@@ -1,0 +1,6 @@
+{"id": "cache_neg_refund_negation", "kind": "negative", "tenant": "summers", "q1": "환불 되는 경우 알려줘", "q2": "환불 안 되는 경우 알려줘", "should_hit": false, "note": "반사실 부정 — 반대 의미"}
+{"id": "cache_neg_shipfee_cond", "kind": "negative", "tenant": "summers", "q1": "단순변심 반품 배송비는 누가 부담해요?", "q2": "하자 반품 배송비는 누가 부담해요?", "should_hit": false, "note": "조건 다름 — 고객 vs 회사"}
+{"id": "cache_neg_exchange_vs_return", "kind": "negative", "tenant": "summers", "q1": "교환 배송비 얼마예요?", "q2": "반품 배송비 얼마예요?", "should_hit": false, "note": "주제 다름 — doc집합 가드 대상"}
+{"id": "cache_pos_return_period", "kind": "positive", "tenant": "summers", "q1": "단순변심 반품 며칠까지 돼요?", "q2": "단순변심 반품 기간 알려주세요", "should_hit": true, "note": "동일 질문 다른 표현"}
+{"id": "cache_pos_refund_timing", "kind": "positive", "tenant": "summers", "q1": "환불 언제 입금돼요?", "q2": "환불받으면 며칠 만에 돈 들어와요?", "should_hit": true, "note": "동일 질문 구어체"}
+{"id": "cache_pos_thermal", "kind": "positive", "tenant": "summers", "q1": "보온 성능 불량이면 교환되나요?", "q2": "보온이 안 되는데 교환 가능한가요?", "should_hit": true, "note": "동일 질문 다른 표현"}

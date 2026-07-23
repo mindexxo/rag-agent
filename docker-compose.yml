@@ -1,0 +1,29 @@
+# 개발계 백엔드: 웹 앱 + 워커를 같은 이미지로 함께 띄운다.
+# 사전조건: 같은 디렉토리에 .env.dev 준비 (개발계 DB/Redis/vLLM/TEI 값 입력)
+#
+# 사용:
+#   docker compose up -d --build      # 빌드 + 웹·워커 기동
+#   docker compose logs -f            # 로그 보기
+#   docker compose down               # 내리기
+#
+# 참고: network_mode: host 라서 컨테이너가 호스트 네트워크를 그대로 쓴다.
+#       → 사내망의 vLLM·TEI·DB·Redis 주소에 호스트와 동일하게 접근 가능.
+#       → 이 모드에선 ports 매핑이 무시되고 앱이 호스트 8000에 바로 바인딩된다.
+
+services:
+  web:
+    build: .
+    image: consult-agent-backend:local   # 워커가 이 이미지를 재사용 (재빌드 1회)
+    env_file: .env.dev
+    network_mode: host
+    restart: unless-stopped
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  worker:
+    image: consult-agent-backend:local   # web이 빌드한 동일 이미지 사용
+    env_file: .env.dev
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - web                               # web 빌드가 이미지를 먼저 만들도록 순서만 보장
+    command: ["arq", "rag.worker.WorkerSettings"]

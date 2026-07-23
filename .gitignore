@@ -1,0 +1,44 @@
+# 비밀/설정 — 절대 커밋 금지 (API 키·DB 접속정보 포함)
+.env
+.env.*
+# 템플릿(값 비운 것) + 개발계 설정(.env.dev, 비번은 플레이스홀더)은 커밋 허용
+!.env.example
+!.env.dev
+
+# 파이썬
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 가상환경
+.venv/
+venv/
+venvs/
+env/
+
+# 런타임 생성물 — 소스 아님
+# docs/ = 업로드 문서 블롭 저장소(고객 문서). sample_docs/(테스트 코퍼스)는 커밋함
+docs/
+# eval 품질 측정 산출물
+eval/results/
+# 실행 로그
+*.log
+
+# 프로젝트 코드 아님 / 내부 문서 (정식 공개 시 재정리)
+# study/ = 파이썬 학습 예제(torch·autogen 등, 이 앱과 무관)
+study/
+# reference/ = 참고 자료
+reference/
+# docs_internal/ = 내부 기획문서(PHASE·ROADMAP·REVIEW·가이드) — 정식 배포 시 필요분만 꺼냄
+docs_internal/
+# 대용량 아카이브
+*.tar.gz
+
+# OS / 에디터
+.DS_Store
+.idea/
+.vscode/
+*.swp

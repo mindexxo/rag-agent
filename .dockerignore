@@ -1,0 +1,33 @@
+# 파이썬 가상환경 / 캐시 (호스트 것이 이미지에 들어가면 안 됨)
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+
+# 버전관리 / IDE
+.git
+.gitignore
+.idea
+.claude
+.DS_Store
+
+# 환경설정 (이미지에 굽지 않고 런타임에 주입)
+.env
+
+# 테스트 / 평가 (런타임 불필요)
+tests
+eval
+conftest.py
+
+# 학습·참고 자료 / 샘플
+study
+reference
+docs
+sample_docs
+sample_site
+
+# 스크래치 로그 / 문서
+scratch_*.log
+*.md
+AI_인터뷰_준비.txt

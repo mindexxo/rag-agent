@@ -1,0 +1,62 @@
+{
+  "corpus_version": "v1",
+  "recorded_at": "2026-06-07",
+  "tenant": "demo",
+  "documents": [
+    {
+      "filename": "kms_01_비밀번호재설정.pdf",
+      "version": 1,
+      "sha256": "d17071c8caad1f54ed01cdb819241b38d64159166ffeccdcdaf1b95dfa5ca94e"
+    },
+    {
+      "filename": "kms_02_환불정책.pdf",
+      "version": 1,
+      "sha256": "721f74b5188c0e9dcb2f08e5a88a65827b49377ecbcb507d7d5c0aa65712ceef"
+    },
+    {
+      "filename": "kms_03_배송지연대응.docx",
+      "version": 1,
+      "sha256": "c39a4292c336b7a74069c48a739fcf7fd7f8b05c2eafcb4653ed14e336f686e7"
+    },
+    {
+      "filename": "kms_04_교환반품정책.pdf",
+      "version": 1,
+      "sha256": "ee79e671c0f8d46e17491d8b05042d2f210e9ebb1e98ea91bb98c0f549313bdb"
+    },
+    {
+      "filename": "kms_05_주문취소.pdf",
+      "version": 1,
+      "sha256": "18ff3f8ea6d14eeaf8e6bd45816509ef3193c66075a633138258fbad5b9b9417"
+    },
+    {
+      "filename": "kms_06_배송조회.docx",
+      "version": 1,
+      "sha256": "3b58e96f682d8866cb594a9e50e3ae5d876a11ee6b9b3f18f9c6ce09272d234a"
+    },
+    {
+      "filename": "kms_07_멤버십혜택.pdf",
+      "version": 1,
+      "sha256": "0665071df67d000ae82ae8d749da1bff93970a8e970cf8ac6f3946386f1a9082"
+    },
+    {
+      "filename": "kms_08_계정보안.docx",
+      "version": 1,
+      "sha256": "ac117229277a2725520ae6b04f1303c66e5e5bd91ed29d45d28a90808494f27c"
+    },
+    {
+      "filename": "kms_09_포인트적립금.pdf",
+      "version": 1,
+      "sha256": "96d4b2444063ea603db0f976637d8bb70adaab838c72865378a8171e6ef2ff9c"
+    },
+    {
+      "filename": "kms_10_용어집.docx",
+      "version": 1,
+      "sha256": "bcb98204d74263f0452b0f3366ef470c1f40b46073d890833a8e344802cb41eb"
+    },
+    {
+      "filename": "kms_11_공지_202606.pdf",
+      "version": 1,
+      "sha256": "6dfb5bb359d1f292b9d3673f3125ea758e1483e71c8a0d7b80ea65de503ac452"
+    }
+  ]
+}

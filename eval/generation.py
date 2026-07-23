@@ -1,0 +1,302 @@
+"""1.5.D 생성 평가 하네스 (oracle / retrieved 2모드, §5.3).
+
+검색 결과를 고정하고 LLM만 평가:
+- oracle:    gold 정답 청크를 직접 주입 → LLM 순수 성능 (검색 변수 제거)
+- retrieved: 실제 검색기(hybrid + 리랭커) 결과 주입 → 시스템 전체
+
+채점:
+- deterministic(서버 무관): Expected Points Coverage, Citation Accuracy
+- LLM-judge(서버 + 심판모델 필요): Answer Relevancy, Faithfulness → 현재 stub
+
+LLM 서버 필요: .env의 VLLM_BASE_URL/VLLM_MODEL (Ollama qwen3:4b 또는 vLLM).
+실행: python -m eval.generation
+"""
+import asyncio
+import json
+import math
+import re
+from collections import defaultdict
+from pathlib import Path
+from types import SimpleNamespace
+
+from sqlalchemy import select
+
+from database import AsyncSessionLocal
+from rag.conversation import condense_query
+from rag.models import Chunk, Document
+from rag.retriever import retrieve_candidates, RetrievedChunk
+from rag.embeddings import embed_texts_sync
+from rag.prompts import SYSTEM_PROMPT, build_chat_prompt, build_user_message
+from rag.llm import LlmClient
+from eval.retrieval import resolve_gold
+
+TENANT = "demo"                      # v1(단일 테넌트) 기본값 — v2 gold는 id 접두로 라우팅
+V2_TENANTS = {"summers", "homeplus", "adererror", "aromanica", "goodpeople", "harim"}
+GOLD = Path("eval/gold_set_v2.jsonl")
+GOLD_VERSION = "v2"
+
+
+def row_tenant(g: dict) -> str:
+    """gold 문항의 테넌트 — id 접두(summers_sf001 등), v1 형식이면 demo."""
+    prefix = g["id"].split("_")[0]
+    return prefix if prefix in V2_TENANTS else TENANT
+RESULT_DIR = Path("eval/results")
+# 생성 평가 본체. multi_turn은 gold의 conversation을 운영 condense_query에 태워
+# 독립 질문으로 재작성한 뒤 동일 경로로 평가 (E.1 운영 경로 그대로 측정)
+GEN_TYPES = {"single_fact", "paraphrase", "rare_lexical", "multi_doc", "multi_turn"}
+TOP_K = 5
+USE_RERANK = False         # 추가 리랭크 여부. 주의: retrieve_candidates가 settings.rerank_enabled(현재 True)로
+                           # 이미 내부 리랭크 1회 수행 → retrieved 모드는 이미 '리랭커 포함'(=시스템 전체).
+                           # True로 켜면 이중 리랭크. 도입 확정이라 내부 1회로 충분 → False 유지.
+SMOKE = None               # 스모크셋 크기 (전체는 None)
+
+
+# ===== 컨텍스트 구성 =================================================
+
+async def oracle_context(session, chunk_ids: list[int]) -> list[RetrievedChunk]:
+    """gold 정답 청크 id들을 RetrievedChunk로 (LLM 컨텍스트 주입용)."""
+    if not chunk_ids:
+        return []
+    rows = await session.execute(
+        select(Chunk, Document.filename, Document.version)
+        .join(Document, Chunk.document_id == Document.id)
+        .where(Chunk.id.in_(chunk_ids))
+    )
+    return [
+        RetrievedChunk(chunk_id=c.id, document_id=c.document_id, text=c.text,
+                       heading_path=c.heading_path, page=c.page, rrf_score=0.0,
+                       branches=["oracle"], filename=fn, version=v)
+        for c, fn, v in rows.all()
+    ]
+
+
+async def retrieved_context(session, tenant: str, query: str) -> list[RetrievedChunk]:
+    """실제 검색기 결과 top-K (옵션: 리랭커 재정렬)."""
+    cands = await retrieve_candidates(session, tenant, query, top_n=20)
+    chunks = cands.chunks
+    if USE_RERANK and chunks:
+        from rag.reranker import rerank
+        chunks = await rerank(query, chunks)
+    return chunks[:TOP_K]
+
+
+# ===== 생성 ==========================================================
+
+async def generate(llm: LlmClient, query: str, chunks: list[RetrievedChunk]) -> str:
+    """RAG 프롬프트로 답변 1건 생성 (LLM 서버 필요)."""
+    messages = build_chat_prompt(SYSTEM_PROMPT, build_user_message(query, chunks))
+    return await llm.acomplete(messages)
+
+
+# ===== 채점 — deterministic (서버 무관) ==============================
+
+EPCOV_SIM_THRESHOLD = 0.55   # 기대포인트 ↔ 답변문장 코사인 임계 (oracle 상한 보정으로 결정)
+
+
+def _split_sentences(text: str) -> list[str]:
+    return [p.strip() for p in re.split(r"[.!?\n]+", text) if p.strip()]
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else 0.0
+
+
+def expected_points_coverage(answer: str, points: list[str]) -> float | None:
+    """기대 포인트가 답변에 담긴 비율. 부분문자열 → 임베딩 2단 매칭.
+
+    - 부분문자열: "30분"·"12개월" 같은 짧은 수치 포인트용. 임베딩 코사인은
+      짧은 포인트 ↔ 긴 문장 대조에서 임계(0.55)를 못 넘어 과소평가한다
+      (답변 길이 제약 해제 후 실측 — 정답인데 EPCov=0인 아티팩트 다수).
+    - 임베딩: 서술형 포인트("본인 인증 후 재설정 링크")용. 부분문자열은 이걸 놓친다.
+    둘 중 하나라도 걸리면 커버 — 각 방식의 사각을 상호 보완.
+    """
+    if not points:
+        return None
+    norm_answer = re.sub(r"\s+", "", answer)
+    hits = [_contains_point(norm_answer, re.sub(r"\s+", "", p)) for p in points]
+
+    remaining_idx = [i for i, h in enumerate(hits) if not h]
+    if remaining_idx:
+        sents = _split_sentences(answer)
+        if sents:
+            remaining = [points[i] for i in remaining_idx]
+            embs = embed_texts_sync(remaining + sents)
+            p_vecs = [e.dense for e in embs[:len(remaining)]]
+            s_vecs = [e.dense for e in embs[len(remaining):]]
+            for i, pv in zip(remaining_idx, p_vecs):     # index 직접 — 중복 포인트도 각자 갱신
+                if max(_cosine(pv, sv) for sv in s_vecs) >= EPCOV_SIM_THRESHOLD:
+                    hits[i] = True
+    return sum(hits) / len(points)
+
+
+def _contains_point(norm_answer: str, norm_point: str) -> bool:
+    """숫자 경계를 지키는 부분문자열 매칭 — '30분'이 '130분'/'305분'에 오탐되는 것 방지.
+    콤마는 양쪽에서 제거 — xlsx 숫자셀('38000')과 모델 표기('38,000원')의 표기 차이 흡수."""
+    norm_answer = norm_answer.replace(',', '')
+    norm_point = norm_point.replace(',', '')
+    if not norm_point:
+        return False
+    for m in re.finditer(re.escape(norm_point), norm_answer):
+        before = norm_answer[m.start() - 1] if m.start() > 0 else ''
+        after = norm_answer[m.end()] if m.end() < len(norm_answer) else ''
+        if norm_point[0].isdigit() and before.isdigit():
+            continue
+        if norm_point[-1].isdigit() and after.isdigit():
+            continue
+        return True
+    return False
+
+
+def _citation_match(core: str, stem: str) -> bool:
+    """인용 토큰 코어 ↔ 기대 파일명 stem 매칭.
+
+    허용: 정확 일치 / 언더스코어 마지막 조각 일치(kms_03_배송지연대응 ↔ 배송지연대응) /
+          4자 이상일 때의 포함 관계 (짧은 토큰의 우연 매칭 오탐 방지).
+    """
+    if not core or not stem:
+        return False
+    if core == stem:
+        return True
+    if core == stem.split('_')[-1] or stem == core.split('_')[-1]:
+        return True
+    shorter, longer = sorted((core, stem), key=len)
+    return len(shorter) >= 4 and shorter in longer
+
+
+def citation_accuracy(answer: str, expected_docs: list[str]) -> float:
+    """기대 문서 중 답변이 실제로 인용한 비율 (0..1).
+
+    v2 개정 (기존 0/1 any-match와 비교 불가):
+    - any-match는 multi_doc에서 문서 하나만 인용해도 만점 → 커버리지 비율로 교체.
+    - FAQ 출처는 [FAQ]로 인용됨 — 기대에 'FAQ'를 넣으면 정확 매칭.
+    - 확장자 스트립을 5개 형식 전체로 확장 (corpus v2 대응).
+    """
+    if not expected_docs:
+        return 0.0
+    cites = re.findall(r"\[([^\]]+)\]", answer)          # [...] 안 토큰들
+    cores = [re.sub(r"\s*v\d+\s*$", "", c).strip() for c in cites]   # 끝의 'v1' 제거
+    # 원소가 리스트면 대체 출처 그룹 — 같은 정보가 여러 문서에 있을 때 하나만 인용해도 인정
+    groups = [[d] if isinstance(d, str) else d for d in expected_docs]
+    covered = 0
+    for group in groups:
+        stems = [re.sub(r"\.(pdf|docx|xlsx|txt|md)$", "", d) for d in group]
+        if any(_citation_match(core, stem) for stem in stems for core in cores):
+            covered += 1
+    return covered / len(groups)
+
+
+# ===== 채점 — LLM-judge (서버 + 심판모델, 현재 stub) =================
+
+async def judge_relevancy(query: str, answer: str) -> float | None:
+    """Answer Relevancy (0/0.5/1). TODO: 심판 LLM 프롬프트로 채점."""
+    return None
+
+
+async def judge_faithfulness(answer: str, chunks: list[RetrievedChunk]) -> float | None:
+    """Faithfulness/Groundedness (0/0.5/1). TODO: 심판 LLM으로 답변 주장의 근거 일치 채점."""
+    return None
+
+
+# ===== 메인 ==========================================================
+
+async def run_mode(session, llm, mode: str, gold_rows, resolved):
+    """oracle / retrieved 한 모드로 생성 + 채점 → row 리스트."""
+    rows = []
+    for g in gold_rows:
+        if g["type"] not in GEN_TYPES:
+            continue
+
+        # multi_turn: 이전 대화를 운영 condense에 태워 독립 질문으로 재작성.
+        # 검색·생성 모두 재작성된 질의를 쓴다 — 운영 /kms/query 경로와 동일.
+        query = g["query"]
+        standalone = None
+        if g["type"] == "multi_turn":
+            history = [SimpleNamespace(**m) for m in g.get("conversation", [])]
+            standalone = await condense_query(llm, query, history)
+            query = standalone
+
+        if mode == "oracle":
+            chunks = await oracle_context(session, resolved.chunk_ids.get(g["id"]) or [])
+            if not chunks:                       # 정답 청크 resolve 실패 → oracle 스킵
+                continue
+        else:
+            chunks = await retrieved_context(session, row_tenant(g), query)
+
+        answer = await generate(llm, query, chunks)
+
+        rows.append({
+            "id": g["id"], "type": g["type"], "mode": mode,
+            "standalone_query": standalone,      # multi_turn만 값 있음 — condense 품질 분석용
+            "answer": answer,
+            # RAGAS retrieved_contexts용 — 생성기가 본 것과 동일하게 [파일명 vN] 헤더 포함
+            # (헤더 없이 text만 저장하면 답변의 인용 문장이 judge에게 근거없음 판정됨)
+            "retrieved_contexts": [
+                f"[{c.filename} v{c.version}] 섹션: "
+                f"{' > '.join(c.heading_path) if c.heading_path else ''} / 페이지: {c.page or '-'}\n{c.text}"
+                for c in chunks
+            ],
+            "scores": {
+                "expected_points_coverage": expected_points_coverage(answer, g.get("expected_points", [])),
+                "citation_accuracy": citation_accuracy(answer, g.get("expected_docs", [])),
+                "answer_relevancy": await judge_relevancy(g["query"], answer),
+                "faithfulness": await judge_faithfulness(answer, chunks),
+            },
+            "gold_version": GOLD_VERSION,
+        })
+    return rows
+
+
+async def main():
+    gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+    gen_gold = [g for g in gold if g["type"] in GEN_TYPES]
+    if SMOKE:
+        gen_gold = gen_gold[:SMOKE]
+    RESULT_DIR.mkdir(exist_ok=True)
+
+    llm = LlmClient()
+    async with AsyncSessionLocal() as session:
+        # 테넌트별 resolve 후 병합 (chunk_ids는 문항 id 키라 충돌 없음)
+        from eval.retrieval import Resolved
+        resolved = Resolved()
+        by_tenant = defaultdict(list)
+        for g in gold:
+            by_tenant[row_tenant(g)].append(g)
+        for tenant, rows_t in by_tenant.items():
+            r_t = await resolve_gold(session, tenant, rows_t)
+            resolved.chunk_ids.update(r_t.chunk_ids)
+            resolved.stale.extend(f"[{tenant}] {m}" for m in r_t.stale)
+        if resolved.stale:
+            print(f"⚠ 라벨 노후 {len(resolved.stale)}건")
+            for m in resolved.stale[:10]:
+                print("  ", m)
+
+        all_rows = {}
+        for mode in ("oracle", "retrieved"):
+            print(f"\n=== mode: {mode} ({len(gen_gold)}문항) ===")
+            rows = await run_mode(session, llm, mode, gen_gold, resolved)
+            out = RESULT_DIR / f"generation_{mode}.jsonl"
+            out.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows))
+            summarize(rows)
+            print(f"→ {out} ({len(rows)} rows)")
+            all_rows[mode] = rows
+
+
+def summarize(rows):
+    """모드별 deterministic 평균 (judge는 채점 붙으면 추가)."""
+    by_type = defaultdict(list)
+    for r in rows:
+        by_type[r["type"]].append(r["scores"])
+    print(f"{'type':<14}{'n':>4}{'EPCov':>8}{'Cite':>7}")
+    for t, ss in by_type.items():
+        n = len(ss)
+        cov = [s["expected_points_coverage"] for s in ss if s["expected_points_coverage"] is not None]
+        cite = [s["citation_accuracy"] for s in ss]
+        cov_avg = sum(cov) / len(cov) if cov else 0.0
+        print(f"{t:<14}{n:>4}{cov_avg:>8.2f}{sum(cite)/n:>7.2f}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -1,0 +1,51 @@
+# 설치: pip install -r requirements.txt
+# 임베딩/리랭크/LLM은 외부 서버(TEI·vLLM)로 호출하므로 torch·transformers·FlagEmbedding 등
+# 로컬 ML 스택은 불필요 (그 패키지들은 study/ 학습 예제 전용).
+
+# ---- 웹 프레임워크 / 서버 ----
+fastapi==0.135.2
+uvicorn[standard]==0.42.0
+python-multipart==0.0.22          # 파일 업로드(멀티파트)
+starlette==1.0.0                  # fastapi 의존이지만 직접 import(SSE StreamingResponse)라 명시
+
+# ---- 설정 / 검증 ----
+pydantic==2.12.5
+pydantic-settings==2.13.1
+python-dotenv==1.2.2              # .env 로드
+
+# ---- DB / 캐시 ----
+sqlalchemy[asyncio]==2.0.48
+asyncpg==0.31.0                  # PostgreSQL async 드라이버
+pgvector==0.4.2                  # 벡터 컬럼/거리 연산
+redis==5.3.1                     # 문서 역인덱스·동시성 제한(Redis)
+hiredis==3.3.1                   # redis 파서 가속
+
+# ---- HTTP 클라이언트 (TEI/vLLM 호출, SSE) ----
+httpx==0.28.1
+httpx-sse==0.4.3
+
+# ---- LLM (vLLM은 OpenAI 호환 API로 호출) ----
+openai==2.30.0
+tiktoken==0.12.0                 # 토큰 카운트
+
+# ---- 문서 파싱 (인제스트) ----
+pdfplumber==0.11.10              # PDF
+python-docx==1.2.0               # DOCX
+openpyxl==3.1.5                  # XLSX
+
+# ---- 청킹 유틸 ----
+llama-index-core==0.14.20        # 노드/스플리터 등 단독 컴포넌트만 사용
+numpy==2.4.4
+
+# ---- 백그라운드 워커 ----
+arq==0.28.0                      # 문서 인덱싱 잡 큐 (Redis 기반)
+
+# ---- 테스트 (개발용) ----
+pytest==9.0.3
+pytest-asyncio==1.3.0
+
+# ---- 품질 평가 전용 (eval/, 서비스 런타임엔 불필요) ----
+# 개발계 BE 기동만이면 아래 블록은 생략 가능. RAGAS 측정 시에만 설치.
+# ragas==0.4.3
+# langchain-openai==0.3.35
+# datasets==4.8.4

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
         # .env.dev(개발계 공용 기본, git 커밋됨) → .env(로컬 오버라이드, gitignore) 순.
         # 뒤 파일이 우선이라, 로컬에 .env가 있으면 그게 이기고 없으면 .env.dev를 쓴다.
         # cwd 무관하게 절대경로 (부팅 이식성).
-        env_file=(str(PROJECT_ROOT / ".env.dev"), str(PROJECT_ROOT / ".env")),
+        env_file=(str(PROJECT_ROOT / ".env"), str(PROJECT_ROOT / ".env.dev")),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,

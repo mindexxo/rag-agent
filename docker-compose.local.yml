@@ -1,0 +1,21 @@
+# FE 개발자용 로컬 인프라: DB(pgvector) + Redis 만 도커로 띄운다.
+# 백엔드는 도커가 아니라 파이썬(uvicorn/arq)으로 직접 실행하고, 이 컨테이너들에 localhost로 붙는다.
+#   - DB: 백엔드 개발자에게 받은 이미지(kms-db:local, pgvector+스키마 내장)를 docker load 후 사용
+#   - Redis: Docker Hub 자동 다운로드
+# 사용: docker compose -f docker-compose.local.yml up -d
+
+services:
+  db:
+    image: kms-db:local            # 받은 tar를 docker load 하면 생기는 이미지
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: kms
+    ports: ["5432:5432"]           # 파이썬 백엔드가 localhost:5432로 접속
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+
+  redis:
+    image: redis:7-alpine          # 인터넷(Docker Hub)에서 자동 다운로드
+    ports: ["6379:6379"]           # 파이썬 백엔드가 localhost:6379로 접속
+
+volumes:
+  pgdata: {}

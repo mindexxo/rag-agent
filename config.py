@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     vllm_base_url: str = "http://localhost:11434/v1"
     vllm_model: str = "qwen3:4b"
     llm_temperature: float | None = None  # None이면 모델/서버 기본값(Qwen3 0.6). 경계 문항 일관성 실험용 — 낮을수록 결정적
+    llm_enable_thinking: bool = False     # Qwen3 thinking 모드. 서버가 --reasoning-parser로 떠 있어 추론은 reasoning 필드로
+                                          # 분리되고 우리는 .content만 읽으므로 답변엔 안 섞인다. 다만 추론 토큰만큼
+                                          # 첫 토큰 지연·생성 시간이 늘고 max_tokens 예산을 함께 먹는다. 실험용 토글(기본 off).
+                                          # 주의: 전 호출(인텐트·condense·생성) 공유 — 운영에 켤 땐 호출별 분리 필요
 
     # embedding (F99: TEI 원격 서버, dense-only). 저장 벡터도 이 서버 출력이어야 검색 정상 — 재인제스트로 일치 보장
     embed_base_url: str = "http://localhost:38889"    # TEI 임베딩 서버 (BGE-M3, /embed) — 실주소는 .env

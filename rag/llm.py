@@ -25,7 +25,7 @@ class LlmClient:
         kwargs = {
             "model": settings.vllm_model,
             "max_tokens": settings.generation_reserve_tokens,   # 생성 몫 예약 + 폭주 방지 (F100)
-            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": settings.llm_enable_thinking}},
         }
         if settings.llm_temperature is not None:
             kwargs["temperature"] = settings.llm_temperature

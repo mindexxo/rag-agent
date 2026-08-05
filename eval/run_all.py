@@ -52,6 +52,9 @@ ROWS = [
     ("cache", "accuracy", "캐시히트 정확도"),
     ("other", "accuracy", "OTHER 경계준수"),
     ("retrieval", "recall_at_5", "검색  R@5"),
+    ("retrieval", "r5_easy", "검색  R@5(쉬움)"),
+    ("retrieval", "r5_medium", "검색  R@5(중간)"),
+    ("retrieval", "r5_hard", "검색  R@5(어려움)"),
     ("retrieval", "recall_at_20", "검색  R@20"),
     ("retrieval", "hit_at_1", "검색  Hit@1"),
     ("retrieval", "mrr", "검색  MRR"),
@@ -93,6 +96,43 @@ def _prev_summary() -> dict | None:
     return json.loads(files[-1].read_text())
 
 
+# 시계열 뷰 컬럼 — (지표키 경로, 짧은 헤더). ROWS와 같은 축이나 폭 위해 축약.
+HIST_COLS = [
+    ("intent", "accuracy", "intent"),
+    ("condense", "accuracy", "cond"),
+    ("refusal", "accuracy", "refus"),
+    ("cache", "accuracy", "cache"),
+    ("other", "accuracy", "other"),
+    ("retrieval", "recall_at_5", "R@5"),
+    ("retrieval", "r5_hard", "R@5hard"),
+    ("ragas", "faithfulness", "faith"),
+]
+
+
+def _history_view() -> None:
+    """history의 모든 요약을 읽어 시계열 매트릭스로 출력 (버전 라벨 포함).
+
+    각 축을 안 돌린 실행은 빈칸(-). 라벨로 '무엇을 바꿨나'를 시각적으로 추적.
+    """
+    if not HISTORY.exists() or not sorted(HISTORY.glob("summary_*.json")):
+        print("이력 없음 — python -m eval.run_all 로 먼저 측정하세요.")
+        return
+    summaries = [json.loads(f.read_text()) for f in sorted(HISTORY.glob("summary_*.json"))]
+
+    print(f"\n평가 이력 (시계열, {len(summaries)}회)\n")
+    header = f"{'날짜':<12}{'라벨':<22}" + "".join(f"{h:>7}" for _, _, h in HIST_COLS)
+    print(header)
+    print("─" * len(header))
+    for s in summaries:
+        stamp = (s.get("stamp") or "")[5:]   # 'MM-DD HH:MM' (연도 생략)
+        label = (s.get("label") or "")[:20]
+        cells = ""
+        for axis, key, _ in HIST_COLS:
+            v = _get(s, axis, key)
+            cells += f"{v:>7.3f}" if isinstance(v, (int, float)) else f"{'-':>7}"
+        print(f"{stamp:<12}{label:<22}{cells}")
+
+
 def _get(summary: dict | None, axis: str, key: str):
     if not summary:
         return None
@@ -103,14 +143,19 @@ def _report(cur: dict, prev: dict | None) -> None:
     stamp = cur["stamp"]
     prev_note = f"(직전: {prev['stamp']} 대비)" if prev else "(첫 실행 — 비교 대상 없음)"
     print(f"\n평가 요약 — {stamp}  {prev_note}")
+    if cur.get("label"):
+        print(f"라벨: {cur['label']}")
     print("─" * 52)
     warnings = []
     for axis, key, label in ROWS:
-        if cur.get(axis) is None:
-            continue  # 이번 실행에서 안 돌린 축 (행 자체 생략)
-        v = _get(cur, axis, key)
+        axis_data = cur.get(axis)
+        if axis_data is None:
+            continue  # 축 자체를 안 돌림 → 행 생략
+        if key not in axis_data:
+            continue  # 축은 돌렸으나 이 세부지표는 해당 없음(예: 빈 난이도 그룹) → 행 생략
+        v = axis_data[key]
         if v is None:
-            # 축은 돌렸으나 지표가 실패(RAGAS NaN 등) — '안 돌림'과 구분해 명시
+            # 키는 있는데 값이 None = 진짜 측정 실패(RAGAS NaN 등) — '해당 없음'과 구분해 명시
             print(f"{label:<20}{'실패':>8}   (측정 불가)")
             warnings.append(f"{label} 측정 실패")
             continue
@@ -138,7 +183,15 @@ async def _run_async(name: str):
     if name == "retrieval":
         from eval.retrieval_v2 import compute
         r = await compute()
-        return r["overall"]
+        # 전체 평균 + 난이도 층화(easy/medium/hard의 R@5).
+        # 문항 없는 난이도 그룹은 키를 아예 넣지 않는다 → _report가 '해당 없음'으로 행 생략
+        # (None으로 넣으면 '측정 실패'로 오인돼 가짜 회귀가 뜸).
+        d = r["by_difficulty"]
+        out = dict(r["overall"])
+        for grp, key in (("easy", "r5_easy"), ("medium", "r5_medium"), ("hard", "r5_hard")):
+            if grp in d:
+                out[key] = d[grp]
+        return out
     if name == "intent":
         from eval.intent import compute
         r = await compute()
@@ -160,7 +213,7 @@ async def _run_async(name: str):
     if name == "other":
         from eval.other_eval import compute
         r = await compute()
-        return {"accuracy": r["accuracy"]}
+        return {"accuracy": r["accuracy"], "flaky": r["flaky"]}
     raise ValueError(name)
 
 
@@ -174,7 +227,14 @@ def main() -> None:
     ap.add_argument("--cache", action="store_true", help="캐시 히트 정확성")
     ap.add_argument("--other", action="store_true", help="OTHER 경계 준수")
     ap.add_argument("--smoke", type=int, default=None, help="RAGAS 샘플 수(0=전체). 미지정 시 SMOKE 환경변수")
+    ap.add_argument("--label", type=str, default="", help="이 실행의 라벨 (무엇을 바꿨나 — 이력 추적용)")
+    ap.add_argument("--history", action="store_true", help="측정 없이 과거 이력을 시계열 표로 출력")
     args = ap.parse_args()
+
+    # 이력 조회 모드 — 측정 안 하고 시계열만 보여주고 종료
+    if args.history:
+        _history_view()
+        return
 
     # 아무 플래그도 없으면 전 축
     run_all = not (args.retrieval or args.ragas or args.intent or args.condense or args.refusal or args.cache or args.other)
@@ -188,7 +248,7 @@ def main() -> None:
         "other": run_all or args.other,
     }
 
-    summary: dict = {"stamp": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    summary: dict = {"stamp": datetime.now().strftime("%Y-%m-%d %H:%M"), "label": args.label}
 
     # 검색축·인텐트·condense·거절 (async) — 순차 실행 (DB/TEI/LLM 부하 분산)
     if do["intent"]:

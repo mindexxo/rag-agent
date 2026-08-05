@@ -20,6 +20,7 @@ from pathlib import Path
 from database import AsyncSessionLocal
 from rag.chunking import chunk_file
 from rag.embeddings import embed_texts
+from rag.index_text import build_index_text
 from rag.models import Chunk, Document
 
 _MIME_OVERRIDES = {
@@ -55,7 +56,10 @@ async def ingest_file(file_path: str | Path, tenant_id: str) -> int:
     sha = _sha256(path)
 
     chunks = chunk_file(file_path)
-    embeddings = await embed_texts([c.text for c in chunks])
+    # 워커 경로(rag/documents.py)와 같은 조립 — 임베딩 입력에만 '파일명 > 헤딩' 컨텍스트
+    embeddings = await embed_texts([
+        build_index_text(c.text, path.name, c.heading_path) for c in chunks
+    ])
 
     async with AsyncSessionLocal() as session:
         async with session.begin():

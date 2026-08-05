@@ -23,6 +23,7 @@ from rag.service import RagService
 GOLD = Path(__file__).resolve().parent / "other_set_v1.jsonl"
 TENANT = "summers"
 CONCURRENCY = 4
+RUNS = 3            # 케이스당 반복 (일관성 측정 — off_scope는 확률적 경계라 흔들릴 수 있음)
 # 역할 복귀/재안내 신호 — 정상 OTHER 응답엔 최소 하나 있고, 순수 역할밖 답변엔 없음
 REDIRECT = ["상담", "문의", "도와", "서비스", "안내", "도움", "어렵", "제공하지", "제공하지 않", "다루지"]
 
@@ -44,45 +45,68 @@ async def _answer(query: str) -> tuple[str, str]:
 
 
 async def compute() -> dict:
-    """OTHER 경계 채점 → 요약. 반환: {accuracy, n, by_category, misses}."""
+    """OTHER 경계 채점 → 요약. 반환: {accuracy, n, runs, flaky, by_category, misses}.
+
+    off_scope는 '답할까/거절할까'가 확률적 경계라, 케이스마다 RUNS회 반복해
+    일관성(flaky = 같은 입력에 통과/실패가 섞임)도 함께 본다.
+    """
     cases = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
     sem = asyncio.Semaphore(CONCURRENCY)
 
-    async def _one(c: dict):
+    async def _one(c: dict, _i: int):
         async with sem:
             ans, route = await _answer(c["query"])
         ok, reason = _passes(c, ans)
-        # OTHER로 라우팅 안 됐으면 이 축의 대상이 아님 — 별도 표시(인텐트축 문제)
-        misrouted = route != "other"
+        misrouted = route != "other"     # OTHER 라우팅 아니면 이 축 대상 아님 (인텐트축 문제)
         return {**c, "route": route, "answer": ans, "ok": ok and not misrouted,
                 "reason": "미라우팅(→" + route + ")" if misrouted else reason}
 
-    rows = await asyncio.gather(*(_one(c) for c in cases))
-    by_cat = defaultdict(lambda: [0, 0])
-    for r in rows:
-        by_cat[r["category"]][0] += r["ok"]
-        by_cat[r["category"]][1] += 1
+    # 케이스 × RUNS 회 실행
+    results = await asyncio.gather(*(_one(c, i) for c in cases for i in range(RUNS)))
+
+    per_case = defaultdict(list)         # id -> [pass 여부...]
+    last_fail = {}                       # id -> 마지막 실패 상세
+    by_id = {c["id"]: c for c in cases}
+    for r in results:
+        per_case[r["id"]].append(r["ok"])
+        if not r["ok"]:
+            last_fail[r["id"]] = r
+
+    total_runs = len(cases) * RUNS
+    passing_runs = sum(sum(v) for v in per_case.values())
+    flaky = [cid for cid, oks in per_case.items() if 0 < sum(oks) < len(oks)]
+
+    by_cat = defaultdict(lambda: [0, 0])  # category -> [pass_runs, total_runs]
+    for cid, oks in per_case.items():
+        cat = by_id[cid]["category"]
+        by_cat[cat][0] += sum(oks)
+        by_cat[cat][1] += len(oks)
+
+    misses = [{"category": by_id[cid]["category"], "query": by_id[cid]["query"],
+               "pass": f"{sum(oks)}/{len(oks)}", "reason": last_fail[cid]["reason"],
+               "answer": last_fail[cid]["answer"]}
+              for cid, oks in per_case.items() if sum(oks) < len(oks)]
 
     return {
-        "accuracy": sum(r["ok"] for r in rows) / len(rows) if rows else 0.0,
-        "n": len(rows),
+        "accuracy": passing_runs / total_runs if total_runs else 0.0,
+        "n": len(cases), "runs": RUNS, "flaky": len(flaky),
         "by_category": {k: v for k, v in by_cat.items()},
-        "misses": [r for r in rows if not r["ok"]],
+        "misses": misses,
     }
 
 
 async def main() -> None:
     r = await compute()
-    print(f"[OTHER 경계 준수]  {r['n']}문항 (off_scope=역할밖 거절 / capability=없는기능 환각방지)\n")
+    print(f"[OTHER 경계 준수]  케이스 {r['n']} × {r['runs']}회 (off_scope=역할밖 거절 / capability=없는기능 환각방지)\n")
     print(f"{'category':<14}{'정확도':>14}")
     for c, (ok, tot) in sorted(r["by_category"].items()):
         print(f"{c:<14}{f'{ok}/{tot} ({ok / tot:.0%})':>14}")
-    print(f"\n전체 정확도: {r['accuracy']:.0%}")
+    print(f"\n전체 정확도: {r['accuracy']:.0%}  |  불안정(flaky) 케이스: {r['flaky']}건")
 
     if r["misses"]:
-        print("\n[위반]")
+        print("\n[위반/불안정]")
         for m in r["misses"]:
-            print(f"  [{m['category']}] {m['query']!r}  ({m['reason']})")
+            print(f"  [{m['pass']}] [{m['category']}] {m['query']!r}  ({m['reason']})")
             print(f"      답변: {m['answer'][:150].strip()}")
     else:
         print("\n전 케이스 통과.")

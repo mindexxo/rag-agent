@@ -43,6 +43,26 @@ def _overall(rows) -> dict:
     return {m: sum(s[m] for s in all_ss) / len(all_ss) for m in METRICS}
 
 
+# 검색 난이도 층화 — type을 난이도 그룹으로 묶는다 (별도 태깅 없이 type 재활용).
+# 쉬움: 직접 사실·고유용어(매칭 쉬움) / 어려움: 다문서 종합·멀티턴 맥락 의존.
+DIFFICULTY = {
+    'single_fact': 'easy', 'rare_lexical': 'easy',
+    'paraphrase': 'medium',
+    'multi_doc': 'hard', 'multi_turn': 'hard',
+}
+
+
+def _by_difficulty(rows) -> dict:
+    """난이도 그룹별 R@5 — '어려운 질의에서만 약한지'를 평균에 가려지지 않게 본다."""
+    groups = defaultdict(list)
+    for r in rows:
+        groups[DIFFICULTY.get(r['type'], 'medium')].append(r['scores'])
+    out = {}
+    for g, ss in groups.items():
+        out[g] = sum(s['recall_at_5'] for s in ss) / len(ss) if ss else 0.0
+    return out
+
+
 async def compute() -> dict:
     """검색축 채점 실행 → 요약 반환 (출력·파일저장은 main이 담당).
 
@@ -70,7 +90,8 @@ async def compute() -> dict:
                 scores = score_one([c.chunk_id for c in cands.chunks], gold_ids)
                 rows.append({'id': g['id'], 'type': g['type'], 'tenant': tenant, 'scores': scores})
 
-    return {'rows': rows, 'skipped': skipped, 'overall': _overall(rows), 'stale': stale}
+    return {'rows': rows, 'skipped': skipped, 'overall': _overall(rows),
+            'by_difficulty': _by_difficulty(rows), 'stale': stale}
 
 
 async def main() -> None:

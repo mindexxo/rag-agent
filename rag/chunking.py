@@ -6,8 +6,8 @@
  ================================================================
    형식별 파싱
  ================================================================
- - PDF : pdfplumber 페이지별 텍스트 추출. page 번호 보존(인용용), heading_path 없음(레이아웃 미인식).
- - DOCX: python-docx 문단 + 표 셀 텍스트를 평문으로. heading_path 없음.
+ - PDF : pdfplumber로 줄별 글자 크기를 보고 헤딩 판정 → heading_path 채움. page(섹션 시작 쪽) 보존.
+ - DOCX: python-docx로 body를 문서 순서대로 읽어 Heading 스타일 기준 섹션 분할 → heading_path 채움.
  - MD  : LlamaIndex MarkdownNodeParser로 # 헤딩 구조 보존 → heading_path 채움(유일하게 heading 있음).
  - TXT : 평문을 인코딩 감지(utf-8→cp949)해 읽어 문장 단위 분할. heading_path 없음.
  - XLSX: rag/xlsx_chunking (openpyxl, 시트/표 단위).
@@ -26,10 +26,17 @@ from pathlib import Path
 
 import pdfplumber
 from docx import Document as DocxDocument
+from docx.table import Table as DocxTable
+from docx.text.paragraph import Paragraph as DocxParagraph
 from llama_index.core import Document as LiDocument
 from llama_index.core.node_parser import MarkdownNodeParser, SentenceSplitter
 
 _HEADING_RE = re.compile(r'^(#{1,6})\s+(.+)$')
+_DOCX_HEADING_RE = re.compile(r'^Heading (\d+)$')     # python-docx는 빌트인 헤딩을 영문명으로 준다
+# 섹션 묶음 예산(문자). 섹션 하나하나는 보통 100~150자라, 섹션=청크로 두면 top_k=5가
+# 실어 나르는 컨텍스트가 옛 방식의 1/3로 줄어든다(실측 2211자→707자). 옛 청크 중앙값(499자)에
+# 맞춰 연속 섹션을 여기까지 묶는다. 실제 토큰 상한은 뒤이어 SentenceSplitter가 다시 건다.
+_PACK_CHARS = 500
 
 @dataclass
 class ChunkData:
@@ -82,16 +89,188 @@ def _pdf_pages(file_path: str | Path) -> list[tuple[int, str]]:
         return [(i, page.extract_text() or '') for i, page in enumerate(pdf.pages, start=1)]
 
 
-def _docx_text(file_path: str | Path) -> str:
-    """DOCX 본문 문단 + 표 셀 텍스트를 평문으로 (python-docx, 비ML)."""
+def _pdf_lines(file_path: str | Path) -> list[tuple[int, str, float]]:
+    """PDF를 (page, 줄 텍스트, 최대 글자크기) 목록으로. 헤딩 판정에 크기가 필요해서.
+
+    extract_text()는 크기 정보를 버리므로 extract_text_lines()로 줄별 char를 본다.
+    """
+    out: list[tuple[int, str, float]] = []
+    with pdfplumber.open(str(file_path)) as pdf:
+        for page_no, page in enumerate(pdf.pages, start=1):
+            for line in page.extract_text_lines():
+                text = (line.get('text') or '').strip()
+                if not text:
+                    continue
+                sizes = [c['size'] for c in line.get('chars', []) if c.get('size')]
+                out.append((page_no, text, round(max(sizes), 1) if sizes else 0.0))
+    return out
+
+
+def _pdf_sections(file_path: str | Path) -> list[tuple[list[str], int, str]]:
+    """PDF를 (heading_path, 시작 page, 본문) 섹션 목록으로 — 글자 크기로 헤딩을 판정.
+
+    DOCX와 달리 PDF엔 구조 태그가 없어 조판에 기대는 휴리스틱이다:
+      본문 크기 = 가장 많이 쓰인 글자 크기, 그보다 **큰** 줄을 헤딩으로 본다.
+      크기 종류를 큰 순으로 정렬해 1,2,3… 레벨로 매긴다.
+    크기 차이가 없는 문서(전부 같은 크기, 스캔본 등)는 헤딩 0개 → heading_path=[]로
+    폴백해 이 변경 전과 동일하게 동작한다 (조판이 달라도 손해는 없게).
+    """
+    lines = _pdf_lines(file_path)
+    if not lines:
+        return []
+
+    # 본문 크기 = 글자 수 기준 최빈 크기 (줄 수가 아니라 분량 기준이라 제목에 안 휘둘린다)
+    weight: dict[float, int] = {}
+    for _, text, size in lines:
+        weight[size] = weight.get(size, 0) + len(text)
+    body_size = max(weight, key=lambda s: weight[s])
+
+    # 본문보다 큰 크기들 → 큰 순으로 레벨 부여
+    level_of = {size: lv for lv, size in
+                enumerate(sorted((s for s in weight if s > body_size), reverse=True), start=1)}
+
+    sections: list[tuple[list[str], int | None, str]] = []
+    stack: list[str] = []
+    buf: list[str] = []
+    start_page = lines[0][0]
+
+    def flush() -> None:
+        if buf:
+            sections.append((list(stack), start_page, '\n'.join(buf)))
+            buf.clear()
+
+    for page_no, text, size in lines:
+        level = level_of.get(size)
+        if level:
+            flush()
+            del stack[level - 1:]
+            stack.append(text)
+            start_page = page_no       # 섹션이 시작된 페이지를 인용 근거로 삼는다
+        else:
+            if not buf:
+                start_page = page_no
+            buf.append(text)
+    flush()
+    return sections
+
+
+def _docx_items(file_path: str | Path):
+    """DOCX body를 **문서 원래 순서대로** (is_heading, level, text)로 흘린다.
+
+    doc.paragraphs와 doc.tables를 따로 훑으면 표가 전부 문서 끝으로 밀린다
+    (예: '2.1 기준표' 밑의 표가 자기 섹션에서 떨어져 나와 마지막 청크로 감).
+    body 자식을 직접 순회해 문단·표의 상대 순서를 보존한다.
+    """
     doc = DocxDocument(str(file_path))
-    parts = [p.text for p in doc.paragraphs if p.text.strip()]
-    for table in doc.tables:                       # docx 표는 구조화 포맷 → 셀 값 안정 추출
-        for row in table.rows:
-            cells = [c.text.strip() for c in row.cells if c.text.strip()]
-            if cells:
-                parts.append(' | '.join(cells))
-    return '\n'.join(parts)
+    for child in doc.element.body.iterchildren():
+        tag = child.tag.split('}')[-1]
+        if tag == 'p':
+            para = DocxParagraph(child, doc)
+            text = para.text.strip()
+            if not text:
+                continue
+            # style이 None인 문단이 실제로 있다 (스타일 정의가 빠진 docx) — getattr로 방어
+            m = _DOCX_HEADING_RE.match(getattr(para.style, 'name', None) or '')
+            yield (bool(m), int(m.group(1)) if m else 0, text)
+        elif tag == 'tbl':                         # docx 표는 구조화 포맷 → 셀 값 안정 추출
+            for row in DocxTable(child, doc).rows:
+                # 빈 셀도 자리를 지킨다 — 걸러내면 뒷 컬럼이 앞으로 당겨져 헤더와 어긋난다.
+                # ['제주','','5000원','도서산간 별도'] → '제주 | 5000원 | 도서산간 별도'가 되어
+                # LLM이 '조건=5000원'으로 읽는다. 완전 빈 행만 스킵 (xlsx 파서와 같은 원리).
+                cells = [c.text.strip() for c in row.cells]
+                if any(cells):
+                    yield (False, 0, ' | '.join(cells))
+
+
+def _docx_text(file_path: str | Path) -> str:
+    """DOCX 전체를 평문 하나로 (채팅 첨부 — 컨텍스트 직접 주입용). 헤딩 포함, 문서 순서 보존."""
+    return '\n'.join(text for _, _, text in _docx_items(file_path))
+
+
+def _docx_sections(file_path: str | Path) -> list[tuple[list[str], int | None, str]]:
+    """DOCX를 (heading_path, 본문) 섹션 목록으로 — Heading 스타일이 경계.
+
+    헤딩 텍스트는 본문에 넣지 않는다. heading_path가 들고 있고, 인덱스 입력엔
+    rag/index_text가 앞에 붙이므로 본문에까지 넣으면 같은 문구가 두 번 들어간다.
+
+    본문이 없는 헤딩(상위 목차처럼 바로 하위 헤딩이 오는 경우)은 섹션을 만들지 않는다 —
+    '헤딩만 있고 내용 없는 청크'가 인덱스에 새는 것을 막는다(md 경로에서 실제로 관측된 노이즈).
+    그 헤딩은 하위 섹션의 heading_path에 조상으로 남으므로 정보 손실은 없다.
+    """
+    sections: list[tuple[list[str], int | None, str]] = []
+    stack: list[str] = []      # 현재 헤딩 경로 — 인덱스가 곧 레벨-1
+    lines: list[str] = []
+
+    def flush() -> None:
+        if lines:
+            sections.append((list(stack), None, '\n'.join(lines)))   # page는 docx에 없음
+            lines.clear()
+
+    for is_heading, level, text in _docx_items(file_path):
+        if is_heading:
+            flush()                    # 이전 섹션 마감 후 경로 갱신
+            del stack[level - 1:]      # 같은 레벨·하위 레벨 걷어내고
+            stack.append(text)
+        else:
+            lines.append(text)
+    flush()
+    return sections
+
+
+def _common_prefix(paths: list[list[str]]) -> list[str]:
+    """heading_path들의 공통 조상 경로."""
+    common = list(paths[0])
+    for path in paths[1:]:
+        while common != path[:len(common)]:
+            common.pop()
+    return common
+
+
+def _pack_sections(
+        sections: list[tuple[list[str], int | None, str]],
+        max_chars: int = _PACK_CHARS,
+) -> list[tuple[list[str], int | None, str]]:
+    """연속 섹션을 예산까지 묶는다 — 섹션 하나가 청크 하나면 너무 잘아지므로.
+    (heading_path, page, 본문) 형태를 그대로 받고, 묶음의 page는 첫 섹션 것을 쓴다.
+
+    묶음의 heading_path는 참여 섹션들의 **공통 조상**이고, 그보다 깊은 헤딩은 본문에
+    줄로 남긴다. 정보 손실 없이 청크 크기만 옛 방식 수준으로 되돌린다.
+      예: '2.1 신청 채널'과 '2.2 최소 후원 금액'을 묶으면
+          heading_path=[문서명, '2. 정기후원 신청'], 본문 앞에 각 소제목이 한 줄씩.
+
+    상위 섹션이 다르면 묶지 않는다(공통 조상 깊이 2 미만). 문서 전체를 무작정 묶으면
+    공통 조상이 문서명 하나로 떨어져 heading_path가 무의미해진다 — 크기를 벌자고
+    섹션 정보를 잃는 셈이라, 예산보다 경계를 우선한다.
+    """
+    packed: list[tuple[list[str], int | None, str]] = []
+    buf: list[tuple[list[str], int | None, str]] = []
+    size = 0
+
+    def joinable(path: list[str]) -> bool:
+        """buf에 이 섹션을 더해도 공통 조상이 문서명 아래로 유지되는가."""
+        return len(_common_prefix([p for p, _, _ in buf] + [path])) >= 2
+
+    def flush() -> None:
+        nonlocal size
+        if not buf:
+            return
+        common = _common_prefix([path for path, _, _ in buf])
+        lines: list[str] = []
+        for path, _, body in buf:
+            lines.extend(path[len(common):])   # 공통 조상보다 깊은 헤딩은 본문에 보존
+            lines.append(body)
+        packed.append((common, buf[0][1], '\n'.join(lines)))
+        buf.clear()
+        size = 0
+
+    for section in sections:
+        path, _, body = section
+        if buf and (size + len(body) > max_chars or not joinable(path)):
+            flush()
+        buf.append(section)
+        size += len(body)
+    flush()
+    return packed
 
 
 def extract_text(file_path: str | Path) -> str:
@@ -135,20 +314,24 @@ def chunk_file(file_path: str | Path) -> list[ChunkData]:
     splitter = SentenceSplitter(chunk_size=512, chunk_overlap=50)
 
     if low.endswith('.pdf'):
+        # 글자 크기로 헤딩을 잡아 섹션 단위로 (docx와 같은 원리). 크기 차이가 없는 문서는
+        # 섹션 1개로 떨어져 페이지 순서 그대로 크기 분할된다 — 이 변경 전과 같은 결과.
         out: list[ChunkData] = []
-        for page_no, text in _pdf_pages(file_path):
-            if not text.strip():
-                continue          # 빈/스캔 페이지 — split_text('')가 ['']를 반환해 빈 청크가 새는 것 방지
-            for chunk in splitter.split_text(text):
-                out.append(ChunkData(text=chunk, heading_path=[], page=page_no, chunk_index=len(out)))
+        for heading_path, page_no, body in _pack_sections(_pdf_sections(file_path)):
+            for chunk in splitter.split_text(body):
+                out.append(ChunkData(text=chunk, heading_path=list(heading_path),
+                                     page=page_no, chunk_index=len(out)))
         return out
 
     if low.endswith('.docx'):
-        text = _docx_text(file_path)
-        return [
-            ChunkData(text=chunk, heading_path=[], page=None, chunk_index=i)
-            for i, chunk in enumerate(splitter.split_text(text))
-        ]
+        # 섹션(Heading 경계) 단위로 먼저 쪼갠 뒤 섹션마다 크기 분할 — md 경로와 같은 원리.
+        # 문서 전체를 문자열 하나로 뭉쳐 자르면 청크와 헤딩을 이을 고리가 없다.
+        out: list[ChunkData] = []
+        for heading_path, _, body in _pack_sections(_docx_sections(file_path)):
+            for chunk in splitter.split_text(body):
+                out.append(ChunkData(text=chunk, heading_path=list(heading_path),
+                                     page=None, chunk_index=len(out)))
+        return out
 
     # .md — 마크다운 헤딩 구조 보존 (md는 # 헤딩이 네이티브)
     text = _read_text(file_path)

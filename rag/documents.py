@@ -12,6 +12,7 @@ from rag.cache import AnswerCache
 from rag.chunking import chunk_file, chunk_txt
 from rag.xlsx_chunking import chunk_xlsx
 from rag.embeddings import embed_texts
+from rag.index_text import build_index_text
 from rag.models import Chunk, Document
 
 async def _mark_failed(document_id: int, reason: str) -> None:
@@ -42,6 +43,7 @@ async def index_pending_document(document_id: int) -> None:
             return
         blob_path = doc.blob_path
         description = doc.description or ''
+        filename = doc.filename          # 임베딩 입력 앞에 붙일 문서 컨텍스트 (index_text)
 
     try:
         # ── 2) 무거운 계산 — 트랜잭션 밖 (DB 커넥션 안 물고 청킹·임베딩) ──
@@ -56,7 +58,11 @@ async def index_pending_document(document_id: int) -> None:
         # 빈 파일·텍스트레이어 없는 PDF 등 → 청크 0개면 ready 승격 대신 failed (C2 유령 ready 방지)
         if not chunks:
             raise ValueError('추출된 텍스트가 없습니다 (빈 파일이거나 파싱 결과가 비어 있음)')
-        embeddings = await embed_texts([c.text for c in chunks])
+        # 임베딩 입력에만 '파일명 > 헤딩' 컨텍스트를 얹는다 (저장되는 chunk.text는 원문 유지).
+        # 리랭커도 rag/reranker.py에서 같은 조립을 쓴다 — 두 단계가 같은 형태를 보게.
+        embeddings = await embed_texts([
+            build_index_text(c.text, filename, c.heading_path) for c in chunks
+        ])
 
         # ── 3) 짧은 쓰기 — 청크 저장 + supersede + ready 승격 + 캐시 무효화 ──
         async with AsyncSessionLocal() as session:

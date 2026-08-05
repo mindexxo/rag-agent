@@ -103,7 +103,7 @@ class Chunk(Base):
     faq_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("faqs.id", ondelete="CASCADE"))            # FAQ 출처 — 항목당 1청크 (부분 유니크)
     tenant_id: Mapped[str]                                                                                # 비정규화 (필터 성능)
     chunk_index: Mapped[int]                                                                              # 문서 내 청크 순서 (0부터)
-    text: Mapped[str]                                                                                     # 청크 본문 (헤딩 경로 prefix 포함)
+    text: Mapped[str]                                                                                     # 청크 본문 원문 (prefix 없음 — 인용·프롬프트가 쓰는 값)
     token_count: Mapped[int | None]                                                                       # 토큰 수
     page: Mapped[int | None]                                                                              # 원 페이지 번호 (PDF만, DOCX는 NULL)
     heading_path: Mapped[list[str]] = mapped_column(ARRAY(Text), server_default="{}")                     # 헤딩 계층 경로 ["3. 배송지연", "3.2 지급기준"]

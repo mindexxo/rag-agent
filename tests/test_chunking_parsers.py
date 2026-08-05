@@ -89,19 +89,47 @@ class TestChunkTxt:
 
 
 class TestChunkFile:
-    def test_pdf_page_보존_heading_없음(self):
+    def test_pdf_page_보존_heading_채움(self):
         chunks = chunk_file(PDF)
         assert chunks, 'PDF에서 청크 0개'
-        assert all(c.heading_path == [] for c in chunks)   # 새 스펙: 레이아웃 미인식
+        assert all(c.heading_path for c in chunks)         # 글자 크기로 헤딩 판정
         assert all(c.page is not None and c.page >= 1 for c in chunks)
         assert len({c.page for c in chunks}) >= 2          # 다중 페이지 문서여야 아래 연속성 검증이 유효
-        # chunk_index는 페이지 경계를 넘어 문서 전체에서 연속 (페이지별 리셋 회귀 방지)
+        # chunk_index는 섹션·페이지 경계를 넘어 문서 전체에서 연속 (리셋 회귀 방지)
         assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
 
-    def test_docx_heading_없음_page_없음(self):
+    def test_pdf_크기차이_없으면_heading_없이_폴백(self, tmp_path):
+        # 한 가지 글자 크기만 쓰는 PDF(스캔·단순 조판) → 헤딩 0개, 변경 전과 동일 동작
+        from reportlab.pdfgen import canvas
+        p = tmp_path / 'flat.pdf'
+        c = canvas.Canvas(str(p))
+        for i in range(12):
+            c.setFont('Helvetica', 11)
+            c.drawString(60, 760 - i * 22, f'Uniform body line number {i} with policy content.')
+        c.save()
+        chunks = chunk_file(p)
+        assert chunks
+        assert all(ch.heading_path == [] for ch in chunks)
+
+    def test_docx_heading_path_채움_page_없음(self):
         chunks = chunk_file(DOCX)
         assert chunks
-        assert all(c.heading_path == [] and c.page is None for c in chunks)
+        assert all(c.page is None for c in chunks)         # Word는 페이지를 파일에 저장하지 않음
+        assert all(c.heading_path for c in chunks)         # Heading 스타일 → 섹션 경로
+        assert any('해지' in h for c in chunks for h in c.heading_path)
+
+    def test_docx_헤딩만_있는_청크_없음(self):
+        # 본문 없는 상위 헤딩이 청크로 새면 인덱스 노이즈 — 자손의 조상 경로로만 남아야 함
+        chunks = chunk_file(DOCX)
+        heads = {h for c in chunks for h in c.heading_path}
+        assert not [c for c in chunks if c.text.strip() in heads]
+
+    def test_docx_표는_자기_섹션에_남는다(self):
+        # 문단·표를 따로 훑으면 표가 문서 끝으로 밀린다 — body 순서 보존 회귀 방지
+        chunks = chunk_file(DOCX)
+        table_chunks = [c for c in chunks if '출금일 | 재출금' in c.text]
+        assert table_chunks, '표 청크를 못 찾음'
+        assert any('결제수단별 출금일' in h for h in table_chunks[0].heading_path)
 
     def test_md는_heading_path_채움(self):
         chunks = chunk_file(MD)

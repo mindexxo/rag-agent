@@ -22,22 +22,38 @@ class Embedding:
     dense: list[float]                # 1024차원 의미 벡터
 
 
+# TEI가 요청 하나에 받는 입력 개수 상한 (`/info`의 max_client_batch_size, 실측 2026-08-04).
+# 초과하면 422. GPU 용량이 아니라 큐 독점 방지용 상한이라, 나눠 보내도 서버가
+# max_batch_tokens(16384) 안에서 다시 합쳐 배치하므로 처리량 손실이 없다.
+# 서버 설정을 올리는 대신 클라이언트에서 쪼갠다 — 문서가 커지면 어떤 상한이든 다시 넘기 때문.
+MAX_CLIENT_BATCH = 32
+
+
+def _batches(texts: list[str]) -> list[list[str]]:
+    return [texts[i:i + MAX_CLIENT_BATCH] for i in range(0, len(texts), MAX_CLIENT_BATCH)]
+
+
 async def embed_texts(texts: list[str]) -> list[Embedding]:
-    """여러 텍스트를 TEI 서버로 한번에 임베딩. dense만 반환. (정식 — async 경로용)
+    """여러 텍스트를 TEI 서버로 임베딩. dense만 반환. (정식 — async 경로용)
 
     TEI `/embed` 응답 형식: [[float, ...], ...] (입력 순서 보존).
+    MAX_CLIENT_BATCH개씩 나눠 순차 호출하고 결과를 입력 순서대로 이어붙인다 —
+    입력별 독립 연산이라 한 번에 보낸 것과 결과가 동일하다.
     공용 AsyncClient(rag.clients) 사용 — 커넥션 풀 재사용 + 이벤트 루프 비블로킹.
     """
     if not texts:
         return []
     from rag.clients import http_async   # 지연 import — 동기 스크립트가 이 모듈만 쓸 때 클라이언트 미생성
-    resp = await http_async.post(
-        f"{settings.embed_base_url}/embed",
-        json={"inputs": texts},
-        timeout=settings.embed_timeout,
-    )
-    resp.raise_for_status()
-    return [Embedding(dense=vec) for vec in resp.json()]
+    out: list[Embedding] = []
+    for batch in _batches(texts):
+        resp = await http_async.post(
+            f"{settings.embed_base_url}/embed",
+            json={"inputs": batch},
+            timeout=settings.embed_timeout,
+        )
+        resp.raise_for_status()
+        out.extend(Embedding(dense=vec) for vec in resp.json())
+    return out
 
 
 async def embed_query(text: str) -> Embedding:
@@ -51,13 +67,16 @@ def embed_texts_sync(texts: list[str]) -> list[Embedding]:
     """
     if not texts:
         return []
-    resp = httpx.post(
-        f"{settings.embed_base_url}/embed",
-        json={"inputs": texts},
-        timeout=settings.embed_timeout,
-    )
-    resp.raise_for_status()
-    return [Embedding(dense=vec) for vec in resp.json()]
+    out: list[Embedding] = []
+    for batch in _batches(texts):        # async 경로와 같은 이유로 분할 (MAX_CLIENT_BATCH 주석 참조)
+        resp = httpx.post(
+            f"{settings.embed_base_url}/embed",
+            json={"inputs": batch},
+            timeout=settings.embed_timeout,
+        )
+        resp.raise_for_status()
+        out.extend(Embedding(dense=vec) for vec in resp.json())
+    return out
 
 
 def embed_query_sync(text: str) -> Embedding:

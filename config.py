@@ -56,7 +56,12 @@ class Settings(BaseSettings):
     # vllm
     vllm_base_url: str = "http://localhost:11434/v1"
     vllm_model: str = "qwen3:4b"
-    llm_temperature: float | None = None  # None이면 모델/서버 기본값(Qwen3 0.6). 경계 문항 일관성 실험용 — 낮을수록 결정적
+    # 문서 기반 사실 제공 서비스라 다양성이 손해 — 낮게 고정 (2026-08-05).
+    # None이면 서버 기본값(Qwen3 non-thinking 권장 0.7)이 쓰이는데, 실측 4회 반복에서 매번 다른 답이
+    # 나왔다. is_refusal의 문자열 판정·인용 형식 파싱·시맨틱 캐시가 모두 결정성에 의존해 불리하다.
+    # 0.0(greedy)은 배제 — Qwen3 모델 카드가 "성능 저하·무한 반복" 위험으로 명시 금지.
+    # 0.2는 greedy를 피하는 최소 대역이고 저온이라 top_p·top_k는 거의 개입하지 않아 따로 안 보낸다.
+    llm_temperature: float | None = 0.2
     llm_enable_thinking: bool = False     # Qwen3 thinking 모드. 서버가 --reasoning-parser로 떠 있어 추론은 reasoning 필드로
                                           # 분리되고 우리는 .content만 읽으므로 답변엔 안 섞인다. 다만 추론 토큰만큼
                                           # 첫 토큰 지연·생성 시간이 늘고 max_tokens 예산을 함께 먹는다. 실험용 토글(기본 off).

@@ -89,7 +89,6 @@ async def test(session):
             filename='iso_test.pdf',
             mime='application/pdf',
             blob_path='blob://test/iso_test.pdf',
-            sha256='a'*64,
         ))
         # await session.commit(): 트랜잭션 커밋. 이 시점에 실제 INSERT가 DB에 반영됨.
         #                         await로 I/O 끝까지 대기.

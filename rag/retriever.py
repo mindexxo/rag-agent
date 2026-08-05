@@ -57,6 +57,8 @@ class RetrievedChunk:
     version: int
     faq_id: int | None = None       # FAQ 출처면 항목 id (캐시 키·인용 분기용)
     is_table: bool = False          # F1a: xlsx 표 청크 여부 ('한 시트만' 필터용)
+    folder_name: str | None = None          # 소속 폴더 (미분류·FAQ는 None)
+    folder_description: str | None = None   # 폴더 '참조 설명' — 리랭커 입력에만 사용 (임베딩엔 미포함)
 
 @dataclass
 class RetrievalResult:
@@ -176,13 +178,15 @@ async def retrieve_candidates(
     # 위에선 id + 점수만 가져왔으니, 이제 본문 + 메타 가져옴
     # IN (...) 절로 한 번에 조회 (개별 SELECT N번 안 함)
     chunk_rows = await session.execute(
-        select(Chunk, Document.filename, Document.version)
+        select(Chunk, Document.filename, Document.version, Folder.name, Folder.description)
         .outerjoin(Document, Chunk.document_id == Document.id)   # FAQ 청크는 filename/version이 NULL로 옴
+        .outerjoin(Folder, Document.folder_id == Folder.id)      # 미분류 문서·FAQ는 폴더가 NULL로 옴
         .where(Chunk.id.in_(top_ids))
     )
     # 결과를 dict로 만들어서 RRF 순서로 재배열할 때 O(1) 룩업.
     # FAQ 청크는 라벨을 'FAQ'로 — 컨텍스트 라벨=인용 형식 원칙에 따라 모델이 [FAQ]로 인용하게 됨
-    chunk_map = {c.id: (c, filename or 'FAQ', ver or 1) for c, filename, ver in chunk_rows.all()}
+    chunk_map = {c.id: (c, filename or 'FAQ', ver or 1, fname, fdesc)
+                 for c, filename, ver, fname, fdesc in chunk_rows.all()}
 
     # branch 판정용 set (in 연산 O(1))
     dense_id_set = set(dense_ids)
@@ -190,7 +194,7 @@ async def retrieve_candidates(
 
     result = []
     for cid in top_ids:                              # RRF 순서대로
-        c, filename, version = chunk_map[cid]
+        c, filename, version, folder_name, folder_description = chunk_map[cid]
         branches = []
         if cid in dense_id_set:
             branches.append('dense')
@@ -208,6 +212,8 @@ async def retrieve_candidates(
             version=version,
             faq_id=c.faq_id,
             is_table=bool((c.meta or {}).get('is_table')),   # F1a: xlsx 표 청크 여부
+            folder_name=folder_name,
+            folder_description=folder_description,
         ))
 
     # ----- 6.4 리랭커 재정렬 (F99, on/off = settings.rerank_enabled) ----------

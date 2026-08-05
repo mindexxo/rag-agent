@@ -43,6 +43,7 @@ class Folder(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     tenant_id: Mapped[str]
     name: Mapped[str]                                                               # 테넌트 내 유일
+    description: Mapped[str | None]                                                 # "언제 이 폴더를 참조하나" 자연어 설명 (리랭커 입력·프롬프트에 사용)
     is_searchable: Mapped[bool] = mapped_column(default=True, server_default="true")  # 폴더 단위 참조 on/off
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
@@ -52,15 +53,14 @@ class Folder(Base):
 
 
 class Document(Base):
-    """업로드된 원본 문서. 같은 filename + 다른 sha256 = 새 version."""
+    """업로드된 원본 문서. 같은 filename 재업로드 = 새 version (내용 무관, 2026-08-05)."""
     __tablename__ = "documents"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     tenant_id: Mapped[str]                                                            # 테넌트(고객사) 식별자, 격리 키
     filename: Mapped[str]                                                             # 테넌트 내 논리적 문서명 (재업로드 식별 기준)
     mime: Mapped[str]                                                                 # application/pdf | .../wordprocessingml.document
-    blob_path: Mapped[str]                                                            # 원본 파일 저장 경로
-    sha256: Mapped[str] = mapped_column(String(64))                                   # 파일 내용 해시 (dedupe 판정)
+    blob_path: Mapped[str]                                                            # 원본 파일 저장 경로 (웹 업로드는 UUID 이름, CLI는 원본 경로 그대로)
     version: Mapped[int] = mapped_column(default=1, server_default="1")               # 같은 filename 내 일련번호
     version_label: Mapped[str | None]                                                 # 사람 읽기용 라벨 ("2025-Q1")
     is_active: Mapped[bool] = mapped_column(default=False, server_default="false")    # 검색 대상 여부 (filename당 단 하나만 true)

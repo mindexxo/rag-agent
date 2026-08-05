@@ -127,27 +127,26 @@ async def handle_upload(
         filename: str,
         mime: str,
         blob_path: Path,
-        sha: str,
         description: str | None = None,
 ) -> Document:
-    """업로드 시점 처리: dedupe 체크 + pending row 등록까지만.
+    """업로드 시점 처리: pending row 등록까지만.
     실제 청킹/임베딩/supersede는 워커(index_document)가 수행한다.
     description은 표 설명(xlsx 검색 보강) — 워커가 청킹 시 병합한다.
+
+    문서 식별은 **filename 완전 일치** 하나뿐 (2026-08-05 정책 확정).
+    내용 해시(sha) dedupe는 제거 — 같은 이름이면 내용이 같아도 새 version이 된다.
+    "같은 이름이면 물어보고, 확인하면 대체"라는 단일 규칙을 유지하기 위함
+    (내용 동일 여부로 확인 창을 띄울지 말지 분기하면 규칙이 둘이 된다).
     """
-    # 같은 filename의 모든 버전을 한 번에 조회 (dedupe 판정 + 다음 version 계산에 재사용)
+    # 같은 filename의 모든 버전 조회 (다음 version 계산 + 설정 계승용)
     docs = (await session.execute(
         select(Document)
         .where(Document.tenant_id == tenant_id)
         .where(Document.filename == filename)
     )).scalars().all()
 
-    # 1. dedupe(동일 내용): 같은 sha의 ready 문서가 있으면 인덱싱 없이 재사용.
-    for d in docs:
-        if d.sha256 == sha and d.status == "ready":
-            return d
-
-    # 2. pending 버전 row만 insert. is_active=False(ready 전엔 검색 제외).
-    #    폴더 소속·참조 on/off(F2)는 직전 버전에서 계승 — 개정판 업로드로 설정이 풀리지 않게.
+    # pending 버전 row만 insert. is_active=False(ready 전엔 검색 제외).
+    # 폴더 소속·참조 on/off(F2)는 직전 버전에서 계승 — 개정판 업로드로 설정이 풀리지 않게.
     next_version = max((d.version for d in docs), default=0) + 1
     prev = max(docs, key=lambda d: d.version) if docs else None
     doc = Document(
@@ -155,7 +154,6 @@ async def handle_upload(
         filename=filename,
         mime=mime,
         blob_path=str(blob_path),
-        sha256=sha,
         version=next_version,
         is_active=False,
         status="pending",

@@ -16,6 +16,27 @@ from schemas.kms import FolderInfo, FolderCreateRequest, FolderUpdateRequest
 router = APIRouter(prefix='/kms')
 
 
+def _to_info(folder: Folder) -> FolderInfo:
+    return FolderInfo(id=folder.id, name=folder.name,
+                      description=folder.description, is_searchable=folder.is_searchable)
+
+
+async def _invalidate_folder_docs(session: AsyncSession, tenant_id: str, folder_id: int) -> None:
+    """폴더 소속 문서들을 근거로 만든 답변 캐시 무효화.
+
+    폴더 설정(참조 on/off·설명)이 바뀌면 같은 질문의 검색 결과·순위가 달라지므로,
+    옛 설정으로 만든 캐시 답변은 버려야 한다.
+    """
+    doc_ids = (await session.execute(
+        select(Document.id)
+        .where(Document.tenant_id == tenant_id)
+        .where(Document.folder_id == folder_id)
+    )).scalars().all()
+    cache = AnswerCache()
+    for doc_id in doc_ids:
+        await cache.invalidate_document(session, tenant_id, doc_id)
+
+
 async def _get_folder(session: AsyncSession, tenant_id: str, folder_id: int) -> Folder:
     folder = (await session.execute(
         select(Folder)
@@ -37,7 +58,7 @@ async def list_folders(
         .where(Folder.tenant_id == tenant_id)
         .order_by(Folder.name)
     )).scalars().all()
-    return [FolderInfo(id=f.id, name=f.name, is_searchable=f.is_searchable) for f in folders]
+    return [_to_info(f) for f in folders]
 
 
 @router.post('/folders', response_model=FolderInfo)
@@ -49,14 +70,15 @@ async def create_folder(
     name = request.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail='폴더 이름이 비어 있습니다.')
-    folder = Folder(tenant_id=tenant_id, name=name)
+    folder = Folder(tenant_id=tenant_id, name=name,
+                    description=(request.description or '').strip() or None)
     session.add(folder)
     try:
         await session.commit()
     except IntegrityError:
         await session.rollback()
         raise HTTPException(status_code=409, detail=f"'{name}' 폴더가 이미 있습니다.")
-    return FolderInfo(id=folder.id, name=folder.name, is_searchable=folder.is_searchable)
+    return _to_info(folder)
 
 
 @router.patch('/folders/{folder_id}', response_model=FolderInfo)
@@ -72,24 +94,24 @@ async def update_folder(
         if not name:
             raise HTTPException(status_code=422, detail='폴더 이름이 비어 있습니다.')
         folder.name = name
+    if request.description is not None:
+        # 설명은 리랭커 입력에 들어가 검색 순위를 바꾼다 → 옛 순위로 만든 답변 캐시를 버린다.
+        # (설명이 실제로 달라졌을 때만 — 같은 값 재전송으로 캐시가 날아가지 않게)
+        new_desc = request.description.strip() or None
+        if new_desc != folder.description:
+            await _invalidate_folder_docs(session, tenant_id, folder.id)
+        folder.description = new_desc
     if request.is_searchable is not None:
         # 폴더 off 전환 시 소속 문서들을 근거로 만든 캐시 무효화 (문서 단위 off와 같은 이유)
         if folder.is_searchable and not request.is_searchable:
-            doc_ids = (await session.execute(
-                select(Document.id)
-                .where(Document.tenant_id == tenant_id)
-                .where(Document.folder_id == folder.id)
-            )).scalars().all()
-            cache = AnswerCache()
-            for doc_id in doc_ids:
-                await cache.invalidate_document(session, tenant_id, doc_id)
+            await _invalidate_folder_docs(session, tenant_id, folder.id)
         folder.is_searchable = request.is_searchable
     try:
         await session.commit()
     except IntegrityError:
         await session.rollback()
         raise HTTPException(status_code=409, detail='같은 이름의 폴더가 이미 있습니다.')
-    return FolderInfo(id=folder.id, name=folder.name, is_searchable=folder.is_searchable)
+    return _to_info(folder)
 
 
 @router.delete('/folders/{folder_id}', status_code=204)

@@ -1,4 +1,5 @@
 """KMS API 요청/응답 스키마"""
+from datetime import datetime
 from typing import Literal
 from pydantic import BaseModel, Field
 
@@ -50,6 +51,15 @@ class DocumentUploadResponse(BaseModel):
     ref_count: int | None = None  # 답변 인용 누적 횟수 (목록 API에서만 집계 — filename 키)
 
 
+class DocumentExistsResponse(BaseModel):
+    """업로드 전 동일 파일명 존재 확인 응답 (FE가 대체 확인 창을 띄울지 판단)."""
+    exists: bool
+    document_id: int | None = None
+    version: int | None = None       # 존재할 경우 현재 버전 (업로드하면 +1이 된다)
+    status: str | None = None
+    uploaded_at: datetime | None = None
+
+
 class DocumentUpdateRequest(BaseModel):
     """문서 속성 변경 (F2). 보낸 필드만 반영 — folder_id는 null 전송 시 미분류로 이동."""
     folder_id: int | None = None
@@ -77,15 +87,21 @@ class FaqUpdateRequest(BaseModel):
     is_active: bool | None = None
 
 
+FOLDER_DESC_MAX = 200   # 리랭커 입력에 매 후보마다 붙으므로 길이를 제한 (top_n개 누적 → 지연)
+
+
 class FolderInfo(BaseModel):
     id: int
     name: str
+    description: str | None = None   # "언제 이 폴더를 참조하나" 자연어 설명
     is_searchable: bool
 
 class FolderCreateRequest(BaseModel):
     name: str
+    description: str | None = Field(None, max_length=FOLDER_DESC_MAX)
 
 class FolderUpdateRequest(BaseModel):
     """보낸 필드만 반영."""
     name: str | None = None
+    description: str | None = Field(None, max_length=FOLDER_DESC_MAX)
     is_searchable: bool | None = None

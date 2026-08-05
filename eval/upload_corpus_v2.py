@@ -1,7 +1,7 @@
 """corpus_v2 업로드·인덱싱 셋업 (C-2 E2E) — 실 TEI 임베딩 사용 (사내망 필요).
 
 테넌트별 디렉터리의 문서를 실제 업로드 API(ASGI 직call)로 넣고, 인덱싱 잡을 직접 실행한다.
-*.rev2.* 는 버저닝 테스트용이라 제외. 재실행 시 dedupe(같은 sha)가 재업로드를 막는다.
+*.rev2.* 는 버저닝 테스트용이라 제외. 재실행 시 같은 filename이면 새 version이 쌓인다 (dedupe 제거, 2026-08-05).
 
 사용:
   python3 -m eval.upload_corpus_v2            # 업로드 + 인덱싱 + 카나리아 검증
@@ -58,7 +58,7 @@ async def upload_all() -> None:
                         doc = await s.get(Document, body['document_id'])
                         mark = '✓' if doc.status == 'ready' else f'✗ {doc.status}: {doc.status_reason}'
                 else:
-                    mark = f"= {body['status']} (dedupe)"
+                    mark = f"= {body['status']}"
                 print(f'  {mark} {tenant}/{f.name}')
                 total += 1
     print(f'\n업로드 시도 {total}건 완료')

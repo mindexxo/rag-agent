@@ -1,8 +1,7 @@
-"""소형 유틸 단위 테스트 — estimate_tokens / _detect_mime / _sha256."""
-import hashlib
+"""소형 유틸 단위 테스트 — estimate_tokens / _detect_mime."""
 from pathlib import Path
 
-from rag.ingestion import _detect_mime, _sha256
+from rag.ingestion import _detect_mime
 from rag.tokens import estimate_tokens
 
 
@@ -40,24 +39,3 @@ class TestDetectMime:
         import pytest
         with pytest.raises(ValueError):
             _detect_mime(Path('a.zzz'))
-
-
-class TestSha256:
-    def test_같은_내용_같은_해시(self, tmp_path):
-        a, b = tmp_path / 'a.txt', tmp_path / 'b.txt'
-        a.write_bytes(b'content')
-        b.write_bytes(b'content')
-        assert _sha256(a) == _sha256(b) == hashlib.sha256(b'content').hexdigest()
-
-    def test_다른_내용_다른_해시(self, tmp_path):
-        a, b = tmp_path / 'a.txt', tmp_path / 'b.txt'
-        a.write_bytes(b'content1')
-        b.write_bytes(b'content2')
-        assert _sha256(a) != _sha256(b)
-
-    def test_블록_크기_초과_파일(self, tmp_path):
-        # 64KB 블록 루프가 첫 블록만 읽도록 붕괴하면 dedupe 오판 — 실제 PDF는 대부분 64KB 초과
-        content = b'x' * (64 * 1024) + b'tail'
-        p = tmp_path / 'big.bin'
-        p.write_bytes(content)
-        assert _sha256(p) == hashlib.sha256(content).hexdigest()

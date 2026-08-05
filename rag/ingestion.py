@@ -6,12 +6,11 @@
 흐름: 파일 -> 청킹 -> 임베딩 -> DB 적재.
 documents 1개 row + chunks N개 row insert (한 트랜잭션 내).
 
-Phase 1엔 dedupe/version 정책 미구현. 같은 파일 두 번 돌리면 UNIQUE 위반.
-정식 정책은 Stage E.3에서 추가.
+문서 식별은 filename 완전 일치 (2026-08-05 정책). 같은 파일 두 번 돌리면 UNIQUE 위반 —
+웹 업로드 경로(rag/documents.py)와 달리 이 CLI는 버저닝/supersede를 하지 않는다.
 """
 import argparse
 import asyncio
-import hashlib
 import mimetypes
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,14 +37,6 @@ def _detect_mime(file_path: Path) -> str:
         raise ValueError(f"mime 추론 실패: {file_path}")
     return mime
 
-def _sha256(file_path: Path) -> str:
-    """파일 내용 해시. dedupe 정책(Stage E.3)에서 활용."""
-    h = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        for block in iter(lambda: f.read(64 * 1024), b""):
-            h.update(block)
-    return h.hexdigest()
-
 async def ingest_file(file_path: str | Path, tenant_id: str) -> int:
     """파일 한 개를 적재. 반환: 생성된 document.id."""
     path = Path(file_path)
@@ -53,7 +44,6 @@ async def ingest_file(file_path: str | Path, tenant_id: str) -> int:
         raise FileNotFoundError(file_path)
 
     mime = _detect_mime(path)
-    sha = _sha256(path)
 
     chunks = chunk_file(file_path)
     # 워커 경로(rag/documents.py)와 같은 조립 — 임베딩 입력에만 '파일명 > 헤딩' 컨텍스트
@@ -68,7 +58,6 @@ async def ingest_file(file_path: str | Path, tenant_id: str) -> int:
                 filename=path.name,
                 mime=mime,
                 blob_path=str(path.resolve()),
-                sha256=sha,
                 version=1,
                 is_active=True,
                 status="ready",

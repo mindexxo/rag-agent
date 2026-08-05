@@ -1,10 +1,16 @@
 """KMS 문서 업로드 라우터.
 
 POST /kms/documents (multipart)
-재업로드/버전 정책은 version_policy 쿼리 파라미터로 분기 (E.3).
+
+문서 식별·버전 정책 (2026-08-05 확정):
+- 식별 기준은 **filename 완전 일치** 하나뿐. 유사 파일명은 별개 문서로 본다.
+- 같은 이름 재업로드 = 새 version + 기존 버전 supersede(비활성화 + 청크 삭제 + 근거 캐시 무효화).
+  내용이 같아도 마찬가지 — 내용 해시 dedupe는 제거했다(규칙을 하나로 유지).
+- 원본 파일은 테넌트 디렉터리 아래 UUID 이름으로 저장 (업로드 1건 = 파일 1개).
+- 버전 롤백은 미지원. 되돌리려면 이전 파일을 다시 업로드한다.
 """
-import hashlib
 import tempfile
+from uuid import uuid4
 from datetime import timedelta
 from pathlib import Path
 
@@ -24,7 +30,7 @@ from rag.documents import handle_upload
 from rag.ingestion import _detect_mime
 from rag.models import Chunk, Document, Folder
 from routers.kms import get_tenant_id
-from schemas.kms import DocumentUploadResponse, DocumentUpdateRequest, QueryAttachment
+from schemas.kms import DocumentExistsResponse, DocumentUploadResponse, DocumentUpdateRequest, QueryAttachment
 
 
 def _to_response(doc: Document, ref_count: int | None = None) -> DocumentUploadResponse:
@@ -72,26 +78,29 @@ async def upload_document(
     if suffix not in SUPPORTED_SUFFIXES:
         raise HTTPException(status_code=400, detail=f'지원하지 않는 형식입니다: {suffix or "확장자 없음"}. 지원: PDF/DOCX/XLSX/TXT/MD')
 
-    #1. 업로드 바이트 전체를 읽어 sha256 계산
+    #1. 업로드 바이트 전체를 읽는다
     content = await file.read()
     if len(content) > DOC_MAX_FILE_BYTES:
         raise HTTPException(status_code=413, detail='파일이 10MB를 초과합니다.')
-    sha = hashlib.sha256(content).hexdigest()
 
-    # 2. blob 저장. 테넌트별 디렉터리 아래 sha 기준 파일명으로 저장
+    # 2. blob 저장. 테넌트별 디렉터리 아래 UUID 파일명으로 저장한다 (2026-08-05).
+    #    업로드 1건 = 파일 1개로 고정 — 내용이 같아도 경로를 공유하지 않는다.
+    #    (내용 해시를 쓰면 v1·v2가 같은 파일을 가리켜, 나중에 비활성 문서 blob을
+    #     정리할 때 살아 있는 문서의 원본까지 지워질 수 있다. 디스크는 조금 더 쓰지만
+    #     '문서 식별은 filename 하나'라는 정책과도 일관된다.)
     blob_dir = Path(settings.blob_storage_dir) / tenant_id
     blob_dir.mkdir(parents=True, exist_ok=True)
-    blob_path = blob_dir / f"{sha}{suffix}"
+    blob_path = blob_dir / f"{uuid4().hex}{suffix}"
     blob_path.write_bytes(content)
 
     # 3. 파일 인덱싱 후 저장
     mime = _detect_mime(blob_path)
     doc = await handle_upload(
-        session, tenant_id, file.filename, mime, blob_path, sha, description=description
+        session, tenant_id, file.filename, mime, blob_path, description=description
     )
     await session.commit()
 
-    #4. 새 pending이면 워커에 인덱싱 작업 등록. dedupe 재사용(ready)은 enqueue 안 함.
+    #4. pending이면 워커에 인덱싱 작업 등록.
     if doc.status == 'pending':
         try:
             pool = await create_pool(RedisSettings.from_dsn(settings.redis_url))
@@ -147,6 +156,43 @@ async def list_documents(
     ref_counts = {r.filename: r.cnt for r in ref_rows}
 
     return [_to_response(d, ref_counts.get(d.filename, 0)) for d in docs]
+
+
+# ⚠ 이 라우트는 반드시 '/documents/{document_id}'보다 **위에** 있어야 한다.
+#   FastAPI는 등록 순서대로 매칭하므로, 아래에 두면 'exists'가 document_id(int)로 파싱돼 422가 난다.
+@router.get('/documents/exists', response_model=DocumentExistsResponse)
+async def document_exists(
+        filename: str,
+        tenant_id: str = Depends(get_tenant_id),
+        session: AsyncSession = Depends(get_session)
+):
+    """업로드 전 동일 파일명 확인 (FE가 대체 확인 창을 띄울지 판단).
+
+    판정 기준은 supersede 로직과 **정확히 같아야** 한다 — tenant + filename **완전 일치**
+    (대소문자·공백 구분), status != 'deleted'. 기준이 어긋나면 "물어본 것과 다른 문서가
+    지워지는" 사고가 난다.
+
+    이 API는 안내용일 뿐 강제력이 없다. 업로드 API는 확인 없이도 통과하며(2026-08-05 결정),
+    그 경우 기존 버전이 그대로 대체된다.
+    """
+    doc = (await session.execute(
+        select(Document)
+        .where(Document.tenant_id == tenant_id)      # 격리 — WHERE 절 명시
+        .where(Document.filename == filename)
+        .where(Document.status != 'deleted')
+        .order_by(Document.version.desc())
+        .limit(1)
+    )).scalars().first()
+
+    if doc is None:
+        return DocumentExistsResponse(exists=False)
+    return DocumentExistsResponse(
+        exists=True,
+        document_id=doc.id,
+        version=doc.version,
+        status=doc.status,
+        uploaded_at=doc.uploaded_at,
+    )
 
 
 @router.get('/documents/{document_id}', response_model=DocumentUploadResponse)

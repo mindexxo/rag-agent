@@ -28,7 +28,8 @@ def _rerank_text(chunk) -> str:
     """
     if chunk.faq_id:
         return chunk.text
-    return build_index_text(chunk.text, chunk.filename, chunk.heading_path)
+    folder = ' — '.join(x for x in (chunk.folder_name, chunk.folder_description) if x) or None
+    return build_index_text(chunk.text, chunk.filename, chunk.heading_path, folder=folder)
 
 
 async def rerank(query: str, chunks: list, model_name: str | None = None) -> list:

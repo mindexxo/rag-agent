@@ -8,6 +8,13 @@
 - 임베딩: rag/documents.py(워커), rag/ingestion.py(CLI)
 - 리랭커: rag/reranker.py
 
+**예외 — 폴더 설명(2026-08-05)**: `folder`는 리랭커에만 전달한다. 두 가지 이유다.
+1) 폴더 내 **모든** 청크에 같은 문자열이 붙어, 임베딩에 넣으면 그 청크들의 벡터가 서로
+   가까워진다 — 폴더 '사이' 구분에는 이득이지만 폴더 '안' 구분에는 해가 된다.
+   (filename·heading은 청크마다 달라 이 문제가 없다 — 그래서 둘 다에 넣는다.)
+2) 설명은 운영 중 다듬는 값인데, 임베딩에 넣으면 고칠 때마다 전체 재색인이다.
+cross-encoder는 질의·문서를 한 쌍으로 보므로 1)의 벡터 공간 효과가 없다.
+
 DB의 chunks.text는 원문 그대로 둔다 — 인용·프롬프트 컨텍스트·본문 미리보기가 쓰는 값이라
 파생 정보를 섞지 않는다. 프롬프트는 이미 build_context_blocks가 '[파일명 vN] 섹션: ...'
 라벨을 따로 찍으므로 본문에까지 넣으면 중복이다.
@@ -15,8 +22,9 @@ DB의 chunks.text는 원문 그대로 둔다 — 인용·프롬프트 컨텍스�
 from pathlib import Path
 
 
-def build_index_text(text: str, filename: str | None, heading_path: list[str] | None) -> str:
-    """본문 앞에 '파일명 > 헤딩 > 헤딩' 한 줄을 붙인다. 붙일 게 없으면 본문 그대로.
+def build_index_text(text: str, filename: str | None, heading_path: list[str] | None,
+                     folder: str | None = None) -> str:
+    """본문 앞에 '[폴더] > 파일명 > 헤딩 > 헤딩' 한 줄을 붙인다. 붙일 게 없으면 본문 그대로.
 
     확장자는 뗀다 — '.pdf'/'.docx'는 의미 벡터에 잡음만 얹는다.
     FAQ 청크는 본문이 'Q: ...'로 이미 자기설명적이고 파일 개념이 없어 대상이 아니다
@@ -27,6 +35,8 @@ def build_index_text(text: str, filename: str | None, heading_path: list[str] | 
     같은 헤딩이 두 번 들어가 본문 대비 헤딩 비중이 부풀고 '헤딩만 매칭되는' 쪽으로 기운다.
     """
     parts = []
+    if folder:                      # 리랭커 전용 (위 docstring 참조)
+        parts.append(folder.strip())
     if filename:
         parts.append(Path(filename).stem)
     parts.extend(heading_path or [])

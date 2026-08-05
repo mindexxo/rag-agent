@@ -108,14 +108,20 @@ async def test_같은_파일명_재업로드는_엎어치기(client, tenant_id, 
 
 
 @pytest.mark.asyncio
-async def test_같은_내용_재업로드는_dedupe(client, tenant_id, fake_queue, blob_tmp):
+async def test_같은_내용_재업로드도_새_버전(client, tenant_id, fake_queue, blob_tmp):
+    """내용 해시 dedupe 제거(2026-08-05) — 식별 기준은 filename 하나뿐.
+
+    같은 이름이면 내용이 같아도 새 version이 되고 인덱싱도 다시 돈다.
+    ("같은 이름이면 물어보고, 확인하면 대체"라는 단일 규칙을 유지하기 위한 선택)
+    """
     v1 = await _upload(client, '환불정책.md', MD)
     await index_pending_document(v1['document_id'])
     n_jobs = len(fake_queue)
 
-    again = await _upload(client, '환불정책.md', MD)             # 동일 sha
-    assert again['document_id'] == v1['document_id']                               # 기존 ready 재사용
-    assert len(fake_queue) == n_jobs                             # enqueue 안 함
+    again = await _upload(client, '환불정책.md', MD)             # 내용까지 동일
+    assert again['document_id'] != v1['document_id']             # 재사용하지 않는다
+    assert again['version'] == v1['version'] + 1
+    assert len(fake_queue) == n_jobs + 1                         # 인덱싱 재실행
 
 
 @pytest.mark.asyncio
@@ -233,3 +239,58 @@ async def test_소프트_삭제_청크와_캐시_제거_row_보존(client, tenan
             select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
         )).scalars().all()
         assert rows == []                                        # 근거 캐시 무효화
+
+
+# ===== 업로드 전 동일 파일명 확인 (GET /documents/exists) =====================
+
+@pytest.mark.asyncio
+async def test_exists_없는_파일명은_false(client, tenant_id, fake_queue, blob_tmp):
+    res = await client.get('/kms/documents/exists', params={'filename': '없는문서.md'})
+    assert res.status_code == 200
+    assert res.json() == {'exists': False, 'document_id': None, 'version': None,
+                          'status': None, 'uploaded_at': None}
+
+
+@pytest.mark.asyncio
+async def test_exists_기존_문서는_현재_버전을_알려준다(client, tenant_id, fake_queue, blob_tmp):
+    v1 = await _upload(client, '환불정책.md', MD)
+    await index_pending_document(v1['document_id'])
+
+    body = (await client.get('/kms/documents/exists', params={'filename': '환불정책.md'})).json()
+    assert body['exists'] is True
+    assert body['document_id'] == v1['document_id']
+    assert body['version'] == 1                      # 업로드하면 v2가 된다는 안내용
+    assert body['status'] == 'ready'
+
+
+@pytest.mark.asyncio
+async def test_exists_는_최신_버전을_본다(client, tenant_id, fake_queue, blob_tmp):
+    v1 = await _upload(client, '환불정책.md', MD)
+    await index_pending_document(v1['document_id'])
+    v2 = await _upload(client, '환불정책.md', MD.replace(b'14', b'30'))
+    await index_pending_document(v2['document_id'])
+
+    body = (await client.get('/kms/documents/exists', params={'filename': '환불정책.md'})).json()
+    assert body['document_id'] == v2['document_id']  # supersede된 v1이 아니라 살아 있는 v2
+    assert body['version'] == 2
+
+
+@pytest.mark.asyncio
+async def test_exists_는_완전일치만_본다(client, tenant_id, fake_queue, blob_tmp):
+    """정책: 대소문자·공백 구분. supersede 기준과 동일해야 한다."""
+    v1 = await _upload(client, '환불정책.md', MD)
+    await index_pending_document(v1['document_id'])
+
+    for other in ('환불정책.MD', '환불정책 .md', '환불정책_최종.md'):
+        body = (await client.get('/kms/documents/exists', params={'filename': other})).json()
+        assert body['exists'] is False, other
+
+
+@pytest.mark.asyncio
+async def test_exists_는_테넌트_격리(client, tenant_id, fake_queue, blob_tmp):
+    v1 = await _upload(client, '환불정책.md', MD)
+    await index_pending_document(v1['document_id'])
+
+    res = await client.get('/kms/documents/exists', params={'filename': '환불정책.md'},
+                           headers={'X-Tenant-Id': 'other-tenant'})
+    assert res.json()['exists'] is False

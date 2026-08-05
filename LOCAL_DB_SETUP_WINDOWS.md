@@ -79,7 +79,6 @@ CREATE TABLE IF NOT EXISTS documents (
     mime           TEXT        NOT NULL,
     blob_path      TEXT        NOT NULL,
     version        INTEGER     NOT NULL DEFAULT 1,
-    version_label  TEXT,
     is_active      BOOLEAN     NOT NULL DEFAULT FALSE,
     status         TEXT        NOT NULL DEFAULT 'pending',
     status_reason  TEXT,

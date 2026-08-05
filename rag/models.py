@@ -62,7 +62,6 @@ class Document(Base):
     mime: Mapped[str]                                                                 # application/pdf | .../wordprocessingml.document
     blob_path: Mapped[str]                                                            # 원본 파일 저장 경로 (웹 업로드는 UUID 이름, CLI는 원본 경로 그대로)
     version: Mapped[int] = mapped_column(default=1, server_default="1")               # 같은 filename 내 일련번호
-    version_label: Mapped[str | None]                                                 # 사람 읽기용 라벨 ("2025-Q1")
     is_active: Mapped[bool] = mapped_column(default=False, server_default="false")    # 검색 대상 여부 (filename당 단 하나만 true)
     status: Mapped[str] = mapped_column(default="pending", server_default="pending")  # pending|parsing|embedding|ready|failed|deleted
     status_reason: Mapped[str | None]                                                 # 실패/삭제 사유

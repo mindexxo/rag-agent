@@ -33,6 +33,16 @@ def _batches(texts: list[str]) -> list[list[str]]:
     return [texts[i:i + MAX_CLIENT_BATCH] for i in range(0, len(texts), MAX_CLIENT_BATCH)]
 
 
+def _payload(batch: list[str]) -> dict:
+    """TEI `/embed` 요청 본문. settings.embed_dimensions가 있으면 MRL 절단을 서버에 맡긴다.
+    (TEI 1.9.3 실측: `dimensions` 수용 + 절단 후 L2 재정규화까지 서버가 처리 — 클라이언트 절단 불필요.)
+    """
+    body: dict = {"inputs": batch}
+    if settings.embed_dimensions:
+        body["dimensions"] = settings.embed_dimensions
+    return body
+
+
 async def embed_texts(texts: list[str]) -> list[Embedding]:
     """여러 텍스트를 TEI 서버로 임베딩. dense만 반환. (정식 — async 경로용)
 
@@ -48,7 +58,7 @@ async def embed_texts(texts: list[str]) -> list[Embedding]:
     for batch in _batches(texts):
         resp = await http_async.post(
             f"{settings.embed_base_url}/embed",
-            json={"inputs": batch},
+            json=_payload(batch),
             timeout=settings.embed_timeout,
         )
         resp.raise_for_status()
@@ -71,7 +81,7 @@ def embed_texts_sync(texts: list[str]) -> list[Embedding]:
     for batch in _batches(texts):        # async 경로와 같은 이유로 분할 (MAX_CLIENT_BATCH 주석 참조)
         resp = httpx.post(
             f"{settings.embed_base_url}/embed",
-            json={"inputs": batch},
+            json=_payload(batch),
             timeout=settings.embed_timeout,
         )
         resp.raise_for_status()

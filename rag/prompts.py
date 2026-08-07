@@ -47,7 +47,21 @@ BLOCKED_INPUT_ANSWER = '해당 요청은 처리할 수 없습니다. 상담 관�
 # 출력 가드레일 차단 시 답변 대체 문구
 BLOCKED_OUTPUT_ANSWER = '답변에 부적절한 내용이 포함될 수 있어 차단되었습니다. 관리자에게 문의해 주세요.'
 
-SYSTEM_PROMPT = f"""당신은 한국어 콜센터 상담원을 돕는 사내 지식 어시스턴트입니다.
+# 테넌트 지식 범위 설명(domain_hint) — 인텐트 분류·KNOWLEDGE 생성·OTHER 생성 3곳에
+# 역할/범위 안내로만 주입한다. 답변의 근거가 아니다 (strict-grounded 유지).
+# [임시] ICCS 연동 전까지 요청 파라미터(KmsQueryRequest.domain_hint)로 받는다 (#1).
+DEFAULT_DOMAIN_HINT = '테넌트에 등록된 문서를 근거로 하는 상담 지식 전반'   # 도메인 중립 폴백
+
+
+def _resolve_domain_hint(domain_hint: str | None) -> str:
+    """domain_hint 정규화 + 폴백 — 3개 빌더가 공유하는 단일 폴백 지점."""
+    return (domain_hint or '').strip() or DEFAULT_DOMAIN_HINT
+
+
+# 프롬프트 본문에 JSON 예시 등 리터럴 중괄호가 많아 str.format 대신 __DOMAIN_HINT__ 마커 치환을 쓴다.
+_SYSTEM_PROMPT_TEMPLATE = f"""당신은 한국어 콜센터 상담원을 돕는 사내 지식 어시스턴트입니다.
+참고: 이 상담이 다루는 지식 범위는 다음과 같습니다 — __DOMAIN_HINT__.
+단, 이는 역할 참고 정보일 뿐 답변의 근거가 아닙니다. 답변의 유일한 근거는 아래 <문서>/<첨부 문서> 블록입니다.
 
 규칙:
 1. 반드시 아래 <문서> 블록과 <첨부 문서> 블록(있는 경우)의 내용만 근거로 답변하십시오. <첨부 문서>는 상담원이 이 대화에 첨부한 고객 제공 문서입니다.
@@ -83,6 +97,14 @@ SYSTEM_PROMPT = f"""당신은 한국어 콜센터 상담원을 돕는 사내 지
    - 상품 하자·오배송: 회사 부담 [반품정책.pdf v1]
 """
 
+
+def build_system_prompt(domain_hint: str | None = None) -> str:
+    """KNOWLEDGE 생성 시스템 프롬프트 — 지식 범위 슬롯 치환."""
+    return _SYSTEM_PROMPT_TEMPLATE.replace('__DOMAIN_HINT__', _resolve_domain_hint(domain_hint))
+
+
+SYSTEM_PROMPT = build_system_prompt()   # 기본(중립) 렌더링 — eval/generation 등 힌트 없는 정적 참조용
+
 # {prior_turns_block}  : 이전 대화 2턴 (없으면 빈 문자열)
 # {context_blocks}     : 검색된 청크들을 [파일명 vN] 라벨로 나열한 텍스트
 # {attachment_blocks}  : 채팅 첨부 문서들 (없으면 빈 문자열)
@@ -97,7 +119,7 @@ USER_TEMPLATE = """{prior_turns_block}<문서>
 
 # 입력 가드레일 + 인텐트 분류 통합. 첫 턴 포함 항상 실행 (condense/재작성과 분리).
 # 한 번의 LLM 호출로 {safe, intent}를 JSON으로 받아 라우팅한다.
-INTENT_GUARD_SYSTEM_PROMPT = """당신은 한국어 콜센터 상담 지식 어시스턴트의 입력 검사·분류기입니다.
+_INTENT_GUARD_SYSTEM_PROMPT_TEMPLATE = """당신은 한국어 콜센터 상담 지식 어시스턴트의 입력 검사·분류기입니다.
 사용자 입력을 두 축으로 판단해 JSON 한 줄로만 답하십시오.
 
 [1] safe — 아래에 해당하면 false, 아니면 true:
@@ -106,7 +128,7 @@ INTENT_GUARD_SYSTEM_PROMPT = """당신은 한국어 콜센터 상담 지식 어�
   - 유해·악의적·불법 행위 유도
 
 [2] intent — 아래 둘 중 하나로 분류:
-  - KNOWLEDGE : 상담 지식·정책·업무 내용에 관한 질문·요청 (환불/배송/교환/계정 등 서비스 사실)
+  - KNOWLEDGE : 상담 지식·정책·업무 내용에 관한 질문·요청 (지식 범위: __DOMAIN_HINT__)
   - OTHER : 그 외 전부 —
       · 인사·감사·맞장구·감탄·푸념 (예: "안녕", "고마워", "수고하세요")
       · 이 대화 자체에 대한 요청 (예: "지금까지 요약해줘", "방금 뭐랬어", "내가 뭘 물어봤지")
@@ -161,9 +183,14 @@ INTENT_GUARD_SYSTEM_PROMPT = """당신은 한국어 콜센터 상담 지식 어�
 """
 
 
+def build_intent_guard_prompt(domain_hint: str | None = None) -> str:
+    """입력 검사·인텐트 분류 시스템 프롬프트 — KNOWLEDGE 정의의 지식 범위 슬롯 치환."""
+    return _INTENT_GUARD_SYSTEM_PROMPT_TEMPLATE.replace('__DOMAIN_HINT__', _resolve_domain_hint(domain_hint))
+
+
 # '그 외'(OTHER) 통합 경로 생성 프롬프트 — 인사·대화 요약·회상·자기소개는 자유롭게,
 # 서비스 사실은 방화벽(지어내기 금지), 역할 밖 주제는 정중히 거절. SMALLTALK/OUT_OF_SCOPE를 대체.
-OTHER_SYSTEM_PROMPT = """당신은 한국어 콜센터 상담 지식 어시스턴트입니다.
+_OTHER_SYSTEM_PROMPT_TEMPLATE = """당신은 한국어 콜센터 상담 지식 어시스턴트입니다.
 지금 입력은 서비스 지식 질문이 아니라 — 대화성 발화(인사·감사·맞장구), 이 대화 자체에 대한 요청(요약·회상·되묻기), 당신에 대한 질문(정체·기능), 또는 역할 밖 요청입니다.
 아래 <역할 안내>와 <이전 대화>를 참고해 규칙에 따라 응답하십시오.
 
@@ -187,11 +214,16 @@ OTHER_SYSTEM_PROMPT = """당신은 한국어 콜센터 상담 지식 어시스�
 
 <역할 안내>
 - 저는 콜센터 상담 지식을 안내하는 AI 어시스턴트입니다.
-- 환불·배송·교환·계정 등 서비스 정책은 등록된 문서를 근거로 답합니다.
+- 다음 범위의 내용은 등록된 문서를 근거로 답합니다: __DOMAIN_HINT__.
 - 이 대화의 내용을 요약하거나 되짚어 드릴 수 있습니다.
 - 근거 문서가 없으면 답하지 않고, 서비스와 무관한 주제는 다루지 않습니다.
 </역할 안내>
 """
+
+
+def build_other_system_prompt(domain_hint: str | None = None) -> str:
+    """OTHER 경로 생성 시스템 프롬프트 — <역할 안내>의 지식 범위 슬롯 치환."""
+    return _OTHER_SYSTEM_PROMPT_TEMPLATE.replace('__DOMAIN_HINT__', _resolve_domain_hint(domain_hint))
 
 
 CONDENSE_SYSTEM_PROMPT = """당신은 한국어 콜센터 상담 대화에서 후속 질문을 검색 가능한 독립 질문으로 재작성하는 도우미입니다.

@@ -74,6 +74,7 @@ class FakeLlm:
         self.answer = answer
         self.intent_json = '{"safe": true, "intent": "KNOWLEDGE"}'
         self.calls: list[str] = []          # 어떤 용도로 호출됐는지 기록 (검증용)
+        self.system_prompts: list[tuple[str, str]] = []   # (용도, 시스템 프롬프트) — 주입 내용 검증용
 
     def _kind(self, messages: list[dict]) -> str:
         system = messages[0]['content'] if messages else ''
@@ -83,9 +84,13 @@ class FakeLlm:
             return 'condense'
         return 'generate'
 
+    def _record(self, kind: str, messages: list[dict]) -> None:
+        self.system_prompts.append((kind, messages[0]['content'] if messages else ''))
+
     async def acomplete(self, messages: list[dict]) -> str:
         kind = self._kind(messages)
         self.calls.append(kind)
+        self._record(kind, messages)
         if kind == 'intent':
             return self.intent_json
         if kind == 'condense':
@@ -93,7 +98,9 @@ class FakeLlm:
         return self.answer
 
     async def astream(self, messages: list[dict]):
-        self.calls.append('stream:' + self._kind(messages))
+        kind = self._kind(messages)
+        self.calls.append('stream:' + kind)
+        self._record(kind, messages)
         for token in self.answer.split(' '):
             yield token + ' '
 

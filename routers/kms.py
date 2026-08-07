@@ -98,7 +98,8 @@ async def query(
     service = RagService(tenant_id=tenant_id, session=session, user_id=user_id)
 
     try:
-        prepared = await service.prepare(request.query, request.conversation_id, request.attachments)
+        prepared = await service.prepare(request.query, request.conversation_id, request.attachments,
+                                         domain_hint=request.domain_hint)
     except ValueError:
         # 존재하지 않거나 다른 테넌트 소유의 conversation_id — 500 아닌 404 (REVIEW findings ③)
         raise HTTPException(status_code=404, detail='대화를 찾을 수 없습니다.')

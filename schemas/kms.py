@@ -15,6 +15,9 @@ class QueryAttachment(BaseModel):
     filename: str
     text: str
 
+DOMAIN_HINT_MAX = 200   # 프롬프트 3곳에 매 요청 주입되므로 길이 제한 (클라이언트발 텍스트 상한)
+
+
 class KmsQueryRequest(BaseModel):
     """KMS 질의 요청 바디.
     conversation_id 가 없으면 새 대화를 생성하고,
@@ -24,6 +27,9 @@ class KmsQueryRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)   # 빈 질의 방지 + 상한 (P2 스키마 제약)
     conversation_id: int | None = Field(default=None, gt=0)
     attachments: list[QueryAttachment] = []
+    # [임시] 테넌트 지식 범위 설명 — 인텐트 분류·생성 프롬프트에 역할 안내로 주입 (#1).
+    # ICCS 연동 시 이 필드를 제거하고 서버 측 테넌트 정보 조회로 대체한다.
+    domain_hint: str | None = Field(default=None, max_length=DOMAIN_HINT_MAX)
 
 class KmsQueryResponse(BaseModel):
     """비스트리밍 응답 (?stream=false)

@@ -40,7 +40,8 @@ async def compute() -> dict:
 
     async def run(case: dict) -> dict:
         async with sem:
-            d = await classify_and_guard(llm, case["query"], case.get("has_attachments", False))
+            d = await classify_and_guard(llm, case["query"], case.get("has_attachments", False),
+                                         domain_hint=case.get("domain_hint"))
         return {**case, "got_safe": d.safe, "got_intent": d.intent, "ok": _is_correct(case, d)}
 
     rows = list(await asyncio.gather(*(run(c) for c in cases)))

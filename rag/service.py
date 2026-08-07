@@ -51,6 +51,12 @@ class PreparedRag:
     assistant_message_id: int | None = None   # 생성 경로: 자리표시 assistant 메시지 id (백그라운드 태스크가 UPDATE할 대상)
 
     @property
+    def intent_label(self) -> str | None:
+        """저장용 인텐트 라벨 — 답변률 분모(KNOWLEDGE) 판별에 쓴다.
+        blocked는 인텐트 판정 자체가 무의미(unsafe 입력)라 NULL."""
+        return {"knowledge": "KNOWLEDGE", "other": "OTHER"}.get(self.route)
+
+    @property
     def no_evidence(self) -> bool:
         """검색 근거 없음 판정 — 첨부가 있으면 첨부 기반 답변이 가능하므로 False (단일 정의점)."""
         return self.retrieval is not None and self.retrieval.no_evidence and not self.attachments
@@ -291,6 +297,7 @@ class RagService:
             # 저장 순간에 사실 확정 — 조회는 순수 SQL (거절이면 sources처럼 인용도 비움: 모순 방지)
             cited_docs=[] if is_refusal(answer) else cited_filenames(answer, prepared.sources),
             is_refusal=is_refusal(answer),
+            intent=prepared.intent_label,
         )
 
         # 신규 LLM 응답만 캐시에 저장한다.
@@ -339,6 +346,7 @@ class RagService:
             # 거절 판정·인용 확정은 정상 완료(done)에만 의미 — blocked/failed는 항상 False/[]
             cited_docs=cited_filenames(answer, prepared.sources) if status == "done" and not is_refusal(answer) else [],
             is_refusal=is_refusal(answer) if status == "done" else False,
+            intent=prepared.intent_label,
         )
         if status == "done" and prepared.should_cache and not is_refusal(answer):
             await self._cache.set(

@@ -170,6 +170,10 @@ class Message(Base):
     cache_kind: Mapped[str | None]       # assistant 메시지: 'semantic'=캐시 재생 답변, NULL=신규 생성
     cited_docs: Mapped[Any | None] = mapped_column(JSONB)  # assistant: 실인용 파일명 배열 — 저장 시 확정 (지표는 이 컬럼만 집계)
     is_refusal: Mapped[bool | None]      # assistant(status=done만): 거절 답변 여부 — 저장 시 확정 (거절율·미답변)
+    # [원복 필요] messages.intent DB 반영(ALTER) 전 임시 주석 — 매핑돼 있으면 모든 SELECT/INSERT가
+    # 이 컬럼을 나열해 미반영 DB에서 채팅이 통째로 죽는다. DB 반영 후 아래 주석을 풀 것
+    # (conversation.py ②③, test_integration_stats.py의 [원복 필요] 두 곳도 함께).
+    # intent: Mapped[str | None]           # assistant: 라우팅 결과 'KNOWLEDGE'|'OTHER' — 답변률 분모는 KNOWLEDGE만 (NULL=차단 턴·도입 전 행)
     question_message_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("messages.id", ondelete="SET NULL"))  # assistant: 답한 user 메시지 (짝을 데이터로)
 

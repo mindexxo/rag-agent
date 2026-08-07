@@ -8,6 +8,14 @@ POST /kms/documents (multipart)
   내용이 같아도 마찬가지 — 내용 해시 dedupe는 제거했다(규칙을 하나로 유지).
 - 원본 파일은 테넌트 디렉터리 아래 UUID 이름으로 저장 (업로드 1건 = 파일 1개).
 - 버전 롤백은 미지원. 되돌리려면 이전 파일을 다시 업로드한다.
+
+동시 업로드 (2026-08-07 추가):
+- FE가 확인창에서 본 버전을 expect_version으로 보내면, 그 사이 DB가 바뀌었을 때 409를 준다.
+  조회 후 확인창을 띄우는 흐름은 조회~업로드 사이 창이 원리적으로 남으므로(TOCTOU),
+  화면에서 몇 번을 확인해도 서버 검사 없이는 남의 문서를 조용히 대체할 수 있다.
+- 파일명 자동 넘버링은 하지 않는다. 이름은 사용자가 확정한다 —
+  파일명이 임베딩 입력(rag/index_text.py)과 답변 인용 표기(rag/prompts.py)에 그대로 쓰여서,
+  '(1)' 같은 무의미한 이름을 서버가 싸게 만들어 주면 KB 품질이 조용히 나빠진다.
 """
 import tempfile
 from uuid import uuid4
@@ -18,9 +26,10 @@ from arq.connections import RedisSettings, create_pool
 from fastapi import APIRouter, File, Form, Request, UploadFile, Depends, HTTPException
 from sqlalchemy import delete, func, select, update
 from sqlalchemy import text as sql_text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
-from starlette.responses import FileResponse
+from starlette.responses import FileResponse, JSONResponse
 
 from config import settings
 from database import get_session
@@ -62,11 +71,46 @@ def _reject_if_oversized(request: Request, limit: int) -> None:
     if cl and cl.isdigit() and int(cl) > limit + 8192:
         raise HTTPException(status_code=413, detail='파일이 너무 큽니다.')
 
+
+async def _current_version(session: AsyncSession, tenant_id: str, filename: str) -> int:
+    """해당 파일명의 현재 버전. 없으면 0.
+
+    판정 기준은 exists API·supersede와 **정확히 같아야** 한다 — tenant + filename 완전 일치,
+    status != 'deleted'. 기준이 어긋나면 "확인창에서 본 것과 다른 문서가 대체되는" 사고가 난다.
+    """
+    return (await session.execute(
+        select(func.max(Document.version))
+        .where(Document.tenant_id == tenant_id)      # 격리 — WHERE 절 명시
+        .where(Document.filename == filename)
+        .where(Document.status != 'deleted')
+    )).scalar() or 0
+
+
+def _version_conflict(filename: str, current_version: int) -> JSONResponse:
+    """409 — 확인창에서 본 상태와 DB가 달라졌다.
+
+    FE가 확인창을 다시 띄우는 데 필요한 값을 함께 준다(어느 이름이 걸렸는지 + 그 이름의 현재 버전).
+    detail은 문자열로 유지 — 공용 에러 토스트가 그대로 쓰기 때문.
+    """
+    return JSONResponse(
+        status_code=409,
+        content={
+            'detail': f"'{filename}' 문서 상태가 변경되었습니다. 다시 확인해 주세요.",
+            'filename': filename,
+            'current_version': current_version,
+        },
+    )
+
 @router.post('/documents', response_model=DocumentUploadResponse)
 async def upload_document(
         request: Request,
         file: UploadFile = File(...),
         description: str | None = Form(None),   # F1a: 표 설명 (xlsx 검색 보강). 선택
+        # 낙관적 잠금 (선택). exists 응답의 version을 그대로 보낸다 — 없는 이름이면 0.
+        #   미전송 → 검사 없음 (기존 호출부 호환)
+        #   0      → 아직 아무 버전도 없어야 함 (새 문서로 등록하려는 경우)
+        #   N      → 현재 버전이 N이어야 함 (대체하려는 경우)
+        expect_version: int | None = Form(None),
         tenant_id: str = Depends(get_tenant_id),
         session: AsyncSession = Depends(get_session)
 ):
@@ -93,14 +137,30 @@ async def upload_document(
     blob_path = blob_dir / f"{uuid4().hex}{suffix}"
     blob_path.write_bytes(content)
 
-    # 3. 파일 인덱싱 후 저장
-    mime = _detect_mime(blob_path)
-    doc = await handle_upload(
-        session, tenant_id, file.filename, mime, blob_path, description=description
-    )
-    await session.commit()
+    # 3. 낙관적 잠금 — 확인창에서 본 상태와 지금 DB가 같은지 본다.
+    #    이 조회만으로는 조회~insert 사이 창이 남는다. 그 창은 아래 IntegrityError가 닫는다.
+    if expect_version is not None:
+        current = await _current_version(session, tenant_id, file.filename)
+        if current != expect_version:
+            blob_path.unlink(missing_ok=True)      # 참조되지 않는 blob 남기지 않기
+            return _version_conflict(file.filename, current)
 
-    #4. pending이면 워커에 인덱싱 작업 등록.
+    # 4. 파일 인덱싱 후 저장
+    mime = _detect_mime(blob_path)
+    try:
+        doc = await handle_upload(
+            session, tenant_id, file.filename, mime, blob_path, description=description
+        )
+        await session.commit()
+    except IntegrityError:
+        # 같은 이름·같은 version이 방금 먼저 들어왔다 — UNIQUE(tenant_id, filename, version).
+        # 위 조회를 두 요청이 함께 통과했을 때의 최종 방어선.
+        # (expect_version 미전송 호출도 여기서 409가 된다 — 이전엔 그대로 터져 500이었다)
+        await session.rollback()
+        blob_path.unlink(missing_ok=True)
+        return _version_conflict(file.filename, await _current_version(session, tenant_id, file.filename))
+
+    #5. pending이면 워커에 인덱싱 작업 등록.
     if doc.status == 'pending':
         try:
             pool = await create_pool(RedisSettings.from_dsn(settings.redis_url))

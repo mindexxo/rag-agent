@@ -61,7 +61,8 @@ async def main():
     print(f"[인텐트 분류 정확도]  총 {len(rows)}문항\n")
     print(f"{'category':<24}{'정확도':>12}")
     order = ["greeting", "meta_summary", "meta_recall", "self_intro", "external_oos",
-             "domain", "domain_statement", "domain_summary_boundary", "injection", "pii_request"]
+             "domain", "domain_statement", "domain_summary_boundary", "domain_hinted",
+             "injection", "pii_request"]
     for cat in order:
         rs = by_cat.get(cat)
         if not rs:

@@ -3,12 +3,17 @@
 라벨은 인용 형식을 견인한다(라벨=인용형식 설계) — 형식이 바뀌면 인용 전체가 회귀.
 """
 from rag.prompts import (
+    DEFAULT_DOMAIN_HINT,
+    SYSTEM_PROMPT,
     build_attachment_blocks,
     build_chat_prompt,
     build_classify_user_message,
     build_condense_user_message,
     build_context_blocks,
+    build_intent_guard_prompt,
+    build_other_system_prompt,
     build_other_user_message,
+    build_system_prompt,
     build_user_message,
 )
 from rag.retriever import RetrievedChunk
@@ -117,3 +122,25 @@ class TestOtherUserMessage:
     def test_이력_주입_형식(self):
         out = build_other_user_message('요약해줘', prior_turns=[{'q': '환불?', 'a': '7일입니다'}])
         assert '사용자: 환불?' in out and '상담도우미: 7일입니다' in out
+
+
+_SYSTEM_BUILDERS = (build_intent_guard_prompt, build_system_prompt, build_other_system_prompt)
+
+
+class TestDomainHint:
+    def test_힌트가_3개_프롬프트에_주입(self):
+        for build in _SYSTEM_BUILDERS:
+            out = build('보험 약관·청구 절차 상담')
+            assert '보험 약관·청구 절차 상담' in out
+            assert '__DOMAIN_HINT__' not in out   # 마커 잔존 = 치환 누락 회귀
+
+    def test_빈값은_중립_폴백(self):
+        for build in _SYSTEM_BUILDERS:
+            for hint in (None, '', '   '):
+                out = build(hint)
+                assert DEFAULT_DOMAIN_HINT in out
+                assert '__DOMAIN_HINT__' not in out
+
+    def test_상수는_기본_렌더링과_동일(self):
+        # eval/generation 등 정적 참조(SYSTEM_PROMPT)가 기본 빌드와 어긋나면 평가·운영 프롬프트가 갈라진다
+        assert SYSTEM_PROMPT == build_system_prompt()

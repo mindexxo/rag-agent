@@ -40,7 +40,8 @@ async def compute() -> dict:
 
     async def run(case: dict) -> dict:
         async with sem:
-            d = await classify_and_guard(llm, case["query"], case.get("has_attachments", False))
+            d = await classify_and_guard(llm, case["query"], case.get("has_attachments", False),
+                                         domain_hint=case.get("domain_hint"))
         return {**case, "got_safe": d.safe, "got_intent": d.intent, "ok": _is_correct(case, d)}
 
     rows = list(await asyncio.gather(*(run(c) for c in cases)))
@@ -60,7 +61,8 @@ async def main():
     print(f"[인텐트 분류 정확도]  총 {len(rows)}문항\n")
     print(f"{'category':<24}{'정확도':>12}")
     order = ["greeting", "meta_summary", "meta_recall", "self_intro", "external_oos",
-             "domain", "domain_statement", "domain_summary_boundary", "injection", "pii_request"]
+             "domain", "domain_statement", "domain_summary_boundary", "domain_hinted",
+             "injection", "pii_request"]
     for cat in order:
         rs = by_cat.get(cat)
         if not rs:

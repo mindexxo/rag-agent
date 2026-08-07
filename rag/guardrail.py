@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass
 
 from rag.llm import LlmClient
-from rag.prompts import GUARDRAIL_OUTPUT_PROMPT, INTENT_GUARD_SYSTEM_PROMPT, build_classify_user_message
+from rag.prompts import GUARDRAIL_OUTPUT_PROMPT, build_intent_guard_prompt, build_classify_user_message
 
 logger = logging.getLogger(__name__)
 
@@ -37,15 +37,17 @@ def _as_bool(value, default: bool = True) -> bool:
     return str(value).strip().lower() not in ('false', 'no', '0', 'f', 'n')
 
 
-async def classify_and_guard(llm: LlmClient, query: str, has_attachments: bool = False) -> RouteDecision:
+async def classify_and_guard(llm: LlmClient, query: str, has_attachments: bool = False,
+                             domain_hint: str | None = None) -> RouteDecision:
     """입력 안전성 + 인텐트를 한 번의 LLM 호출로 판단한다.
 
     safe=false면 차단(BLOCKED), 아니면 intent로 라우팅.
+    domain_hint는 KNOWLEDGE 정의의 지식 범위 슬롯에 주입 (빈 값은 중립 폴백).
     파싱·호출 실패는 fail-open + KNOWLEDGE (검색 경로 = 안전 측, 과잉거절 방지).
     """
     try:
         raw = await llm.acomplete([
-            {'role': 'system', 'content': INTENT_GUARD_SYSTEM_PROMPT},
+            {'role': 'system', 'content': build_intent_guard_prompt(domain_hint)},
             {'role': 'user', 'content': build_classify_user_message(query, has_attachments)},
         ])
         data = _extract_json(raw)

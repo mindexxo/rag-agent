@@ -130,6 +130,22 @@ async def test_캐시_히트는_즉시_경로_LLM_미호출(client, tenant_id, f
 
 
 @pytest.mark.asyncio
+async def test_domain_hint가_인텐트와_생성_프롬프트에_주입(client, tenant_id, fake_llm, pass_gate):
+    # 요청 → prepare(분류) → PreparedRag → 백그라운드 생성까지 힌트가 관통하는지 (#1)
+    await _register_faq(client)
+    hint = '보험 약관·청구 절차 상담'
+    res = await client.post('/kms/query', json={'query': '환불 기간 알려줘', 'domain_hint': hint})
+    assert res.status_code == 200
+    assert '테스트 답변입니다.' in _answer_text(_events(res.text))
+
+    injected = {kind: system for kind, system in fake_llm.system_prompts}
+    assert hint in injected['intent']
+    assert hint in injected['generate']
+    # condense는 도메인 중립 — 스콥 밖 (#1). 첫 턴은 히스토리가 없어 호출 자체가 없을 수 있다.
+    assert all(hint not in system for kind, system in fake_llm.system_prompts if kind == 'condense')
+
+
+@pytest.mark.asyncio
 async def test_없는_대화_id는_404(client, tenant_id, fake_llm):
     res = await client.post('/kms/query', json={'query': '환불?', 'conversation_id': 999999})
     assert res.status_code == 404                            # REVIEW ③ — 500 아닌 404

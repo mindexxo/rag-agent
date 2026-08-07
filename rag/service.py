@@ -17,8 +17,8 @@ from rag.guardrail import GuardrailResult, check_output, classify_and_guard
 from rag.llm import LlmClient
 from rag.clients import shared_llm
 from rag.models import Document, Message
-from rag.prompts import (SYSTEM_PROMPT, NO_EVIDENCE_ANSWER, cited_filenames, is_refusal, build_chat_prompt, build_user_message, SMALLTALK_ANSWER,
-                         OTHER_SYSTEM_PROMPT, build_other_user_message, BLOCKED_INPUT_ANSWER)
+from rag.prompts import (NO_EVIDENCE_ANSWER, cited_filenames, is_refusal, build_chat_prompt, build_user_message, SMALLTALK_ANSWER,
+                         build_system_prompt, build_other_system_prompt, build_other_user_message, BLOCKED_INPUT_ANSWER)
 from rag.retriever import RetrievalResult, retrieve, RetrievedChunk
 
 from schemas.kms import SourceCitation, QueryAttachment
@@ -48,6 +48,7 @@ class PreparedRag:
     route: Literal["knowledge", "other", "blocked"] = "knowledge"
     attachments: list[dict] = field(default_factory=list)      # 컨텍스트 주입용 — 히스토리 저장분 + 이번 턴 신규 합본
     new_attachments: list[dict] = field(default_factory=list)  # 이번 턴에 새로 동봉된 것 — save 시 user 메시지에 저장
+    domain_hint: str | None = None   # [임시] 테넌트 지식 범위 설명 — 생성 프롬프트 주입용, 저장 안 함 (#1)
     assistant_message_id: int | None = None   # 생성 경로: 자리표시 assistant 메시지 id (백그라운드 태스크가 UPDATE할 대상)
 
     @property
@@ -106,6 +107,7 @@ class RagService:
             query: str,
             conversation_id: int | None = None,
             attachments: list[QueryAttachment] | None = None,
+            domain_hint: str | None = None,
     ) -> PreparedRag:
         """RAG 답변 생성 전 필요한 컨텍스트를 준비한다.
 
@@ -143,9 +145,10 @@ class RagService:
                 route=route,
                 attachments=attachment_dicts,
                 new_attachments=new_attachment_dicts,
+                domain_hint=domain_hint,
             )
 
-        decision = await classify_and_guard(self._llm, query, has_attachments=bool(attachment_dicts))
+        decision = await classify_and_guard(self._llm, query, has_attachments=bool(attachment_dicts), domain_hint=domain_hint)
         if not decision.safe:
             return _routed("blocked")
         if decision.intent == "OTHER":
@@ -183,6 +186,7 @@ class RagService:
                     cache_kind="semantic",
                     source_doc_ids=semantic_hit.source_doc_ids,
                     sources=semantic_hit.sources,
+                    domain_hint=domain_hint,
                 )
 
         # 7. 캐시 miss -> 최종 return
@@ -196,6 +200,7 @@ class RagService:
             source_doc_ids=source_doc_ids,
             attachments=attachment_dicts,
             new_attachments=new_attachment_dicts,
+            domain_hint=domain_hint,
         )
 
     async def _load_history_attachments(self, conversation_id: int, limit: int) -> list[dict]:
@@ -238,7 +243,7 @@ class RagService:
         if prepared.route == "other":
             try:
                 user_msg = build_other_user_message(prepared.original_query, prepared.prior_turns)
-                async for token in self._llm.astream(build_chat_prompt(OTHER_SYSTEM_PROMPT, user_msg)):
+                async for token in self._llm.astream(build_chat_prompt(build_other_system_prompt(prepared.domain_hint), user_msg)):
                     yield token
             except Exception:
                 logger.exception('LLM error(other gen)')
@@ -259,7 +264,7 @@ class RagService:
             return
 
         prompt = build_chat_prompt(
-            SYSTEM_PROMPT,
+            build_system_prompt(prepared.domain_hint),
             build_user_message(
                 prepared.standalone_query,
                 prepared.retrieval.chunks,

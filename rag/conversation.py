@@ -222,8 +222,7 @@ async def save_exchange(
         cache_kind=cache_kind,
         cited_docs=cited_docs,
         is_refusal=is_refusal,
-        # [원복 필요] intent — models.py 매핑 주석과 세트 (미매핑 kwargs는 TypeError). DB 반영 후 함께 해제
-        # intent=intent,
+        intent=intent,   # 라우팅 결과 — 답변률 분모(KNOWLEDGE) 집계용. DB 반영 완료로 원복 (#13)
         question_message_id=user_message.id,   # 짝을 데이터로 (미답변 목록이 휴리스틱 없이 JOIN)
     )
     session.add(assistant_message)
@@ -316,8 +315,7 @@ async def finalize_turn(
     msg.latency_ms = latency_ms
     msg.cited_docs = cited_docs
     msg.is_refusal = is_refusal
-    # [원복 필요] intent — models.py 매핑 주석과 세트. DB 반영 후 함께 해제
-    # msg.intent = intent
+    msg.intent = intent   # 라우팅 결과 — 답변률 분모(KNOWLEDGE) 집계용. DB 반영 완료로 원복 (#13)
 
 
 def trim_messages_for_condense(messages: list, budget_tokens: int) -> list:

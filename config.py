@@ -18,9 +18,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         # .env.dev(개발계 공용 기본, git 커밋됨) → .env(로컬 오버라이드, gitignore) 순.
-        # 뒤 파일이 우선이라, 로컬에 .env가 있으면 그게 이기고 없으면 .env.dev를 쓴다.
+        # pydantic-settings는 '튜플의 뒤 파일이 우선'이라 .env를 뒤에 둬야 로컬이 이긴다.
+        # (기존 순서가 반대로 돼 있어 .env.dev가 로컬을 덮던 잠복 버그 — 2026-08-08 발견·수정.
+        #  두 파일 값이 그간 사실상 같아 증상이 없다가, 공용 DB 분리 시점에 드러남)
         # cwd 무관하게 절대경로 (부팅 이식성).
-        env_file=(str(PROJECT_ROOT / ".env"), str(PROJECT_ROOT / ".env.dev")),
+        env_file=(str(PROJECT_ROOT / ".env.dev"), str(PROJECT_ROOT / ".env")),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,

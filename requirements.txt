@@ -24,6 +24,10 @@ hiredis==3.3.1                   # redis 파서 가속
 httpx==0.28.1
 httpx-sse==0.4.3
 
+# ---- 관측성 (#7: OTel 수동 계측 → Phoenix. endpoint 미설정 시 no-op) ----
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.44.0
+
 # ---- LLM (vLLM은 OpenAI 호환 API로 호출) ----
 openai==2.30.0
 tiktoken==0.12.0                 # 토큰 카운트

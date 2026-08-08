@@ -16,6 +16,7 @@ from starlette.responses import StreamingResponse
 
 from config import settings
 from database import get_session, AsyncSessionLocal
+from rag import otel
 from rag.limiter import query_limiter
 from rag.models import TenantQuota
 from rag.prompts import BLOCKED_OUTPUT_ANSWER, NO_EVIDENCE_ANSWER, is_refusal
@@ -97,70 +98,97 @@ async def query(
     t_request = time.monotonic()   # 응답시간 기준점 — prepare(인텐트·검색·condense) 포함 (사용자 체감)
     service = RagService(tenant_id=tenant_id, session=session, user_id=user_id)
 
+    # 턴 루트 스팬(#7) — 데코레이터가 아닌 수동 관리: SSE 생성 경로는 핸들러 반환 후
+    # 백그라운드 태스크가 끝나야 턴이 끝나므로, 그 경우 span.end()를 태스크에 핸드오프해
+    # 루트 duration이 턴 전체(생성 완료까지)를 반영하게 한다 (리뷰 반영).
+    root_span, otel_token = otel.start_turn()
+    root_handed_off = False
     try:
-        prepared = await service.prepare(request.query, request.conversation_id, request.attachments,
-                                         domain_hint=request.domain_hint)
-    except ValueError:
-        # 존재하지 않거나 다른 테넌트 소유의 conversation_id — 500 아닌 404 (REVIEW findings ③)
-        raise HTTPException(status_code=404, detail='대화를 찾을 수 없습니다.')
-    no_evidence = prepared.no_evidence   # 판정 정의는 PreparedRag 한 곳 (리팩터 — 5곳 중복 제거)
+        try:
+            prepared = await service.prepare(request.query, request.conversation_id, request.attachments,
+                                             domain_hint=request.domain_hint)
+        except ValueError:
+            # 존재하지 않거나 다른 테넌트 소유의 conversation_id — 500 아닌 404 (REVIEW findings ③)
+            # 정상 클라이언트 오류 — 스팬을 ERROR로 남기지 않는다 (에러율 오염 방지, 리뷰 반영)
+            raise HTTPException(status_code=404, detail='대화를 찾을 수 없습니다.')
+        no_evidence = prepared.no_evidence   # 판정 정의는 PreparedRag 한 곳 (리팩터 — 5곳 중복 제거)
+        otel.set_attrs(root_span, {          # 루트 스팬 속성 — prepare 결과 반영 (#7)
+            otel.INPUT_VALUE: request.query,
+            'kms.tenant_id': tenant_id,
+            'kms.conversation_id': prepared.conversation_id,
+            'kms.route': prepared.route,
+            'kms.cache_kind': prepared.cache_kind,
+            'kms.no_evidence': no_evidence,
+        })
+        # ── 비스트리밍 경로 (기존 JSON) ──
+        if not stream:
+            parts = []
+            with otel.span('generate', 'LLM') as sp:
+                async for token in service.generate(prepared):
+                    parts.append(token)
+                answer = ''.join(parts)
+                otel.set_attrs(sp, {otel.LLM_MODEL: settings.vllm_model, otel.OUTPUT_VALUE: otel.clip(answer)})
 
-    # ── 비스트리밍 경로 (기존 JSON) ──
-    if not stream:
-        parts = []
-        async for token in service.generate(prepared):
-            parts.append(token)
-        answer = ''.join(parts)
+            # 가드레일
+            verdict = await service.guard_output(prepared, answer)
+            if not verdict.safe:
+                return KmsQueryResponse(
+                    answer=BLOCKED_OUTPUT_ANSWER,
+                    sources=[],
+                    conversation_id=prepared.conversation_id,
+                    reason='blocked_output',
+                    cached=False,
+                    cache_kind=None,
+                )
+            await service.save(prepared, answer, latency_ms=int((time.monotonic() - t_request) * 1000))
+            await session.commit()
 
-        # 가드레일
-        verdict = await service.guard_output(prepared, answer)
-        if not verdict.safe:
             return KmsQueryResponse(
-                answer=BLOCKED_OUTPUT_ANSWER,
-                sources=[],
+                answer=answer,
+                # 검색 근거 없음 + LLM 스스로 거절(규칙 3)한 경우 모두 인용 제외 — 거절 답변에 인용이 붙는 모순 방지
+                sources=[] if (no_evidence or is_refusal(answer)) else prepared.sources,
                 conversation_id=prepared.conversation_id,
-                reason='blocked_output',
-                cached=False,
-                cache_kind=None,
+                reason='no_evidence' if no_evidence else 'ok',
+                cached=prepared.is_cache_hit,
+                cache_kind=prepared.cache_kind,
             )
-        await service.save(prepared, answer, latency_ms=int((time.monotonic() - t_request) * 1000))
-        await session.commit()
 
-        return KmsQueryResponse(
-            answer=answer,
-            # 검색 근거 없음 + LLM 스스로 거절(규칙 3)한 경우 모두 인용 제외 — 거절 답변에 인용이 붙는 모순 방지
-            sources=[] if (no_evidence or is_refusal(answer)) else prepared.sources,
-            conversation_id=prepared.conversation_id,
-            reason='no_evidence' if no_evidence else 'ok',
-            cached=prepared.is_cache_hit,
-            cache_kind=prepared.cache_kind,
-        )
+        # ── 스트리밍: 즉시 경로 (비LLM: cache-hit/blocked/no_evidence) ──
+        if not prepared.needs_generation:
+            return StreamingResponse(
+                _immediate_stream(service, prepared, no_evidence, session, t_request),
+                media_type="text/event-stream", headers=_SSE_HEADERS,
+            )
 
-    # ── 스트리밍: 즉시 경로 (비LLM: cache-hit/blocked/no_evidence) ──
-    if not prepared.needs_generation:
+        # ── 스트리밍: 생성 경로 (LLM → 백그라운드 태스크 + 큐 리더) ──
+        await service.begin_turn(prepared)          # placeholder(generating) commit → assistant_message_id
+        queue: asyncio.Queue = asyncio.Queue()
+        limiter_token = getattr(http_request.state, "limiter_token", None)
+        limiter_user_id = getattr(http_request.state, "limiter_user_id", None)
+        task = asyncio.create_task(_run_generation(tenant_id, prepared, queue, limiter_token, limiter_user_id,
+                                                   t_request, root_span=root_span))
+        root_handed_off = True                      # 루트 스팬 종료는 배경 태스크가 담당 (턴 전체 duration)
+        _running_tasks.add(task)
+        task.add_done_callback(_running_tasks.discard)
+        http_request.state.limiter_handed_off = True   # limiter release는 태스크가 담당
         return StreamingResponse(
-            _immediate_stream(service, prepared, no_evidence, session, t_request),
+            _queue_reader(prepared, no_evidence, queue),
             media_type="text/event-stream", headers=_SSE_HEADERS,
         )
-
-    # ── 스트리밍: 생성 경로 (LLM → 백그라운드 태스크 + 큐 리더) ──
-    await service.begin_turn(prepared)          # placeholder(generating) commit → assistant_message_id
-    queue: asyncio.Queue = asyncio.Queue()
-    limiter_token = getattr(http_request.state, "limiter_token", None)
-    limiter_user_id = getattr(http_request.state, "limiter_user_id", None)
-    task = asyncio.create_task(_run_generation(tenant_id, prepared, queue, limiter_token, limiter_user_id, t_request))
-    _running_tasks.add(task)
-    task.add_done_callback(_running_tasks.discard)
-    http_request.state.limiter_handed_off = True   # limiter release는 태스크가 담당
-    return StreamingResponse(
-        _queue_reader(prepared, no_evidence, queue),
-        media_type="text/event-stream", headers=_SSE_HEADERS,
-    )
+    except HTTPException:
+        raise                                       # 정상 클라이언트 오류(404 등) — ERROR 마킹 없이
+    except Exception as exc:
+        otel.mark_error(root_span, exc)             # 예상외 오류만 스팬 ERROR (에러율 신뢰 유지)
+        raise
+    finally:
+        otel.detach_turn(otel_token)
+        if not root_handed_off:
+            root_span.end()
 
 
 async def _run_generation(tenant_id: str, prepared, queue: asyncio.Queue,
                           limiter_token: str | None, limiter_user_id: str | None,
-                          t_request: float) -> None:
+                          t_request: float, root_span=None) -> None:
     """백그라운드: 생성→큐로 토큰 전달→완료 시 DB finalize. 연결과 무관하게 끝까지.
     자기 세션의 RagService 사용 (요청 세션은 응답 종료 시 닫히므로).
     limiter는 이 태스크 수명 끝(finally)에서 토큰으로 release.
@@ -169,10 +197,12 @@ async def _run_generation(tenant_id: str, prepared, queue: asyncio.Queue,
     try:
         async with AsyncSessionLocal() as session:
             svc = RagService(tenant_id=tenant_id, session=session)
-            async for chunk in svc.generate(prepared):
-                parts.append(chunk)
-                await queue.put(("token", {"text": chunk}))
-            answer = "".join(parts)
+            with otel.span('generate', 'LLM') as sp:   # 배경 태스크 — 컨텍스트 복사로 kms.query의 자식 (#7)
+                async for chunk in svc.generate(prepared):
+                    parts.append(chunk)
+                    await queue.put(("token", {"text": chunk}))
+                answer = "".join(parts)
+                otel.set_attrs(sp, {otel.LLM_MODEL: settings.vllm_model, otel.OUTPUT_VALUE: otel.clip(answer)})
 
             verdict = await svc.guard_output(prepared, answer)   # 현재 off → safe (no-op)
             if not verdict.safe:
@@ -199,6 +229,8 @@ async def _run_generation(tenant_id: str, prepared, queue: asyncio.Queue,
     finally:
         await queue.put(None)                        # 리더 종료 sentinel
         await query_limiter.release(tenant_id, limiter_token, limiter_user_id)   # limiter는 태스크 수명 끝에
+        if root_span is not None:                    # 핸드오프된 턴 루트 스팬 종료 — duration=턴 전체 (#7)
+            root_span.end()
 
 
 async def _queue_reader(prepared, no_evidence: bool, queue: asyncio.Queue):

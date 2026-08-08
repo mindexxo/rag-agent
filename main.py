@@ -8,12 +8,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
+from rag.otel import init_tracing
 from routers.conversations import router as conversation_router
 from routers.documents import router as document_router
 from routers.faqs import router as faq_router
 from routers.folders import router as folder_router
 from routers.kms import router as kms_router
 from routers.stats import router as stats_router
+
+init_tracing()   # OTel(#7) — otel_endpoint 미설정이면 no-op
 
 app = FastAPI()
 

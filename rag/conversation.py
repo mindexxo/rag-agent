@@ -12,6 +12,7 @@ import logging
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from rag import otel
 from rag.llm import LlmClient
 from rag.models import Conversation, Message
 
@@ -94,21 +95,20 @@ async def condense_query(
         for m in messages
     ]
 
-    try:
-        llm_messages = build_chat_prompt(
-            CONDENSE_SYSTEM_PROMPT,
-            build_condense_user_message(query, history),
-        )
-        result = await llm.acomplete(llm_messages)
-
-        if result is None:
-            return query
-
-        return result.strip() or query
-
-    except Exception:
-        logger.exception('LLM error(condense_query)')
-        return query
+    with otel.span('condense', 'LLM') as sp:
+        try:
+            llm_messages = build_chat_prompt(
+                CONDENSE_SYSTEM_PROMPT,
+                build_condense_user_message(query, history),
+            )
+            result = await llm.acomplete(llm_messages)
+            standalone = (result or '').strip() or query
+        except Exception:
+            logger.exception('LLM error(condense_query)')
+            standalone = query
+        otel.set_attrs(sp, {otel.INPUT_VALUE: query, otel.OUTPUT_VALUE: standalone,
+                            'kms.history_messages': len(history)})
+        return standalone
 
 
 async def condense_to_queries(
@@ -129,34 +129,42 @@ async def condense_to_queries(
         for m in messages
     ]
 
-    try:
-        llm_messages = build_chat_prompt(
-            CONDENSE_MULTI_SYSTEM_PROMPT,
-            build_condense_user_message(query, history),
-        )
-        result = await llm.acomplete(llm_messages)
-        if result is None:
-            return [query]
+    with otel.span('condense', 'LLM') as sp:
+        try:
+            llm_messages = build_chat_prompt(
+                CONDENSE_MULTI_SYSTEM_PROMPT,
+                build_condense_user_message(query, history),
+            )
+            result = await llm.acomplete(llm_messages)
+            queries = _parse_multi_queries(result, query)
+        except Exception:
+            logger.exception('LLM error(condense_to_queries)')
+            queries = [query]
+        otel.set_attrs(sp, {otel.INPUT_VALUE: query, otel.OUTPUT_VALUE: queries[0],
+                            'kms.expanded_queries': queries[1:],   # 멀티쿼리 변형 (#5) — DB에 저장 안 되는 유일한 기록처
+                            'kms.history_messages': len(history)})
+        return queries
 
-        lines = [l.strip() for l in result.strip().splitlines() if l.strip()]
-        # 머리말 라벨 방어 — 모델이 "검색용 독립 질문:" 같은 라벨 줄을 앞에 붙이는 경우가
-        # 실측됨(#5 mt003 3회 중 2회). 첫 줄을 무조건 standalone으로 쓰는 계약이라, 라벨이
-        # 검색 쿼리·생성 질문이 되어 거절 답변으로 이어진다. 콜론 종결 줄은 질문일 수 없어 제거.
-        lines = [l for l in lines if not l.endswith((':', '：'))]
-        if not lines:
-            return [query]
-        standalone = lines[0]
-        # standalone·변형 간 중복 제거 — 같은 줄이 반복되면 RRF에서 같은 순위 리스트를
-        # 중복 가산해 원본 상위 결과를 희석시킨다 (#3 A/B의 goodpeople_rl005 실측 부작용)
-        variants: list[str] = []
-        for line in lines[1:]:
-            if line != standalone and line not in variants:
-                variants.append(line)
-        return [standalone, *variants[:2]]
 
-    except Exception:
-        logger.exception('LLM error(condense_to_queries)')
+def _parse_multi_queries(result: str | None, query: str) -> list[str]:
+    """condense_to_queries 출력 파싱 — 계측 래핑으로 본체가 깊어져 분리."""
+    if result is None:
         return [query]
+    lines = [l.strip() for l in result.strip().splitlines() if l.strip()]
+    # 머리말 라벨 방어 — 모델이 "검색용 독립 질문:" 같은 라벨 줄을 앞에 붙이는 경우가
+    # 실측됨(#5 mt003 3회 중 2회). 첫 줄을 무조건 standalone으로 쓰는 계약이라, 라벨이
+    # 검색 쿼리·생성 질문이 되어 거절 답변으로 이어진다. 콜론 종결 줄은 질문일 수 없어 제거.
+    lines = [l for l in lines if not l.endswith((':', '：'))]
+    if not lines:
+        return [query]
+    standalone = lines[0]
+    # standalone·변형 간 중복 제거 — 같은 줄이 반복되면 RRF에서 같은 순위 리스트를
+    # 중복 가산해 원본 상위 결과를 희석시킨다 (#3 A/B의 goodpeople_rl005 실측 부작용)
+    variants: list[str] = []
+    for line in lines[1:]:
+        if line != standalone and line not in variants:
+            variants.append(line)
+    return [standalone, *variants[:2]]
 
 
 async def save_exchange(

@@ -253,13 +253,11 @@ async def retrieve_candidates(
         if multi:
             import asyncio
             from rag.reranker import rerank_scores   # 지연 import (retriever ↔ reranker 순환 방지)
-            # 쿼리 간 병렬 — 순차 await면 지연이 쿼리 수만큼 누적되고, TEI가 느려지는 부분
-            # 장애에선 최악 (타임아웃×배치수)×쿼리수 직렬이 된다. gather로 가장 느린 1개분으로 상한.
             matrix = await asyncio.gather(*(rerank_scores(q, result) for q in queries))
             if all(s is not None for s in matrix):
                 best = [max(col) for col in zip(*matrix)]
-                order = sorted(range(len(result)), key=lambda i: -best[i])
-                result = [result[i] for i in order]
+                order = sorted(range(len(result)), key=lambda idx: -best[idx])
+                result = [result[idx] for idx in order]
         else:
             from rag.reranker import rerank
             result = await rerank(query, result)

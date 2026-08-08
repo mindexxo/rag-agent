@@ -145,9 +145,10 @@ class Conversation(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     tenant_id: Mapped[str]
     title: Mapped[str | None]                                                  # 대화 제목 (옵셔널)
-    created_by: Mapped[str | None]                                             # 생성한 사용자
+    created_by: Mapped[str | None]                                             # 생성한 사용자 (#10부터 항상 저장 — 미전송 시 'test-user')
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())    # 생성 시각
     last_used_at: Mapped[datetime] = mapped_column(server_default=func.now())  # 최근 사용 시각 (목록 정렬용)
+    deleted_at: Mapped[datetime | None]    # 소프트 삭제 시각 (#10) — NULL=활성. 감사 목적 이력 보존, 전 조회 경로가 IS NULL 필터
 
 
 class Message(Base):
@@ -155,7 +156,7 @@ class Message(Base):
     __tablename__ = "messages"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    conversation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("conversations.id", ondelete="CASCADE"))  # 부모 대화 FK. 대화 삭제 시 cascade
+    conversation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("conversations.id"))  # 부모 대화 FK. CASCADE 해제(#10) — 삭제는 소프트(deleted_at), 실수 하드 DELETE에도 이력 보존
     tenant_id: Mapped[str]
     role: Mapped[str]                                                        # 'user' | 'assistant'
     content: Mapped[str]                                                     # user면 원 질문, assistant면 최종 답변

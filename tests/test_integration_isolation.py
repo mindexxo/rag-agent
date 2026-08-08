@@ -47,10 +47,10 @@ async def test_대화_목록과_메시지_격리(client, tenant_id, other_tenant
 
     async with _client_for(other_tenant_id) as other:
         listing = (await other.get('/kms/conversations')).json()
-        assert all(c['conversation_id'] != conv_id for c in listing)   # 목록 격리
+        assert all(c['conversation_id'] != conv_id for c in listing['items'])   # 목록 격리 (#10: {items, has_more})
 
-        msgs = (await other.get(f'/kms/conversations/{conv_id}/messages')).json()
-        assert msgs == []                                              # 메시지 격리 (현 스펙: 빈 배열)
+        res = await other.get(f'/kms/conversations/{conv_id}/messages')
+        assert res.status_code == 404                                  # 메시지 격리 (#10: 소유 검증으로 404)
 
 
 @pytest.mark.asyncio

@@ -10,12 +10,6 @@ import pytest
 from config import settings
 
 
-@pytest.fixture
-def pass_gate(monkeypatch):
-    """근거 게이트 무조건 통과 — 가짜 벡터로는 임계(0.6)를 못 넘어서."""
-    import rag.retriever as rt
-    monkeypatch.setattr(rt, 'apply_gate', lambda cands, max_dense_distance=0.6: (False, None))
-
 
 @pytest.fixture
 def multi_query_on(monkeypatch):

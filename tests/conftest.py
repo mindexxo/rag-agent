@@ -60,6 +60,14 @@ def fake_embed(monkeypatch):
     return fake_vector
 
 
+@pytest.fixture
+def pass_gate(monkeypatch):
+    """근거 게이트 무조건 통과 — 가짜 벡터로는 임계(0.6)를 못 넘어서.
+    (4개 테스트 파일에 복붙되던 것을 공용 승격 — #10 리뷰)"""
+    import rag.retriever as rt
+    monkeypatch.setattr(rt, 'apply_gate', lambda cands, max_dense_distance=0.6: (False, None))
+
+
 # ── 가짜 LLM ─────────────────────────────────────────────────
 
 class FakeLlm:

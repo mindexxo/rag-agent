@@ -15,12 +15,6 @@ from rag.models import AnswerCache as AnswerCacheRow, Message
 from rag.prompts import BLOCKED_INPUT_ANSWER, NO_EVIDENCE_ANSWER
 
 
-@pytest.fixture
-def pass_gate(monkeypatch):
-    """근거 게이트 무조건 통과 — 가짜 벡터로는 임계(0.6)를 못 넘어서."""
-    import rag.retriever as rt
-    monkeypatch.setattr(rt, 'apply_gate', lambda cands, max_dense_distance=0.6: (False, None))
-
 
 def _events(sse_text: str) -> list[tuple[str, object]]:
     out = []

@@ -116,7 +116,7 @@ class RagService:
         멀티턴 condense, 검색, sources 구성을 한 번에 수행한다.
         """
         # 1. 대화 생성 or 조회
-        conversation = await ensure_conversation(self.session, self.tenant_id, conversation_id)
+        conversation = await ensure_conversation(self.session, self.tenant_id, conversation_id, user_id=self.user_id)
         # persist-before-stream: 새 대화면 여기서 즉시 commit해 conversation_id를 durable하게.
         # meta 이벤트로 id를 FE에 노출하기 전에 확정돼야, disconnect/blocked/error로 스트림이
         # 중단돼도 FE가 받은 id가 유효하다 (유령 id·후속 500 방지 — REVIEW findings ②).

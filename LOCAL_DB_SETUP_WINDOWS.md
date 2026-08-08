@@ -165,14 +165,15 @@ CREATE TABLE IF NOT EXISTS conversations (
     title        TEXT,
     created_by   TEXT,
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    last_used_at TIMESTAMPTZ  NOT NULL DEFAULT now()
+    last_used_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    deleted_at   TIMESTAMPTZ                 -- 소프트 삭제 (#10). NULL=활성
 );
 CREATE INDEX IF NOT EXISTS idx_conv_tenant_last
     ON conversations (tenant_id, last_used_at DESC);
 
 CREATE TABLE IF NOT EXISTS messages (
     id              BIGSERIAL PRIMARY KEY,
-    conversation_id BIGINT       NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    conversation_id BIGINT       NOT NULL REFERENCES conversations(id),  -- CASCADE 해제(#10)
     tenant_id       TEXT         NOT NULL,
     role            TEXT         NOT NULL,
     content         TEXT         NOT NULL,

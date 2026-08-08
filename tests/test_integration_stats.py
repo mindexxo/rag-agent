@@ -10,11 +10,6 @@ from database import AsyncSessionLocal
 from rag.models import Message
 
 
-@pytest.fixture
-def pass_gate(monkeypatch):
-    import rag.retriever as rt
-    monkeypatch.setattr(rt, 'apply_gate', lambda cands, max_dense_distance=0.6: (False, None))
-
 
 async def _ask(client, query: str, user: str | None = None):
     headers = {'X-User-Id': user} if user else {}

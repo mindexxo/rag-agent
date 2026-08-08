@@ -1,13 +1,19 @@
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends
-from sqlalchemy import select, update, func
+from fastapi import APIRouter, Depends, HTTPException, Response
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
 from database import get_session
+from rag.conversation import DEFAULT_USER
 from rag.models import Conversation, Message
-from routers.kms import get_tenant_id
-from schemas.conversations import ConversationSummary, ConversationMessage
+from routers.kms import get_tenant_id, get_user_id
+from schemas.conversations import (
+    ConversationListResponse,
+    ConversationMessage,
+    ConversationSummary,
+    ConversationTitleUpdate,
+)
 
 router = APIRouter(prefix='/kms')
 
@@ -15,33 +21,78 @@ router = APIRouter(prefix='/kms')
 # (정상 생성은 수십 초. 5분은 넉넉한 "확실히 죽음" 임계)
 GENERATION_STALE_SECONDS = 300
 
-MAX_CONVERSATIONS = 10   # 최근 대화 목록 상한
+MAX_CONVERSATIONS = 10   # 페이지 크기 상한 (#10부터 offset 페이지네이션의 limit 상한 의미)
 
-@router.get('/conversations', response_model=list[ConversationSummary])
+
+def _owned(tenant_id: str, user_id: str | None):
+    """대화 소유 필터 (#10) — tenant + created_by + 미삭제 (이 라우터의 조회 경로 공통).
+
+    같은 규칙이 rag/conversation.py ensure_conversation(질의 경로, ORM 인스턴스 비교)에도
+    있다 — 소유권 규칙을 바꾸면 두 곳을 함께 고칠 것.
+    created_by NULL인 기존 개발 데이터는 어느 사용자와도 불일치 → 자연 미노출.
+    """
+    return (
+        (Conversation.tenant_id == tenant_id)
+        & (Conversation.created_by == (user_id or DEFAULT_USER))
+        & (Conversation.deleted_at.is_(None))
+    )
+
+
+async def _get_owned_conversation(
+        session: AsyncSession, conversation_id: int, tenant_id: str, user_id: str | None,
+) -> Conversation:
+    """소유 대화 로드 — 없거나 남의 것이거나 삭제됐으면 404 (존재 여부 노출 안 함)."""
+    conv = (await session.execute(
+        select(Conversation).where(Conversation.id == conversation_id).where(_owned(tenant_id, user_id))
+    )).scalar_one_or_none()
+    if conv is None:
+        raise HTTPException(status_code=404, detail='대화를 찾을 수 없습니다.')
+    return conv
+
+
+@router.get('/conversations', response_model=ConversationListResponse)
 async def list_conversations(
     limit: int = MAX_CONVERSATIONS,
+    offset: int = 0,
     tenant_id: str = Depends(get_tenant_id),
+    user_id: str | None = Depends(get_user_id),
     session: AsyncSession = Depends(get_session),
 ):
-    """최근 대화 N개. 각 대화의 첫 사용자 질문을 미리보기 제목으로."""
+    """내 대화 목록 (최근 사용순, offset 페이지네이션 #10).
+
+    limit+1개를 조회해 has_more 판정 (count 쿼리 없이 다음 페이지 유무 확인).
+    알려진 한계: last_used_at 정렬이 가변이라 스크롤 중 페이지 밀림 가능 — 이 UI에선 감수.
+    """
     # 범위 밖(<=0 or 상한 초과)은 상한값으로 클램프 (거부 대신 sane 결과 — 음수 500·무상한 조회 방지, P2)
     if not 1 <= limit <= MAX_CONVERSATIONS:
         limit = MAX_CONVERSATIONS
-    conversations = (await session.execute(
+    if offset < 0:
+        offset = 0
+    rows = (await session.execute(
         select(Conversation)
-        .where(Conversation.tenant_id == tenant_id)
+        .where(_owned(tenant_id, user_id))
         .order_by(Conversation.last_used_at.desc())
-        .limit(limit)
+        .offset(offset)
+        .limit(limit + 1)
     )).scalars().all()
 
-    return [ConversationSummary(conversation_id=c.id, title=c.title) for c in conversations]
+    return ConversationListResponse(
+        items=[ConversationSummary(conversation_id=c.id, title=c.title, updated_at=c.last_used_at)
+               for c in rows[:limit]],
+        has_more=len(rows) > limit,
+    )
+
 
 @router.get('/conversations/{conversation_id}/messages', response_model=list[ConversationMessage])
 async def get_conversation_messages(
         conversation_id: int,
         tenant_id: str = Depends(get_tenant_id),
+        user_id: str | None = Depends(get_user_id),
         session: AsyncSession = Depends(get_session),
 ):
+    # 소유 검증 (#10) — 이전엔 메시지 tenant 필터뿐이라 같은 테넌트 남의 대화도 조회 가능했음
+    await _get_owned_conversation(session, conversation_id, tenant_id, user_id)
+
     # lazy 스윕: 오래 고착된 generating을 failed로 자기치유 (태스크가 소유하지만 웹 프로세스
     # 사망 시 아무도 finalize 못 하므로, 조회 시점에 정리. 정상 진행 중인 건 최근이라 미매칭).
     # 시간 비교는 서버측(func.now())으로 — created_at 컬럼이 naive/aware 혼선을 피한다.
@@ -74,3 +125,35 @@ async def get_conversation_messages(
         )
         for m in msgs
     ]
+
+
+@router.patch('/conversations/{conversation_id}', response_model=ConversationSummary)
+async def rename_conversation(
+        conversation_id: int,
+        body: ConversationTitleUpdate,
+        tenant_id: str = Depends(get_tenant_id),
+        user_id: str | None = Depends(get_user_id),
+        session: AsyncSession = Depends(get_session),
+):
+    """제목 변경 (#10). 자동 제목은 title IS NULL일 때만 세팅되므로 이후 턴이 덮어쓰지 않는다."""
+    conv = await _get_owned_conversation(session, conversation_id, tenant_id, user_id)
+    conv.title = body.title
+    await session.commit()
+    return ConversationSummary(conversation_id=conv.id, title=conv.title, updated_at=conv.last_used_at)
+
+
+@router.delete('/conversations/{conversation_id}', status_code=204)
+async def delete_conversation(
+        conversation_id: int,
+        tenant_id: str = Depends(get_tenant_id),
+        user_id: str | None = Depends(get_user_id),
+        session: AsyncSession = Depends(get_session),
+):
+    """소프트 삭제 (#10) — deleted_at 마킹. 이력(메시지·첨부)은 감사 목적 보존.
+
+    generating 중 삭제돼도 row가 남아 백그라운드 finalize가 정상 동작 (엣지 검증 완료 — 이슈 참조).
+    """
+    conv = await _get_owned_conversation(session, conversation_id, tenant_id, user_id)
+    conv.deleted_at = func.now()
+    await session.commit()
+    return Response(status_code=204)

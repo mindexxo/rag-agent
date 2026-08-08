@@ -26,25 +26,36 @@ from rag.prompts import (
 )
 
 
+# X-User-Id 미전송 시 created_by·스코핑에 쓰는 폴백 (#10).
+# 헤더 필수화는 ICCS 통합의 정식 인증으로 자연 해결 — 지금은 폴백으로 일관 저장·일관 필터.
+DEFAULT_USER = 'test-user'
+
+
 async def ensure_conversation(
         session: AsyncSession,
         tenant_id: str,
         conversation_id: int | None,
+        user_id: str | None = None,
 ) -> Conversation:
-    """대화가 없으면 새로 만들고, 있으면 테넌트 소유 대화인지 검증한다.
-      conversation_id=None이면 새 Conversation을 INSERT한다.
-      conversation_id가 있으면 tenant_id까지 같이 WHERE로 확인해서
-      다른 테넌트 대화 접근을 차단한다.
+    """대화가 없으면 새로 만들고, 있으면 소유 대화인지 검증한다.
+      conversation_id=None이면 새 Conversation을 INSERT (created_by 저장, #10).
+      conversation_id가 있으면 tenant + created_by + 미삭제까지 확인 —
+      남의 대화 접근·삭제된 대화로의 질의 계속을 차단한다.
+      같은 규칙이 routers/conversations.py _owned(목록·조회 경로, WHERE절)에도 있다 —
+      소유권 규칙 변경 시 두 곳을 함께 고칠 것.
+      기존 created_by NULL 대화(개발 데이터)는 어느 사용자와도 불일치 → 미노출.
     """
+    user = user_id or DEFAULT_USER
     if conversation_id is None:
-        conversation = Conversation(tenant_id=tenant_id)
+        conversation = Conversation(tenant_id=tenant_id, created_by=user)
         session.add(conversation)
         await session.flush()
         return conversation
 
     conversation = await session.get(Conversation, conversation_id)
 
-    if conversation is None or conversation.tenant_id != tenant_id:
+    if (conversation is None or conversation.tenant_id != tenant_id
+            or conversation.created_by != user or conversation.deleted_at is not None):
         raise ValueError(f'Conversation {conversation_id} not found')
 
     return conversation

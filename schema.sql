@@ -117,16 +117,17 @@ CREATE TABLE IF NOT EXISTS conversations (
     id           BIGSERIAL PRIMARY KEY,
     tenant_id    TEXT         NOT NULL,
     title        TEXT,
-    created_by   TEXT,
+    created_by   TEXT,                       -- 생성 사용자 (#10부터 항상 저장 — X-User-Id 미전송 시 'test-user')
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    last_used_at TIMESTAMPTZ  NOT NULL DEFAULT now()
+    last_used_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    deleted_at   TIMESTAMPTZ                 -- 소프트 삭제 시각 (#10). NULL=활성 — 삭제 시각 자체가 감사 데이터
 );
 CREATE INDEX IF NOT EXISTS idx_conv_tenant_last
     ON conversations (tenant_id, last_used_at DESC);
 
 CREATE TABLE IF NOT EXISTS messages (
     id              BIGSERIAL PRIMARY KEY,
-    conversation_id BIGINT       NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    conversation_id BIGINT       NOT NULL REFERENCES conversations(id),  -- CASCADE 해제(#10): 삭제는 소프트 — 실수 하드 DELETE에도 이력 보존
     tenant_id       TEXT         NOT NULL,
     role            TEXT         NOT NULL,
     content         TEXT         NOT NULL,
@@ -134,7 +135,7 @@ CREATE TABLE IF NOT EXISTS messages (
     sources         JSONB,
     -- 채팅 첨부: 첨부한 턴의 user 메시지에 추출 텍스트가 함께 저장됨 [{filename, text}].
     -- 인덱싱 안 함(전역 검색과 격리), 질의 시 대화 내 첨부를 모아 컨텍스트에 주입.
-    -- 고객 개인 문서 — 대화 삭제 시 메시지와 함께 CASCADE 삭제 (보존 정책).
+    -- 고객 개인 문서 — 대화는 소프트 삭제(#10)라 메시지·첨부 이력이 감사 목적으로 보존됨.
     attachments     JSONB,
     status          TEXT         NOT NULL DEFAULT 'done',   -- assistant 생성 상태: generating|done|failed|blocked (user 메시지는 항상 'done')
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),

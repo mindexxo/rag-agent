@@ -36,8 +36,7 @@ async def test_씨앗_저장_user_id_latency_cache_kind(client, tenant_id, fake_
         # 저장 시 확정된 사실: 짝 FK(생성·즉시 경로 모두) + 거절 아님 플래그 + 인텐트(답변률 분모)
         assert [a.question_message_id for a in answers] == [u.id for u in users]
         assert all(a.is_refusal is False for a in answers)
-        # [원복 필요] intent 매핑 임시 주석(models.py) 동안 기록이 안 됨 — DB 반영 후 함께 해제
-        # assert all(a.intent == 'KNOWLEDGE' for a in answers)              # 생성·캐시 경로 모두 기록 (답변률 분모)
+        assert all(a.intent == 'KNOWLEDGE' for a in answers)              # 생성·캐시 경로 모두 기록 (답변률 분모, #13 원복)
 
 
 @pytest.mark.asyncio
@@ -60,10 +59,9 @@ async def test_stats_집계_정확성(client, tenant_id, fake_llm, pass_gate):
     body = res.json()
 
     assert body['questions'] == 4                                # 사용량은 OTHER 포함 전체
-    # [원복 필요] intent 매핑 임시 주석(models.py) 동안 intent가 전부 NULL로 저장돼 아래 값이 0이 됨
-    # assert body['knowledge_done'] == 3                           # 분모는 지식 질문만 — 잡담이 답변률을 못 부풀림
-    # assert body['refusals'] == 1
-    # assert body['refusal_rate'] == round(1 / 3, 3)
+    assert body['knowledge_done'] == 3                           # 분모는 지식 질문만 — 잡담이 답변률을 못 부풀림 (#13 원복)
+    assert body['refusals'] == 1
+    assert body['refusal_rate'] == round(1 / 3, 3)
     assert body['daily'] and sum(d['questions'] for d in body['daily']) == 4
     assert body['top_documents'][0]['filename'] == 'FAQ'         # 실인용 기준 top
     assert body['top_documents'][0]['citations'] == 2             # 생성 1 + 캐시 재생 1 (미인용은 미집계)
@@ -72,7 +70,6 @@ async def test_stats_집계_정확성(client, tenant_id, fake_llm, pass_gate):
         assert gone not in body, gone
 
 
-@pytest.mark.skip(reason='[원복 필요] intent 매핑 임시 주석(models.py) — Message(intent=...)가 TypeError. DB 반영 후 매핑과 함께 해제')
 @pytest.mark.asyncio
 async def test_레거시_intent_NULL_거절은_답변률을_왜곡하지_않는다(client, tenant_id, fake_llm, pass_gate):
     """intent 컬럼 도입(2026-08-07) 전 행은 분자·분모 어디에도 안 들어가야 한다.

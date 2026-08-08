@@ -54,7 +54,7 @@ def fake_embed(monkeypatch):
 
     monkeypatch.setattr(routers.faqs, 'embed_texts', _texts)
     monkeypatch.setattr(rag.documents, 'embed_texts', _texts)
-    monkeypatch.setattr(rag.retriever, 'embed_query', _query)
+    monkeypatch.setattr(rag.retriever, 'embed_texts', _texts)   # 쿼리 확장(#5)으로 배치 임베딩 전환
     monkeypatch.setattr(rag.cache, 'embed_query', _query)
     monkeypatch.setattr(settings, 'rerank_enabled', False)
     return fake_vector
@@ -80,6 +80,8 @@ class FakeLlm:
         system = messages[0]['content'] if messages else ''
         if '분류기' in system or '입력 검사' in system:
             return 'intent'
+        if '질문 여러 개' in system:      # CONDENSE_MULTI(#5) — '재작성'보다 먼저 (문자열 겹침)
+            return 'condense_multi'
         if '재작성' in system:
             return 'condense'
         return 'generate'
@@ -95,6 +97,13 @@ class FakeLlm:
             return self.intent_json
         if kind == 'condense':
             return messages[-1]['content'].splitlines()[-1].strip()
+        if kind == 'condense_multi':
+            # 멀티쿼리(#5) 규격(3줄) 반향 — 한 줄만 주면 변형이 조용히 비어
+            # 플래그 on 통합 테스트가 off와 동일 경로로 축소되는 걸 막는다.
+            # 유저 메시지 마지막 줄은 라벨('검색용 독립 질문:')이라 '현재 질문:' 다음 줄을 집는다.
+            lines = [l.strip() for l in messages[-1]['content'].splitlines() if l.strip()]
+            q = lines[lines.index('현재 질문:') + 1] if '현재 질문:' in lines else lines[-1]
+            return f'{q}\n{q} 변형A\n{q} 변형B'
         return self.answer
 
     async def astream(self, messages: list[dict]):

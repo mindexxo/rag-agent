@@ -1,11 +1,13 @@
 """검색 품질 측정 v2 — 멀티테넌트 gold로 Recall@5/20, Hit@1, MRR.
 
-생성(LLM)과 분리된 검색 축 단독 평가. LLM 불필요 — TEI 임베딩 + DB만.
+생성(LLM)과 분리된 검색 축 단독 평가. 기본 실행은 LLM 불필요 — TEI 임베딩 + DB만.
 대상: single_fact/paraphrase/rare_lexical/multi_doc (multi_turn은 condense가
-LLM 의존이라 검색 단독 축에서 제외 — v1과 동일 기준).
+LLM 의존이라 이 축에서 제외 — 멀티턴 검색축은 eval.retrieval_mt가 담당, #5).
 
 사용: python3 -m eval.retrieval_v2
+     python3 -m eval.retrieval_v2 --expand   # 멀티쿼리 통합(#5) on A/B — 이때만 LLM 사용
 """
+import argparse
 import asyncio
 import json
 from collections import defaultdict
@@ -63,11 +65,20 @@ def _by_difficulty(rows) -> dict:
     return out
 
 
-async def compute() -> dict:
+async def compute(expand: bool = False) -> dict:
     """검색축 채점 실행 → 요약 반환 (출력·파일저장은 main이 담당).
+
+    expand=True면 운영 플래그 on과 동일하게 condense_to_queries(#5, 빈 히스토리)로
+    멀티쿼리를 만들어 첫 줄=주 쿼리, 나머지=변형으로 검색 (A/B). 변형은 rows에 기록.
 
     반환: {'rows': [...], 'skipped': int, 'overall': {recall_at_5, ...}, 'stale': {tenant: n}}
     """
+    llm = None
+    if expand:
+        from rag.conversation import condense_to_queries
+        from rag.llm import LlmClient
+        llm = LlmClient()
+
     gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
     target = [g for g in gold if g['type'] in TYPES]
 
@@ -86,21 +97,37 @@ async def compute() -> dict:
                 if not gold_ids:
                     skipped += 1
                     continue
-                cands = await retrieve_candidates(session, tenant, g['query'], top_n=20)
+                if llm:
+                    queries = await condense_to_queries(llm, g['query'], [])
+                    cands = await retrieve_candidates(session, tenant, queries[0], top_n=20,
+                                                      expanded_queries=queries[1:])
+                else:
+                    queries = [g['query']]
+                    cands = await retrieve_candidates(session, tenant, g['query'], top_n=20)
                 scores = score_one([c.chunk_id for c in cands.chunks], gold_ids)
-                rows.append({'id': g['id'], 'type': g['type'], 'tenant': tenant, 'scores': scores})
+                row = {'id': g['id'], 'type': g['type'], 'tenant': tenant, 'scores': scores}
+                if expand:
+                    row['queries'] = queries
+                rows.append(row)
 
     return {'rows': rows, 'skipped': skipped, 'overall': _overall(rows),
             'by_difficulty': _by_difficulty(rows), 'stale': stale}
 
 
 async def main() -> None:
-    result = await compute()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--expand', action='store_true',
+                        help='멀티쿼리 통합(#5) on으로 측정 — 결과는 retrieval_v2_expand.jsonl에 별도 저장 (A/B)')
+    args = parser.parse_args()
+
+    result = await compute(expand=args.expand)
     rows, skipped = result['rows'], result['skipped']
     for tenant, n in result['stale'].items():
         print(f'⚠ {tenant} 라벨 노후 {n}건')
 
-    out = Path(__file__).resolve().parent / 'results' / 'retrieval_v2.jsonl'
+    # off 기본 결과를 덮어쓰지 않게 expand는 별도 파일 — 두 파일을 나란히 비교
+    name = 'retrieval_v2_expand.jsonl' if args.expand else 'retrieval_v2.jsonl'
+    out = Path(__file__).resolve().parent / 'results' / name
     out.write_text('\n'.join(json.dumps(r, ensure_ascii=False) for r in rows) + '\n')
     print(f'\n채점 {len(rows)}문항 (resolve 불가 스킵 {skipped})  →  {out}\n')
     print('[타입별]')

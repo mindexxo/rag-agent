@@ -18,6 +18,7 @@ from rag.models import Conversation, Message
 logger = logging.getLogger(__name__)
 from rag.tokens import estimate_tokens
 from rag.prompts import (
+    CONDENSE_MULTI_SYSTEM_PROMPT,
     CONDENSE_SYSTEM_PROMPT,
     build_chat_prompt,
     build_condense_user_message,
@@ -108,6 +109,54 @@ async def condense_query(
     except Exception:
         logger.exception('LLM error(condense_query)')
         return query
+
+
+async def condense_to_queries(
+        llm: LlmClient,
+        query: str,
+        messages: list[Message],
+) -> list[str]:
+    """질의 재작성 의미 확장(#5) — 1콜로 검색용 멀티쿼리를 만든다.
+
+    반환 [0]은 기존 condense 출력과 같은 역할(standalone — 저장·캐시 키·리랭크 기준),
+    [1:]는 검색 전용 어휘 변형(최대 2). condense_query와 달리 히스토리가 없어도
+    LLM을 호출한다 — 운영은 service가 멀티턴에서만 부르지만(단일턴 확장은 실측상 손실),
+    eval(retrieval_v2 --expand)이 빈 히스토리로 A/B를 돌려야 해서 게이트는 호출부 책임.
+    실패·빈 결과 시 [query] 폴백 = 재작성·변형 없이 원본 단독 검색 (기능 자동 off).
+    """
+    history = [
+        {'role': m.role, 'content': m.content}
+        for m in messages
+    ]
+
+    try:
+        llm_messages = build_chat_prompt(
+            CONDENSE_MULTI_SYSTEM_PROMPT,
+            build_condense_user_message(query, history),
+        )
+        result = await llm.acomplete(llm_messages)
+        if result is None:
+            return [query]
+
+        lines = [l.strip() for l in result.strip().splitlines() if l.strip()]
+        # 머리말 라벨 방어 — 모델이 "검색용 독립 질문:" 같은 라벨 줄을 앞에 붙이는 경우가
+        # 실측됨(#5 mt003 3회 중 2회). 첫 줄을 무조건 standalone으로 쓰는 계약이라, 라벨이
+        # 검색 쿼리·생성 질문이 되어 거절 답변으로 이어진다. 콜론 종결 줄은 질문일 수 없어 제거.
+        lines = [l for l in lines if not l.endswith((':', '：'))]
+        if not lines:
+            return [query]
+        standalone = lines[0]
+        # standalone·변형 간 중복 제거 — 같은 줄이 반복되면 RRF에서 같은 순위 리스트를
+        # 중복 가산해 원본 상위 결과를 희석시킨다 (#3 A/B의 goodpeople_rl005 실측 부작용)
+        variants: list[str] = []
+        for line in lines[1:]:
+            if line != standalone and line not in variants:
+                variants.append(line)
+        return [standalone, *variants[:2]]
+
+    except Exception:
+        logger.exception('LLM error(condense_to_queries)')
+        return [query]
 
 
 async def save_exchange(

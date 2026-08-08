@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from rag.conversation import ensure_conversation, load_recent_messages, condense_query, build_prior_turns, trim_messages_for_condense, save_exchange, add_pending_turn, finalize_turn
+from rag.conversation import ensure_conversation, load_recent_messages, condense_query, condense_to_queries, build_prior_turns, trim_messages_for_condense, save_exchange, add_pending_turn, finalize_turn
 from rag.guardrail import GuardrailResult, check_output, classify_and_guard
 from rag.llm import LlmClient
 from rag.clients import shared_llm
@@ -155,10 +155,20 @@ class RagService:
             return _routed("other")
 
         # 3.5 질의 재작성 (KNOWLEDGE 경로만) — 히스토리는 condense 전용 예산으로 (답변용 2000과 용도 분리).
-        standalone_query = await condense_query(
-            self._llm, query, trim_messages_for_condense(messages, settings.condense_history_budget_tokens))
+        # 플래그 on(#5): 멀티턴이면 같은 자리 1콜로 멀티쿼리(재작성 1 + 어휘 변형 2). 첫 줄만
+        # standalone으로 저장·캐시에 쓰이고, 변형은 검색 전용.
+        # 단일턴은 플래그와 무관하게 현행 경로(LLM 스킵) — 단일턴 확장은 세 차례 측정(분리형·
+        # 선언형·절차형)에서 일관되게 Hit@1 손실(변형의 RRF 희석)이라 멀티턴 전용으로 게이트(#5).
+        expanded: list[str] = []
+        if settings.condense_multi_query_enabled and messages:
+            queries = await condense_to_queries(
+                self._llm, query, trim_messages_for_condense(messages, settings.condense_history_budget_tokens))
+            standalone_query, expanded = queries[0], queries[1:]
+        else:
+            standalone_query = await condense_query(
+                self._llm, query, trim_messages_for_condense(messages, settings.condense_history_budget_tokens))
         # 4. 검색 (exact 캐시 제거 — semantic 캐시가 검색 후 doc집합 비교로 처리)
-        retrieval = await retrieve(self.session, self.tenant_id, standalone_query)
+        retrieval = await retrieve(self.session, self.tenant_id, standalone_query, expanded_queries=expanded)
 
         sources = []
         if not retrieval.no_evidence:

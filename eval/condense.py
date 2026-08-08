@@ -12,7 +12,9 @@ condense는 확률적이라 케이스마다 RUNS회 반복 → 일관성(flaky)�
 공백은 무시하고 매칭한다("한 달"="한달").
 
 실행: python -m eval.condense
+     python -m eval.condense --multi   # 멀티쿼리 통합(#5)의 첫 줄(재작성)을 같은 규칙으로 채점
 """
+import argparse
 import asyncio
 import json
 from collections import defaultdict
@@ -20,7 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from rag.llm import LlmClient
-from rag.conversation import condense_query
+from rag.conversation import condense_query, condense_to_queries
 
 GOLD = Path(__file__).resolve().parent / "condense_set_v1.jsonl"
 RUNS = 3            # 케이스당 반복 (일관성 측정)
@@ -41,8 +43,12 @@ def _passes(case: dict, rewrite: str) -> bool:
     return True
 
 
-async def compute() -> dict:
-    """condense 채점 → 요약. 반환: {accuracy, n, runs, flaky, by_category, misses}."""
+async def compute(multi: bool = False) -> dict:
+    """condense 채점 → 요약. 반환: {accuracy, n, runs, flaky, by_category, misses}.
+
+    multi=True면 condense_to_queries(#5)의 첫 줄(standalone)을 같은 규칙으로 채점 —
+    변형 생성을 얹었을 때 재작성 품질이 회귀하지 않는지 본다. 변형 줄은 채점 대상 아님.
+    """
     cases = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
     llm = LlmClient()
     sem = asyncio.Semaphore(CONCURRENCY)
@@ -50,7 +56,10 @@ async def compute() -> dict:
     async def _one(case: dict, _i: int):
         msgs = [SimpleNamespace(role=m["role"], content=m["content"]) for m in case["conversation"]]
         async with sem:
-            out = await condense_query(llm, case["query"], msgs)
+            if multi:
+                out = (await condense_to_queries(llm, case["query"], msgs))[0]
+            else:
+                out = await condense_query(llm, case["query"], msgs)
         return case["id"], _passes(case, out), out
 
     # 케이스 × RUNS 회 전부 실행
@@ -89,8 +98,14 @@ async def compute() -> dict:
 
 
 async def main() -> None:
-    r = await compute()
-    print(f"[질의재작성(condense) 정확도]  케이스 {r['n']} × {r['runs']}회 = {r['n'] * r['runs']}런\n")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--multi", action="store_true",
+                        help="condense_to_queries(#5) 첫 줄 채점 — 통합 프롬프트의 재작성 회귀 확인")
+    args = parser.parse_args()
+
+    r = await compute(multi=args.multi)
+    label = "멀티쿼리 통합(#5) 첫 줄" if args.multi else "질의재작성(condense)"
+    print(f"[{label} 정확도]  케이스 {r['n']} × {r['runs']}회 = {r['n'] * r['runs']}런\n")
     print(f"{'category':<24}{'정확도':>14}")
     for cat, (ok, tot) in sorted(r["by_category"].items()):
         print(f"{cat:<24}{f'{ok}/{tot} ({ok / tot:.0%})':>14}")

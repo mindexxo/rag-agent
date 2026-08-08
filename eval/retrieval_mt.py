@@ -27,10 +27,16 @@ from rag.llm import LlmClient
 from rag.retriever import retrieve_candidates
 
 
+TYPES = {'multi_turn', 'multi_turn_long'}
+# multi_turn      : 1턴 히스토리 (기존 90문항 — 수치 비교 연속성 유지)
+# multi_turn_long : 6~16메시지 긴 히스토리 (#5 E2E에서 발굴한 유형: 주제 전환·상대 참조·
+#                   장거리 참조·히스토리 예산 트리밍. 실서버 대화를 재료로 라벨링)
+
+
 async def compute(multi: bool = False) -> dict:
     """multi_turn 축 채점 → 요약 반환. 반환 형식은 retrieval_v2.compute와 동일 계열."""
     gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
-    target = [g for g in gold if g['type'] == 'multi_turn']
+    target = [g for g in gold if g['type'] in TYPES]
 
     llm = LlmClient()
     rows, skipped, stale = [], 0, {}
@@ -80,8 +86,12 @@ async def main() -> None:
     out.write_text('\n'.join(json.dumps(r, ensure_ascii=False) for r in rows) + '\n')
     print(f'\n[multi_turn 검색축 — {"멀티쿼리 on" if args.multi else "condense 단일(off)"}]')
     print(f'채점 {len(rows)}문항 (resolve 불가 스킵 {result["skipped"]})  →  {out}')
-    print(''.join(f'{m:>12}' for m in ['R@5', 'R@20', 'Hit@1', 'MRR']))
-    print(''.join(f'{result["overall"][m]:>12.3f}' for m in METRICS))
+    # 타입별 분리 — multi_turn(기존 90, 비교 연속성)과 multi_turn_long(신설)을 섞지 않는다
+    print(f'{"type":<18}' + ''.join(f'{m:>12}' for m in ['R@5', 'R@20', 'Hit@1', 'MRR']))
+    for t in sorted({r['type'] for r in rows}):
+        ss = [r['scores'] for r in rows if r['type'] == t]
+        print(f'{t:<18}' + ''.join(f'{sum(s[m] for s in ss) / len(ss):>12.3f}' for m in METRICS))
+    print(f'{"(전체)":<18}' + ''.join(f'{result["overall"][m]:>12.3f}' for m in METRICS))
 
 
 if __name__ == '__main__':

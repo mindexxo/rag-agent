@@ -75,8 +75,9 @@ class Settings(BaseSettings):
     # 질의 재작성 의미 확장(#5). on이면 '멀티턴에서만' condense 자리 1콜로 멀티쿼리(재작성 1 +
     # 어휘 변형 2)를 뽑아 검색 — rerank on이면 쿼리별 채점 max-pool 정렬, rerank off/실패면 RRF 폴백.
     # 단일턴은 on이어도 현행 경로 그대로(LLM 스킵) — 단일턴 확장은 실측상 손실이라 게이트(service).
-    # off면 코드·프롬프트 모두 현행과 동일. 검증(#5) 전까지 off 유지.
-    condense_multi_query_enabled: bool = False
+    # 기본 on (#5 검증 완료: 재작성 98%, mt Hit@1 +2.2pp·R@20 1.000, 생성 EPCov/Cite +2.8/+5.5pp).
+    # off면 코드·프롬프트 모두 도입 전과 동일 — 문제 시 .env 한 줄로 원복.
+    condense_multi_query_enabled: bool = True
 
     # reranker (F99: TEI /rerank, cross-encoder 재정렬). on/off 토글 한 줄.
     rerank_enabled: bool = True                       # False면 dense-only 순서 그대로 (리랭크 skip). .env로 오버라이드 가능

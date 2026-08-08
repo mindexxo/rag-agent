@@ -19,7 +19,14 @@ def pass_gate(monkeypatch):
 
 @pytest.fixture
 def multi_query_on(monkeypatch):
+    """기본값(True)과 무관하게 on을 명시 — 기본값이 바뀌어도 테스트 의도 유지."""
     monkeypatch.setattr(settings, 'condense_multi_query_enabled', True)
+
+
+@pytest.fixture
+def multi_query_off(monkeypatch):
+    """원복 경로(off) 검증용 — 기본 on이므로 명시적으로 끈다."""
+    monkeypatch.setattr(settings, 'condense_multi_query_enabled', False)
 
 
 async def _register_faq(client) -> int:
@@ -52,7 +59,7 @@ async def test_멀티턴이면_condense_multi가_호출되고_응답_정상(
 
 @pytest.mark.asyncio
 async def test_플래그_off면_멀티턴도_기존_condense(
-        client, tenant_id, fake_llm, pass_gate):
+        client, tenant_id, fake_llm, pass_gate, multi_query_off):
     await _register_faq(client)
     res1 = await client.post('/kms/query?stream=false', json={'query': '환불 기간 알려줘'})
     conv_id = res1.json()['conversation_id']

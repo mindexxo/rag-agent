@@ -1,10 +1,11 @@
 """dense-only 검색 + 리랭커 + 근거 게이트 (F99 — 하이브리드 원복 청사진은 본문 주석 보관).
 
 흐름:
-    query
-      -> embed_query (async) -> q_dense
-      -> dense top-N (cosine distance)   -- 의미 매칭 (BGE-M3)
-      -> 리랭커 재정렬 (cross-encoder, settings.rerank_enabled)
+    query (+ 확장 변형, #5 Multi-Query)
+      -> embed_texts (async, 배치 1회) -> q_dense × N
+      -> 쿼리별 dense top-N (cosine distance)   -- 의미 매칭 (BGE-M3)
+      -> 변형 있으면 union 후보 + 쿼리별 리랭크 max-pool (RRF는 폴백 순서)
+         없으면 distance 순 그대로 -> 리랭커 재정렬 (cross-encoder, settings.rerank_enabled)
       -> top-N 후보 + 본문 fetch          == retrieve_candidates()
       -> 근거 게이트 (top-1 거리 임계값)   == apply_gate()
       -> RetrievalResult                  == retrieve() 가 위 둘을 조합
@@ -22,7 +23,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from rag.embeddings import embed_query
+from rag.embeddings import embed_texts
 from rag.models import Chunk, Document, Faq, Folder
 
 # 검색 대상 판정 — 출처별 분기 (chunks는 document/faq 다형성, F3):
@@ -52,7 +53,7 @@ class RetrievedChunk:
     heading_path: list[str]         # 인용 표시용 ["3. 보상", "3.2 지급기준"]
     page: int | None                # PDF 페이지 (있으면)
     rrf_score: float                # RRF 합산 점수 (높을수록 관련)
-    branches: list[str]             # ['dense'] | ['sparse'] | ['dense','sparse']  어느 검색에서 잡혔는지 — 디버깅·로깅용
+    branches: list[str]             # 'dense'(원본)/'sparse'(하이브리드)/'expand'(변형 쿼리, #5) 조합 — 어느 검색에서 잡혔는지, 디버깅·로깅용
     filename: str                   # FAQ 청크는 'FAQ' — 컨텍스트 라벨·인용 표기가 이 값을 따름
     version: int
     faq_id: int | None = None       # FAQ 출처면 항목 id (캐시 키·인용 분기용)
@@ -84,26 +85,25 @@ class RetrievalCandidates:
 # ===== RRF (Reciprocal Rank Fusion) =================================
 
 def _rrf_fuse(
-    dense_ids: list[int],
-    sparse_ids: list[int],
+    rank_lists: list[list[int]],
     k: int = 60,
 ) -> dict[int, float]:
-    """[보관 — 현재 미호출] 하이브리드 원복 시 사용. 두 검색의 순위 리스트를 RRF 점수로 합산.
+    """N개 순위 리스트를 RRF 점수로 합산. 쿼리 확장(#5) 융합에 사용 중이며,
+    하이브리드 원복 시에도 [dense_ids, sparse_ids]로 그대로 쓴다.
 
-    공식: score(doc) = sum( 1 / (k + rank) ) for each retriever where doc 출현
+    공식: score(doc) = sum( 1 / (k + rank) ) for each list where doc 출현
     - k=60: 표준값. 작을수록 상위 순위 가산 ↑, 클수록 평탄
-    - 점수 자체값이 아닌 '순위'만 사용 → dense/sparse 점수 스케일 달라도 안정
-    - 두 검색 모두 상위면 점수 합산 → 자동 가점
+    - 점수 자체값이 아닌 '순위'만 사용 → 리스트 간 점수 스케일 달라도 안정
+    - 여러 리스트에서 모두 상위면 점수 합산 → 자동 가점
 
-    예: dense에서 rank 1, sparse에서 rank 3인 청크의 점수
+    예: 리스트 A에서 rank 1, 리스트 B에서 rank 3인 청크의 점수
         = 1/(60+1) + 1/(60+3) = 0.01639 + 0.01587 = 0.03226
     """
     scores: dict[int, float] = {}
-    # enumerate(..., start=1): 인덱스를 0이 아닌 1부터 시작 (rank가 1부터이므로)
-    for rank, cid in enumerate(dense_ids, start=1):
-        scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
-    for rank, cid in enumerate(sparse_ids, start=1):
-        scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
+    for ids in rank_lists:
+        # enumerate(..., start=1): 인덱스를 0이 아닌 1부터 시작 (rank가 1부터이므로)
+        for rank, cid in enumerate(ids, start=1):
+            scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
     return scores
 
 
@@ -115,41 +115,54 @@ async def retrieve_candidates(
     query: str,
     top_n: int = 20,                      # 후보 수 — 평가가 Recall@N 보려면 넓게
     candidates_per_branch: int = 30,      # 각 검색에서 가져올 후보 수
+    expanded_queries: list[str] | None = None,   # 쿼리 확장(#5) 변형 — 검색·RRF 융합 전용
 ) -> RetrievalCandidates:
     """하이브리드 검색까지만. 근거 게이트는 apply_gate가 담당.
+
+    expanded_queries가 있으면 원본+변형을 각각 dense 검색해 union 후보를 만들고,
+    쿼리별 cross-encoder 채점의 max-pool로 정렬한다 (#5). 리랭크 꺼짐/실패 시 RRF 순서 폴백.
+    게이트 신호(top_dense_distance)는 항상 '원본 쿼리'의 top-1 거리 — 변형이
+    의미 이탈해도 게이트 판정이 흔들리지 않는다.
 
     NOTE: tenant 격리는 명시적 WHERE 절로 강제 (tenant_scoped 유틸 미사용).
     유틸은 전체 row select에만 적합한데 여기선 id+점수만 가져오므로 직접 박음.
     """
 
     # ----- 1. query 임베딩 (dense-only, F99) -----------------
-    q_emb = await embed_query(query)
+    # 원본+변형을 한 번에 배치 임베딩 (TEI 호출 1회 — embed_texts가 분할 담당)
+    queries = [query, *(expanded_queries or [])]
+    q_embs = await embed_texts(queries)
     # [dense-only] sparse 제거 — 하이브리드 원복 시 해제
-    # q_sparse = SparseVector(q_emb.sparse, 250002)
+    # q_sparse = SparseVector(q_embs[0].sparse, 250002)
 
     # ----- 2. dense search: cosine distance 작은 순 top-N ---------
+    # 쿼리별로 순차 실행 — AsyncSession은 동시 실행 불가라 gather 금지.
     # cosine_distance: pgvector-python이 제공하는 SQLAlchemy 헬퍼.
     # 실제 SQL은 chunks.dense <=> :q_dense 연산자로 변환됨.
     # 범위 [0, 2]: 0=완전 동일, 1=직각(무관), 2=정반대
-    distance = Chunk.dense.cosine_distance(q_emb.dense).label('distance')
-    # .label('distance'): SELECT 결과에 'distance' 라는 컬럼명 부여 → r.distance로 접근
+    per_query_ids: list[list[int]] = []
+    dense_results: list[tuple[int, float]] = []   # 원본 쿼리 결과 — 게이트 신호용
+    for i, q_emb in enumerate(q_embs):
+        distance = Chunk.dense.cosine_distance(q_emb.dense).label('distance')
+        # .label('distance'): SELECT 결과에 'distance' 라는 컬럼명 부여 → r.distance로 접근
+        dense_stmt = (
+            select(Chunk.id, distance)
+            .outerjoin(Document, Chunk.document_id == Document.id)   # FAQ 청크(document NULL)도 살리는 outer join
+            .outerjoin(Folder, Document.folder_id == Folder.id)
+            .outerjoin(Faq, Chunk.faq_id == Faq.id)
+            .where(Chunk.tenant_id == tenant_id)         # 격리 강제 — 변형 검색도 동일 경로
+            .where(_searchable_condition())              # 출처별 참조 판정 (문서 F2 조건 / FAQ on)
+            .order_by(distance)                          # 작은 순 = 유사한 순
+            .limit(candidates_per_branch)
+        )
+        # (await session.execute(stmt)).all() → list[Row]
+        rows = (await session.execute(dense_stmt)).all()
+        if i == 0:
+            # 튜플 리스트로 정규화: [(chunk_id, distance), ...]
+            dense_results = [(r.id, r.distance) for r in rows]
+        per_query_ids.append([r.id for r in rows])
 
-    dense_stmt = (
-        select(Chunk.id, distance)
-        .outerjoin(Document, Chunk.document_id == Document.id)   # FAQ 청크(document NULL)도 살리는 outer join
-        .outerjoin(Folder, Document.folder_id == Folder.id)
-        .outerjoin(Faq, Chunk.faq_id == Faq.id)
-        .where(Chunk.tenant_id == tenant_id)         # 격리 강제
-        .where(_searchable_condition())              # 출처별 참조 판정 (문서 F2 조건 / FAQ on)
-        .order_by(distance)                          # 작은 순 = 유사한 순
-        .limit(candidates_per_branch)
-    )
-    # (await session.execute(stmt)).all() → list[Row]
-    dense_rows = (await session.execute(dense_stmt)).all()
-    # 튜플 리스트로 정규화: [(chunk_id, distance), ...]
-    dense_results = [(r.id, r.distance) for r in dense_rows]
-
-    # ----- 3~5. [dense-only, F99] distance 순 top-N -----------------
+    # ----- 3~5. 순위 결정 -----------------
     # 하이브리드(sparse 검색 + RRF)는 아래 주석 보관 — 원복 시 이 블록으로 되돌리면 됨.
     #   neg_ip = Chunk.sparse.max_inner_product(q_sparse).label('score')
     #   sparse_stmt = (select(Chunk.id, neg_ip)
@@ -162,13 +175,22 @@ async def retrieve_candidates(
     #   sparse_results = [(r.id, r.score) for r in sparse_rows]
     #   dense_ids = [cid for cid, _ in dense_results]
     #   sparse_ids = [cid for cid, _ in sparse_results]
-    #   scores = _rrf_fuse(dense_ids, sparse_ids)
+    #   scores = _rrf_fuse([dense_ids, sparse_ids])
     #   if not scores: return RetrievalCandidates(chunks=[], top_dense_distance=999.0)
     #   top_ids = [cid for cid, _ in sorted(scores.items(), key=lambda x: -x[1])[:top_n]]
-    dense_ids = [cid for cid, _ in dense_results]
-    top_ids = dense_ids[:top_n]
-    # rrf_score 자리 채움(순위 역수) — 하이브리드 복원 시 위 블록으로 대체
-    scores = {cid: 1.0 / rank for rank, cid in enumerate(dense_ids, start=1)}
+    dense_ids = per_query_ids[0]
+    multi = len(per_query_ids) > 1
+    if not multi:
+        # [dense-only, F99] 단일 쿼리 — distance 순 그대로 (기존 동작 불변)
+        top_ids = dense_ids[:top_n]
+        # rrf_score 자리 채움(순위 역수) — 하이브리드 복원 시 위 블록으로 대체
+        scores = {cid: 1.0 / rank for rank, cid in enumerate(dense_ids, start=1)}
+    else:
+        # 쿼리 확장(#5): union 전체를 확보(슬라이스는 리랭크 뒤에서) — 순서는 RRF.
+        # RRF는 max-pool 리랭크(6.4) 실패 시의 폴백 순서이자 rrf_score 표시값.
+        # 원본이 항상 한 리스트로 들어가므로, 의미 이탈한 변형이 순위를 지배하지 못한다.
+        scores = _rrf_fuse(per_query_ids)
+        top_ids = [cid for cid, _ in sorted(scores.items(), key=lambda x: -x[1])]
 
     # 빈 결과 → 빈 후보 반환 (no_results 판정은 apply_gate가)
     if not top_ids:
@@ -191,6 +213,8 @@ async def retrieve_candidates(
     # branch 판정용 set (in 연산 O(1))
     dense_id_set = set(dense_ids)
     sparse_id_set = set()          # [dense-only, F99] sparse 브랜치 없음
+    # 변형 쿼리에서 잡힌 청크 — 어느 검색이 기여했는지 디버깅·로깅용 (#5)
+    expand_id_set = {cid for ids in per_query_ids[1:] for cid in ids}
 
     result = []
     for cid in top_ids:                              # RRF 순서대로
@@ -200,6 +224,8 @@ async def retrieve_candidates(
             branches.append('dense')
         if cid in sparse_id_set:
             branches.append('sparse')
+        if cid in expand_id_set:
+            branches.append('expand')
         result.append(RetrievedChunk(
             chunk_id=c.id,
             document_id=c.document_id,
@@ -217,11 +243,25 @@ async def retrieve_candidates(
         ))
 
     # ----- 6.4 리랭커 재정렬 (F99, on/off = settings.rerank_enabled) ----------
-    # 후보(top_n) 순서만 cross-encoder로 재정렬 → 표 필터·최종 top-K 전에 수행해
-    # '가장 관련 높은 청크'가 앞·표 필터 기준이 되게 한다. 서버 실패 시 원 순서 유지(graceful).
+    # 단일 쿼리: 후보(top_n) 순서만 cross-encoder로 재정렬 (기존 동작 불변).
+    # 쿼리 확장(#5): union 후보를 쿼리별로 각자 채점해 청크별 최고점(max-pool)으로 정렬.
+    #   RRF→원본 쿼리 채점 방식은 변형이 찾아온 청크를 원본 어휘로 다시 채점해 이득이
+    #   소멸했다 (mt 90문항 실측: RRF+원본채점 = 풀확장+원본채점 = 개선 0, max-pool +4.5pp).
+    # 표 필터·최종 top-K 전에 수행해 '가장 관련 높은 청크'가 앞·표 필터 기준이 되게 한다.
+    # 서버 실패 시 원 순서(RRF) 유지(graceful) — 이때도 top_n 슬라이스는 보장.
     if settings.rerank_enabled and result:
-        from rag.reranker import rerank   # 지연 import (retriever ↔ reranker 순환 방지)
-        result = await rerank(query, result)
+        if multi:
+            import asyncio
+            from rag.reranker import rerank_scores   # 지연 import (retriever ↔ reranker 순환 방지)
+            matrix = await asyncio.gather(*(rerank_scores(q, result) for q in queries))
+            if all(s is not None for s in matrix):
+                best = [max(col) for col in zip(*matrix)]
+                order = sorted(range(len(result)), key=lambda idx: -best[idx])
+                result = [result[idx] for idx in order]
+        else:
+            from rag.reranker import rerank
+            result = await rerank(query, result)
+    result = result[:top_n]   # multi는 union 전체를 들고 왔으므로 여기서 top_n 확정 (단일은 이미 top_n)
 
     # ----- 6.5 '한 시트만 참조' 필터 (F1a) ----------
     # 표(xlsx) 청크는 최상위 1개만 유지, 나머지 표 청크는 제외.
@@ -278,6 +318,8 @@ async def retrieve(
     query: str,
     top_k: int = 5,                       # 최종 반환 청크 수
     candidates_per_branch: int = 30,
+    expanded_queries: list[str] | None = None,   # 쿼리 확장(#5) 변형 — retrieve_candidates로 전달만
+
     max_dense_distance: float = float("inf"),  # 거리 게이트 비활성 (no_results만 유지)
                                           # 대상이 상담원 어시스턴트라 잡담/무관 질의가 드물고,
                                           # dense 거리 게이트는 rare_lexical 등 정상 질의를 오거부
@@ -294,6 +336,7 @@ async def retrieve(
         session, tenant_id, query,
         top_n=20,
         candidates_per_branch=candidates_per_branch,
+        expanded_queries=expanded_queries,
     )
     no_evidence, reason = apply_gate(candidates, max_dense_distance)
     return RetrievalResult(

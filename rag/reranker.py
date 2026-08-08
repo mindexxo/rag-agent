@@ -32,21 +32,21 @@ def _rerank_text(chunk) -> str:
     return build_index_text(chunk.text, chunk.filename, chunk.heading_path, folder=folder)
 
 
-async def rerank(query: str, chunks: list, model_name: str | None = None) -> list:
-    """query 기준 cross-encoder 점수로 chunks 재정렬. 실패 시 원본 순서 그대로.
+async def rerank_scores(query: str, chunks: list) -> list[float] | None:
+    """query ↔ 각 청크의 cross-encoder 원점수 (chunks와 같은 순서). 실패 시 None.
 
-    async(공용 AsyncClient) — 리랭크 대기 중 이벤트 루프 비블로킹.
-    model_name: TEI는 컨테이너당 모델 고정이라 무시 (구 eval 호출 호환용 인자).
+    쿼리 확장 max-pool(#5)이 쿼리별 점수를 직접 합산해야 해서 순서 대신 점수를 노출.
+    rerank()도 이 점수로 정렬한다 — 채점 경로는 하나.
     """
     if not chunks:
-        return chunks
+        return []
     try:
         from rag.clients import http_async
         from rag.embeddings import MAX_CLIENT_BATCH   # 리랭커 TEI도 같은 상한 32 (실측 2026-08-04)
 
         # 상한 초과 시 422. cross-encoder는 query-text 쌍마다 독립 채점이라 나눠 불러도
         # 점수가 같다 → 전체 점수를 모아 한 번에 정렬하면 결과가 동일하다.
-        scored: list[tuple[int, float]] = []
+        scores = [0.0] * len(chunks)
         for start in range(0, len(chunks), MAX_CLIENT_BATCH):
             batch = chunks[start:start + MAX_CLIENT_BATCH]
             resp = await http_async.post(
@@ -57,13 +57,25 @@ async def rerank(query: str, chunks: list, model_name: str | None = None) -> lis
             resp.raise_for_status()
             # TEI /rerank → [{"index": i, "score": s}, ...]. index는 **이 배치 안**의 위치라
             # start를 더해 원본 인덱스로 환산한다 (빠뜨리면 엉뚱한 청크가 상위로 올라간다).
-            scored.extend((start + item["index"], item["score"]) for item in resp.json())
-
-        ranked = sorted(scored, key=lambda x: -x[1])   # score 내림차순
-        return [chunks[idx] for idx, _ in ranked]
+            for item in resp.json():
+                scores[start + item["index"]] = item["score"]
+        return scores
     except Exception as e:
-        logger.warning("rerank 실패 — 원 순서 유지: %s", e)
+        logger.warning("rerank 점수 실패: %s", e)
+        return None
+
+
+async def rerank(query: str, chunks: list, model_name: str | None = None) -> list:
+    """query 기준 cross-encoder 점수로 chunks 재정렬. 실패 시 원본 순서 그대로.
+
+    async(공용 AsyncClient) — 리랭크 대기 중 이벤트 루프 비블로킹.
+    model_name: TEI는 컨테이너당 모델 고정이라 무시 (구 eval 호출 호환용 인자).
+    """
+    scores = await rerank_scores(query, chunks)
+    if not scores:                        # 실패(None)·빈 입력 모두 원 순서 유지 (graceful degrade)
         return chunks
+    order = sorted(range(len(chunks)), key=lambda i: -scores[i])
+    return [chunks[i] for i in order]
 
 
 # =====================================================================

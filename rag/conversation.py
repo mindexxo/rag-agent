@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 from rag.tokens import estimate_tokens
 from rag.prompts import (
     CONDENSE_SYSTEM_PROMPT,
+    EXPAND_SYSTEM_PROMPT,
     build_chat_prompt,
     build_condense_user_message,
 )
@@ -108,6 +109,29 @@ async def condense_query(
     except Exception:
         logger.exception('LLM error(condense_query)')
         return query
+
+
+async def expand_query(
+        llm: LlmClient,
+        query: str,
+) -> list[str]:
+    """쿼리 확장(Multi-Query) — 표현을 달리한 검색용 변형을 생성한다 (#3).
+
+    구어체 질문을 정책 문서 어휘로 정규화한 변형 2개를 만들어,
+    retriever가 원본과 함께 검색·RRF 융합하게 한다 (변형은 검색 전용 —
+    저장·캐시 키·인용 어디에도 쓰지 않는다).
+    실패·빈 결과·규격 위반이면 빈 리스트 폴백 = 원본 단독 검색 (기능 자동 off).
+    """
+    try:
+        result = await llm.acomplete(build_chat_prompt(EXPAND_SYSTEM_PROMPT, query))
+        if result is None:
+            return []
+        lines = [l.strip() for l in result.strip().splitlines() if l.strip()]
+        # 원본과 동일한 줄은 제거 — RRF에서 원본 브랜치를 중복 가산하게 됨
+        return [l for l in lines if l != query][:2]
+    except Exception:
+        logger.exception('LLM error(expand_query)')
+        return []
 
 
 async def save_exchange(

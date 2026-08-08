@@ -54,7 +54,7 @@ def fake_embed(monkeypatch):
 
     monkeypatch.setattr(routers.faqs, 'embed_texts', _texts)
     monkeypatch.setattr(rag.documents, 'embed_texts', _texts)
-    monkeypatch.setattr(rag.retriever, 'embed_query', _query)
+    monkeypatch.setattr(rag.retriever, 'embed_texts', _texts)   # 쿼리 확장(#3)으로 배치 임베딩 전환
     monkeypatch.setattr(rag.cache, 'embed_query', _query)
     monkeypatch.setattr(settings, 'rerank_enabled', False)
     return fake_vector

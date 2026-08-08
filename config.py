@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     embed_timeout: float = 30.0
     embed_dimensions: int | None = None
 
+    # 쿼리 확장(Multi-Query, #3). on이면 검색 전 LLM으로 변형 2개 생성 → 원본+변형 RRF 융합.
+    # 검색 경로에 LLM 1콜 직렬 추가(첫 토큰 지연 증가) — eval A/B로 효과 확인 전까지 off 유지.
+    query_expansion_enabled: bool = False
+
     # reranker (F99: TEI /rerank, cross-encoder 재정렬). on/off 토글 한 줄.
     rerank_enabled: bool = True                       # False면 dense-only 순서 그대로 (리랭크 skip). .env로 오버라이드 가능
     rerank_base_url: str = "http://localhost:38890"   # TEI 리랭커 서버 (bge-reranker-v2-m3, /rerank) — 실주소는 .env

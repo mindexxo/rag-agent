@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from rag.conversation import ensure_conversation, load_recent_messages, condense_query, build_prior_turns, trim_messages_for_condense, save_exchange, add_pending_turn, finalize_turn
+from rag.conversation import ensure_conversation, load_recent_messages, condense_query, expand_query, build_prior_turns, trim_messages_for_condense, save_exchange, add_pending_turn, finalize_turn
 from rag.guardrail import GuardrailResult, check_output, classify_and_guard
 from rag.llm import LlmClient
 from rag.clients import shared_llm
@@ -157,8 +157,12 @@ class RagService:
         # 3.5 질의 재작성 (KNOWLEDGE 경로만) — 히스토리는 condense 전용 예산으로 (답변용 2000과 용도 분리).
         standalone_query = await condense_query(
             self._llm, query, trim_messages_for_condense(messages, settings.condense_history_budget_tokens))
+        # 3.7 쿼리 확장 (#3, 플래그 off 기본) — 변형은 검색 전용, 저장·캐시 키는 standalone 그대로
+        expanded = []
+        if settings.query_expansion_enabled:
+            expanded = await expand_query(self._llm, standalone_query)
         # 4. 검색 (exact 캐시 제거 — semantic 캐시가 검색 후 doc집합 비교로 처리)
-        retrieval = await retrieve(self.session, self.tenant_id, standalone_query)
+        retrieval = await retrieve(self.session, self.tenant_id, standalone_query, expanded_queries=expanded)
 
         sources = []
         if not retrieval.no_evidence:

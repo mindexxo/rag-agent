@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from rag.conversation import ensure_conversation, load_recent_messages, condense_query, condense_to_queries, build_prior_turns, trim_messages_for_condense, save_exchange, add_pending_turn, finalize_turn
+from rag import otel
 from rag.guardrail import GuardrailResult, check_output, classify_and_guard
 from rag.llm import LlmClient
 from rag.clients import shared_llm
@@ -384,7 +385,10 @@ class RagService:
             return GuardrailResult(safe=True)
         if prepared.no_evidence:
             return GuardrailResult(safe=True)
-        return await check_output(self._llm, answer)
+        with otel.span('guard_output', 'GUARDRAIL') as sp:
+            verdict = await check_output(self._llm, answer)
+            otel.set_attrs(sp, {'kms.safe': verdict.safe, 'kms.reason': verdict.reason})
+            return verdict
 
 
 async def _build_sources(

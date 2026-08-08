@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     embed_timeout: float = 30.0
     embed_dimensions: int | None = None
 
+    # OTel 트레이싱 (#7). 미설정(빈 값)이면 완전 no-op — 계측 코드는 돌지만 스팬이 기록되지 않음.
+    # 로컬 Phoenix: http://localhost:6006/v1/traces (docker-compose.local.yml). 개발계 전용 권장.
+    otel_endpoint: str = ""
+    otel_text_limit: int = 500        # 스팬에 담는 청크 본문·답변 절단 길이 (질문·재작성은 전문)
+
     # 질의 재작성 의미 확장(#5). on이면 '멀티턴에서만' condense 자리 1콜로 멀티쿼리(재작성 1 +
     # 어휘 변형 2)를 뽑아 검색 — rerank on이면 쿼리별 채점 max-pool 정렬, rerank off/실패면 RRF 폴백.
     # 단일턴은 on이어도 현행 경로 그대로(LLM 스킵) — 단일턴 확장은 실측상 손실이라 게이트(service).

@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass
 
 from rag.llm import LlmClient
+from rag import otel
 from rag.prompts import GUARDRAIL_OUTPUT_PROMPT, build_intent_guard_prompt, build_classify_user_message
 
 logger = logging.getLogger(__name__)
@@ -45,19 +46,22 @@ async def classify_and_guard(llm: LlmClient, query: str, has_attachments: bool =
     domain_hint는 KNOWLEDGE 정의의 지식 범위 슬롯에 주입 (빈 값은 중립 폴백).
     파싱·호출 실패는 fail-open + KNOWLEDGE (검색 경로 = 안전 측, 과잉거절 방지).
     """
-    try:
-        raw = await llm.acomplete([
-            {'role': 'system', 'content': build_intent_guard_prompt(domain_hint)},
-            {'role': 'user', 'content': build_classify_user_message(query, has_attachments)},
-        ])
-        data = _extract_json(raw)
-        intent = str(data.get('intent', 'KNOWLEDGE')).upper()
-        if intent not in ('KNOWLEDGE', 'OTHER'):
-            intent = 'KNOWLEDGE'
-        return RouteDecision(safe=_as_bool(data.get('safe'), default=True), intent=intent, reason=data.get('reason'))
-    except Exception:
-        logger.exception('LLM error(classify_and_guard)')
-        return RouteDecision(safe=True, intent='KNOWLEDGE')
+    with otel.span('classify_and_guard', 'GUARDRAIL') as sp:
+        try:
+            raw = await llm.acomplete([
+                {'role': 'system', 'content': build_intent_guard_prompt(domain_hint)},
+                {'role': 'user', 'content': build_classify_user_message(query, has_attachments)},
+            ])
+            data = _extract_json(raw)
+            intent = str(data.get('intent', 'KNOWLEDGE')).upper()
+            if intent not in ('KNOWLEDGE', 'OTHER'):
+                intent = 'KNOWLEDGE'
+            decision = RouteDecision(safe=_as_bool(data.get('safe'), default=True), intent=intent, reason=data.get('reason'))
+        except Exception:
+            logger.exception('LLM error(classify_and_guard)')
+            decision = RouteDecision(safe=True, intent='KNOWLEDGE')   # fail-open (기존 동작 유지)
+        otel.set_attrs(sp, {otel.INPUT_VALUE: query, 'kms.intent': decision.intent, 'kms.safe': decision.safe})
+        return decision
 
 def _extract_json(raw: str) -> dict:
     """LLM 출력에서 JSON 객체만 추출한다.

@@ -17,5 +17,16 @@ services:
     image: redis:7-alpine          # 인터넷(Docker Hub)에서 자동 다운로드
     ports: ["6379:6379"]           # 파이썬 백엔드가 localhost:6379로 접속
 
+  # 관측성(#7, 선택): OTel 트레이스 수집·조회 UI. 백엔드 .env에
+  # OTEL_ENDPOINT=http://localhost:6006/v1/traces 설정 시에만 스팬이 전송된다 (미설정=no-op).
+  # 트레이스는 소모성 진단 데이터 — 서비스 DB와 분리된 SQLite 볼륨에 저장, 커지면 볼륨 삭제로 정리.
+  phoenix:
+    image: arizephoenix/phoenix:latest   # 도입 확정 시 버전 핀 권장
+    ports: ["6006:6006"]                 # UI + OTLP HTTP 수집 (같은 포트)
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+    volumes: ["phoenix_data:/mnt/data"]
+
 volumes:
   pgdata: {}
+  phoenix_data: {}

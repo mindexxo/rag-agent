@@ -23,6 +23,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
+from rag import otel
 from rag.embeddings import embed_texts
 from rag.models import Chunk, Document, Faq, Folder
 
@@ -250,17 +251,26 @@ async def retrieve_candidates(
     # 표 필터·최종 top-K 전에 수행해 '가장 관련 높은 청크'가 앞·표 필터 기준이 되게 한다.
     # 서버 실패 시 원 순서(RRF) 유지(graceful) — 이때도 top_n 슬라이스는 보장.
     if settings.rerank_enabled and result:
-        if multi:
-            import asyncio
-            from rag.reranker import rerank_scores   # 지연 import (retriever ↔ reranker 순환 방지)
-            matrix = await asyncio.gather(*(rerank_scores(q, result) for q in queries))
-            if all(s is not None for s in matrix):
-                best = [max(col) for col in zip(*matrix)]
-                order = sorted(range(len(result)), key=lambda idx: -best[idx])
-                result = [result[idx] for idx in order]
-        else:
-            from rag.reranker import rerank
-            result = await rerank(query, result)
+        with otel.span('rerank', 'RERANKER') as sp:
+            otel.set_attrs(sp, {otel.RERANK_QUERY: query, otel.RERANK_TOP_K: top_n,
+                                'kms.pool_size': len(result), 'kms.mode': 'maxpool' if multi else 'single'})
+            if multi:
+                import asyncio
+                from rag.reranker import rerank_scores   # 지연 import (retriever ↔ reranker 순환 방지)
+                matrix = await asyncio.gather(*(rerank_scores(q, result) for q in queries))
+                if all(s is not None for s in matrix):
+                    best = [max(col) for col in zip(*matrix)]
+                    order = sorted(range(len(result)), key=lambda idx: -best[idx])
+                    result = [result[idx] for idx in order]
+                    if sp.is_recording():   # max-pool 채택 점수 — DB에 안 남는 진단 정보 (#5·#7)
+                        for i, idx in enumerate(order[:top_n]):
+                            sp.set_attribute(f'reranker.output_documents.{i}.document.id', str(result[i].chunk_id))
+                            sp.set_attribute(f'reranker.output_documents.{i}.document.score', float(best[idx]))
+                else:
+                    otel.set_attrs(sp, {'kms.fallback': 'rrf'})   # 점수 실패 → RRF 순서 유지
+            else:
+                from rag.reranker import rerank
+                result = await rerank(query, result)
     result = result[:top_n]   # multi는 union 전체를 들고 왔으므로 여기서 top_n 확정 (단일은 이미 top_n)
 
     # ----- 6.5 '한 시트만 참조' 필터 (F1a) ----------
@@ -332,12 +342,16 @@ async def retrieve(
     최종 top_k는 정렬된 후보의 상위 슬라이스라 리팩토링 전과 동일 결과·동일 순서.
     RagService 등 호출부는 이 함수만 알면 됨 (계약 불변).
     """
-    candidates = await retrieve_candidates(
-        session, tenant_id, query,
-        top_n=20,
-        candidates_per_branch=candidates_per_branch,
-        expanded_queries=expanded_queries,
-    )
+    with otel.span('retrieve', 'RETRIEVER') as sp:
+        candidates = await retrieve_candidates(
+            session, tenant_id, query,
+            top_n=20,
+            candidates_per_branch=candidates_per_branch,
+            expanded_queries=expanded_queries,
+        )
+        otel.set_attrs(sp, {otel.INPUT_VALUE: query,
+                            'kms.expanded_queries': list(expanded_queries or [])})
+        otel.set_documents(sp, candidates.chunks)
     no_evidence, reason = apply_gate(candidates, max_dense_distance)
     return RetrievalResult(
         chunks=candidates.chunks[:top_k],

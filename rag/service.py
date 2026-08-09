@@ -304,7 +304,7 @@ class RagService:
             for source in prepared.sources
         ]
 
-        await save_exchange(
+        assistant = await save_exchange(
             self.session,
             self.tenant_id,
             prepared.conversation_id,
@@ -321,6 +321,9 @@ class RagService:
             is_refusal=is_refusal(answer),
             intent=prepared.intent_label,
         )
+        # 즉시 경로는 begin_turn을 안 거쳐 meta의 assistant_message_id가 비어 있었음 —
+        # #16의 persist-before-stream 덕에 meta 전송 전에 id 확정 가능 → 피드백 대상 노출 (#8)
+        prepared.assistant_message_id = assistant.id
 
         # 신규 LLM 응답만 캐시에 저장한다.
         # 게이트를 통과했어도 LLM이 스스로 거절한 답변은 제외 —

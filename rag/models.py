@@ -174,6 +174,9 @@ class Message(Base):
     intent: Mapped[str | None]           # assistant: 라우팅 결과 'KNOWLEDGE'|'OTHER' — 답변률 분모는 KNOWLEDGE만 (NULL=차단 턴·도입 전 행). DB 반영 완료로 원복 (#13)
     question_message_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("messages.id", ondelete="SET NULL"))  # assistant: 답한 user 메시지 (짝을 데이터로)
+    # ── 인간 피드백 1단계 (#8): 상담원의 답변 평가. 검증은 Pydantic Literal (태그 4종·별도 테이블은 과설계)
+    feedback: Mapped[bool | None]        # assistant: True=👍 False=👎 NULL=미선택/취소
+    feedback_tag: Mapped[str | None]     # assistant: 👎 사유 슬러그(wrong_info|wrong_source|outdated_doc|insufficient). 옵셔널 — 👎인데 스킵하면 NULL
 
 
 class TenantQuota(Base):

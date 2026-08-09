@@ -13,6 +13,8 @@ from schemas.conversations import (
     ConversationMessage,
     ConversationSummary,
     ConversationTitleUpdate,
+    MessageFeedbackState,
+    MessageFeedbackUpdate,
 )
 
 router = APIRouter(prefix='/kms')
@@ -115,6 +117,7 @@ async def get_conversation_messages(
     )).scalars().all()
     return [
         ConversationMessage(
+            message_id=m.id,
             role=m.role,
             content=m.content,
             status=m.status,
@@ -122,9 +125,42 @@ async def get_conversation_messages(
             # 첨부 본문은 노출하지 않고 파일명만 (FE 뱃지/말풍선 표시용)
             attachments=[a['filename'] for a in m.attachments] if m.attachments else None,
             cited_docs=m.cited_docs,
+            feedback=m.feedback,
+            feedback_tag=m.feedback_tag,
         )
         for m in msgs
     ]
+
+
+@router.patch('/messages/{message_id}/feedback', response_model=MessageFeedbackState)
+async def set_message_feedback(
+        message_id: int,
+        body: MessageFeedbackUpdate,
+        tenant_id: str = Depends(get_tenant_id),
+        user_id: str | None = Depends(get_user_id),
+        session: AsyncSession = Depends(get_session),
+):
+    """답변 피드백 👍/👎 + 사유 태그 저장 (#8) — 멱등 set, 토글/취소는 FE가 최종 상태를 보내는 방식.
+
+    assistant 메시지 + 본인 소유 대화만 허용 — 아니면 전부 404 (존재 여부 비노출,
+    _get_owned_conversation과 같은 원칙). 👍/취소 시 태그는 강제 NULL (👎 전용 축).
+    """
+    msg = (await session.execute(
+        select(Message)
+        .join(Conversation, Message.conversation_id == Conversation.id)
+        .where(Message.id == message_id)
+        .where(Message.tenant_id == tenant_id)     # 격리 — 메시지에도 tenant WHERE 명시
+        .where(Message.role == 'assistant')
+        .where(Message.status == 'done')           # 실패/차단/생성중 턴엔 평가할 답변이 없음 — 집계 오염 방지
+        .where(_owned(tenant_id, user_id))
+    )).scalar_one_or_none()
+    if msg is None:
+        raise HTTPException(status_code=404, detail='메시지를 찾을 수 없습니다.')
+
+    msg.feedback = body.feedback
+    msg.feedback_tag = body.tag if body.feedback is False else None
+    await session.commit()
+    return MessageFeedbackState(message_id=msg.id, feedback=msg.feedback, feedback_tag=msg.feedback_tag)
 
 
 @router.patch('/conversations/{conversation_id}', response_model=ConversationSummary)

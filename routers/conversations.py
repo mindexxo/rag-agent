@@ -127,6 +127,7 @@ async def get_conversation_messages(
             cited_docs=m.cited_docs,
             feedback=m.feedback,
             feedback_tag=m.feedback_tag,
+            feedback_text=m.feedback_text,
         )
         for m in msgs
     ]
@@ -143,7 +144,7 @@ async def set_message_feedback(
     """답변 피드백 👍/👎 + 사유 태그 저장 (#8) — 멱등 set, 토글/취소는 FE가 최종 상태를 보내는 방식.
 
     assistant 메시지 + 본인 소유 대화만 허용 — 아니면 전부 404 (존재 여부 비노출,
-    _get_owned_conversation과 같은 원칙). 👍/취소 시 태그는 강제 NULL (👎 전용 축).
+    _get_owned_conversation과 같은 원칙). 👍/취소 시 태그·텍스트는 강제 NULL (👎 전용 축).
     """
     msg = (await session.execute(
         select(Message)
@@ -159,8 +160,10 @@ async def set_message_feedback(
 
     msg.feedback = body.feedback
     msg.feedback_tag = body.tag if body.feedback is False else None
+    msg.feedback_text = body.text if body.feedback is False else None
     await session.commit()
-    return MessageFeedbackState(message_id=msg.id, feedback=msg.feedback, feedback_tag=msg.feedback_tag)
+    return MessageFeedbackState(message_id=msg.id, feedback=msg.feedback,
+                                feedback_tag=msg.feedback_tag, feedback_text=msg.feedback_text)
 
 
 @router.patch('/conversations/{conversation_id}', response_model=ConversationSummary)

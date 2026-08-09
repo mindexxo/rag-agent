@@ -42,7 +42,8 @@ async def test_싫어요와_태그_저장(client, tenant_id):
     res = await client.patch(f'/kms/messages/{aid}/feedback',
                              json={'feedback': False, 'tag': 'wrong_info'}, headers=USER_A)
     assert res.status_code == 200
-    assert res.json() == {'message_id': aid, 'feedback': False, 'feedback_tag': 'wrong_info'}
+    assert res.json() == {'message_id': aid, 'feedback': False,
+                          'feedback_tag': 'wrong_info', 'feedback_text': None}
     assert await _db_state(aid) == (False, 'wrong_info')
 
 
@@ -150,3 +151,35 @@ async def test_done_아닌_메시지는_404(client, tenant_id):
     res = await client.patch(f'/kms/messages/{aid}/feedback',
                              json={'feedback': False}, headers=USER_A)
     assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_자유_서술_저장과_취소시_NULL(client, tenant_id):
+    """👎 자유 서술(옵셔널) — 태그가 못 잡는 사유 발굴 축. 👍 전환·취소 시 태그처럼 강제 NULL."""
+    _, aid, _ = await _seed_turn(tenant_id)
+    res = await client.patch(f'/kms/messages/{aid}/feedback',
+                             json={'feedback': False, 'tag': 'insufficient',
+                                   'text': '표 안의 예외 조건을 빼먹었어요'}, headers=USER_A)
+    assert res.status_code == 200
+    assert res.json()['feedback_text'] == '표 안의 예외 조건을 빼먹었어요'
+
+    res = await client.patch(f'/kms/messages/{aid}/feedback',
+                             json={'feedback': True}, headers=USER_A)
+    assert res.json() == {'message_id': aid, 'feedback': True,
+                          'feedback_tag': None, 'feedback_text': None}
+
+
+@pytest.mark.asyncio
+async def test_좋아요에_텍스트_동봉은_422(client, tenant_id):
+    _, aid, _ = await _seed_turn(tenant_id)
+    res = await client.patch(f'/kms/messages/{aid}/feedback',
+                             json={'feedback': True, 'text': '굿'}, headers=USER_A)
+    assert res.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_텍스트_500자_초과는_422(client, tenant_id):
+    _, aid, _ = await _seed_turn(tenant_id)
+    res = await client.patch(f'/kms/messages/{aid}/feedback',
+                             json={'feedback': False, 'text': '가' * 501}, headers=USER_A)
+    assert res.status_code == 422

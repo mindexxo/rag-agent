@@ -27,8 +27,12 @@ def _load_jsonl(path: Path) -> list[dict]:
     return [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
 
 
-def build_dataset(mode: str = "retrieved") -> EvaluationDataset:
-    """저장된 {mode} 생성 결과 → RAGAS EvaluationDataset."""
+def build_dataset(mode: str = "retrieved", ref_only: bool = False) -> EvaluationDataset:
+    """저장된 {mode} 생성 결과 → RAGAS EvaluationDataset.
+
+    ref_only=True: 검수된 정답문(expected_answer)이 있는 gold만 — reference 필요 지표
+    (context_recall·answer_correctness)용. 파일럿 30문항부터 (2026-08-08).
+    """
     gold_by_id = {g["id"]: g for g in _load_jsonl(GOLD)}
     rows = _load_jsonl(RESULT_DIR / f"generation_{mode}.jsonl")
 
@@ -37,13 +41,16 @@ def build_dataset(mode: str = "retrieved") -> EvaluationDataset:
         g = gold_by_id.get(r["id"])
         if g is None:                       # gold에 없는 결과 → 스킵
             continue
+        if ref_only and not g.get("expected_answer"):
+            continue
         samples.append({
             # multi_turn은 condense 재작성 질문을 사용 — 원 후속 질문("그건 언제까지?")은
             # 맥락이 없어 answer_relevancy가 부당하게 깎임. 재작성 질문이 답변의 공정한 기준.
             "user_input": r.get("standalone_query") or g["query"],
             "response": r["answer"],
             "retrieved_contexts": r.get("retrieved_contexts", []),
-            "reference": " ".join(g.get("expected_points", [])),
+            # 검수된 정답문 우선, 없으면 기대 포인트 이어붙임(유사 reference — 참고용 폴백)
+            "reference": g.get("expected_answer") or " ".join(g.get("expected_points", [])),
         })
     return EvaluationDataset.from_list(samples)
 

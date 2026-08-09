@@ -26,7 +26,7 @@
   python -m eval.run_all --intent        # 인텐트만 (LLM)
   python -m eval.run_all --ragas --smoke 0   # 생성축 전체(기본 SMOKE=3)
 
-주의: --ragas는 OPENAI_API_KEY + rate limit이 걸리고 느리다.
+참고: --ragas 심판은 기본 사내 vLLM(RAGAS_JUDGE=vllm) — 비용·rate limit 없음. 외부 심판은 RAGAS_JUDGE=openai.
       전 축은 사내망(DB·TEI·vLLM) 접근이 필요하다.
 
 생성축(--ragas)은 '미리 생성해둔 답변'(generation_retrieved.jsonl)을 채점만 한다

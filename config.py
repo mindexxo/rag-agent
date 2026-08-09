@@ -100,7 +100,12 @@ class Settings(BaseSettings):
     max_attachments: int = 2                 # 컨텍스트 유지 첨부 개수 (넘으면 오래된 것 제외 — FE 고정 안내)
 
     # cache (exact 캐시 제거됨 — semantic만)
-    semantic_cache_threshold: float = 0.90
+    # 0.90→0.95 상향(#16): 검색용 임베딩은 부정("가능/불가능" 0.949)·수치("7일/14일" 0.918) 차이에
+    # 둔감해 0.90에선 오답 재생 실측. 0.95도 긴 부정 쌍(~0.97)은 누수 가능 — 운영 데이터로 재판단.
+    semantic_cache_threshold: float = 0.95
+    # 미히트 캐시 보존 기간(#16) — last_hit_at 기준이라 히트마다 연장, 인기 답변은 영구 생존.
+    # TTL이 아님: 정확성은 무효화·doc집합 비교가 담당하고 이건 죽은 row 위생(LIMIT 1 가림 완화).
+    cache_retention_days: int = 90
 
     # guardrail
     guardrail_output_enabled: bool = False

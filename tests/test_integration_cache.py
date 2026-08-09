@@ -165,3 +165,127 @@ async def test_무효화는_해당_문서_참조_행만(tenant_id, fake_embed):
             select(AnswerCacheRow.answer).where(AnswerCacheRow.tenant_id == tenant_id)
         )).scalars().all()
         assert remain == ['답3']                             # 7을 참조한 두 행만 제거
+
+
+# ── #16 캐시 경화: FAQ 낙관적 검증 + fail-open ──────────────────
+
+@pytest.mark.asyncio
+async def test_생성_중_FAQ_수정되면_캐시_저장_스킵(tenant_id, fake_embed):
+    """write-back 레이스(#16): prepare 스냅샷 이후 FAQ가 바뀌면 set이 저장을 스킵.
+    FAQ는 id 불변이라 doc집합 비교가 자가치유 못 하는 유일한 출처 — 이 검증이 마지막 방어선."""
+    from rag.cache import snapshot_faq_versions
+    from rag.models import Faq
+
+    cache = AnswerCache()
+    async with AsyncSessionLocal() as session:
+        faq = Faq(tenant_id=tenant_id, question='반품 기간?', answer='14일')
+        session.add(faq)
+        await session.commit()
+
+        snap = await snapshot_faq_versions(session, tenant_id, [-faq.id])
+        assert snap                                          # 스냅샷에 FAQ 잡힘
+
+        # 생성 구간에 끼어든 FAQ 수정 (별도 세션 = 별도 트랜잭션의 커밋)
+        async with AsyncSessionLocal() as s2:
+            row = (await s2.execute(select(Faq).where(Faq.id == faq.id))).scalar_one()
+            row.answer = '7일'
+            await s2.commit()
+
+        await cache.set(session, tenant_id, '반품 기간 알려줘', '14일입니다', [], [-faq.id],
+                        faq_versions=snap)
+        await session.commit()
+        rows = (await session.execute(
+            select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
+        )).scalars().all()
+        assert rows == []                                    # 옛 내용 기반 답변 저장 안 됨
+
+
+@pytest.mark.asyncio
+async def test_FAQ_변경_없으면_스냅샷_검증_통과_저장(tenant_id, fake_embed):
+    from rag.cache import snapshot_faq_versions
+    from rag.models import Faq
+
+    cache = AnswerCache()
+    async with AsyncSessionLocal() as session:
+        faq = Faq(tenant_id=tenant_id, question='반품 기간?', answer='14일')
+        session.add(faq)
+        await session.commit()
+
+        snap = await snapshot_faq_versions(session, tenant_id, [-faq.id])
+        await cache.set(session, tenant_id, '반품 기간 알려줘', '14일입니다', [], [-faq.id],
+                        faq_versions=snap)
+        await session.commit()
+        row = (await session.execute(
+            select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
+        )).scalar_one()
+        assert row.answer == '14일입니다'
+
+
+@pytest.mark.asyncio
+async def test_캐시_조회_저장_실패는_요청을_죽이지_않는다(tenant_id, monkeypatch):
+    """fail-open(#16): 임베딩(TEI) 실패 시 조회는 miss, 저장은 스킵 — 예외 전파 금지."""
+    async def boom(text):
+        raise RuntimeError('TEI down')
+    monkeypatch.setattr('rag.cache.embed_query', boom)
+
+    cache = AnswerCache()
+    async with AsyncSessionLocal() as session:
+        assert await cache.get_semantic(session, tenant_id, '배송비 얼마예요', [5]) is None
+        await cache.set(session, tenant_id, '배송비 얼마예요', '3천원', [], [5])   # 예외 없이 통과
+        rows = (await session.execute(
+            select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
+        )).scalars().all()
+        assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_보존기간_지난_미히트_캐시만_청소(tenant_id, fake_embed):
+    """sweep_stale(#16): last_hit_at이 cache_retention_days를 넘긴 row만 삭제."""
+    from sqlalchemy import func, update as sa_update
+
+    cache = AnswerCache()
+    async with AsyncSessionLocal() as session:
+        await cache.set(session, tenant_id, '오래된 질문', '옛 답', [], [5])
+        await cache.set(session, tenant_id, '최근 질문', '새 답', [], [7])
+        await session.commit()
+        # 한 행을 보존기간(90일) 밖으로 백데이트
+        await session.execute(
+            sa_update(AnswerCacheRow)
+            .where(AnswerCacheRow.tenant_id == tenant_id)
+            .where(AnswerCacheRow.query_text == '오래된 질문')
+            .values(last_hit_at=func.now() - func.make_interval(0, 0, 0, 91)))
+
+        deleted = await cache.sweep_stale(session)
+        await session.commit()
+
+        assert deleted >= 1                                  # 전 테넌트 일괄이라 정확 수 대신 하한
+        remain = (await session.execute(
+            select(AnswerCacheRow.answer).where(AnswerCacheRow.tenant_id == tenant_id)
+        )).scalars().all()
+        assert remain == ['새 답']                            # 이 테넌트에선 미히트 옛 행만 제거
+
+
+@pytest.mark.asyncio
+async def test_FAQ_스냅샷_검증도_테넌트_격리(tenant_id, other_tenant_id, fake_embed):
+    """snapshot_faq_versions/_faqs_unchanged는 타 테넌트의 같은 faq_id를 보면 안 된다
+    (WHERE-clause 격리 전략 — 새 테넌트 스코프 쿼리 경로마다 통합 테스트가 계약)."""
+    from rag.cache import snapshot_faq_versions
+    from rag.models import Faq
+
+    cache = AnswerCache()
+    async with AsyncSessionLocal() as session:
+        faq = Faq(tenant_id=other_tenant_id, question='반품 기간?', answer='14일')
+        session.add(faq)
+        await session.commit()
+
+        # 타 테넌트 FAQ id로는 스냅샷이 비어야 한다
+        assert await snapshot_faq_versions(session, tenant_id, [-faq.id]) == {}
+
+        # 빈 스냅샷을 기준으로 한 검증은 '변경됨' 판정 → 저장 스킵 (보수적 안전)
+        await cache.set(session, tenant_id, '반품 기간 알려줘', '14일입니다', [], [-faq.id],
+                        faq_versions={})
+        await session.commit()
+        rows = (await session.execute(
+            select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
+        )).scalars().all()
+        assert rows == []

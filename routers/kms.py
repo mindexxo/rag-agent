@@ -248,16 +248,30 @@ async def _queue_reader(prepared, no_evidence: bool, queue: asyncio.Queue):
 
 async def _immediate_stream(service, prepared, no_evidence: bool, session, t_request: float):
     """즉시 경로(cache-hit/blocked/no_evidence): 답이 확정 → 인라인 저장·스트림.
-    placeholder·태스크 불필요."""
-    yield _sse_meta(prepared, no_evidence)
-    yield sse_event("sources", [] if no_evidence else [s.model_dump() for s in prepared.sources])
+    placeholder·태스크 불필요.
+
+    persist-before-stream(#16): 답이 이미 확정된 경로이므로 저장·commit을 먼저 한다 —
+    재생 중 disconnect여도 턴이 남고(이력 구멍 방지), get_semantic이 잡은 hit_count
+    행 잠금도 스트림 전에 풀린다(동시 히트가 첫 클라이언트 수신 속도에 직렬화되던 문제).
+    """
     parts = []
     async for chunk in service.generate(prepared):
         parts.append(chunk)
-        yield sse_event("token", {"text": chunk})
     answer = "".join(parts)
-    if is_refusal(answer):
-        yield sse_event("sources", [])
-    await service.save(prepared, answer, latency_ms=int((time.monotonic() - t_request) * 1000))
-    await session.commit()
+    # 저장 실패가 이미 확정된 답변의 '전달'까지 막으면 안 된다 (fail-open — 리뷰 반영).
+    # StreamingResponse는 첫 yield 전에 200 헤더가 이미 나가므로, 여기서 예외가 새면
+    # 사용자는 빈 스트림을 받는다. 실패는 로그만 남기고 전달은 계속한다.
+    try:
+        await service.save(prepared, answer, latency_ms=int((time.monotonic() - t_request) * 1000))
+        await session.commit()
+    except Exception:
+        logger.exception("즉시 경로 저장 실패 — 답변 전달은 계속 (conversation=%s)",
+                         prepared.conversation_id)
+
+    yield _sse_meta(prepared, no_evidence)
+    # 저장 전에 answer가 확정되므로 sources를 처음부터 올바르게 1회만 보낸다
+    # (기존엔 선전송 후 거절 판명 시 빈 sources로 정정 이벤트를 재전송)
+    yield sse_event("sources", [] if (no_evidence or is_refusal(answer)) else [s.model_dump() for s in prepared.sources])
+    for chunk in parts:
+        yield sse_event("token", {"text": chunk})
     yield sse_event("done", {})

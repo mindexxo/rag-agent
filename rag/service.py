@@ -7,6 +7,7 @@ LLM 호출 없이 근거 게이트에서 막히면 고정 문구를 바로 반�
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,7 +25,7 @@ from rag.retriever import RetrievalResult, retrieve, RetrievedChunk
 
 from schemas.kms import SourceCitation, QueryAttachment
 from typing import Literal
-from rag.cache import AnswerCache
+from rag.cache import AnswerCache, snapshot_faq_versions
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class PreparedRag:
     new_attachments: list[dict] = field(default_factory=list)  # 이번 턴에 새로 동봉된 것 — save 시 user 메시지에 저장
     domain_hint: str | None = None   # [임시] 테넌트 지식 범위 설명 — 생성 프롬프트 주입용, 저장 안 함 (#1)
     assistant_message_id: int | None = None   # 생성 경로: 자리표시 assistant 메시지 id (백그라운드 태스크가 UPDATE할 대상)
+    faq_versions: dict[int, datetime] | None = None   # 근거 FAQ {id: updated_at} 스냅샷 — cache.set 낙관적 검증 기준 (#16)
 
     @property
     def intent_label(self) -> str | None:
@@ -176,6 +178,9 @@ class RagService:
             sources = await _build_sources(self.session, self.tenant_id, retrieval.chunks)
 
         source_doc_ids = _source_doc_ids(retrieval.chunks)
+        # 근거 FAQ 버전 스냅샷 — 생성이 끝난 cache.set 시점에 재조회·등치 비교해,
+        # 생성 중 FAQ가 수정됐으면 저장을 스킵한다 (write-back 레이스 차단, #16)
+        faq_versions = await snapshot_faq_versions(self.session, self.tenant_id, source_doc_ids)
 
         # 6. semantic 캐시 조회 — exact와 같은 이유로 첨부가 있으면 우회
         #    질문 의미가 비슷하고, 지금 검색된 문서 집합이 캐시와 같을 때만 hit
@@ -212,6 +217,7 @@ class RagService:
             attachments=attachment_dicts,
             new_attachments=new_attachment_dicts,
             domain_hint=domain_hint,
+            faq_versions=faq_versions,
         )
 
     async def _load_history_attachments(self, conversation_id: int, limit: int) -> list[dict]:
@@ -328,6 +334,7 @@ class RagService:
                 answer,
                 prepared.sources,
                 prepared.source_doc_ids,
+                faq_versions=prepared.faq_versions,
             )
 
     async def begin_turn(self, prepared: PreparedRag) -> None:
@@ -372,6 +379,7 @@ class RagService:
                 answer,
                 prepared.sources,
                 prepared.source_doc_ids,
+                faq_versions=prepared.faq_versions,
             )
 
     async def guard_output(self, prepared: PreparedRag, answer: str) -> GuardrailResult:

@@ -33,12 +33,34 @@ TYPES = {'multi_turn', 'multi_turn_long'}
 #                   장거리 참조·히스토리 예산 트리밍. 실서버 대화를 재료로 라벨링)
 
 
+CONCURRENCY = 6   # worker15 공유 장비 — RAGAS max_workers와 동일 안전선 (#18)
+
+
 async def compute(multi: bool = False) -> dict:
-    """multi_turn 축 채점 → 요약 반환. 반환 형식은 retrieval_v2.compute와 동일 계열."""
+    """multi_turn 축 채점 → 요약 반환. 반환 형식은 retrieval_v2.compute와 동일 계열.
+
+    LLM(condense)은 선병렬(vLLM 연속 배칭 활용, #18), 검색·채점은 세션 직렬 —
+    AsyncSession은 동시 실행 불가라 gather에 태우지 않는다.
+    """
     gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
     target = [g for g in gold if g['type'] in TYPES]
 
     llm = LlmClient()
+    sem = asyncio.Semaphore(CONCURRENCY)
+
+    async def _condense(g: dict) -> tuple[str, list[str]]:
+        # gold의 conversation을 condense가 받는 Message 형태로 (eval.condense와 동일 방식)
+        msgs = [SimpleNamespace(role=m['role'], content=m['content'])
+                for m in (g.get('conversation') or [])]
+        async with sem:
+            if multi:
+                return g['id'], await condense_to_queries(llm, g['query'], msgs)
+            return g['id'], [await condense_query(llm, g['query'], msgs)]
+
+    # 1단계: LLM 선병렬 — DB 접근 없음
+    queries_map = dict(await asyncio.gather(*(_condense(g) for g in target)))
+
+    # 2단계: 검색·채점 — 세션 직렬
     rows, skipped, stale = [], 0, {}
     async with AsyncSessionLocal() as session:
         by_tenant = {}
@@ -53,13 +75,7 @@ async def compute(multi: bool = False) -> dict:
                 if not gold_ids:
                     skipped += 1
                     continue
-                # gold의 conversation을 condense가 받는 Message 형태로 (eval.condense와 동일 방식)
-                msgs = [SimpleNamespace(role=m['role'], content=m['content'])
-                        for m in (g.get('conversation') or [])]
-                if multi:
-                    queries = await condense_to_queries(llm, g['query'], msgs)
-                else:
-                    queries = [await condense_query(llm, g['query'], msgs)]
+                queries = queries_map[g['id']]
                 cands = await retrieve_candidates(session, tenant, queries[0], top_n=20,
                                                   expanded_queries=queries[1:])
                 scores = score_one([c.chunk_id for c in cands.chunks], gold_ids)
@@ -78,6 +94,8 @@ async def main() -> None:
 
     result = await compute(multi=args.multi)
     rows = result['rows']
+    if not rows:   # 채점 0 = gold resolve 전멸 (빈/잘못된 DB) — 결과 덮어쓰기 전에 중단 (#18 실사고 가드)
+        raise SystemExit(f"채점 0문항 (스킵 {result['skipped']}) — DATABASE_URL이 코퍼스 있는 DB인지 확인. 결과 파일 미변경.")
     for tenant, n in result['stale'].items():
         print(f'⚠ {tenant} 라벨 노후 {n}건')
 

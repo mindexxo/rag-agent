@@ -14,6 +14,7 @@ LLM 서버 필요: .env의 VLLM_BASE_URL/VLLM_MODEL (Ollama qwen3:4b 또는 vLLM
 import asyncio
 import json
 import math
+import os
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -48,7 +49,7 @@ TOP_K = 5
 USE_RERANK = False         # 추가 리랭크 여부. 주의: retrieve_candidates가 settings.rerank_enabled(현재 True)로
                            # 이미 내부 리랭크 1회 수행 → retrieved 모드는 이미 '리랭커 포함'(=시스템 전체).
                            # True로 켜면 이중 리랭크. 도입 확정이라 내부 1회로 충분 → False 유지.
-SMOKE = None               # 스모크셋 크기 (전체는 None)
+SMOKE = int(os.getenv("SMOKE", "0")) or None   # 스모크셋 크기 (0/미설정=전체) — 검증용 부분 실행 (#18)
 
 
 # ===== 컨텍스트 구성 =================================================
@@ -202,30 +203,53 @@ async def judge_faithfulness(answer: str, chunks: list[RetrievedChunk]) -> float
 
 # ===== 메인 ==========================================================
 
+CONCURRENCY = 6   # worker15 공유 장비 — RAGAS max_workers와 동일 안전선 (#18)
+
+
 async def run_mode(session, llm, mode: str, gold_rows, resolved):
-    """oracle / retrieved 한 모드로 생성 + 채점 → row 리스트."""
-    rows = []
-    for g in gold_rows:
-        if g["type"] not in GEN_TYPES:
-            continue
+    """oracle / retrieved 한 모드로 생성 + 채점 → row 리스트.
 
-        # multi_turn: 이전 대화를 운영 condense에 태워 독립 질문으로 재작성.
-        # 검색·생성 모두 재작성된 질의를 쓴다 — 운영 /kms/query 경로와 동일.
-        query = g["query"]
-        standalone = None
-        if g["type"] == "multi_turn":
-            history = [SimpleNamespace(**m) for m in g.get("conversation", [])]
-            standalone = await condense_query(llm, query, history)
-            query = standalone
+    LLM 콜(condense·generate)은 병렬(vLLM 연속 배칭, #18), 컨텍스트 조회·채점은 직렬 —
+    AsyncSession은 동시 실행 불가라 gather에 태우지 않는다.
+    """
+    gen_rows = [g for g in gold_rows if g["type"] in GEN_TYPES]
+    sem = asyncio.Semaphore(CONCURRENCY)
 
+    # ① condense 선병렬 (multi_turn만 — DB 무관).
+    # multi_turn: 이전 대화를 운영 condense에 태워 독립 질문으로 재작성.
+    # 검색·생성 모두 재작성된 질의를 쓴다 — 운영 /kms/query 경로와 동일.
+    async def _standalone(g):
+        if g["type"] != "multi_turn":
+            return g["id"], None
+        history = [SimpleNamespace(**m) for m in g.get("conversation", [])]
+        async with sem:
+            return g["id"], await condense_query(llm, g["query"], history)
+
+    standalone_map = dict(await asyncio.gather(*(_standalone(g) for g in gen_rows)))
+
+    # ② 컨텍스트 조회 — 세션 직렬. oracle에서 resolve 실패는 스킵(기존 동작)
+    work: list[tuple[dict, list]] = []
+    for g in gen_rows:
+        query = standalone_map[g["id"]] or g["query"]
         if mode == "oracle":
             chunks = await oracle_context(session, resolved.chunk_ids.get(g["id"]) or [])
             if not chunks:                       # 정답 청크 resolve 실패 → oracle 스킵
                 continue
         else:
             chunks = await retrieved_context(session, row_tenant(g), query)
+        work.append((g, chunks))
 
-        answer = await generate(llm, query, chunks)
+    # ③ 생성 병렬 — 가장 무거운 구간이라 병렬화 효과 최대
+    async def _generate(g, chunks):
+        async with sem:
+            return await generate(llm, standalone_map[g["id"]] or g["query"], chunks)
+
+    answers = await asyncio.gather(*(_generate(g, c) for g, c in work))
+
+    # ④ 채점·행 구성 — 직렬 (EPCov의 embed_texts_sync 포함)
+    rows = []
+    for (g, chunks), answer in zip(work, answers):
+        standalone = standalone_map[g["id"]]
 
         rows.append({
             "id": g["id"], "type": g["type"], "mode": mode,
@@ -277,6 +301,8 @@ async def main():
         for mode in ("oracle", "retrieved"):
             print(f"\n=== mode: {mode} ({len(gen_gold)}문항) ===")
             rows = await run_mode(session, llm, mode, gen_gold, resolved)
+            if not rows:   # 채점 0 = resolve 전멸 (빈/잘못된 DB) — 재료 파일 덮어쓰기 방지 (#18 실사고 가드)
+                raise SystemExit(f"{mode}: 생성 0행 — DATABASE_URL이 코퍼스 있는 DB인지 확인. 결과 파일 미변경.")
             out = RESULT_DIR / f"generation_{mode}.jsonl"
             out.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows))
             summarize(rows)

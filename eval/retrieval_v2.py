@@ -73,19 +73,27 @@ async def compute(expand: bool = False) -> dict:
 
     반환: {'rows': [...], 'skipped': int, 'overall': {recall_at_5, ...}, 'stale': {tenant: n}}
     """
-    llm = None
+    gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+    target = [g for g in gold if g['type'] in TYPES]
+
+    # 1단계(expand만): LLM 선병렬 — vLLM 연속 배칭 활용 (#18). DB 접근 없어 gather 안전
+    queries_map: dict[str, list[str]] = {}
     if expand:
         from rag.conversation import condense_to_queries
         from rag.llm import LlmClient
         llm = LlmClient()
+        sem = asyncio.Semaphore(6)   # worker15 공유 장비 — RAGAS와 동일 안전선
 
-    gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
-    target = [g for g in gold if g['type'] in TYPES]
+        async def _expand(g):
+            async with sem:
+                return g['id'], await condense_to_queries(llm, g['query'], [])
+        queries_map = dict(await asyncio.gather(*(_expand(g) for g in target)))
 
     by_tenant = defaultdict(list)
     for g in target:
         by_tenant[row_tenant(g)].append(g)
 
+    # 2단계: 검색·채점 — 세션 직렬 (AsyncSession은 동시 실행 불가)
     rows, skipped, stale = [], 0, {}
     async with AsyncSessionLocal() as session:
         for tenant, items in by_tenant.items():
@@ -97,8 +105,8 @@ async def compute(expand: bool = False) -> dict:
                 if not gold_ids:
                     skipped += 1
                     continue
-                if llm:
-                    queries = await condense_to_queries(llm, g['query'], [])
+                if expand:
+                    queries = queries_map[g['id']]
                     cands = await retrieve_candidates(session, tenant, queries[0], top_n=20,
                                                       expanded_queries=queries[1:])
                 else:
@@ -122,6 +130,8 @@ async def main() -> None:
 
     result = await compute(expand=args.expand)
     rows, skipped = result['rows'], result['skipped']
+    if not rows:   # 채점 0 = gold resolve 전멸 (빈/잘못된 DB) — 결과 덮어쓰기 전에 중단 (#18 실사고 가드)
+        raise SystemExit(f"채점 0문항 (스킵 {skipped}) — DATABASE_URL이 코퍼스 있는 DB인지 확인. 결과 파일 미변경.")
     for tenant, n in result['stale'].items():
         print(f'⚠ {tenant} 라벨 노후 {n}건')
 

@@ -42,7 +42,7 @@ class KmsQueryResponse(BaseModel):
     conversation_id: int
     reason: Literal["ok", "no_evidence", "blocked_output"]
     cached: bool = False
-    cache_kind: Literal["exact", "semantic"] | None = None
+    cache_kind: Literal["semantic"] | None = None
 
 class DocumentUploadResponse(BaseModel):
     """문서 업로드/조회 응답."""

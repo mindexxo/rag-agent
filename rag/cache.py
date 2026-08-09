@@ -1,13 +1,12 @@
-"""RAG 답변 캐시.
+"""RAG 답변 캐시 — Postgres semantic 단층.
 
-Postgres semantic cache를 다룬다 (Redis exact 계층은 제거됨 — doc 역인덱스 등 잔여 유틸만 Redis).
-캐시 키는, 질의 재작성 된 query 기준
+조회 = standalone query 임베딩의 pgvector 최근접 1건 → threshold → 근거 문서 집합 비교.
+캐시 키는 질의 재작성된 standalone query 기준. (과거의 Redis exact 계층은 제거됨)
 """
 from dataclasses import dataclass
 from typing import Literal
 
 from hashlib import sha256
-from redis.asyncio import Redis
 from sqlalchemy import select, update, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,7 +22,7 @@ class CacheHit:
     answer: str
     sources: list[SourceCitation]
     source_doc_ids: list[int]
-    kind: Literal["exact", "semantic"]
+    kind: Literal["semantic"]
 
 def normalize_query(query: str) -> str:
     """캐시 키 생성을 위해 질의를 정규화한다."""
@@ -44,11 +43,7 @@ def sources_from_json(raw_sources: list[dict]) -> list[SourceCitation]:
     return [SourceCitation(**source) for source in raw_sources]
 
 class AnswerCache:
-    """Redis exact + Postgres semantic 2계층 답변 캐시."""
-    def __init__(self, redis: Redis | None = None):
-        # 기본은 공용 싱글톤 재사용 (요청마다 새 커넥션 풀 생성 방지 — P1-12)
-        from rag.clients import cache_redis
-        self.redis = redis or cache_redis
+    """Postgres semantic 답변 캐시."""
 
     async def get_semantic(self, session: AsyncSession, tenant_id: str, query: str, current_source_doc_ids: list[int]) -> CacheHit | None:
         """Postgres semantic cache를 조회한다.

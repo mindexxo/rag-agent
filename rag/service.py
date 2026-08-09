@@ -44,7 +44,7 @@ class PreparedRag:
     sources: list[SourceCitation]
     source_doc_ids: list[int]
     cached_answer: str | None = None
-    cache_kind: Literal["exact", "semantic"] | None = None
+    cache_kind: Literal["semantic"] | None = None
     # 라우팅 결과. knowledge=RAG, other=대화/메타/역할밖 제약 생성, blocked=입력 차단
     route: Literal["knowledge", "other", "blocked"] = "knowledge"
     attachments: list[dict] = field(default_factory=list)      # 컨텍스트 주입용 — 히스토리 저장분 + 이번 턴 신규 합본
@@ -100,7 +100,7 @@ class RagService:
         self.session = session
         self.user_id = user_id          # 지표 씨앗 — user 메시지에 기록 (X-User-Id)
         self._llm = shared_llm          # 공용 싱글톤 재사용 (요청마다 HTTP 풀 생성 방지 — P1-12)
-        self._cache = AnswerCache()     # 기본 redis=공용 cache_redis (요청마다 Redis 풀 생성 방지)
+        self._cache = AnswerCache()
 
 
     async def prepare(

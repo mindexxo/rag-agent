@@ -146,9 +146,11 @@ CREATE TABLE IF NOT EXISTS messages (
     cited_docs      JSONB,       -- assistant: 실인용 파일명 배열 (저장 시 확정 — 지표 집계는 이 컬럼만)
     is_refusal      BOOLEAN,     -- assistant(status=done만): 거절 답변 여부 (저장 시 확정 — 문구 변경에도 과거 통계 불변)
     question_message_id BIGINT REFERENCES messages(id) ON DELETE SET NULL,  -- assistant: 답한 user 메시지 (미답변 짝짓기)
-    intent          TEXT         -- assistant: 라우팅 결과 'KNOWLEDGE'|'OTHER' (2026-08-07 — 답변률 분모를 지식 질문으로 한정). NULL=차단 턴·컬럼 도입 전 행
+    intent          TEXT,        -- assistant: 라우팅 결과 'KNOWLEDGE'|'OTHER' (2026-08-07 — 답변률 분모를 지식 질문으로 한정). NULL=차단 턴·컬럼 도입 전 행
+    block_reason    TEXT         -- assistant(status='blocked'): 가드 판정 사유. 입력차단=classify_and_guard, 출력차단=check_output (#22)
 );
 -- 기존 DB 반영: ALTER TABLE messages ADD COLUMN IF NOT EXISTS intent TEXT;  (추가형 — 재구축 불필요)
+-- 기존 DB 반영(#22): ALTER TABLE messages ADD COLUMN IF NOT EXISTS block_reason TEXT;
 CREATE INDEX IF NOT EXISTS idx_msg_conv_created
     ON messages (conversation_id, created_at);
 

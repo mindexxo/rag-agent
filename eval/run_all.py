@@ -47,6 +47,7 @@ HISTORY = Path(__file__).resolve().parent / "results" / "history"
 # (축, 지표키, 표시라벨) — 리포트 행 정의. 높을수록 좋은 지표라 하락이 회귀.
 ROWS = [
     ("intent", "accuracy", "인텐트 정확도"),
+    ("intent", "safe_accuracy", "가드 차단 정확도"),   # 안전성 분리 축 (#22) — 합산에 묻히면 회귀를 못 잡는다
     ("condense", "accuracy", "질의재작성 정확도"),
     ("refusal", "accuracy", "거절 정확도"),
     ("cache", "accuracy", "캐시히트 정확도"),
@@ -99,6 +100,7 @@ def _prev_summary() -> dict | None:
 # 시계열 뷰 컬럼 — (지표키 경로, 짧은 헤더). ROWS와 같은 축이나 폭 위해 축약.
 HIST_COLS = [
     ("intent", "accuracy", "intent"),
+    ("intent", "safe_accuracy", "guard"),
     ("condense", "accuracy", "cond"),
     ("refusal", "accuracy", "refus"),
     ("cache", "accuracy", "cache"),
@@ -195,7 +197,8 @@ async def _run_async(name: str):
     if name == "intent":
         from eval.intent import compute
         r = await compute()
-        return {"accuracy": r["accuracy"]}
+        return {"accuracy": r["accuracy"], "safe_accuracy": r["safe_accuracy"],
+                "intent_accuracy": r["intent_accuracy"], "n_unsafe": r["n_unsafe"]}
     if name == "condense":
         from eval.condense import compute
         r = await compute()

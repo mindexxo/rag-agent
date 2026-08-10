@@ -60,7 +60,8 @@ async def classify_and_guard(llm: LlmClient, query: str, has_attachments: bool =
         except Exception:
             logger.exception('LLM error(classify_and_guard)')
             decision = RouteDecision(safe=True, intent='KNOWLEDGE')   # fail-open (기존 동작 유지)
-        otel.set_attrs(sp, {otel.INPUT_VALUE: query, 'kms.intent': decision.intent, 'kms.safe': decision.safe})
+        otel.set_attrs(sp, {otel.INPUT_VALUE: query, 'kms.intent': decision.intent, 'kms.safe': decision.safe,
+                            'kms.block_reason': decision.reason})   # 차단 사유 — 없으면 no-op (#22)
         return decision
 
 def _extract_json(raw: str) -> dict:

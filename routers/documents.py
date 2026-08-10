@@ -391,7 +391,8 @@ async def download_document(
 # 채팅 첨부 크기 게이트 (KMS_UX_FEATURES_PLAN.md — 채팅 내 첨부파일)
 # 텍스트 상한은 schemas.kms가 단일 정의점 — /kms/query의 QueryAttachment 제약과 같은 값이어야
 # 여기서 통과한 결과가 질의에서 거부되지 않는다 (#22)
-ATTACHMENT_MAX_FILE_BYTES = 10 * 1024 * 1024   # 1차: 파일 크기
+ATTACHMENT_MAX_FILE_BYTES = 5 * 1024 * 1024   # 1차: 파일 크기 (문서 업로드 10MB와 별개 — 채팅 첨부는
+                                              # 매 턴 프롬프트에 재주입되므로 더 좁게, 10MB→5MB #22)
 
 
 @router.post('/attachments/extract', response_model=QueryAttachment)
@@ -408,7 +409,9 @@ async def extract_attachment(request: Request, file: UploadFile = File(...)):
                             detail=f'파일명이 너무 깁니다 ({ATTACHMENT_FILENAME_MAX}자 이내로 줄여 주세요).')
     content = await file.read()
     if len(content) > ATTACHMENT_MAX_FILE_BYTES:
-        raise HTTPException(status_code=413, detail='파일이 10MB를 초과합니다.')
+        # 문구를 상수에서 파생 — 값만 바꾸고 안내가 그대로 남는 드리프트 방지
+        raise HTTPException(status_code=413,
+                            detail=f'파일이 {ATTACHMENT_MAX_FILE_BYTES // (1024 * 1024)}MB를 초과합니다.')
 
     suffix = Path(file.filename).suffix.lower()
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:

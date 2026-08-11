@@ -206,7 +206,9 @@ async def _run_generation(tenant_id: str, prepared, queue: asyncio.Queue,
 
             verdict = await svc.guard_output(prepared, answer)   # 현재 off → safe (no-op)
             if not verdict.safe:
-                await svc.finalize(prepared, BLOCKED_OUTPUT_ANSWER, status="blocked", latency_ms=int((time.monotonic() - t_request) * 1000))
+                await svc.finalize(prepared, BLOCKED_OUTPUT_ANSWER, status="blocked",
+                                   latency_ms=int((time.monotonic() - t_request) * 1000),
+                                   block_reason=verdict.reason)   # 차단 사유 보존 (#22)
                 await session.commit()
                 await queue.put(("blocked_output", {"message": BLOCKED_OUTPUT_ANSWER}))
             else:

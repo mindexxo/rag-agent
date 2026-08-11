@@ -10,10 +10,20 @@ class SourceCitation(BaseModel):
     filename: str
     version: int
 
+# 첨부 상한 (#22) — 여기가 단일 정의점. routers/documents.py의 extract 엔드포인트도 이 값을 쓴다.
+# 이전엔 extract에만 상한이 있어, 클라이언트가 그 헬퍼를 건너뛰고 /kms/query에 직접
+# attachments를 실으면 크기·개수 모두 무제한이었다 (컨텍스트 초과·DB 팽창 경로).
+ATTACHMENT_MAX_TEXT_CHARS = 6000   # 개당 추출 텍스트 (~3-4페이지, ≈4K토큰)
+ATTACHMENT_MAX_ITEMS = 2           # 요청당 첨부 개수 = 프롬프트 주입 개수(settings.max_attachments)와 동일.
+                                   # 주입되지 않을 첨부를 받아 저장만 하는 건 의미가 없다.
+                                   # max_attachments를 바꾸면 이 값도 함께 고칠 것 (두 곳이 짝)
+ATTACHMENT_FILENAME_MAX = 255      # 프롬프트의 [첨부: 파일명] 라벨에 그대로 들어감
+
+
 class QueryAttachment(BaseModel):
     """채팅 첨부 문서 — 서버에 저장하지 않고 요청마다 동봉되는 추출 텍스트."""
-    filename: str
-    text: str
+    filename: str = Field(max_length=ATTACHMENT_FILENAME_MAX)
+    text: str = Field(max_length=ATTACHMENT_MAX_TEXT_CHARS)
 
 DOMAIN_HINT_MAX = 200   # 프롬프트 3곳에 매 요청 주입되므로 길이 제한 (클라이언트발 텍스트 상한)
 
@@ -26,7 +36,7 @@ class KmsQueryRequest(BaseModel):
     """
     query: str = Field(min_length=1, max_length=4000)   # 빈 질의 방지 + 상한 (P2 스키마 제약)
     conversation_id: int | None = Field(default=None, gt=0)
-    attachments: list[QueryAttachment] = []
+    attachments: list[QueryAttachment] = Field(default=[], max_length=ATTACHMENT_MAX_ITEMS)
     # [임시] 테넌트 지식 범위 설명 — 인텐트 분류·생성 프롬프트에 역할 안내로 주입 (#1).
     # ICCS 연동 시 이 필드를 제거하고 서버 측 테넌트 정보 조회로 대체한다.
     domain_hint: str | None = Field(default=None, max_length=DOMAIN_HINT_MAX)

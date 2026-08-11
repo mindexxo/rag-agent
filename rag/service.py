@@ -52,6 +52,7 @@ class PreparedRag:
     new_attachments: list[dict] = field(default_factory=list)  # 이번 턴에 새로 동봉된 것 — save 시 user 메시지에 저장
     domain_hint: str | None = None   # [임시] 테넌트 지식 범위 설명 — 생성 프롬프트 주입용, 저장 안 함 (#1)
     assistant_message_id: int | None = None   # 생성 경로: 자리표시 assistant 메시지 id (백그라운드 태스크가 UPDATE할 대상)
+    block_reason: str | None = None   # route='blocked'일 때 가드 판정 사유 — 저장·집계용 (#22)
     faq_versions: dict[int, datetime] | None = None   # 근거 FAQ {id: updated_at} 스냅샷 — cache.set 낙관적 검증 기준 (#16)
 
     @property
@@ -135,9 +136,10 @@ class RagService:
         # 2. 이전 메시지 조회
         messages = await load_recent_messages(self.session, self.tenant_id, conversation.id)
         # 3. 입력 가드레일 + 인텐트 분류 (통합 1회 호출) — 히스토리 유무와 무관하게 항상 실행
-        def _routed(route: str) -> PreparedRag:
+        def _routed(route: str, block_reason: str | None = None) -> PreparedRag:
             # 검색·인용 없이 라우팅 결과만 담는 PreparedRag (blocked/other 공용)
             return PreparedRag(
+                block_reason=block_reason,
                 conversation_id=conversation.id,
                 original_query=query,
                 standalone_query=query,
@@ -153,7 +155,9 @@ class RagService:
 
         decision = await classify_and_guard(self._llm, query, has_attachments=bool(attachment_dicts), domain_hint=domain_hint)
         if not decision.safe:
-            return _routed("blocked")
+            logger.warning('입력 가드 차단 (tenant=%s, conversation=%s): %s',
+                           self.tenant_id, conversation.id, decision.reason)
+            return _routed("blocked", block_reason=decision.reason)
         if decision.intent == "OTHER":
             return _routed("other")
 
@@ -320,6 +324,10 @@ class RagService:
             cited_docs=[] if is_refusal(answer) else cited_filenames(answer, prepared.sources),
             is_refusal=is_refusal(answer),
             intent=prepared.intent_label,
+            # 입력 차단 턴은 status로 식별 가능해야 한다 — 이력 격리(load_recent_messages)와
+            # 차단 집계가 모두 이 값에 의존 (#22). 출력 차단은 finalize_turn 쪽이 담당.
+            status='blocked' if prepared.route == 'blocked' else 'done',
+            block_reason=prepared.block_reason,
         )
 
         # 신규 LLM 응답만 캐시에 저장한다.
@@ -355,7 +363,8 @@ class RagService:
         prepared.assistant_message_id = assistant.id
         await self.session.commit()   # generating 행 durable → 이후 태스크 spawn
 
-    async def finalize(self, prepared: PreparedRag, answer: str, status: str = "done", latency_ms: int | None = None) -> None:
+    async def finalize(self, prepared: PreparedRag, answer: str, status: str = "done",
+                       latency_ms: int | None = None, block_reason: str | None = None) -> None:
         """생성 완료/실패 시 assistant 자리표시를 UPDATE하고, 성공이면 캐시에 저장한다.
         백그라운드 태스크가 '자기 세션으로 만든 RagService'에서 호출한다 (self.session=태스크 세션).
         commit은 호출자(태스크)가 담당. 실패/차단이면 status='failed'|'blocked', answer=''로 호출.
@@ -370,6 +379,7 @@ class RagService:
             cited_docs=cited_filenames(answer, prepared.sources) if status == "done" and not is_refusal(answer) else [],
             is_refusal=is_refusal(answer) if status == "done" else False,
             intent=prepared.intent_label,
+            block_reason=block_reason,   # 출력 차단 사유 (#22)
         )
         if status == "done" and prepared.should_cache and not is_refusal(answer):
             await self._cache.set(

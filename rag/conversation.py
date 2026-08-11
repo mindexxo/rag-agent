@@ -81,12 +81,23 @@ async def load_recent_messages(
         # id 보조정렬(P1-14): 한 턴의 user·assistant가 같은 커밋이라 created_at 동률 →
         # id(자동증가, user가 먼저라 작음)로 순서 확정. reverse 후 user→assistant 보장.
         .order_by(Message.created_at.desc(), Message.id.desc())
-        .limit(limit)
+        # 아래 격리 필터로 빠지는 만큼 여유 조회 — limit이 '토큰 예산을 항상 포화시키는 상한'이라는
+        # 전제를 유지하려면 제외분을 메워야 한다. 2배면 최근 절반이 차단·실패여도 limit행을 확보한다 (#22)
+        .limit(limit * 2)
     )
     result = await session.execute(stmt)
-    messages = list(result.scalars().all())
+    messages = list(result.scalars().all())[::-1]
 
-    return messages[::-1]
+    # 비정상 턴 격리 (#22) — 프롬프트 재료에서만 제외한다 (대화 조회 API는 그대로 노출).
+    # blocked: 가드가 막은 입력이 다음 턴 프롬프트(condense·prior_turns·OTHER 이력)로
+    #          재진입하면 차단 결정이 한 턴짜리로 휘발된다. 가드는 현재 질문만 검사한다.
+    # failed/generating: content=''이라 빈 답변 턴이 맥락에 낀다.
+    # user·assistant 짝을 함께 뺀다 — 한쪽만 빼면 build_prior_turns의 짝짓기가 밀린다.
+    dropped_questions = {m.question_message_id for m in messages
+                         if m.role == 'assistant' and m.status != 'done'}
+    kept = [m for m in messages
+            if not (m.id in dropped_questions or (m.role == 'assistant' and m.status != 'done'))]
+    return kept[-limit:]   # 여유 조회분을 되돌려 원래 창 크기 유지
 
 async def condense_query(
         llm: LlmClient,
@@ -193,6 +204,8 @@ async def save_exchange(
         cited_docs: list[str] | None = None,
         is_refusal: bool = False,
         intent: str | None = None,
+        status: str = "done",
+        block_reason: str | None = None,
 ) -> None:
     """사용자 질문과 assistant 답변을 세션에 등록한다.
 
@@ -224,6 +237,8 @@ async def save_exchange(
         is_refusal=is_refusal,
         intent=intent,   # 라우팅 결과 — 답변률 분모(KNOWLEDGE) 집계용. DB 반영 완료로 원복 (#13)
         question_message_id=user_message.id,   # 짝을 데이터로 (미답변 목록이 휴리스틱 없이 JOIN)
+        status=status,             # 입력 차단이면 'blocked' — SQL 집계·이력 격리의 유일한 식별자 (#22)
+        block_reason=block_reason,
     )
     session.add(assistant_message)
     await _touch_conversation(session, tenant_id, conversation_id, first_query=user_query)
@@ -299,6 +314,7 @@ async def finalize_turn(
         cited_docs: list[str] | None = None,
         is_refusal: bool = False,
         intent: str | None = None,
+        block_reason: str | None = None,
 ) -> None:
     """생성 대기 assistant 자리표시를 최종 결과로 채운다 (id로 재조회 후 UPDATE).
 
@@ -316,6 +332,7 @@ async def finalize_turn(
     msg.cited_docs = cited_docs
     msg.is_refusal = is_refusal
     msg.intent = intent   # 라우팅 결과 — 답변률 분모(KNOWLEDGE) 집계용. DB 반영 완료로 원복 (#13)
+    msg.block_reason = block_reason   # 출력 차단 사유 (#22) — 가드 off인 현재는 항상 None
 
 
 def trim_messages_for_condense(messages: list, budget_tokens: int) -> list:

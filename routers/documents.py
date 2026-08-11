@@ -39,7 +39,8 @@ from rag.documents import handle_upload
 from rag.ingestion import _detect_mime
 from rag.models import Chunk, Document, Folder
 from routers.kms import get_tenant_id
-from schemas.kms import DocumentExistsResponse, DocumentUploadResponse, DocumentUpdateRequest, QueryAttachment
+from schemas.kms import (ATTACHMENT_FILENAME_MAX, ATTACHMENT_MAX_TEXT_CHARS, DocumentExistsResponse,
+                         DocumentUploadResponse, DocumentUpdateRequest, QueryAttachment)
 
 
 def _to_response(doc: Document, ref_count: int | None = None) -> DocumentUploadResponse:
@@ -388,8 +389,10 @@ async def download_document(
 
 
 # 채팅 첨부 크기 게이트 (KMS_UX_FEATURES_PLAN.md — 채팅 내 첨부파일)
-ATTACHMENT_MAX_FILE_BYTES = 10 * 1024 * 1024   # 1차: 파일 크기
-ATTACHMENT_MAX_TEXT_CHARS = 6000               # 개당 추출 텍스트 상한 (~3-4페이지, ≈4K토큰). 누적 max_attachments개까지 주입
+# 텍스트 상한은 schemas.kms가 단일 정의점 — /kms/query의 QueryAttachment 제약과 같은 값이어야
+# 여기서 통과한 결과가 질의에서 거부되지 않는다 (#22)
+ATTACHMENT_MAX_FILE_BYTES = 5 * 1024 * 1024   # 1차: 파일 크기 (문서 업로드 10MB와 별개 — 채팅 첨부는
+                                              # 매 턴 프롬프트에 재주입되므로 더 좁게, 10MB→5MB #22)
 
 
 @router.post('/attachments/extract', response_model=QueryAttachment)
@@ -399,9 +402,16 @@ async def extract_attachment(request: Request, file: UploadFile = File(...)):
     크기 초과는 자르지 않고 명시 거절(413)한다.
     """
     _reject_if_oversized(request, ATTACHMENT_MAX_FILE_BYTES)   # 거대 본문은 read 전에 차단 (C2-A)
+    # 파일명 상한은 마지막 줄의 QueryAttachment 생성에서도 검증되는데, 그 지점의 ValidationError는
+    # 요청 파싱이 아니라 핸들러 내부라 422로 변환되지 않고 500이 된다 — 여기서 명시 거절 (#22)
+    if len(file.filename or '') > ATTACHMENT_FILENAME_MAX:
+        raise HTTPException(status_code=413,
+                            detail=f'파일명이 너무 깁니다 ({ATTACHMENT_FILENAME_MAX}자 이내로 줄여 주세요).')
     content = await file.read()
     if len(content) > ATTACHMENT_MAX_FILE_BYTES:
-        raise HTTPException(status_code=413, detail='파일이 10MB를 초과합니다.')
+        # 문구를 상수에서 파생 — 값만 바꾸고 안내가 그대로 남는 드리프트 방지
+        raise HTTPException(status_code=413,
+                            detail=f'파일이 {ATTACHMENT_MAX_FILE_BYTES // (1024 * 1024)}MB를 초과합니다.')
 
     suffix = Path(file.filename).suffix.lower()
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:

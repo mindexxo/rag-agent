@@ -9,7 +9,12 @@ LLM 스트리밍은 응답이 수십 초씩 걸려 분당 빈도(RPM)보다 동�
 진행 중은 안 건드리고 유출만 회수한다. Redis라 다중 워커/인스턴스에서 상한 공유.
 
 이중 제한: 테넌트 zset(공유 GPU 보호) + 사용자 zset(테넌트 내 공정성). 같은 토큰을 두
-zset에 넣어 release 한 번에 정리. user_id=None(헤더 없음)이면 테넌트만 적용.
+zset에 넣어 release 한 번에 정리. user_id=None(헤더 없음)이면 테넌트만 적용 — 인증 도입
+전까지는 X-User-Id 미전송 시 사실상 테넌트 단일 제한으로 동작한다(의도된 현행).
+
+사용자 상한이 0/None으로 들어오면 config 기본값으로 폴백한다(#24). 이전엔 falsy 값이
+사용자 zset 자체를 건너뛰게 해서 "0 = 무제한"으로 동작했다 — 상한을 조이려는 설정이
+반대로 제한을 통째로 없애는 방향이라 폴백으로 바꿨다.
 
 acquire는 Lua 스크립트로 prune+count+조건부 add를 서버측에서 원자적으로 1왕복 처리한다
 (왕복 수 절감 + 체크↔추가 race 제거).
@@ -57,12 +62,16 @@ class ConcurrencyLimiter:
     ) -> str | None:
         """테넌트(+사용자) 상한 모두 미만이면 토큰 등록 후 반환, 하나라도 꽉 차면 None.
         Lua로 원자 실행 — prune+판정+등록이 1왕복, race 없음.
+
+        user_limit이 0/None이면 config 기본값을 쓴다 — 사용자 제한을 끄는 경로는 없다
+        (끄고 싶으면 user_id를 넘기지 않는다).
         """
         now = time.time()
         token = uuid.uuid4().hex
         keys = [_T_PREFIX + tenant_id]
-        if user_id and user_limit:
+        if user_id:
             keys.append(_U_PREFIX + f'{tenant_id}:{user_id}')
+            user_limit = user_limit or settings.user_concurrency_default
         argv = [now, tenant_limit, user_limit or 0, settings.inflight_max_seconds, token]
         ok = await self._redis.eval(_ACQUIRE_LUA, len(keys), *keys, *argv)
         return token if ok == 1 else None

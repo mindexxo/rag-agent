@@ -125,7 +125,7 @@ async def retrieve_candidates(
     게이트 신호(top_dense_distance)는 항상 '원본 쿼리'의 top-1 거리 — 변형이
     의미 이탈해도 게이트 판정이 흔들리지 않는다.
 
-    NOTE: tenant 격리는 명시적 WHERE 절로 강제 (tenant_scoped 유틸 미사용).
+    NOTE: tenant 격리는 명시적 WHERE 절로 강제 (프로젝트 규약 — rag/models.py 참조).
     유틸은 전체 row select에만 적합한데 여기선 id+점수만 가져오므로 직접 박음.
     """
 

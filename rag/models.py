@@ -1,13 +1,29 @@
 """SQLAlchemy 2.0 declarative 모델 — 테넌트 테이블의 ORM 매핑.
 
+- folders        : 1단 폴더 (검색 참조 제어 전용 그룹)
 - documents      : 업로드된 원본 문서 (filename + version 단위)
-- chunks         : 검색 단위 (dense + sparse 임베딩 보유)
-- answer_cache   : LLM 응답 영속 캐시 (semantic + 무효화 — exact 계층은 제거됨)
+- faqs           : FAQ 항목 (검색 편입은 chunks로)
+- chunks         : 검색 단위 (dense 임베딩 보유 — dense-only, F99)
+- answer_cache   : LLM 응답 영속 캐시 (semantic 매칭 + 문서 단위 무효화)
 - conversations  : 멀티턴 대화 세션
 - messages       : 대화 내 한 턴 (user/assistant)
-- tenant_quotas  : 테넌트별 사용량 한도 정책 마스터
+- tenant_quotas  : 테넌트별 동시 요청 상한 정책
 
-스키마(DDL)는 schema.sql이 권위. 이 파일은 ORM 매핑만 담당 — 인덱스/RLS는 schema.sql 참조.
+스키마(DDL)는 schema.sql이 권위. 이 파일은 ORM 매핑만 담당 — 인덱스는 schema.sql 참조.
+
+── 테넌트 격리 규약 ────────────────────────────────────────
+이 프로젝트는 **RLS를 사용하지 않는다.** 격리의 유일한 방어선은 쿼리의 WHERE 절이다.
+
+1. 멀티테넌트 테이블을 읽는 모든 쿼리에 `.where(Model.tenant_id == tenant_id)`를 직접 쓴다.
+   래퍼 유틸을 두지 않는 이유: 실제 쿼리 상당수가 join·컬럼 지정(`select(Chunk.id, distance)`)·
+   집계(`select(func.count())`) 형태라 `select(Model)`을 감싸는 헬퍼가 절반도 덮지 못하고,
+   반쯤 적용된 유틸은 "안 썼으니 격리가 빠졌나?"라는 오독을 만든다. 손 WHERE로 일관시킨다.
+2. UPDATE/DELETE는 대상 id를 **tenant 스코프 조회로 먼저 확정**한 뒤 그 id로 실행한다
+   (예: `delete(Chunk).where(Chunk.document_id.in_(<스코프된 doc_ids>))`).
+3. `chunks.tenant_id`·`messages.tenant_id`는 필터 성능용 비정규화 컬럼이다. 부모와의 일치를
+   DB가 보장하지 않으므로(FK는 부모 id에만 걸림) 삽입 시 부모의 tenant_id를 그대로 넣는다.
+4. 누락 검출은 통합 테스트가 담당한다 — tests/test_tenant_isolation.py(ORM 읽기),
+   tests/test_integration_isolation.py(검색 후보·대화·폴더). 표면이 늘면 여기에 케이스를 추가한다.
 """
 from datetime import datetime
 from typing import Any
@@ -117,12 +133,12 @@ class Chunk(Base):
 
 
 class AnswerCache(Base):
-    """LLM 응답 영속 캐시. exact 키 + semantic 임베딩 + 문서 무효화 지원."""
+    """LLM 응답 영속 캐시. semantic 임베딩 매칭 + 문서 단위 무효화."""
     __tablename__ = "answer_cache"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     tenant_id: Mapped[str]
-    cache_key: Mapped[str]                                                    # standalone query 정규화 해시 (exact match)
+    cache_key: Mapped[str]                                                    # standalone query 정규화 해시 — 조회 키가 아니라 upsert 충돌 대상 (exact 계층 제거 #16)
     query_text: Mapped[str]                                                   # 저장된 standalone query 원문
     query_embedding: Mapped[Any] = mapped_column(Vector(1024))                # 의미 캐시(semantic match)용 임베딩
     answer: Mapped[str]                                                       # 저장된 LLM 답변
@@ -177,18 +193,16 @@ class Message(Base):
 
 
 class TenantQuota(Base):
-    """테넌트별 사용량 한도/차단 정책 마스터. 실시간 카운터는 Redis."""
+    """테넌트별 동시 요청 상한 정책. 행이 없으면 config 기본값이 적용된다 (테이블은 오버라이드 전용).
+
+    실시간 in-flight 카운터는 Redis ZSET(rag/limiter.py) — 이 테이블은 정책값만 보관한다.
+    빈도 제한(RPM·일일 한도)·강제 차단·deep 모드 컬럼은 제거했다(#24): 정의만 있고 코드가
+    읽지 않아, 값을 넣어도 아무 일이 일어나지 않는 채로 "동작한다"고 읽히는 상태였다.
+    빈도 제한이 필요해지면 그때 설계와 함께 다시 도입한다.
+    """
     __tablename__ = "tenant_quotas"
 
-    tenant_id: Mapped[str] = mapped_column(primary_key=True)                              # 테넌트당 row 1개
-    rpm_limit: Mapped[int] = mapped_column(default=60, server_default="60")               # 분당 query 호출 수 (테넌트 합산)
-    user_rpm_limit: Mapped[int] = mapped_column(default=20, server_default="20")          # 분당 query 호출 수 (사용자별)
-    daily_query_limit: Mapped[int] = mapped_column(default=5000, server_default="5000")   # 일일 query 호출 수
-    daily_upload_mb: Mapped[int] = mapped_column(default=500, server_default="500")       # 일일 업로드 누적 MB
-    concurrency_limit: Mapped[int] = mapped_column(default=8, server_default="8")         # 동시 in-flight (테넌트)
-    user_concurrency: Mapped[int] = mapped_column(default=3, server_default="3")          # 동시 in-flight (사용자)
-    deep_mode_enabled: Mapped[bool] = mapped_column(default=True, server_default="true")  # deep(리랭커) 사용 허용 여부
-    deep_rpm_limit: Mapped[int] = mapped_column(default=20, server_default="20")          # deep 모드 분당 별도 제한
-    is_blocked: Mapped[bool] = mapped_column(default=False, server_default="false")       # 강제 차단 (관리자 토글)
-    block_reason: Mapped[str | None]                                                      # 차단 사유
-    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())               # 갱신 시각
+    tenant_id: Mapped[str] = mapped_column(primary_key=True)                                # 테넌트당 row 1개
+    concurrency_limit: Mapped[int] = mapped_column(default=10, server_default="10")         # 동시 in-flight (테넌트) — config 기본값과 동일하게 유지
+    user_concurrency: Mapped[int] = mapped_column(default=10, server_default="10")          # 동시 in-flight (사용자) — config 기본값과 동일하게 유지
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())                 # 갱신 시각

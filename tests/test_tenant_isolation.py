@@ -1,11 +1,10 @@
 import uuid
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from database import AsyncSessionLocal
 from rag.models import Document
-from rag.tenant import tenant_scoped
 
 """
     1. async def - 코루틴 함수
@@ -94,9 +93,11 @@ async def test(session):
         #                         await로 I/O 끝까지 대기.
         await session.commit()
 
-        # B 조회 — tenant_scoped가 WHERE tenant_id = tenant_b 자동 주입.
+        # B 조회 — 격리 규약대로 tenant_id WHERE를 명시 (rag/models.py 규약 참조).
         # await session.execute(stmt): SELECT 실행, Result 객체 반환.
-        result_b = await session.execute(tenant_scoped(Document, tenant_b))
+        result_b = await session.execute(
+            select(Document).where(Document.tenant_id == tenant_b)
+        )
         # result.scalars(): row 전체 대신 첫 컬럼(여기선 Document 객체)만 추출.
         # .all(): 결과를 리스트로 (지연된 iterator를 즉시 소비).
         rows_b = result_b.scalars().all()
@@ -106,7 +107,8 @@ async def test(session):
         # A 조회 — positive control.
         # SELECT 빌더는 .where()로 추가 조건 체이닝 가능.
         result_a = await session.execute(
-            tenant_scoped(Document, tenant_a)
+            select(Document)
+            .where(Document.tenant_id == tenant_a)
             .where(Document.filename == 'iso_test.pdf')
         )
         rows_a = result_a.scalars().all()

@@ -141,10 +141,9 @@ async def _loop_hygiene():
 
     import rag.clients as clients
     from database import engine
+    from rag.limiter import query_limiter
 
     await engine.dispose()
-    await clients.cache_redis.connection_pool.disconnect()
-    from rag.limiter import query_limiter
     await query_limiter._redis.connection_pool.disconnect()   # 동시성 제한기 싱글톤도 루프에 묶임
     # http_async는 aclose 후 재사용 불가 → 새 인스턴스로 교체
     # (호출부가 함수 안에서 지연 import하므로 모듈 속성 교체가 먹는다)
@@ -173,10 +172,12 @@ async def purge_tenant(t: str) -> None:
                       Faq, Document, Folder, TenantQuota):
             await session.execute(delete(model).where(model.tenant_id == t))
         await session.commit()
-    import rag.clients as clients
-    keys = [k async for k in clients.cache_redis.scan_iter(match=f'kms:*{t}*')]
+    # Redis 잔재는 리미터의 in-flight 키뿐 — 클라이언트도 리미터 것을 쓴다 (#24: 공용 cache_redis 제거)
+    from rag.limiter import query_limiter
+
+    keys = [k async for k in query_limiter._redis.scan_iter(match=f'kms:*{t}*')]
     if keys:
-        await clients.cache_redis.delete(*keys)
+        await query_limiter._redis.delete(*keys)
 
 
 @pytest_asyncio.fixture

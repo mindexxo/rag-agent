@@ -1,6 +1,5 @@
 """KMS API 요청/응답 스키마"""
 from datetime import datetime
-from typing import Literal
 from pydantic import BaseModel, Field
 
 class SourceCitation(BaseModel):
@@ -40,19 +39,6 @@ class KmsQueryRequest(BaseModel):
     # [임시] 테넌트 지식 범위 설명 — 인텐트 분류·생성 프롬프트에 역할 안내로 주입 (#1).
     # ICCS 연동 시 이 필드를 제거하고 서버 측 테넌트 정보 조회로 대체한다.
     domain_hint: str | None = Field(default=None, max_length=DOMAIN_HINT_MAX)
-
-class KmsQueryResponse(BaseModel):
-    """비스트리밍 응답 (?stream=false)
-    conversation_id는 다음 턴에서 같은 대화 맥락을 이어가기 위한 식별자.
-    sources: 중복 제거된 문서 단위 인용 목록. no_evidence면 빈 리스트.
-    reason: ok | no_evidence
-    """
-    answer: str
-    sources: list[SourceCitation]
-    conversation_id: int
-    reason: Literal["ok", "no_evidence", "blocked_output"]
-    cached: bool = False
-    cache_kind: Literal["semantic"] | None = None
 
 class DocumentUploadResponse(BaseModel):
     """문서 업로드/조회 응답."""

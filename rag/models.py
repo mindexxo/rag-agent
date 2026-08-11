@@ -190,7 +190,7 @@ class Message(Base):
     intent: Mapped[str | None]           # assistant: 라우팅 결과 'KNOWLEDGE'|'OTHER' — 답변률 분모는 KNOWLEDGE만 (NULL=차단 턴·도입 전 행). DB 반영 완료로 원복 (#13)
     question_message_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("messages.id", ondelete="SET NULL"))  # assistant: 답한 user 메시지 (짝을 데이터로)
-    block_reason: Mapped[str | None]     # assistant(status='blocked'): 가드 판정 사유 — 입력차단은 classify_and_guard, 출력차단은 check_output의 reason (#22)
+    block_reason: Mapped[str | None]     # assistant(status='blocked'): 입력 가드(classify_and_guard) 차단 사유. 출력 가드는 제거됨(#26)
 
 
 class TenantQuota(Base):

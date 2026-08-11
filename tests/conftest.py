@@ -11,10 +11,44 @@
 통과한다는 보장이 없다. 검색 매칭까지 검증하는 테스트는 apply_gate를 함께 패치할 것.
 """
 import hashlib
+import json
 import uuid
 
 import pytest
 import pytest_asyncio
+
+
+# ── SSE 파싱 (비스트리밍 JSON 경로 삭제 #26로 전 테스트가 SSE를 읽는다) ──
+
+def sse_events(res_or_text) -> list[tuple[str, object]]:
+    """SSE 응답 → [(event, data), ...]. httpx Response나 본문 문자열 모두 받는다.
+    이벤트 경계는 빈 줄(\\n\\n), 각 이벤트는 event/data 두 줄이라는 봉투 규격에 의존.
+    """
+    text = getattr(res_or_text, 'text', res_or_text)
+    out = []
+    for block in text.strip().split('\n\n'):
+        lines = block.splitlines()
+        out.append((lines[0].removeprefix('event: '),
+                    json.loads(lines[1].removeprefix('data: '))))
+    return out
+
+
+def sse_meta(res_or_text) -> dict:
+    """meta 이벤트 payload — conversation_id·cached·cache_kind·reason·assistant_message_id."""
+    return next(data for event, data in sse_events(res_or_text) if event == 'meta')
+
+
+def sse_answer(res_or_text) -> str:
+    """token 이벤트를 이어붙인 최종 답변 텍스트."""
+    return ''.join(d['text'] for e, d in sse_events(res_or_text) if e == 'token')
+
+
+async def register_faq(client) -> int:
+    """검색 근거용 FAQ 1건 등록 — 4개 테스트 파일이 같은 것을 복붙하던 것을 공용 승격."""
+    res = await client.post('/kms/faqs', json={
+        'question': '환불 기간은?', 'variants': [], 'answer': '7일 이내 처리됩니다.',
+    })
+    return res.json()['id']
 
 
 # ── 가짜 임베딩 ──────────────────────────────────────────────

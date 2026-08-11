@@ -99,9 +99,6 @@ class Settings(BaseSettings):
     # TTL이 아님: 정확성은 무효화·doc집합 비교가 담당하고 이건 죽은 row 위생(LIMIT 1 가림 완화).
     cache_retention_days: int = 90
 
-    # guardrail
-    guardrail_output_enabled: bool = False
-
     # storage
     blob_storage_dir: str = str(PROJECT_ROOT / "docs")
 

@@ -314,13 +314,15 @@ async def finalize_turn(
         cited_docs: list[str] | None = None,
         is_refusal: bool = False,
         intent: str | None = None,
-        block_reason: str | None = None,
 ) -> None:
     """생성 대기 assistant 자리표시를 최종 결과로 채운다 (id로 재조회 후 UPDATE).
 
     백그라운드 태스크가 '자기 세션'으로 호출하므로 객체 참조가 아닌 id로 재조회한다.
     tenant 소유를 확인(격리)하고, 없거나 남의 것이면 무시. commit은 호출자가 담당한다.
-    실패/차단이면 status='failed'|'blocked', answer=''로 호출.
+    실패면 status='failed', answer=''로 호출.
+
+    block_reason은 다루지 않는다 — 차단 턴은 입력 가드 전용이고 그 경로는 save_exchange를
+    쓴다(자리표시 없는 즉시 경로). 자리표시는 항상 block_reason=NULL로 생성되므로 그대로 둔다.
     """
     msg = await session.get(Message, assistant_message_id)
     if msg is None or msg.tenant_id != tenant_id:
@@ -332,7 +334,6 @@ async def finalize_turn(
     msg.cited_docs = cited_docs
     msg.is_refusal = is_refusal
     msg.intent = intent   # 라우팅 결과 — 답변률 분모(KNOWLEDGE) 집계용. DB 반영 완료로 원복 (#13)
-    msg.block_reason = block_reason   # 출력 차단 사유 (#22) — 가드 off인 현재는 항상 None
 
 
 def trim_messages_for_condense(messages: list, budget_tokens: int) -> list:

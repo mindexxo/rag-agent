@@ -21,6 +21,7 @@ acquire는 Lua 스크립트로 prune+count+조건부 add를 서버측에서 원�
 """
 import time
 import uuid
+from dataclasses import dataclass
 
 import redis.asyncio as aioredis
 
@@ -51,6 +52,21 @@ return 1
 """
 
 
+@dataclass
+class Lease:
+    """획득한 슬롯 1개. release에 tenant_id·token·user_id 세 값이 항상 함께 필요해 묶었다.
+
+    handed_off는 "반납 책임이 요청 핸들러에서 백그라운드 태스크로 넘어갔는가"다. 생성 경로는
+    응답을 반환한 뒤에도 태스크가 GPU를 물고 있으므로, 요청 종료 시점에 반납하면 안 된다.
+    True가 되면 요청 쪽(concurrency_guard의 finally)은 반납을 건너뛰고 태스크가 담당한다 —
+    이 플래그 하나로 "정확히 한 번 반납"을 지킨다.
+    """
+    tenant_id: str
+    token: str
+    user_id: str | None = None
+    handed_off: bool = False
+
+
 class ConcurrencyLimiter:
     def __init__(self, redis_url: str):
         # from_url은 lazy — 첫 명령 때 연결된다
@@ -59,8 +75,8 @@ class ConcurrencyLimiter:
     async def try_acquire(
             self, tenant_id: str, tenant_limit: int,
             user_id: str | None = None, user_limit: int | None = None,
-    ) -> str | None:
-        """테넌트(+사용자) 상한 모두 미만이면 토큰 등록 후 반환, 하나라도 꽉 차면 None.
+    ) -> Lease | None:
+        """테넌트(+사용자) 상한 모두 미만이면 슬롯을 등록해 Lease 반환, 하나라도 꽉 차면 None.
         Lua로 원자 실행 — prune+판정+등록이 1왕복, race 없음.
 
         user_limit이 0/None이면 config 기본값을 쓴다 — 사용자 제한을 끄는 경로는 없다
@@ -74,15 +90,16 @@ class ConcurrencyLimiter:
             user_limit = user_limit or settings.user_concurrency_default
         argv = [now, tenant_limit, user_limit or 0, settings.inflight_max_seconds, token]
         ok = await self._redis.eval(_ACQUIRE_LUA, len(keys), *keys, *argv)
-        return token if ok == 1 else None
+        return Lease(tenant_id=tenant_id, token=token, user_id=user_id) if ok == 1 else None
 
-    async def release(self, tenant_id: str, token: str | None, user_id: str | None = None) -> None:
-        """요청 종료(완료/중단/에러) 시 토큰을 두 zset에서 제거. token 없으면 no-op."""
-        if not token:
+    async def release(self, lease: Lease | None) -> None:
+        """요청/태스크 종료(완료·중단·에러) 시 토큰을 두 zset에서 제거. lease 없으면 no-op.
+        zrem은 멱등이라 중복 호출도 안전하다."""
+        if lease is None:
             return
-        await self._redis.zrem(_T_PREFIX + tenant_id, token)
-        if user_id:
-            await self._redis.zrem(_U_PREFIX + f'{tenant_id}:{user_id}', token)
+        await self._redis.zrem(_T_PREFIX + lease.tenant_id, lease.token)
+        if lease.user_id:
+            await self._redis.zrem(_U_PREFIX + f'{lease.tenant_id}:{lease.user_id}', lease.token)
 
 
 # /kms/query 전용 공유 리미터

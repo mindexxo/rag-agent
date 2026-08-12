@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from rag.conversation import ensure_conversation, load_recent_messages, condense_query, condense_to_queries, build_prior_turns, trim_messages_for_condense, save_exchange, add_pending_turn, finalize_turn
 from rag import otel
-from rag.guardrail import GuardrailResult, check_output, classify_and_guard
+from rag.guardrail import classify_and_guard
 from rag.llm import LlmClient
 from rag.clients import shared_llm
 from rag.models import Document, Message
@@ -364,10 +364,10 @@ class RagService:
         await self.session.commit()   # generating 행 durable → 이후 태스크 spawn
 
     async def finalize(self, prepared: PreparedRag, answer: str, status: str = "done",
-                       latency_ms: int | None = None, block_reason: str | None = None) -> None:
+                       latency_ms: int | None = None) -> None:
         """생성 완료/실패 시 assistant 자리표시를 UPDATE하고, 성공이면 캐시에 저장한다.
         백그라운드 태스크가 '자기 세션으로 만든 RagService'에서 호출한다 (self.session=태스크 세션).
-        commit은 호출자(태스크)가 담당. 실패/차단이면 status='failed'|'blocked', answer=''로 호출.
+        commit은 호출자(태스크)가 담당. 실패면 status='failed', answer=''로 호출.
         """
         source_dicts = [] if (status != "done" or is_refusal(answer)) else [
             source.model_dump() for source in prepared.sources
@@ -379,7 +379,6 @@ class RagService:
             cited_docs=cited_filenames(answer, prepared.sources) if status == "done" and not is_refusal(answer) else [],
             is_refusal=is_refusal(answer) if status == "done" else False,
             intent=prepared.intent_label,
-            block_reason=block_reason,   # 출력 차단 사유 (#22)
         )
         if status == "done" and prepared.should_cache and not is_refusal(answer):
             await self._cache.set(
@@ -391,22 +390,6 @@ class RagService:
                 prepared.source_doc_ids,
                 faq_versions=prepared.faq_versions,
             )
-
-    async def guard_output(self, prepared: PreparedRag, answer: str) -> GuardrailResult:
-        """출력 가드레일. LLM이 '새로 생성한' 답변만 검사한다."""
-        if not settings.guardrail_output_enabled:
-            return GuardrailResult(safe=True)
-        # knowledge 외 경로(blocked/other)는 지식 주장이 없어 출력 검사 생략
-        if prepared.route != "knowledge":
-            return GuardrailResult(safe=True)
-        if prepared.is_cache_hit:
-            return GuardrailResult(safe=True)
-        if prepared.no_evidence:
-            return GuardrailResult(safe=True)
-        with otel.span('guard_output', 'GUARDRAIL') as sp:
-            verdict = await check_output(self._llm, answer)
-            otel.set_attrs(sp, {'kms.safe': verdict.safe, 'kms.reason': verdict.reason})
-            return verdict
 
 
 async def _build_sources(

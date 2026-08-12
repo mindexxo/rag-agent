@@ -1,6 +1,11 @@
-"""출력 가드레일
-생성된 답변을 LLM에 분류시켜 safe 여부를 판단한다.
-판단 실패(JSON파싱 불가)는 fail-open
+"""입력 가드레일 + 인텐트 분류.
+
+사용자 질의를 LLM에 한 번 분류시켜 ① 안전한 입력인가 ② KNOWLEDGE인가 OTHER인가를 판단한다.
+판단 실패(JSON 파싱 불가·호출 실패)는 fail-open — 검색 경로가 안전 측이라 과잉거절을 피한다.
+
+출력 가드레일(생성된 답변을 사후 검사)은 #26에서 제거했다: 스트리밍에서는 토큰이 이미 전송된
+뒤에야 판정이 끝나 차단이 아니라 화면 가림에 그치고, 원문이 DB에서 대체돼 사후 조사도 불가했다.
+되살릴 때는 사후 검사가 아닌 설계(전송 전 버퍼링·문장 단위 검사·사전 필터)여야 한다.
 """
 import json
 import logging
@@ -8,15 +13,9 @@ from dataclasses import dataclass
 
 from rag.llm import LlmClient
 from rag import otel
-from rag.prompts import GUARDRAIL_OUTPUT_PROMPT, build_intent_guard_prompt, build_classify_user_message
+from rag.prompts import build_intent_guard_prompt, build_classify_user_message
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class GuardrailResult:
-    safe: bool
-    reason: str | None = None
 
 
 @dataclass
@@ -72,17 +71,4 @@ def _extract_json(raw: str) -> dict:
     start = raw.index('{')
     end = raw.rindex('}') + 1
     return json.loads(raw[start:end])
-
-async def check_output(llm: LlmClient, answer: str) -> GuardrailResult:
-    """생성된 답변을 분류해 차단 여부를 반환한다. 스트림 완료 후(사후) 호출."""
-    raw = await llm.acomplete([
-        {'role': 'system', 'content': GUARDRAIL_OUTPUT_PROMPT},
-        {'role': 'user', 'content': answer},
-    ])
-    try:
-        data = _extract_json(raw)
-        return GuardrailResult(safe=_as_bool(data['safe']), reason=data.get('reason'))
-    except (ValueError, KeyError, TypeError):
-        # fail-open: 출력이 형식을 벗어나면 통과로 처리 (모듈 독스트링 참조)
-        return GuardrailResult(safe=True, reason='guardrail_parse_failed')
 

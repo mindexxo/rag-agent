@@ -55,7 +55,7 @@ CANCEL_CHANNEL = 'kms:cancel'
 # 그래서 포기하지 않는다: 상한까지만 늘리고 무한히 재시도한다. 고정 간격이면 장기 장애에서
 # 로그가 폭주하고(인스턴스당 시간 1200줄), 상한이 없으면 복구가 한없이 늦어진다.
 SUBSCRIBE_RETRY_MIN_SECONDS = 1
-SUBSCRIBE_RETRY_MAX_SECONDS = 30
+SUBSCRIBE_RETRY_MAX_SECONDS = 10   # 상한이 곧 '복구 후 원격 취소가 다시 먹기까지의 최대 지연'
 
 # 진행 중 생성 태스크: assistant_message_id → task. 등록/해제는 rag/streaming.py가 한다.
 _registry: dict[int, asyncio.Task] = {}

@@ -52,6 +52,6 @@ class TestExtractJson:
         assert _extract_json(raw) == {'safe': True, 'meta': {'k': 1}}
 
     def test_JSON_없으면_ValueError(self):
-        # check_output/classify의 fail-open except가 이 계약(ValueError)에 의존한다
+        # classify_and_guard의 fail-open except가 이 계약(ValueError)에 의존한다
         with pytest.raises(ValueError):
             _extract_json('중괄호가 전혀 없는 응답')

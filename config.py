@@ -5,7 +5,6 @@
 
 우선순위: OS 환경변수 > .env 파일 > 코드 기본값.
 """
-from functools import lru_cache
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -28,13 +27,8 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # application
-    app_env: str = "local"
-    log_level: str = "INFO"
-
     # database
     database_url: str
-    database_admin_url: str | None = None
     # 커넥션 search_path — 앱 쿼리는 스키마를 명시하지 않으므로(FROM conversations) 여기서 해소.
     # vector 타입이 cdb_admin에 설치돼 있어 cdb_admin도 포함. 로컬(public 스키마)은 뒤의 public으로 폴백.
     # 환경별로 .env의 DB_SEARCH_PATH로 오버라이드. (존재하지 않는 스키마는 무시되므로 안전)
@@ -44,12 +38,10 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # 동시 in-flight 제한 (F6). GPU/모델 미정이라 env로 튜닝. tenant_quotas 행이 있으면 그게 우선.
+    # 이 두 값은 tenant_quotas의 DDL 기본값과 같게 유지할 것 — 행 유무로 상한이 달라지면 안 된다(#24).
     concurrency_limit_default: int = 10   # 테넌트 동시 in-flight 기본 (quota 행 없을 때)
-    user_concurrency_default: int = 3     # 사용자(X-User-Id)별 동시 in-flight 기본
+    user_concurrency_default: int = 10    # 사용자(X-User-Id)별 동시 in-flight 기본
     inflight_max_seconds: int = 120       # in-flight 유령 판정 — 넘으면 카운트서 제거(강제종료 아님)
-
-    # security
-    default_tenant_id: str = "demo"
 
     # CORS — FE가 다른 origin에서 서빙될 때(배포·프록시 없는 로컬) 허용 목록.
     # 쉼표 구분 (.env 예: CORS_ALLOW_ORIGINS=http://localhost:5173,https://iccs.example.com)
@@ -107,17 +99,10 @@ class Settings(BaseSettings):
     # TTL이 아님: 정확성은 무효화·doc집합 비교가 담당하고 이건 죽은 row 위생(LIMIT 1 가림 완화).
     cache_retention_days: int = 90
 
-    # guardrail
-    guardrail_output_enabled: bool = False
-
     # storage
     blob_storage_dir: str = str(PROJECT_ROOT / "docs")
 
 
-@lru_cache(maxsize=1)
-def get_settings() -> Settings:
-    return Settings()
-
-
-settings = get_settings()
+# 모듈 import가 곧 프로세스당 1회이므로 이 전역 자체가 싱글톤이다 (팩토리·캐시 불필요).
+settings = Settings()
 

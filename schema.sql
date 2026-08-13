@@ -1,9 +1,11 @@
--- schema.sql — Phase 1 테이블 + 인덱스 (RLS는 rls.sql 별도)
+-- schema.sql — Phase 1 테이블 + 인덱스
 -- 적용: psql postgres -f schema.sql
 -- idempotent: 여러 번 돌려도 안전.
+--
+-- RLS는 사용하지 않는다 — 테넌트 격리는 애플리케이션 쿼리의 WHERE 절이 유일한 방어선이고,
+-- 누락 검출은 통합 테스트가 담당한다. 규약 전문은 rag/models.py 모듈 docstring 참조.
 
 CREATE EXTENSION IF NOT EXISTS vector;
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- ---------- 폴더 (F2: 1단 그룹, 검색 참조 제어 전용) ----------
 -- 트리 없음 — 계층이 필요해지면 parent_id 컬럼 추가로 확장.
@@ -147,30 +149,39 @@ CREATE TABLE IF NOT EXISTS messages (
     is_refusal      BOOLEAN,     -- assistant(status=done만): 거절 답변 여부 (저장 시 확정 — 문구 변경에도 과거 통계 불변)
     question_message_id BIGINT REFERENCES messages(id) ON DELETE SET NULL,  -- assistant: 답한 user 메시지 (미답변 짝짓기)
     intent          TEXT,        -- assistant: 라우팅 결과 'KNOWLEDGE'|'OTHER' (2026-08-07 — 답변률 분모를 지식 질문으로 한정). NULL=차단 턴·컬럼 도입 전 행
+    block_reason    TEXT,        -- assistant(status='blocked'): 입력 가드(classify_and_guard) 차단 사유. 출력 가드는 제거됨(#26)
     -- 인간 피드백 1단계 (#8): 상담원의 답변 평가 — cited_docs와 조인해 "👎가 몰리는 문서" 집계
     feedback        BOOLEAN,     -- assistant: TRUE=👍 FALSE=👎 NULL=미선택/취소
     feedback_tag    TEXT,        -- assistant: 👎 사유 슬러그(wrong_info|wrong_source|outdated_doc|insufficient). 검증은 앱(Pydantic Literal)
     feedback_text   TEXT         -- assistant: 👎 자유 서술 (옵셔널, 앱에서 500자 제한) — 태그가 못 잡는 사유 발굴용
 );
 -- 기존 DB 반영: ALTER TABLE messages ADD COLUMN IF NOT EXISTS intent TEXT;  (추가형 — 재구축 불필요)
+-- 기존 DB 반영(#22): ALTER TABLE messages ADD COLUMN IF NOT EXISTS block_reason TEXT;
 -- 기존 DB 반영(#8): ALTER TABLE messages ADD COLUMN IF NOT EXISTS feedback BOOLEAN;
 --                  ALTER TABLE messages ADD COLUMN IF NOT EXISTS feedback_tag TEXT;
 --                  ALTER TABLE messages ADD COLUMN IF NOT EXISTS feedback_text TEXT;
 CREATE INDEX IF NOT EXISTS idx_msg_conv_created
     ON messages (conversation_id, created_at);
 
--- ---------- 사용량 제한 / 쿼터 ----------
+-- ---------- 동시 요청 상한 (테넌트별 오버라이드) ----------
+-- 행이 없으면 config 기본값이 적용된다 — 이 테이블은 특정 테넌트만 다르게 줄 때 쓴다.
+-- 실시간 in-flight 카운터는 Redis ZSET(rag/limiter.py). 여기엔 정책값만 있다.
+-- 기본값은 config(CONCURRENCY_LIMIT_DEFAULT·USER_CONCURRENCY_DEFAULT)와 같은 값으로 유지할 것.
 CREATE TABLE IF NOT EXISTS tenant_quotas (
     tenant_id           TEXT        PRIMARY KEY,
-    rpm_limit           INTEGER     NOT NULL DEFAULT 60,
-    user_rpm_limit      INTEGER     NOT NULL DEFAULT 20,
-    daily_query_limit   INTEGER     NOT NULL DEFAULT 5000,
-    daily_upload_mb     INTEGER     NOT NULL DEFAULT 500,
-    concurrency_limit   INTEGER     NOT NULL DEFAULT 8,
-    user_concurrency    INTEGER     NOT NULL DEFAULT 3,
-    deep_mode_enabled   BOOLEAN     NOT NULL DEFAULT TRUE,
-    deep_rpm_limit      INTEGER     NOT NULL DEFAULT 20,
-    is_blocked          BOOLEAN     NOT NULL DEFAULT FALSE,
-    block_reason        TEXT,
+    concurrency_limit   INTEGER     NOT NULL DEFAULT 10,   -- 동시 in-flight (테넌트 합산)
+    user_concurrency    INTEGER     NOT NULL DEFAULT 10,   -- 동시 in-flight (사용자별)
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- 기존 DB 반영(#24): 미사용 컬럼 제거 + 기본값 정합. 정의만 있고 코드가 읽지 않던 컬럼들 —
+-- 값을 넣어도 아무 일이 일어나지 않는데 "동작한다"고 읽히는 상태였다.
+-- ALTER TABLE tenant_quotas DROP COLUMN IF EXISTS rpm_limit;
+-- ALTER TABLE tenant_quotas DROP COLUMN IF EXISTS user_rpm_limit;
+-- ALTER TABLE tenant_quotas DROP COLUMN IF EXISTS daily_query_limit;
+-- ALTER TABLE tenant_quotas DROP COLUMN IF EXISTS daily_upload_mb;
+-- ALTER TABLE tenant_quotas DROP COLUMN IF EXISTS deep_mode_enabled;
+-- ALTER TABLE tenant_quotas DROP COLUMN IF EXISTS deep_rpm_limit;
+-- ALTER TABLE tenant_quotas DROP COLUMN IF EXISTS is_blocked;
+-- ALTER TABLE tenant_quotas DROP COLUMN IF EXISTS block_reason;
+-- ALTER TABLE tenant_quotas ALTER COLUMN concurrency_limit SET DEFAULT 10;   -- 8 → 10
+-- ALTER TABLE tenant_quotas ALTER COLUMN user_concurrency  SET DEFAULT 10;   -- 3 → 10

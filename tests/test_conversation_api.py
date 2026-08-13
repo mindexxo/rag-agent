@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from database import AsyncSessionLocal
 from rag.models import Conversation, Message
+from tests.conftest import register_faq, sse_meta
 
 USER_A = {'X-User-Id': 'agent-a'}
 USER_B = {'X-User-Id': 'agent-b'}
@@ -83,7 +84,7 @@ async def test_소프트삭제_흐름(client, tenant_id):
     # 목록·조회·재질의 전부 미노출/404
     assert (await client.get('/kms/conversations', headers=USER_A)).json()['items'] == []
     assert (await client.get(f'/kms/conversations/{cid}/messages', headers=USER_A)).status_code == 404
-    res_q = await client.post('/kms/query?stream=false', headers=USER_A,
+    res_q = await client.post('/kms/query', headers=USER_A,
                               json={'query': '계속 질문', 'conversation_id': cid})
     assert res_q.status_code == 404                            # 삭제된 대화로 질의 계속 차단
     # 재삭제도 404 (이미 안 보이는 대상)
@@ -108,14 +109,13 @@ async def test_제목변경(client, tenant_id):
 
 @pytest.mark.asyncio
 async def test_query_신규대화에_created_by_저장(client, tenant_id, fake_llm, pass_gate):
-    from tests.test_integration_query_sse import _register_faq
-    await _register_faq(client)
-    res = await client.post('/kms/query?stream=false', headers=USER_A, json={'query': '환불 기간 알려줘'})
+    await register_faq(client)
+    res = await client.post('/kms/query', headers=USER_A, json={'query': '환불 기간 알려줘'})
     assert res.status_code == 200
-    cid = res.json()['conversation_id']
+    cid = sse_meta(res)['conversation_id']
     async with AsyncSessionLocal() as s:
         conv = await s.get(Conversation, cid)
         assert conv.created_by == 'agent-a'
     # 만든 사람에겐 이어가기 허용, 남에겐 404
-    assert (await client.post('/kms/query?stream=false', headers=USER_B,
+    assert (await client.post('/kms/query', headers=USER_B,
                               json={'query': '그럼 교환은?', 'conversation_id': cid})).status_code == 404

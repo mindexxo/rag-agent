@@ -36,7 +36,8 @@ async def test_목록_응답형태_정렬_updated_at(client, tenant_id):
     res = await client.get('/kms/conversations', headers=USER_A)
     assert res.status_code == 200
     body = res.json()
-    assert set(body.keys()) == {'items', 'has_more'}          # breaking: 배열 → 객체
+    assert set(body.keys()) == {'items', 'has_more', 'total'}  # 배열 → 객체(#10), total 추가(#28)
+    assert body['total'] == 3
     assert [i['conversation_id'] for i in body['items']] == list(reversed(ids))   # 최근 사용순
     assert body['has_more'] is False
     assert all(i['updated_at'] for i in body['items'])

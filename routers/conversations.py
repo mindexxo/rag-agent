@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, true, update
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
 from database import get_session
@@ -24,6 +24,47 @@ router = APIRouter(prefix='/kms')
 GENERATION_STALE_SECONDS = 300
 
 MAX_CONVERSATIONS = 10   # 페이지 크기 상한 (#10부터 offset 페이지네이션의 limit 상한 의미)
+
+SNIPPET_RADIUS = 40      # 스니펫: 매칭 지점 전후 문자 수 (#28) — 목록 한 줄에 들어가는 폭
+
+# LIKE 패턴에서 특수 의미를 갖는 문자. ESCAPE 절과 짝이며, 백슬래시가 먼저 나와야 한다
+# (뒤에 두면 %·_를 이스케이프하며 넣은 백슬래시를 다시 이스케이프한다).
+_LIKE_ESCAPE_CHAR = '\\'
+_LIKE_SPECIALS = (_LIKE_ESCAPE_CHAR, '%', '_')
+
+
+def _escape_like(raw: str) -> str:
+    """사용자 입력을 LIKE 패턴 리터럴로 만든다 (#28).
+
+    이스케이프하지 않으면 검색어의 %·_가 와일드카드로 동작한다 — 'a_b'로 검색하면
+    'axb'까지 걸린다(실측). SQLAlchemy .ilike()는 자동 이스케이프를 하지 않으므로
+    호출부가 escape=_LIKE_ESCAPE_CHAR를 함께 넘겨야 이 치환이 의미를 갖는다.
+    """
+    for ch in _LIKE_SPECIALS:
+        raw = raw.replace(ch, _LIKE_ESCAPE_CHAR + ch)
+    return raw
+
+
+def _build_snippet(content: str, q: str) -> str | None:
+    """매칭 지점 전후 SNIPPET_RADIUS자를 잘라낸 발췌 (#28). 잘린 쪽엔 말줄임을 붙인다.
+
+    위치 탐색을 SQL의 position()이 아니라 파이썬에서 하는 이유: position()은 대소문자를
+    구분해서 ILIKE로 매칭된 영문 검색어를 못 찾고 0을 반환한다 — 그러면 조용히 '항상 앞
+    80자'를 반환하는 오동작이 된다(실측). 여기선 양쪽 다 소문자로 맞춰 그 함정이 없다.
+    또 이스케이프한 SQL 패턴이 아니라 원본 q를 쓴다 — 두 경로가 아예 분리돼 섞일 수 없다.
+
+    파이썬 str 슬라이싱은 코드포인트 단위라 한글도 '40자'가 글자 수 그대로 맞는다.
+    """
+    idx = content.lower().find(q.lower())
+    if idx < 0:
+        # ILIKE는 매칭했는데 여기선 못 찾는 경우(유니코드 케이스폴딩 차이 등) — 발췌를 포기한다.
+        # 대화 자체는 결과에 남고 snippet만 비므로, 목록이 깨지지 않는다.
+        return None
+    start = max(0, idx - SNIPPET_RADIUS)
+    end = min(len(content), idx + len(q) + SNIPPET_RADIUS)
+    prefix = '…' if start > 0 else ''
+    suffix = '…' if end < len(content) else ''
+    return f'{prefix}{content[start:end]}{suffix}'
 
 
 def _owned(tenant_id: str, user_id: str | None):
@@ -52,17 +93,74 @@ async def _get_owned_conversation(
     return conv
 
 
+def _search_filter(tenant_id: str, pattern: str | None):
+    """제목 또는 대화 내용 부분일치 필터 (#28). pattern=None이면 필터 없음(기존 목록 동작).
+
+    메시지 매칭을 JOIN이 아니라 EXISTS로 거는 게 핵심이다 — JOIN이면 한 대화에서 두 건이
+    매칭될 때 그 대화가 결과에 두 번 나오고 total도 부풀어 오른다(실측: EXISTS 2 vs JOIN 3).
+    EXISTS는 세미조인이라 매칭 개수와 무관하게 대화 행이 정확히 하나다. 덕분에 DISTINCT나
+    윈도우 함수 없이 "대화당 1행"이 저절로 성립한다.
+
+    status로 거르지 않는다 — 차단 턴(blocked)도 검색에 걸려야 한다. 프롬프트 재료에서
+    비정상 턴을 빼는 load_recent_messages와는 목적이 다르다(그건 맥락 오염 방지).
+    attachments(첨부 추출 텍스트)는 건드리지 않는다 — 조회 API가 파일명만 노출하는 정책과
+    같은 이유로, 고객 개인 문서 본문이 검색으로 새면 안 된다.
+    """
+    if pattern is None:
+        return true()
+    return or_(
+        Conversation.title.ilike(pattern, escape=_LIKE_ESCAPE_CHAR),
+        select(Message.id)
+        .where(Message.conversation_id == Conversation.id)
+        .where(Message.tenant_id == tenant_id)      # 격리 — 상관 서브쿼리에도 WHERE 명시
+        .where(Message.content.ilike(pattern, escape=_LIKE_ESCAPE_CHAR))
+        .exists(),
+    )
+
+
+async def _snippets_for(session: AsyncSession, tenant_id: str, conversation_ids: list[int],
+                        pattern: str, q: str) -> dict[int, str | None]:
+    """페이지에 실린 대화들의 발췌를 한 번의 쿼리로 모아온다 (#28).
+
+    대화당 '가장 최근 매칭 메시지'를 골라야 하는데, (conversation_id, 최신순) 정렬로 받아
+    각 대화의 첫 등장만 취하면 된다 — setdefault가 그 역할. created_at 동률일 때를 위해
+    id 보조정렬을 함께 쓴다(한 턴의 user·assistant가 같은 커밋이라 시각이 같다).
+
+    알려진 한계: 대화당 LIMIT을 걸지 않아 매칭이 많은 대화는 그 행을 전부 실어온다.
+    윈도우 함수(row_number)나 LATERAL이면 DB에서 1건으로 줄일 수 있지만, 리포에 전례가
+    없는 구문이라 현 데이터 규모에서는 단순함을 택했다 — 느려지면 그때 교체할 것.
+    """
+    rows = (await session.execute(
+        select(Message.conversation_id, Message.content)
+        .where(Message.conversation_id.in_(conversation_ids))
+        .where(Message.tenant_id == tenant_id)      # 격리 — 메시지에도 WHERE 명시
+        .where(Message.content.ilike(pattern, escape=_LIKE_ESCAPE_CHAR))
+        .order_by(Message.conversation_id, Message.created_at.desc(), Message.id.desc())
+    )).all()
+
+    latest: dict[int, str] = {}
+    for conversation_id, content in rows:
+        latest.setdefault(conversation_id, content)
+    return {cid: _build_snippet(content, q) for cid, content in latest.items()}
+
+
 @router.get('/conversations', response_model=ConversationListResponse)
 async def list_conversations(
     limit: int = MAX_CONVERSATIONS,
     offset: int = 0,
+    q: str | None = None,
     tenant_id: str = Depends(get_tenant_id),
     user_id: str | None = Depends(get_user_id),
     session: AsyncSession = Depends(get_session),
 ):
-    """내 대화 목록 (최근 사용순, offset 페이지네이션 #10).
+    """내 대화 목록 (최근 사용순, offset 페이지네이션 #10) + 제목·내용 검색 (#28).
 
-    limit+1개를 조회해 has_more 판정 (count 쿼리 없이 다음 페이지 유무 확인).
+    q를 주면 제목 또는 대화 내용에 부분일치하는 대화만 남기고, 내용에서 걸린 대화엔
+    발췌(snippet)를 함께 내려준다. q는 필터일 뿐이라 정렬·페이지 크기는 그대로다 —
+    "최근 10개 안에서 찾는" 게 아니라 소유 대화 전체에서 찾아 최근순 10개를 준다.
+
+    total은 페이지 쿼리와 같은 WHERE에 count만 씌운 값이다. 두 쿼리가 같은 필터를
+    공유해야 has_more가 어긋나지 않으므로 조건은 반드시 한 곳(where)에서 만들어 쓴다.
     알려진 한계: last_used_at 정렬이 가변이라 스크롤 중 페이지 밀림 가능 — 이 UI에선 감수.
     """
     # 범위 밖(<=0 or 상한 초과)은 상한값으로 클램프 (거부 대신 sane 결과 — 음수 500·무상한 조회 방지, P2)
@@ -70,18 +168,34 @@ async def list_conversations(
         limit = MAX_CONVERSATIONS
     if offset < 0:
         offset = 0
+    # 빈 문자열·공백뿐인 q는 미전송과 동일 취급 — '%%'는 전건 매칭이라 필터를 건 척만 하게 된다
+    q = (q or '').strip() or None
+    pattern = f'%{_escape_like(q)}%' if q else None
+
+    where = _owned(tenant_id, user_id) & _search_filter(tenant_id, pattern)
+    total = (await session.execute(
+        select(func.count(Conversation.id)).where(where)
+    )).scalar_one()
     rows = (await session.execute(
         select(Conversation)
-        .where(_owned(tenant_id, user_id))
+        .where(where)
         .order_by(Conversation.last_used_at.desc())
         .offset(offset)
-        .limit(limit + 1)
+        .limit(limit)
     )).scalars().all()
 
+    # 제목에서만 걸린 대화는 여기서 값이 안 나와 snippet=None이 된다 (제목은 이미 목록에 보임)
+    snippets = (await _snippets_for(session, tenant_id, [c.id for c in rows], pattern, q)
+                if q and rows else {})
+
     return ConversationListResponse(
-        items=[ConversationSummary(conversation_id=c.id, title=c.title, updated_at=c.last_used_at)
-               for c in rows[:limit]],
-        has_more=len(rows) > limit,
+        items=[ConversationSummary(conversation_id=c.id, title=c.title, updated_at=c.last_used_at,
+                                   snippet=snippets.get(c.id))
+               for c in rows],
+        # limit+1 조회 트릭은 제거 — total이 있으면 다음 페이지 유무가 산술로 나온다.
+        # len(rows)를 쓰는 게 limit보다 안전하다(마지막 부분 페이지에서도 정확).
+        has_more=offset + len(rows) < total,
+        total=total,
     )
 
 

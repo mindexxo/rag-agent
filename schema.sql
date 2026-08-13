@@ -6,6 +6,11 @@
 -- 누락 검출은 통합 테스트가 담당한다. 규약 전문은 rag/models.py 모듈 docstring 참조.
 
 CREATE EXTENSION IF NOT EXISTS vector;
+-- 대화 히스토리 검색(#28)의 ILIKE 부분일치 인덱스용. 운영 DB가 이미 쓰는 확장이라 맞췄다.
+-- 3-gram이라 검색어가 3글자 미만이면 인덱스를 못 탄다 — '배송'·'환불' 같은 2글자 상담
+-- 키워드는 순차 스캔이 된다(수용한 한계, 이슈 #28 참조). 2글자를 인덱스로 태우려면
+-- pg_bigm이 필요한데 운영에 없어서, 환경별 성능 차이를 만들지 않으려고 pg_trgm으로 통일.
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- ---------- 폴더 (F2: 1단 그룹, 검색 참조 제어 전용) ----------
 -- 트리 없음 — 계층이 필요해지면 parent_id 컬럼 추가로 확장.
@@ -126,6 +131,17 @@ CREATE TABLE IF NOT EXISTS conversations (
 );
 CREATE INDEX IF NOT EXISTS idx_conv_tenant_last
     ON conversations (tenant_id, last_used_at DESC);
+-- 소유 조회 전용 (#28). 목록·검색·count가 전부 tenant+created_by+미삭제로 거르는데 위 인덱스엔
+-- tenant뿐이라, 사용자 대화 100건을 찾으려고 테넌트 대화 2만 건을 훑고 버렸다(실측). 검색은
+-- 그 2만 건마다 ILIKE·EXISTS를 평가해 1초가 걸렸고, 이 인덱스로 후보가 100건이 되며 사라진다:
+--   목록 2.9→1.7ms / count 6.5ms(Seq Scan)→3.5ms / 검색 1125→9.5ms.
+-- deleted_at 부분 인덱스인 이유: 조회 경로는 전부 미삭제만 보므로 삭제분을 넣을 이유가 없다.
+CREATE INDEX IF NOT EXISTS idx_conv_owner_last
+    ON conversations (tenant_id, created_by, last_used_at DESC)
+    WHERE deleted_at IS NULL;
+-- 제목 부분일치 검색 (#28). ILIKE '%…%'는 선행 와일드카드라 btree를 못 타므로 트라이그램 GIN.
+CREATE INDEX IF NOT EXISTS idx_conv_title_trgm
+    ON conversations USING gin (title gin_trgm_ops);
 
 CREATE TABLE IF NOT EXISTS messages (
     id              BIGSERIAL PRIMARY KEY,
@@ -162,6 +178,13 @@ CREATE TABLE IF NOT EXISTS messages (
 --                  ALTER TABLE messages ADD COLUMN IF NOT EXISTS feedback_text TEXT;
 CREATE INDEX IF NOT EXISTS idx_msg_conv_created
     ON messages (conversation_id, created_at);
+-- 대화 내용 부분일치 검색 (#28). attachments는 대상 아님 — 고객 개인 문서 본문이라 검색 제외.
+CREATE INDEX IF NOT EXISTS idx_msg_content_trgm
+    ON messages USING gin (content gin_trgm_ops);
+-- 기존 DB 반영(#28): CREATE EXTENSION IF NOT EXISTS pg_trgm;
+--                   CREATE INDEX IF NOT EXISTS idx_conv_owner_last ON conversations (tenant_id, created_by, last_used_at DESC) WHERE deleted_at IS NULL;
+--                   CREATE INDEX IF NOT EXISTS idx_conv_title_trgm  ON conversations USING gin (title gin_trgm_ops);
+--                   CREATE INDEX IF NOT EXISTS idx_msg_content_trgm ON messages      USING gin (content gin_trgm_ops);
 
 -- ---------- 동시 요청 상한 (테넌트별 오버라이드) ----------
 -- 행이 없으면 config 기본값이 적용된다 — 이 테이블은 특정 테넌트만 다르게 줄 때 쓴다.

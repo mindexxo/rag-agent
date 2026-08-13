@@ -10,6 +10,7 @@
 가짜 임베딩 주의: 벡터는 결정적이지만 의미 없음 — 코사인 거리가 근거 게이트(0.6)를
 통과한다는 보장이 없다. 검색 매칭까지 검증하는 테스트는 apply_gate를 함께 패치할 것.
 """
+import asyncio
 import hashlib
 import json
 import uuid
@@ -117,6 +118,14 @@ class FakeLlm:
         self.intent_json = '{"safe": true, "intent": "KNOWLEDGE"}'
         self.calls: list[str] = []          # 어떤 용도로 호출됐는지 기록 (검증용)
         self.system_prompts: list[tuple[str, str]] = []   # (용도, 시스템 프롬프트) — 주입 내용 검증용
+        # 취소 테스트용 정지 지점 (#30). None이면 기존 동작 그대로.
+        # 왜 필요한가: astream에 진짜 await가 없으면 이벤트 루프에 제어가 넘어가지 않아
+        # task.cancel()이 전달될 지점 자체가 없다 — 생성이 그대로 완주한다(실측).
+        # 시간(sleep) 대신 Event로 멈추는 이유: 테스트가 "정확히 N토큰 뒤"를 잡을 수 있어
+        # CI에서 타이밍 플레이크가 나지 않는다.
+        self.pause_after_tokens: int | None = None
+        self.paused = asyncio.Event()        # 테스트: 정지 지점 도달을 기다린다
+        self.resume = asyncio.Event()        # 테스트: set()하면 스트림이 계속된다
 
     def _kind(self, messages: list[dict]) -> str:
         system = messages[0]['content'] if messages else ''
@@ -152,7 +161,10 @@ class FakeLlm:
         kind = self._kind(messages)
         self.calls.append('stream:' + kind)
         self._record(kind, messages)
-        for token in self.answer.split(' '):
+        for i, token in enumerate(self.answer.split(' ')):
+            if self.pause_after_tokens is not None and i == self.pause_after_tokens:
+                self.paused.set()
+                await self.resume.wait()      # 취소 테스트가 여기서 task.cancel()을 건다
             yield token + ' '
 
 

@@ -33,7 +33,7 @@ from collections.abc import AsyncIterator
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import otel
+from rag import cancellation, otel
 from rag.limiter import Lease, query_limiter
 from rag.prompts import is_refusal
 from rag.service import PreparedRag, RagService
@@ -47,9 +47,8 @@ EVENT_TOKEN = 'token'
 EVENT_ERROR = 'error'
 EVENT_DONE = 'done'
 
-# 백그라운드 생성 태스크 참조 유지 — asyncio는 미참조 태스크를 GC할 수 있어(공식 문서 명시)
-# 실행 중 예고 없이 사라질 수 있다. 완료 시 done_callback이 스스로 빼낸다.
-_running_tasks: set[asyncio.Task] = set()
+# 태스크 참조 유지(GC 방지)와 취소 대상 색인은 rag/cancellation.py의 레지스트리가 겸한다 —
+# 같은 목적의 자료구조를 둘로 두지 않는다. 취소 규약(pop-then-cancel)은 그쪽 docstring 참조.
 
 
 def sse_event(event: str, data) -> str:
@@ -118,9 +117,30 @@ def spawn_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Lease,
     요청 쪽에서 정리하면 생성 도중에 슬롯이 풀리고 턴 duration이 잘린다.
     """
     task = asyncio.create_task(_run_generation(prepared, queue, lease, t_request, root_span))
-    _running_tasks.add(task)
-    task.add_done_callback(_running_tasks.discard)
+    message_id = prepared.assistant_message_id
+    cancellation.register(message_id, task)
+    # 완료 콜백은 백업이다 — 태스크는 정리에 진입할 때 스스로 unregister한다(_run_generation).
+    # 그래도 남겨두는 이유: 등록 직후 예외로 죽는 등 finally를 못 타는 경로가 있으면 누수된다.
+    task.add_done_callback(lambda _t: cancellation.unregister(message_id))
     return task
+
+
+async def _finalize_out_of_band(lease: Lease, prepared: PreparedRag, answer: str,
+                                status: str, latency_ms: int | None) -> None:
+    """비정상 종료(취소·실패)의 상태 기록 — 새 세션으로, 실패는 삼킨다.
+
+    본 흐름의 세션은 이미 롤백/닫힘 상태일 수 있어 자기 세션을 새로 연다.
+    기록이 실패하면 그 턴은 generating으로 남고 300초 스윕이 failed로 정리한다 — 의도(취소 vs
+    실패)는 잃지만 고착은 남지 않는다. 상태 기록 실패가 정리(finally)를 막아선 안 되므로 삼킨다.
+    """
+    try:
+        async with AsyncSessionLocal() as session:
+            await RagService(tenant_id=lease.tenant_id, session=session).finalize(
+                prepared, answer, status=status, latency_ms=latency_ms)
+            await session.commit()
+    except Exception:
+        logger.exception("%s 상태 기록 실패 (tenant=%s, conversation=%s)",
+                         status, lease.tenant_id, prepared.conversation_id)
 
 
 async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Lease,
@@ -144,18 +164,26 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
                 await queue.put((EVENT_SOURCES, []))
             await svc.finalize(prepared, answer, status="done", latency_ms=_elapsed_ms(t_request))
             await session.commit()
+    except asyncio.CancelledError:
+        # 명시적 취소(#30). CancelledError는 BaseException 계열이라 아래 except Exception이
+        # 잡지 못한다 — 이 절이 없으면 finalize를 못 타고 generating으로 남아 300초 스윕이
+        # failed로 만든다(사용자는 취소했는데 화면엔 실패).
+        # 취소 예외는 한 번만 전달되므로 여기서 잡은 뒤의 await(세션·commit)는 정상 완료된다 — 실측 확인.
+        await _finalize_out_of_band(lease, prepared, "".join(parts), "cancelled",
+                                    _elapsed_ms(t_request))
+        raise                                    # 태스크가 '취소됨'으로 끝나도록 재전파
     except Exception:
         logger.exception("답변 생성 실패 (tenant=%s, conversation=%s)", lease.tenant_id, prepared.conversation_id)
-        try:
-            async with AsyncSessionLocal() as s2:
-                await RagService(tenant_id=lease.tenant_id, session=s2).finalize(prepared, "", status="failed")
-                await s2.commit()
-        except Exception:
-            logger.exception("failed 상태 기록도 실패 (tenant=%s)", lease.tenant_id)
+        await _finalize_out_of_band(lease, prepared, "", "failed", None)
         # 예외 원문은 서버 로그로만 — str(exc)에 내부 경로·설정이 섞일 수 있어 클라이언트에 노출 금지
         await queue.put((EVENT_ERROR, {"code": "generation_failed",
                                        "message": "답변 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."}))
     finally:
+        # 취소 대상에서 먼저 빠진다 (#30) — 반드시 아래 await들보다 앞, 그리고 동기 문장으로.
+        # 답변이 done으로 커밋된 뒤 리미터를 반납하는 찰나에 취소가 도착하면 이 finally가
+        # 중간에 끊겨 반납·스팬 종료가 유실된다(실측). 자기를 먼저 빼두면 그 요청은 대상을
+        # 못 찾아 cancel()을 호출하지 않고, 상태(done)를 근거로 404를 받는다.
+        cancellation.unregister(prepared.assistant_message_id)
         await queue.put(None)                    # 리더 종료 sentinel — finalize·commit '뒤'에 넣는다
         await query_limiter.release(lease)        # 리미터는 태스크 수명 끝에 (실제 GPU 점유 구간)
         root_span.end()                           # 핸드오프된 턴 루트 스팬 — duration=턴 전체 (#7)

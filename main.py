@@ -1,13 +1,20 @@
 """KMS 상담 지식 어시스턴트 — FastAPI 앱 부트스트랩.
 
-라우터 조립 + CORS만 담당한다. 도메인 로직은 rag/, 라우팅은 routers/.
+라우터 조립 + CORS + lifespan 배선만 담당한다. 도메인 로직은 rag/, 라우팅은 routers/.
+(lifespan은 #30에서 처음 도입 — 이 웹 프로세스의 인메모리 상태를 다루는 백그라운드 태스크
+ 전용이다. 주기 잡은 rag/worker.py의 arq cron 몫.)
 (과거 STT/화자분리/요약 실험 코드는 2026-07-18 제거, 테스트 UI(/ui 정적 서빙)는
  2026-07-23 제거 — FE가 별도 앱으로 분리됨. 필요 시 git 이전 백업 참조.)
 """
+import asyncio
+import contextlib
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
+from rag import cancellation
 from rag.otel import init_tracing
 from routers.conversations import router as conversation_router
 from routers.documents import router as document_router
@@ -18,7 +25,28 @@ from routers.stats import router as stats_router
 
 init_tracing()   # OTel(#7) — otel_endpoint 미설정이면 no-op
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """앱 수명 동안 도는 백그라운드 태스크 기동·정리 (#30).
+
+    여기 두는 건 **이 웹 프로세스의 인메모리 상태를 다뤄야 하는 작업**뿐이다 —
+    취소 레지스트리(rag/cancellation.py)가 프로세스 로컬이라 그렇다. 주기 스윕(캐시 청소 등)은
+    rag/worker.py의 arq cron 몫이고 별 프로세스라 여기와 무관하다.
+
+    주의: 테스트의 httpx ASGITransport는 lifespan을 호출하지 않는다(실측) — 그래서 본문은
+    subscribe_forever를 부르는 얇은 배선만 두고, 테스트는 그 함수를 직접 띄워 검증한다.
+    """
+    subscriber = asyncio.create_task(cancellation.subscribe_forever())
+    try:
+        yield
+    finally:
+        subscriber.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await subscriber
+
+
+app = FastAPI(lifespan=lifespan)
 
 # CORS — FE(React)가 별도 origin에서 API를 부를 때 브라우저 차단 해제 (게이트웨이 경유 시엔 불발동).
 # X-Tenant-Id 커스텀 헤더 때문에 preflight(OPTIONS)가 항상 발생 → allow_headers 필수.

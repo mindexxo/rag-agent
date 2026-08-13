@@ -179,7 +179,7 @@ class Message(Base):
     standalone_query: Mapped[str | None]                                     # user 메시지의 condense 결과 (assistant는 NULL)
     sources: Mapped[Any | None] = mapped_column(JSONB)                       # assistant 메시지의 인용 메타 (user는 NULL)
     attachments: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))  # 첨부한 턴의 user 메시지에 저장되는 추출 텍스트 [{filename, text}]. none_as_null: 파이썬 None을 JSON null이 아닌 SQL NULL로 (IS NOT NULL 필터가 정확히 동작하게)
-    status: Mapped[str] = mapped_column(default="done", server_default="done")  # assistant 생성 상태: generating|done|failed|blocked (user는 'done')
+    status: Mapped[str] = mapped_column(default="done", server_default="done")  # assistant 생성 상태: generating|done|failed|blocked|cancelled (user는 'done')
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())  # 생성 시각
     # ── 운영 지표 씨앗 (2026-07-18): 화면 반영 전이라도 기록은 지금부터 (지표는 소급 불가) ──
     user_id: Mapped[str | None]          # user 메시지: 질문한 상담원 (X-User-Id — 인증 전엔 'test-user')

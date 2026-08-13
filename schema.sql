@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS messages (
     -- 인덱싱 안 함(전역 검색과 격리), 질의 시 대화 내 첨부를 모아 컨텍스트에 주입.
     -- 고객 개인 문서 — 대화는 소프트 삭제(#10)라 메시지·첨부 이력이 감사 목적으로 보존됨.
     attachments     JSONB,
-    status          TEXT         NOT NULL DEFAULT 'done',   -- assistant 생성 상태: generating|done|failed|blocked (user 메시지는 항상 'done')
+    status          TEXT         NOT NULL DEFAULT 'done',   -- assistant 생성 상태: generating|done|failed|blocked|cancelled (user 메시지는 항상 'done')
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
     -- 운영 지표 씨앗 (2026-07-18)
     user_id         TEXT,        -- user 메시지: 질문한 상담원 (X-User-Id)

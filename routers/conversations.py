@@ -5,6 +5,7 @@ from sqlalchemy import func, or_, select, true, update
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
 from database import get_session
+from rag import cancellation
 from rag.conversation import DEFAULT_USER
 from rag.models import Conversation, Message
 from routers.kms import get_tenant_id, get_user_id
@@ -278,6 +279,53 @@ async def set_message_feedback(
     await session.commit()
     return MessageFeedbackState(message_id=msg.id, feedback=msg.feedback,
                                 feedback_tag=msg.feedback_tag, feedback_text=msg.feedback_text)
+
+
+@router.post('/messages/{message_id}/cancel', status_code=204)
+async def cancel_generation(
+        message_id: int,
+        tenant_id: str = Depends(get_tenant_id),
+        user_id: str | None = Depends(get_user_id),
+        session: AsyncSession = Depends(get_session),
+):
+    """진행 중인 답변 생성을 중단한다 (#30) — 정지 버튼.
+
+    연결 끊김(탭 닫기·순단)과는 다르게 취급한다. 끊김은 의사가 불명해서 생성을 완주시켜
+    저장하지만(#26), 이 엔드포인트는 명시적 의사 표현이므로 실제로 멈추고 GPU를 회수한다.
+    실익은 UX보다 처리량이다 — 버려질 생성이 동시 상한 슬롯을 물고 있으면 다른 상담원이 막힌다.
+
+    **concurrency_guard를 거치지 않는다** — 429가 나는 상황이야말로 취소가 가장 필요한 때인데
+    취소 요청까지 슬롯을 요구하면 정작 못 멈춘다.
+
+    응답: 204=이 프로세스에서 취소했거나 이미 취소된 턴(멱등) / 202=다른 인스턴스 소유로
+    추정해 신호만 발행(도달 보장 없음) / 404=취소할 대상이 아님.
+    """
+    # 소유·상태 검증을 **반드시 먼저** 한다. 레지스트리는 message_id만 키로 쓰고 tenant를
+    # 모르므로, 검증 없이 건드리면 남의 테넌트 생성을 id 추측만으로 죽일 수 있다 —
+    # messages.id는 전 테넌트 공용 시퀀스라 순차 추측이 쉽다.
+    # 이 await가 pop-then-cancel의 원자성을 깨지 않는다: 그 원자성은 cancel_local 내부의
+    # pop↔cancel 사이에 await가 없다는 성질이고, 두 요청이 여기를 함께 통과해도 pop은 한쪽만
+    # 성공한다(다른 쪽은 발행 경로로 빠져 헛수고 한 번을 할 뿐).
+    msg = (await session.execute(
+        select(Message)
+        .join(Conversation, Message.conversation_id == Conversation.id)
+        .where(Message.id == message_id)
+        .where(Message.tenant_id == tenant_id)     # 격리 — 메시지에도 tenant WHERE 명시
+        .where(Message.role == 'assistant')
+        .where(_owned(tenant_id, user_id))
+    )).scalar_one_or_none()
+    if msg is None:
+        raise HTTPException(status_code=404, detail='메시지를 찾을 수 없습니다.')
+    if msg.status == 'cancelled':
+        return Response(status_code=204)           # 따닥 두 번째 — 결과가 같으니 성공으로 (멱등)
+    if msg.status != 'generating':
+        # done·failed·blocked — 멈출 게 없다. 즉시 경로(캐시히트 등)도 여기로 온다(태스크가 없음).
+        raise HTTPException(status_code=404, detail='진행 중인 생성이 아닙니다.')
+
+    if cancellation.cancel_local(message_id):
+        return Response(status_code=204)           # 이 프로세스가 들고 있었다
+    await cancellation.request_cancel(message_id)  # 다른 인스턴스 소유로 추정 — 도달 보장은 없다
+    return Response(status_code=202)
 
 
 @router.patch('/conversations/{conversation_id}', response_model=ConversationSummary)

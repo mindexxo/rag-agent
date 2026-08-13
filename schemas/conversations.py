@@ -13,12 +13,17 @@ class ConversationSummary(BaseModel):
     conversation_id: int
     title: str | None = None     # 첫 질문 앞 80자 (없으면 FE가 '대화 #id' 폴백)
     updated_at: datetime         # 최근 사용 시각(last_used_at) — 목록 "n분 전" 표시용 (#10)
+    # 검색(q) 매칭 발췌 (#28) — 내용에서 걸린 대화만. 제목에서만 걸렸거나 q 미전송이면 None
+    # (제목은 이미 title로 보이므로 같은 내용을 중복해 내려주지 않는다).
+    # 하이라이트는 FE가 이 문자열 안에서 처리한다 — 서버는 마크업 없는 평문만 준다.
+    snippet: str | None = None
 
 
 class ConversationListResponse(BaseModel):
     """목록 응답 (#10, breaking — 기존 배열 → 객체. FE 합의됨)."""
     items: list[ConversationSummary]
-    has_more: bool               # offset+limit 뒤에 더 있는가 (limit+1 조회로 판정)
+    has_more: bool               # offset+len(items) < total (#28부터 total에서 파생)
+    total: int = 0               # 필터 적용 후 전체 대화 수 (#28) — q 없으면 내 대화 총 개수
 
 
 class ConversationTitleUpdate(BaseModel):

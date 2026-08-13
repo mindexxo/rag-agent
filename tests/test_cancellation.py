@@ -38,25 +38,27 @@ async def cancel_subscriber():
     httpx ASGITransport가 lifespan을 호출하지 않으므로(실측) main.py의 배선으로는 구독
     루프가 테스트에서 뜨지 않는다. 그래서 함수를 직접 기동한다.
 
-    모듈 싱글톤 Redis 클라이언트를 이 테스트의 루프에 맞는 새 인스턴스로 교체한다. 앞선
-    테스트의 루프에 묶인 커넥션이 남아 있으면 구독 루프가 "Future attached to a different
-    loop"로 죽고(실측), 그 커넥션은 루프가 이미 닫혀 disconnect()조차 "Event loop is closed"로
-    실패한다. 그래서 정리가 아니라 교체다 — conftest의 _loop_hygiene가 http_async에 쓰는 방식과 같다.
+    공용 Redis 클라이언트(clients.shared_redis)를 이 테스트의 루프에 맞는 새 인스턴스로
+    교체한다. 앞선 테스트의 루프에 묶인 커넥션이 남아 있으면 구독 루프가 "Future attached to
+    a different loop"로 죽고(실측), 그 커넥션은 루프가 이미 닫혀 disconnect()조차 "Event loop
+    is closed"로 실패한다. 그래서 정리가 아니라 교체다 — _loop_hygiene가 http_async에 쓰는 방식.
+    limiter·취소가 이 속성을 호출 시점에 읽으므로 교체가 양쪽에 그대로 먹는다.
     conftest에 두지 않는 이유: 이 파일만 쓰는 fixture다(리포 관례 — 단일 파일 전용은 로컬).
     """
     import redis.asyncio as aioredis
 
     from config import settings
+    from rag import clients
 
-    cancellation._redis = aioredis.from_url(settings.redis_url)
+    clients.shared_redis = aioredis.from_url(settings.redis_url)
     task = asyncio.create_task(cancellation.subscribe_forever())
     await asyncio.sleep(0.1)                  # 구독이 붙을 시간 — pub/sub은 늦게 붙으면 메시지를 놓친다
     yield task
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
-    await cancellation._redis.aclose()
-    cancellation._redis = aioredis.from_url(settings.redis_url)   # lazy — 다음 사용자를 위해 성한 것으로
+    await clients.shared_redis.aclose()
+    clients.shared_redis = aioredis.from_url(settings.redis_url)   # lazy — 다음 사용자를 위해 성한 것으로
 
 
 async def _inflight_count(tenant_id: str) -> int:

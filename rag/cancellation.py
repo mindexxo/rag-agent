@@ -43,9 +43,7 @@ ZREM 가능) 동일 신뢰 구역으로 보고 수용한다. 가용성 침해만
 import asyncio
 import logging
 
-import redis.asyncio as aioredis
-
-from config import settings
+from rag import clients
 
 logger = logging.getLogger(__name__)
 
@@ -58,11 +56,6 @@ SUBSCRIBE_RETRY_SECONDS = 3
 
 # 진행 중 생성 태스크: assistant_message_id → task. 등록/해제는 rag/streaming.py가 한다.
 _registry: dict[int, asyncio.Task] = {}
-
-# 취소 신호 전용 Redis 클라이언트. 리미터의 것을 빌리지 않는 이유: 이 리포는 "그 기능을
-# 소유한 모듈이 자기 싱글톤을 든다"가 관례고(rag/clients.py 참조), query_limiter._redis는
-# 이름부터 limiter의 사유물이라 남이 찌르면 그쪽 리팩터가 여기로 몰래 번진다.
-_redis = aioredis.from_url(settings.redis_url)
 
 
 def register(message_id: int, task: asyncio.Task) -> None:
@@ -90,7 +83,8 @@ def cancel_local(message_id: int) -> bool:
 
 async def request_cancel(message_id: int) -> None:
     """다른 인스턴스에 취소를 요청한다 (로컬에 없을 때만 쓴다)."""
-    await _redis.publish(CANCEL_CHANNEL, str(message_id))
+    # 공용 클라이언트를 호출 시점에 읽는다 — 모듈 속성으로 붙잡으면 테스트의 '교체'가 안 먹는다
+    await clients.shared_redis.publish(CANCEL_CHANNEL, str(message_id))
 
 
 async def subscribe_forever() -> None:
@@ -101,7 +95,7 @@ async def subscribe_forever() -> None:
     놓치는 조용한 장애가 된다.
     """
     while True:
-        pubsub = _redis.pubsub()
+        pubsub = clients.shared_redis.pubsub()   # 재연결 때마다 최신 클라이언트를 집는다
         try:
             await pubsub.subscribe(CANCEL_CHANNEL)
             async for raw in pubsub.listen():

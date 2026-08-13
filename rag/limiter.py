@@ -23,8 +23,6 @@ import time
 import uuid
 from dataclasses import dataclass
 
-import redis.asyncio as aioredis
-
 from config import settings
 
 _T_PREFIX = 'kms:inflight:t:'   # 테넌트별
@@ -68,9 +66,18 @@ class Lease:
 
 
 class ConcurrencyLimiter:
-    def __init__(self, redis_url: str):
-        # from_url은 lazy — 첫 명령 때 연결된다
-        self._redis = aioredis.from_url(redis_url)
+    @property
+    def _redis(self):
+        """공용 Redis 클라이언트 (rag/clients.py) — **호출 시점에** 모듈 속성을 읽는다.
+
+        생성자에서 붙잡으면 안 된다: 테스트가 루프 위생을 지키려고 '닫는 대신 교체'하는데
+        (닫힌 루프에 묶인 커넥션은 disconnect조차 실패한다) 붙잡아두면 교체가 안 먹는다.
+        http_async가 같은 규약을 쓴다.
+        지연 import는 embeddings/reranker와 같은 이유 — 동기 스크립트가 이 모듈만 쓸 때
+        LLM 클라이언트까지 만들어지지 않게 한다.
+        """
+        from rag import clients
+        return clients.shared_redis
 
     async def try_acquire(
             self, tenant_id: str, tenant_limit: int,
@@ -103,4 +110,4 @@ class ConcurrencyLimiter:
 
 
 # /kms/query 전용 공유 리미터
-query_limiter = ConcurrencyLimiter(settings.redis_url)
+query_limiter = ConcurrencyLimiter()

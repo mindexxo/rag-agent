@@ -166,6 +166,76 @@ async def test_취소하면_부분답변이_cancelled로_남고_정리가_끝난
 
 
 @pytest.mark.asyncio
+async def test_취소하면_인용을_빈_배열로_정정한다(client, tenant_id, fake_llm, pass_gate):
+    """생성 경로는 첫 토큰 전에 인용을 낙관적으로 보낸다. 취소 시 정정하지 않으면 화면엔
+    인용이 붙어 있는데 새로고침하면 사라진다(finalize가 status != done이면 sources=[]로 저장).
+    거절 판정에 이미 있는 정정 패턴과 같은 방식 — SSE 계약이 '마지막 sources가 유효'다."""
+    await register_faq(client)
+    fake_llm.pause_after_tokens = 2
+    prepared = await _prepare_turn(tenant_id)
+    lease = await query_limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
+
+    queue: asyncio.Queue = asyncio.Queue()
+    root_span, token = otel.start_turn()
+    task = asyncio.create_task(_run_generation(prepared, queue, lease, 0.0, root_span))
+    try:
+        await asyncio.wait_for(fake_llm.paused.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        otel.detach_turn(token)
+
+    drained = []
+    while not queue.empty():
+        drained.append(queue.get_nowait())
+    sources_events = [payload for item in drained if item for kind, payload in [item] if kind == 'sources']
+    assert sources_events and sources_events[-1] == [], '취소 시 인용 정정 이벤트가 없다'
+    async with AsyncSessionLocal() as session:
+        assert (await session.get(Message, prepared.assistant_message_id)).sources == []
+
+
+@pytest.mark.asyncio
+async def test_스윕이_failed로_바꿔도_살아있는_태스크는_취소된다(client, tenant_id, fake_llm, pass_gate):
+    """300초 스윕은 '정말 진행 중'과 '고착'을 구분하지 못해 살아있는 생성도 failed로 바꾼다.
+    상태만 믿으면 그 순간부터 정지 버튼이 무력해지므로, 태스크가 손에 있으면 멈춘다."""
+    await register_faq(client)
+    fake_llm.pause_after_tokens = 2
+    prepared = await _prepare_turn(tenant_id)
+    assistant_id = prepared.assistant_message_id
+    lease = await query_limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
+    lease.handed_off = True
+
+    root_span, token = otel.start_turn()
+    otel.detach_turn(token)
+    spawn_generation(prepared, asyncio.Queue(), lease, 0.0, root_span)
+    await asyncio.wait_for(fake_llm.paused.wait(), timeout=5)
+
+    async with AsyncSessionLocal() as session:      # 스윕이 지나간 상황을 만든다
+        msg = await session.get(Message, assistant_id)
+        msg.status = 'failed'
+        await session.commit()
+
+    res = await client.post(f'/kms/messages/{assistant_id}/cancel', headers=USER)
+    assert res.status_code == 204, 'DB가 failed라도 살아있는 태스크는 멈춰야 한다'
+    assert await _wait_status(assistant_id, 'cancelled') == 'cancelled'
+
+
+@pytest.mark.asyncio
+async def test_발행_실패는_503(client, tenant_id, fake_llm, pass_gate, monkeypatch):
+    """Redis 순단 시 202("접수했다")는 거짓이고 500은 원인을 감춘다 — 재시도 가능함을 알린다."""
+    await register_faq(client)
+    prepared = await _prepare_turn(tenant_id)       # generating, 로컬 태스크 없음
+
+    async def _boom(_mid):
+        raise ConnectionError('redis down')
+    monkeypatch.setattr(cancellation, 'request_cancel', _boom)
+
+    res = await client.post(f'/kms/messages/{prepared.assistant_message_id}/cancel', headers=USER)
+    assert res.status_code == 503
+
+
+@pytest.mark.asyncio
 async def test_첫_토큰_전에_취소하면_빈_답변으로_남는다(client, tenant_id, fake_llm, pass_gate):
     await register_faq(client)
     fake_llm.pause_after_tokens = 0                   # 첫 토큰 전에 정지

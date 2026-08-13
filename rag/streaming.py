@@ -169,6 +169,10 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
         # 잡지 못한다 — 이 절이 없으면 finalize를 못 타고 generating으로 남아 300초 스윕이
         # failed로 만든다(사용자는 취소했는데 화면엔 실패).
         # 취소 예외는 한 번만 전달되므로 여기서 잡은 뒤의 await(세션·commit)는 정상 완료된다 — 실측 확인.
+        # 낙관적으로 내보낸 인용을 정정한다 — 거절 판정(위)과 같은 이유·같은 방식.
+        # finalize가 status != done이면 sources를 []로 저장하므로, 정정하지 않으면 취소 직후
+        # 화면엔 인용이 붙어 있는데 새로고침하면 사라지는 불일치가 남는다(실기동 확인).
+        await queue.put((EVENT_SOURCES, []))
         await _finalize_out_of_band(lease, prepared, "".join(parts), "cancelled",
                                     _elapsed_ms(t_request))
         raise                                    # 태스크가 '취소됨'으로 끝나도록 재전파

@@ -1,3 +1,4 @@
+import logging
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -17,6 +18,8 @@ from schemas.conversations import (
     MessageFeedbackState,
     MessageFeedbackUpdate,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/kms')
 
@@ -316,15 +319,28 @@ async def cancel_generation(
     )).scalar_one_or_none()
     if msg is None:
         raise HTTPException(status_code=404, detail='메시지를 찾을 수 없습니다.')
+
+    # 소유가 확인됐으므로 이제 레지스트리를 봐도 안전하다. 상태보다 먼저 보는 이유: 300초 스테일
+    # 스윕이 '정말 진행 중인' 생성을 failed로 바꿔놓을 수 있는데(느린 GPU·동시성 포화. LLM
+    # 타임아웃이 300초라 도달 가능한 구간이다), 상태만 믿으면 살아 있는 태스크를 멈출 방법이
+    # 사라진다. 태스크가 손에 있으면 DB가 뭐라 하든 멈추는 게 사용자 의사에 맞다.
+    if cancellation.cancel_local(message_id):
+        return Response(status_code=204)           # 이 프로세스가 들고 있었다
     if msg.status == 'cancelled':
         return Response(status_code=204)           # 따닥 두 번째 — 결과가 같으니 성공으로 (멱등)
     if msg.status != 'generating':
-        # done·failed·blocked — 멈출 게 없다. 즉시 경로(캐시히트 등)도 여기로 온다(태스크가 없음).
+        # done·blocked — 멈출 게 없다. 즉시 경로(캐시히트 등)도 여기로 온다(태스크가 없음).
         raise HTTPException(status_code=404, detail='진행 중인 생성이 아닙니다.')
 
-    if cancellation.cancel_local(message_id):
-        return Response(status_code=204)           # 이 프로세스가 들고 있었다
-    await cancellation.request_cancel(message_id)  # 다른 인스턴스 소유로 추정 — 도달 보장은 없다
+    # 다른 인스턴스 소유로 추정 — 발행만 하고 도달은 보장하지 않는다.
+    try:
+        await cancellation.request_cancel(message_id)
+    except Exception:
+        # Redis 순단. 202("접수했다")로 답하면 거짓이 되고 500은 원인을 감춘다 —
+        # 재시도 가능한 상황임을 알린다. 구독측(subscribe_forever)은 재연결하지만
+        # 발행측은 요청 단위라 재시도 주체가 클라이언트다.
+        logger.exception('취소 신호 발행 실패 (message_id=%s)', message_id)
+        raise HTTPException(status_code=503, detail='취소 요청을 전달할 수 없습니다. 잠시 후 다시 시도해 주세요.')
     return Response(status_code=202)
 
 

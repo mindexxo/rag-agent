@@ -1,8 +1,12 @@
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from schemas.kms import SourceCitation
+
+# 👎 사유 태그 (#8) — 수리 경로별 고정 슬러그. 검증은 이 Literal 하나 (4종에 테이블은 과설계)
+FeedbackTag = Literal['wrong_info', 'wrong_source', 'outdated_doc', 'insufficient']
 
 
 class ConversationSummary(BaseModel):
@@ -23,9 +27,39 @@ class ConversationTitleUpdate(BaseModel):
 
 
 class ConversationMessage(BaseModel):
+    message_id: int               # 피드백 PATCH 대상 식별 (#8) — assistant 메시지 id를 FE가 알아야 버튼이 동작
     role: str
     content: str
     status: str = "done"          # generating|done|failed|blocked (FE 재접속 시 진행상태 판별)
     sources: list[SourceCitation] | None = None
     attachments: list[str] | None = None  # 이 턴에 첨부된 파일명 목록 (본문 텍스트는 내려주지 않음)
     cited_docs: list[str] | None = None   # 실인용 파일명 (저장 시 확정) — FE 각주 필터가 본문 재파싱 없이 사용
+    feedback: bool | None = None          # assistant: 👍/👎 현재 상태 — FE가 히스토리 재진입 시 버튼 상태 복원 (#8)
+    feedback_tag: FeedbackTag | None = None
+    feedback_text: str | None = None
+
+
+class MessageFeedbackUpdate(BaseModel):
+    """PATCH /kms/messages/{id}/feedback 바디 (#8) — 멱등 set: FE가 원하는 최종 상태를 보낸다.
+
+    feedback: true=👍, false=👎, null=취소(태그·텍스트도 함께 NULL).
+    tag/text: 👎일 때만 허용, 둘 다 옵셔널 (안 적어도 👎는 기록 — 필수로 만들면 👎 자체가
+    줄어드는 UX 함정). tag=집계·라우팅 축, text=태그가 못 잡는 사유 발굴 축.
+    """
+    feedback: bool | None
+    tag: FeedbackTag | None = None
+    text: str | None = Field(None, max_length=500)   # 자유 서술 — FE는 고객 정보 미기입 안내 필수
+
+    @model_validator(mode='after')
+    def _detail_only_with_downvote(self):
+        if (self.tag is not None or self.text is not None) and self.feedback is not False:
+            raise ValueError('tag·text는 feedback=false(👎)일 때만 보낼 수 있습니다')
+        return self
+
+
+class MessageFeedbackState(BaseModel):
+    """피드백 PATCH 응답 — 저장된 최종 상태 에코 (FE 상태 동기화용)."""
+    message_id: int
+    feedback: bool | None
+    feedback_tag: FeedbackTag | None
+    feedback_text: str | None

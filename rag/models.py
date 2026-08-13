@@ -191,6 +191,10 @@ class Message(Base):
     question_message_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("messages.id", ondelete="SET NULL"))  # assistant: 답한 user 메시지 (짝을 데이터로)
     block_reason: Mapped[str | None]     # assistant(status='blocked'): 입력 가드(classify_and_guard) 차단 사유. 출력 가드는 제거됨(#26)
+    # ── 인간 피드백 1단계 (#8): 상담원의 답변 평가. 검증은 Pydantic Literal (태그 4종·별도 테이블은 과설계)
+    feedback: Mapped[bool | None]        # assistant: True=👍 False=👎 NULL=미선택/취소
+    feedback_tag: Mapped[str | None]     # assistant: 👎 사유 슬러그(wrong_info|wrong_source|outdated_doc|insufficient). 옵셔널 — 👎인데 스킵하면 NULL
+    feedback_text: Mapped[str | None]    # assistant: 👎 자유 서술 (옵셔널, 500자) — 태그가 못 잡는 사유 발굴용. 고객 정보 미기입 안내는 FE 몫
 
 
 class TenantQuota(Base):

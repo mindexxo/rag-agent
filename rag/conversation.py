@@ -206,12 +206,13 @@ async def save_exchange(
         intent: str | None = None,
         status: str = "done",
         block_reason: str | None = None,
-) -> None:
+) -> Message:
     """사용자 질문과 assistant 답변을 세션에 등록한다.
 
     user 메시지에는 standalone_query와 (이번 턴에 첨부했다면) 첨부 추출 텍스트를,
     assistant 메시지에는 sources JSON을 저장한다.
-    commit은 호출자가 담당한다.
+    commit은 호출자가 담당한다. 반환: assistant Message (id는 flush로 확정 —
+    즉시 경로 meta의 assistant_message_id·피드백 PATCH 대상, #8).
     """
     user_message = Message(
         tenant_id=tenant_id,
@@ -241,7 +242,9 @@ async def save_exchange(
         block_reason=block_reason,
     )
     session.add(assistant_message)
+    await session.flush()   # assistant id 확정 (#8)
     await _touch_conversation(session, tenant_id, conversation_id, first_query=user_query)
+    return assistant_message
 
 
 async def _touch_conversation(session: AsyncSession, tenant_id: str, conversation_id: int,

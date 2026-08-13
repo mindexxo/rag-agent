@@ -399,6 +399,65 @@ async def test_로컬에_없으면_발행하고_202(client, tenant_id, fake_llm,
 
 
 @pytest.mark.asyncio
+async def test_구독이_끊겨도_재연결해_계속_받는다(monkeypatch):
+    """포기하면 그 프로세스는 재기동 전까지 원격 취소를 전부 놓치고, 그게 조용한 장애다.
+
+    첫 연결을 실패시킨 뒤 신호가 여전히 도달하는지 본다 — 재시도가 없으면 이 테스트는 멈춘다.
+    """
+    import redis.asyncio as aioredis
+
+    from config import settings
+    from rag import clients
+
+    monkeypatch.setattr(cancellation, 'SUBSCRIBE_RETRY_MIN_SECONDS', 0.05)
+    clients.shared_redis = aioredis.from_url(settings.redis_url)
+    real_pubsub, attempts = clients.shared_redis.pubsub, []
+
+    def flaky_pubsub():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise ConnectionError('첫 연결 실패')     # 순단 재현
+        return real_pubsub()
+    monkeypatch.setattr(clients.shared_redis, 'pubsub', flaky_pubsub)
+
+    loop_task = asyncio.create_task(cancellation.subscribe_forever())
+    for _ in range(100):                              # 재연결로 구독이 붙을 때까지
+        if len(attempts) >= 2:
+            break
+        await asyncio.sleep(0.05)
+    await asyncio.sleep(0.2)                          # 구독 확립 여유
+
+    cancelled = []
+
+    async def dummy():
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            cancelled.append(1)
+            raise
+
+    task = asyncio.create_task(dummy())
+    await asyncio.sleep(0)
+    cancellation.register(-77, task)
+    await cancellation.request_cancel(-77)
+    for _ in range(100):
+        if cancelled:
+            break
+        await asyncio.sleep(0.05)
+
+    loop_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await loop_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    await clients.shared_redis.aclose()
+    clients.shared_redis = aioredis.from_url(settings.redis_url)
+
+    assert len(attempts) >= 2, '끊긴 뒤 재연결을 시도하지 않았다'
+    assert cancelled == [1], '재연결 후에도 신호를 받지 못했다'
+
+
+@pytest.mark.asyncio
 async def test_원격_신호가_구독으로_전달돼_취소된다(cancel_subscriber):
     """발행 → 구독 → 로컬 취소 배선. lifespan 없이 구독 루프를 직접 띄워 검증한다."""
     cancelled = []

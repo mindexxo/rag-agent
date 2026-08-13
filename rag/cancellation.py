@@ -50,9 +50,12 @@ logger = logging.getLogger(__name__)
 # 취소 신호 채널. kms: prefix는 리미터 키(kms:inflight:*)와 같은 관례.
 CANCEL_CHANNEL = 'kms:cancel'
 
-# 구독이 끊겼을 때 재시도 간격 — 짧게 잡는다. 이 루프가 죽으면 그 프로세스는 원격 취소를
+# 재연결 간격 — 지수 백오프(붙으면 초기화). 이 루프가 멈추면 그 프로세스는 원격 취소를
 # 영구히 놓치는데, 증상이 "취소가 간헐적으로 안 먹힌다"로만 나타나 진단이 어렵다.
-SUBSCRIBE_RETRY_SECONDS = 3
+# 그래서 포기하지 않는다: 상한까지만 늘리고 무한히 재시도한다. 고정 간격이면 장기 장애에서
+# 로그가 폭주하고(인스턴스당 시간 1200줄), 상한이 없으면 복구가 한없이 늦어진다.
+SUBSCRIBE_RETRY_MIN_SECONDS = 1
+SUBSCRIBE_RETRY_MAX_SECONDS = 30
 
 # 진행 중 생성 태스크: assistant_message_id → task. 등록/해제는 rag/streaming.py가 한다.
 _registry: dict[int, asyncio.Task] = {}
@@ -90,14 +93,20 @@ async def request_cancel(message_id: int) -> None:
 async def subscribe_forever() -> None:
     """취소 채널 구독 루프 — 앱 수명 동안 하나만 돈다 (main.py lifespan).
 
-    순단으로 구독이 끊기면 로그를 남기고 SUBSCRIBE_RETRY_SECONDS 후 다시 붙는다.
-    재연결 없이 두면 한 번의 순단으로 그 프로세스가 재기동 전까지 원격 취소를 전부
-    놓치는 조용한 장애가 된다.
+    순단으로 끊기면 지수 백오프로 **무한히** 다시 붙는다. 시도 횟수 상한을 두지 않는 이유:
+    포기하는 순간 그 프로세스는 재기동 전까지 원격 취소를 전부 놓치는데, 그게 조용한 장애라
+    아무도 모른다. 붙는 데 성공하면 간격을 초기화한다.
+
+    끊김 말고 정상 종료(listen이 그냥 끝나는 경우)에도 대기를 거쳐 다시 붙는다 — 그 경로에
+    대기가 없으면 busy-loop가 된다.
     """
+    delay = SUBSCRIBE_RETRY_MIN_SECONDS
     while True:
-        pubsub = clients.shared_redis.pubsub()   # 재연결 때마다 최신 클라이언트를 집는다
+        pubsub = None
         try:
+            pubsub = clients.shared_redis.pubsub()   # 재연결 때마다 최신 클라이언트를 집는다
             await pubsub.subscribe(CANCEL_CHANNEL)
+            delay = SUBSCRIBE_RETRY_MIN_SECONDS      # 붙었으니 백오프 초기화
             async for raw in pubsub.listen():
                 if raw['type'] != 'message':
                     continue          # subscribe 확인 메시지 등
@@ -105,13 +114,17 @@ async def subscribe_forever() -> None:
         except asyncio.CancelledError:
             raise                     # 앱 종료 — 재시도하지 않는다
         except Exception:
-            logger.exception('취소 채널 구독이 끊겼다 — %s초 후 재연결', SUBSCRIBE_RETRY_SECONDS)
-            await asyncio.sleep(SUBSCRIBE_RETRY_SECONDS)
+            # pubsub() 생성까지 try 안에 둔다 — 밖에 두면 거기서 터졌을 때 루프가 통째로 죽어
+            # 정확히 "재기동 전까지 먹통"이 된다.
+            logger.exception('취소 채널 구독이 끊겼다 — %s초 후 재연결', delay)
         finally:
-            try:
-                await pubsub.aclose()
-            except Exception:
-                pass                  # 정리 실패가 재연결을 막지 않게
+            if pubsub is not None:
+                try:
+                    await pubsub.aclose()
+                except Exception:
+                    pass              # 정리 실패가 재연결을 막지 않게
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, SUBSCRIBE_RETRY_MAX_SECONDS)
 
 
 def _handle_signal(data) -> None:

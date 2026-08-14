@@ -21,6 +21,7 @@ from rag.chunking import chunk_file
 from rag.embeddings import embed_texts
 from rag.index_text import build_index_text
 from rag.models import Chunk, Document
+from text_norm import normalize_filename
 
 _MIME_OVERRIDES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -44,18 +45,21 @@ async def ingest_file(file_path: str | Path, tenant_id: str) -> int:
         raise FileNotFoundError(file_path)
 
     mime = _detect_mime(path)
+    # 경계 정규화 (#34) — 파일시스템이 주는 이름은 macOS에서 NFD일 수 있다. 웹 업로드와
+    # 같은 형태로 통일해야 CLI로 넣은 문서도 인용 매칭·재업로드 supersede가 맞는다.
+    filename = normalize_filename(path.name)
 
     chunks = chunk_file(file_path)
     # 워커 경로(rag/documents.py)와 같은 조립 — 임베딩 입력에만 '파일명 > 헤딩' 컨텍스트
     embeddings = await embed_texts([
-        build_index_text(c.text, path.name, c.heading_path) for c in chunks
+        build_index_text(c.text, filename, c.heading_path) for c in chunks
     ])
 
     async with AsyncSessionLocal() as session:
         async with session.begin():
             doc = Document(
                 tenant_id=tenant_id,
-                filename=path.name,
+                filename=filename,
                 mime=mime,
                 blob_path=str(path.resolve()),
                 version=1,

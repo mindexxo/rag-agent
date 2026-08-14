@@ -52,6 +52,38 @@ async def register_faq(client) -> int:
     return res.json()['id']
 
 
+class _FakePool:
+    def __init__(self, jobs: list):
+        self._jobs = jobs
+
+    async def enqueue_job(self, name: str, *args) -> None:
+        self._jobs.append((name, *args))
+
+    async def aclose(self) -> None:
+        pass
+
+
+@pytest.fixture
+def fake_queue(monkeypatch):
+    """arq enqueue를 기록만 하는 가짜로 — 실제 Redis 큐에 잡이 쌓이지 않게."""
+    jobs: list = []
+
+    async def _create_pool(*a, **kw):
+        return _FakePool(jobs)
+
+    import routers.documents as rd
+    monkeypatch.setattr(rd, 'create_pool', _create_pool)
+    return jobs
+
+
+@pytest.fixture
+def blob_tmp(monkeypatch, tmp_path):
+    """blob 저장소를 테스트 임시 디렉터리로 — 실제 blob 디렉터리 오염 방지."""
+    from config import settings
+    monkeypatch.setattr(settings, 'blob_storage_dir', str(tmp_path))
+    return tmp_path
+
+
 # ── 가짜 임베딩 ──────────────────────────────────────────────
 
 def fake_vector(text: str) -> list[float]:
@@ -83,12 +115,14 @@ def fake_embed(monkeypatch):
 
     import rag.cache
     import rag.documents
+    import rag.ingestion
     import rag.retriever
     import routers.faqs
     from config import settings
 
     monkeypatch.setattr(routers.faqs, 'embed_texts', _texts)
     monkeypatch.setattr(rag.documents, 'embed_texts', _texts)
+    monkeypatch.setattr(rag.ingestion, 'embed_texts', _texts)   # CLI 인제스트 경로 (#34 테스트가 사용)
     monkeypatch.setattr(rag.retriever, 'embed_texts', _texts)   # 쿼리 확장(#5)으로 배치 임베딩 전환
     monkeypatch.setattr(rag.cache, 'embed_query', _query)
     monkeypatch.setattr(settings, 'rerank_enabled', False)

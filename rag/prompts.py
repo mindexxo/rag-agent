@@ -4,6 +4,7 @@
 LLM에게 "문서 블록만 근거로 답해라, 인용은 [파일명 v1] 형식" 을 강제.
 """
 from rag.retriever import RetrievedChunk
+from text_norm import nfc
 
 # 근거 게이트/LLM 거절 시 공통으로 쓰는 고정 거절 문구.
 # 시스템 프롬프트(규칙 2)와 캐시 제외 비교(service.save)가 같은 값을 봐야 하므로 상수로 단일화.
@@ -15,11 +16,16 @@ def cited_filenames(answer: str, sources) -> list[str]:
 
     저장 시점에 확정해 messages.cited_docs로 보존 — 지표·FE가 재파싱 없이 사용.
     sources: SourceCitation 리스트 (filename/version 속성).
+
+    비교 직전에 양쪽을 NFC로 맞춘다 (#34). 경계 정규화로 저장값은 NFC지만 **LLM 출력은
+    우리가 통제하는 입력이 아니고**, 마이그레이션 전 남아 있는 NFD 행도 여기서 구제된다.
+    반환값은 원본 s.filename을 유지해야 cited_docs가 DB filename과 조인된다.
     """
+    nfc_answer = nfc(answer)
     return [
         s.filename for s in sources
-        if (s.filename == 'FAQ' and '[FAQ]' in answer)
-        or f'[{s.filename} v{s.version}]' in answer
+        if (s.filename == 'FAQ' and '[FAQ]' in nfc_answer)
+        or f'[{nfc(s.filename)} v{s.version}]' in nfc_answer
     ]
 
 

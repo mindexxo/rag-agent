@@ -24,8 +24,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix='/kms')
 
 # generating이 이 시간 넘게 지속되면 백그라운드 태스크/웹 프로세스 사망으로 고착 → failed 간주.
-# (정상 생성은 수십 초. 5분은 넉넉한 "확실히 죽음" 임계)
-GENERATION_STALE_SECONDS = 300
+#
+# 임계는 '정상 생성의 최대 소요'보다 **확실히 커야** 한다. 살아 있는 요청을 먼저 failed로
+# 선고하면 그 태스크가 완주할 때 finalize_turn이 그 행을 done으로 덮어써(좀비 플립), 이미
+# 실패로 보고된 턴이 조용히 성공이 되고 과거 통계까지 소급 변한다. LLM 호출 타임아웃이
+# 300초(rag/llm.py)라 이전 값 300은 그 경계에 딱 붙어 있었다 — 동시성 포화로 vLLM 큐에서
+# 밀리면 정상 요청이 스윕에 걸릴 수 있었다. 스윕은 '죽은 프로세스 회수'가 목적이라 늦게
+# 정리해도 손해가 없으므로 여유를 뒀다.
+GENERATION_STALE_SECONDS = 500
 
 MAX_CONVERSATIONS = 10   # 페이지 크기 상한 (#10부터 offset 페이지네이션의 limit 상한 의미)
 

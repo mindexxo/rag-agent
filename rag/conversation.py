@@ -330,6 +330,12 @@ async def finalize_turn(
     msg = await session.get(Message, assistant_message_id)
     if msg is None or msg.tenant_id != tenant_id:
         return
+    if msg.status != 'generating':
+        # 자리표시가 아닌 상태를 덮어쓰는 중. 대표 경우: 스테일 스윕이 먼저 failed로 바꿔놨는데
+        # 태스크가 살아서 완주했다(좀비 플립). 덮어쓰는 건 맞다 — 완성된 답변을 버릴 수 없다.
+        # 다만 조용히 넘기면 "실패로 봤던 턴이 왜 done이 됐나"를 나중에 추적할 수 없어 경고를 남긴다.
+        logger.warning('finalize가 %s 상태를 %s로 덮어쓴다 (message_id=%s) — 스테일 스윕과 경쟁했을 수 있다',
+                       msg.status, status, assistant_message_id)
     msg.content = answer
     msg.sources = sources
     msg.status = status

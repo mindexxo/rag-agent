@@ -22,7 +22,7 @@ from pathlib import Path
 from database import AsyncSessionLocal
 from eval.generation import row_tenant
 from rag.service import RagService
-from rag.prompts import is_refusal
+from rag.answer_check import is_refusal
 
 GOLD = Path(__file__).resolve().parent / "gold_set_v2.jsonl"
 CONCURRENCY = 4

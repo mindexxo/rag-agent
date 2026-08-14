@@ -1,6 +1,8 @@
 """KMS API 요청/응답 스키마"""
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from text_norm import normalize_filename
 
 class SourceCitation(BaseModel):
     """응답에 인용된 문서 정보. 내부 retrieval 메타(score 등)는 제외.
@@ -23,6 +25,21 @@ class QueryAttachment(BaseModel):
     """채팅 첨부 문서 — 서버에 저장하지 않고 요청마다 동봉되는 추출 텍스트."""
     filename: str = Field(max_length=ATTACHMENT_FILENAME_MAX)
     text: str = Field(max_length=ATTACHMENT_MAX_TEXT_CHARS)
+
+    @field_validator('filename', mode='before')
+    @classmethod
+    def _nfc_filename(cls, v):
+        """파일명 경계 정규화 (#34). 스키마에 두는 이유 — 이 모델에 도달하는 경로가 둘이다:
+        /kms/attachments/extract의 응답 생성과 /kms/query 바디 파싱. 라우터마다 넣으면
+        하나를 빠뜨리고, 새 경로가 생기면 또 빠뜨린다. `[첨부: 파일명]` 라벨이 프롬프트에
+        들어가므로 문서 파일명과 같은 위험을 갖는다.
+        text(본문)는 정규화하지 않는다 — 원문 보존.
+
+        mode='before'인 이유: 기본값 'after'면 max_length가 **정규화 전** 길이로 검사된다.
+        NFD 한글은 글자당 최대 3코드포인트라, NFC 기준 상한 이내인 정상 파일명이 분해형으로
+        오면 거부될 수 있다 — 검증 기준과 저장 기준이 어긋나는, 이 이슈와 같은 유형의 비대칭.
+        """
+        return normalize_filename(v) if isinstance(v, str) else v
 
 DOMAIN_HINT_MAX = 200   # 프롬프트 3곳에 매 요청 주입되므로 길이 제한 (클라이언트발 텍스트 상한)
 

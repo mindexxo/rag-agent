@@ -39,6 +39,12 @@ async def main():
             if ids:
                 await session.execute(delete(Document).where(Document.id.in_(ids)))
         print(f"삭제: {len(ids)} 문서")
+        # 위 in_() 비교는 소스 리터럴(NFC) vs DB filename이다. DB에 NFD 행이 남아 있으면
+        # 조용히 0건 삭제 후 아래에서 재적재해 **중복 문서를 쌓는다** (#34). 실패가 아니라
+        # 성공처럼 보이는 경로라 여기서 눈에 띄게 경고한다.
+        if not ids:
+            print("  ⚠ 삭제 대상 0건 — 첫 실행이면 정상. 아니면 DB filename 정규형(NFD)이"
+                  " 어긋났을 수 있다: SELECT filename FROM documents WHERE filename <> normalize(filename, NFC);")
 
     # 2) 재인제스천
     for fn in PDFS:

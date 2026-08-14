@@ -41,6 +41,7 @@ from rag.models import Chunk, Document, Folder
 from routers.kms import get_tenant_id
 from schemas.kms import (ATTACHMENT_FILENAME_MAX, ATTACHMENT_MAX_TEXT_CHARS, DocumentExistsResponse,
                          DocumentUploadResponse, DocumentUpdateRequest, QueryAttachment)
+from text_norm import normalize_filename
 
 
 def _to_response(doc: Document, ref_count: int | None = None) -> DocumentUploadResponse:
@@ -119,7 +120,10 @@ async def upload_document(
     _reject_if_oversized(request, DOC_MAX_FILE_BYTES)   # 거대 본문은 read 전에 차단 (C2-A)
     if not file.filename:   # multipart에 filename 누락 시 Path(None) TypeError→500 방지 (C2)
         raise HTTPException(status_code=400, detail='파일명이 없습니다.')
-    suffix = Path(file.filename).suffix.lower()
+    # 경계 정규화 (#34) — 브라우저가 macOS 파일명을 NFD로 주면 DB에 분해형이 저장되고,
+    # LLM이 NFC로 인용해 매칭이 조용히 깨진다. 이하 전부 이 값을 쓴다 (원본 file.filename 금지).
+    filename = normalize_filename(file.filename)
+    suffix = Path(filename).suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
         raise HTTPException(status_code=400, detail=f'지원하지 않는 형식입니다: {suffix or "확장자 없음"}. 지원: PDF/DOCX/XLSX/TXT/MD')
 
@@ -141,16 +145,16 @@ async def upload_document(
     # 3. 낙관적 잠금 — 확인창에서 본 상태와 지금 DB가 같은지 본다.
     #    이 조회만으로는 조회~insert 사이 창이 남는다. 그 창은 아래 IntegrityError가 닫는다.
     if expect_version is not None:
-        current = await _current_version(session, tenant_id, file.filename)
+        current = await _current_version(session, tenant_id, filename)
         if current != expect_version:
             blob_path.unlink(missing_ok=True)      # 참조되지 않는 blob 남기지 않기
-            return _version_conflict(file.filename, current)
+            return _version_conflict(filename, current)
 
     # 4. 파일 인덱싱 후 저장
     mime = _detect_mime(blob_path)
     try:
         doc = await handle_upload(
-            session, tenant_id, file.filename, mime, blob_path, description=description
+            session, tenant_id, filename, mime, blob_path, description=description
         )
         await session.commit()
     except IntegrityError:
@@ -159,7 +163,7 @@ async def upload_document(
         # (expect_version 미전송 호출도 여기서 409가 된다 — 이전엔 그대로 터져 500이었다)
         await session.rollback()
         blob_path.unlink(missing_ok=True)
-        return _version_conflict(file.filename, await _current_version(session, tenant_id, file.filename))
+        return _version_conflict(filename, await _current_version(session, tenant_id, filename))
 
     #5. pending이면 워커에 인덱싱 작업 등록.
     if doc.status == 'pending':
@@ -236,6 +240,9 @@ async def document_exists(
     이 API는 안내용일 뿐 강제력이 없다. 업로드 API는 확인 없이도 통과하며(2026-08-05 결정),
     그 경우 기존 버전이 그대로 대체된다.
     """
+    # 업로드와 같은 경계 정규화 (#34) — 여기만 빠지면 위 "판정 기준이 정확히 같아야 한다"가
+    # 깨져, NFD 이름으로 물어본 클라이언트가 exists=false를 받고 중복 문서를 만든다.
+    filename = normalize_filename(filename)
     doc = (await session.execute(
         select(Document)
         .where(Document.tenant_id == tenant_id)      # 격리 — WHERE 절 명시
@@ -404,7 +411,10 @@ async def extract_attachment(request: Request, file: UploadFile = File(...)):
     _reject_if_oversized(request, ATTACHMENT_MAX_FILE_BYTES)   # 거대 본문은 read 전에 차단 (C2-A)
     # 파일명 상한은 마지막 줄의 QueryAttachment 생성에서도 검증되는데, 그 지점의 ValidationError는
     # 요청 파싱이 아니라 핸들러 내부라 422로 변환되지 않고 500이 된다 — 여기서 명시 거절 (#22)
-    if len(file.filename or '') > ATTACHMENT_FILENAME_MAX:
+    # 길이는 정규화 후 값으로 재야 스키마 검증(mode='before')과 같은 기준이 된다 (#34) —
+    # NFD 한글은 글자당 최대 3코드포인트라 raw 길이로 재면 여기서만 거부되는 파일명이 생긴다.
+    filename = normalize_filename(file.filename or '')
+    if len(filename) > ATTACHMENT_FILENAME_MAX:
         raise HTTPException(status_code=413,
                             detail=f'파일명이 너무 깁니다 ({ATTACHMENT_FILENAME_MAX}자 이내로 줄여 주세요).')
     content = await file.read()
@@ -413,7 +423,7 @@ async def extract_attachment(request: Request, file: UploadFile = File(...)):
         raise HTTPException(status_code=413,
                             detail=f'파일이 {ATTACHMENT_MAX_FILE_BYTES // (1024 * 1024)}MB를 초과합니다.')
 
-    suffix = Path(file.filename).suffix.lower()
+    suffix = Path(filename).suffix.lower()
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(content)
         tmp_path = Path(tmp.name)
@@ -431,6 +441,6 @@ async def extract_attachment(request: Request, file: UploadFile = File(...)):
             status_code=413,
             detail=f'문서가 너무 깁니다 (추출 텍스트 {len(text):,}자 > {ATTACHMENT_MAX_TEXT_CHARS:,}자). 필요한 부분만 잘라 첨부해 주세요.',
         )
-    return QueryAttachment(filename=file.filename, text=text)
+    return QueryAttachment(filename=filename, text=text)
 
 

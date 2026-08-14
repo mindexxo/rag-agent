@@ -13,38 +13,6 @@ from rag.documents import index_pending_document
 from rag.models import AnswerCache as AnswerCacheRow, Chunk, Document
 
 
-class _FakePool:
-    def __init__(self, jobs: list):
-        self._jobs = jobs
-
-    async def enqueue_job(self, name: str, *args) -> None:
-        self._jobs.append((name, *args))
-
-    async def aclose(self) -> None:
-        pass
-
-
-@pytest.fixture
-def fake_queue(monkeypatch):
-    """arq enqueue를 기록만 하는 가짜로 — 실제 Redis 큐에 잡이 쌓이지 않게."""
-    jobs: list = []
-
-    async def _create_pool(*a, **kw):
-        return _FakePool(jobs)
-
-    import routers.documents as rd
-    monkeypatch.setattr(rd, 'create_pool', _create_pool)
-    return jobs
-
-
-@pytest.fixture
-def blob_tmp(monkeypatch, tmp_path):
-    """blob 저장소를 테스트 임시 디렉터리로 — 실제 blob 디렉터리 오염 방지."""
-    from config import settings
-    monkeypatch.setattr(settings, 'blob_storage_dir', str(tmp_path))
-    return tmp_path
-
-
 async def _upload(client, filename: str, content: bytes, mime='text/markdown') -> dict:
     res = await client.post('/kms/documents', files={'file': (filename, content, mime)})
     assert res.status_code == 200, res.text

@@ -27,6 +27,7 @@ from sqlalchemy import delete, select, update
 
 from database import AsyncSessionLocal
 from rag.models import Chunk, Document, Folder
+from text_norm import nfc
 
 V2_TENANTS = ["adererror", "aromanica", "goodpeople", "harim", "homeplus", "summers"]
 
@@ -54,7 +55,11 @@ def classify(filename: str, title: str = "") -> str:
     리랭커 입력에 붙는다. 설명이 틀리면 안 붙이느니만 못하므로 안내 쪽에 우선권을 준다.
     (파일명에 '정책'이 명시된 건 그대로 정책 — 아래 예외 참조)
     """
-    hay = f"{filename} {title}"
+    # 소스에 타이핑된 한글 키워드(NFC)와 DB filename을 비교하므로 NFC로 맞춘다 (#34).
+    # DB에 NFD 행이 남아 있으면 아래 매칭이 전부 실패해 모든 문서가 최종 폴백 'guide'로
+    # 몰리고, 폴더 설명이 틀리게 붙어 리랭커 입력이 조용히 오염된다 (예외도 로그도 없다).
+    hay = nfc(f"{filename} {title}")
+    filename = nfc(filename)
     if any(w in hay for w in SCRIPT_WORDS):
         return "script"
     if filename.lower().endswith(".xlsx"):

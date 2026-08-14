@@ -52,6 +52,27 @@ CREATE INDEX IF NOT EXISTS idx_docs_tenant_status
 CREATE UNIQUE INDEX IF NOT EXISTS uq_docs_one_active_per_name
     ON documents (tenant_id, filename)
     WHERE is_active = TRUE;
+-- filename은 애플리케이션 경계에서 NFC로 정규화된 값만 저장된다 (#34, text_norm.py).
+-- 위 UNIQUE는 코드포인트 단위라, 정규형이 섞이면 시각적으로 같은 이름이 별개 문서로 통과한다.
+--
+-- 기존 DB 반영(#34) — NFD로 저장된 과거 행 정리. **UPDATE 전에 충돌을 먼저 확인할 것**:
+--   ① 정규화 대상 확인
+--      SELECT id, tenant_id, filename, version FROM documents
+--       WHERE filename <> normalize(filename, NFC);
+--   ② 정규화하면 제약이 깨지는 쌍이 있는지 (있으면 UPDATE가 실패한다 — 수동 정리 선행).
+--      **두 제약을 각각 봐야 한다** — 아래 uq_docs_one_active_per_name는 부분 유니크라
+--      version이 달라도 걸린다. NFD판·NFC판이 둘 다 active로 공존하는 게 이 버그의 전형이다.
+--      -- ②-a UNIQUE (tenant_id, filename, version)
+--      SELECT tenant_id, normalize(filename, NFC) AS nfc_name, version, count(*)
+--        FROM documents GROUP BY 1, 2, 3 HAVING count(*) > 1;
+--      -- ②-b uq_docs_one_active_per_name (tenant_id, filename) WHERE is_active
+--      SELECT tenant_id, normalize(filename, NFC) AS nfc_name, count(*)
+--        FROM documents WHERE is_active GROUP BY 1, 2 HAVING count(*) > 1;
+--   ③ 적용
+--      UPDATE documents SET filename = normalize(filename, NFC)
+--       WHERE filename <> normalize(filename, NFC);
+-- 청크 임베딩에도 파일명이 prefix로 들어가므로(rag/index_text.py) 정합을 완전히 맞추려면
+-- 해당 문서 재인제스트가 이상적이다. 검색 품질 영향은 작아 각주·지표 복구는 UPDATE만으로 충분.
 
 -- ---------- FAQ (F3: 전용 저장. 검색은 chunks로 통합 — 관문·원문반환 없음) ----------
 CREATE TABLE IF NOT EXISTS faqs (

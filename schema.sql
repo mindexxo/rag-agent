@@ -100,8 +100,6 @@ CREATE TABLE IF NOT EXISTS chunks (
     heading_path  TEXT[]       NOT NULL DEFAULT '{}',
     metadata      JSONB        NOT NULL DEFAULT '{}'::jsonb,
     dense         VECTOR(1024) NOT NULL,
-    -- [dense-only, F99] sparse 제거. 하이브리드 원복 시 해제 + 재인제스트
-    -- sparse        SPARSEVEC(250002) NOT NULL,
     UNIQUE (document_id, chunk_index),
     CHECK ((document_id IS NOT NULL AND faq_id IS NULL) OR (document_id IS NULL AND faq_id IS NOT NULL))
 );
@@ -111,10 +109,6 @@ CREATE INDEX IF NOT EXISTS idx_chunks_tenant_doc
 CREATE INDEX IF NOT EXISTS idx_chunks_dense_hnsw
     ON chunks USING hnsw (dense vector_cosine_ops)
     WITH (m = 16, ef_construction = 64);
--- [dense-only, F99] sparse 인덱스 제거. 하이브리드 원복 시 해제
--- CREATE INDEX IF NOT EXISTS idx_chunks_sparse_hnsw
---     ON chunks USING hnsw (sparse sparsevec_ip_ops)
---     WITH (m = 16, ef_construction = 64);
 
 -- ---------- LLM 응답 캐시 ----------
 CREATE TABLE IF NOT EXISTS answer_cache (

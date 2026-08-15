@@ -22,7 +22,7 @@ def _chunk(**kw) -> RetrievedChunk:
 
 class TestBuildIndexText:
     def test_폴더_미전달이_기본값(self):
-        """임베딩 호출부(documents.py·ingestion.py)는 folder를 안 넘긴다 — 기본값이 None이어야
+        """임베딩 호출부(documents.py)는 folder를 안 넘긴다 — 기본값이 None이어야
         3인자 호출이 그대로 유지되고, 저장 벡터에 폴더가 섞이지 않는다."""
         sig = inspect.signature(build_index_text)
         assert sig.parameters['folder'].default is None

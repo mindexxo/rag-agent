@@ -158,19 +158,3 @@ async def test_query_바디의_첨부_파일명도_정규화된다(client, tenan
         )).scalars().first()
         assert user_msg.attachments[0]['filename'] == FILENAME_NFC
     assert assistant_id is not None
-
-
-@pytest.mark.asyncio
-async def test_CLI_인제스트도_NFC로_저장된다(tenant_id, fake_embed, tmp_path):
-    """CLI(`ingest_file`)는 파일시스템 이름을 직접 쓰는 4번째 경계다. 웹 업로드와 형태가
-    갈리면 같은 문서가 CLI/웹에서 별개로 취급돼 supersede·인용 매칭이 어긋난다."""
-    from rag.ingestion import ingest_file
-
-    src = tmp_path / FILENAME_NFD
-    src.write_bytes(MD)
-    doc_id = await ingest_file(src, tenant_id)
-
-    async with AsyncSessionLocal() as session:
-        doc = await session.get(Document, doc_id)
-        assert doc.filename == FILENAME_NFC
-        assert unicodedata.is_normalized('NFC', doc.filename)

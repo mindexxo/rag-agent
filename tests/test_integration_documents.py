@@ -374,8 +374,8 @@ async def test_동시_삽입은_유니크_인덱스가_막고_409(client, tenant
     import routers.documents as rd
     real = rd.handle_upload
 
-    async def _collide(session, t, filename, mime, blob_path, description=None):
-        doc = await real(session, t, filename, mime, blob_path, description=description)
+    async def _collide(session, t, filename, blob_path, description=None):
+        doc = await real(session, t, filename, blob_path, description=description)
         doc.version = 1          # 남이 방금 v1을 넣은 것과 같은 결과
         return doc
 

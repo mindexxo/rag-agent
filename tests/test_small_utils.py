@@ -1,7 +1,7 @@
 """소형 유틸 단위 테스트 — estimate_tokens / _detect_mime."""
 from pathlib import Path
 
-from rag.ingestion import _detect_mime
+from rag.documents import _detect_mime
 from rag.tokens import estimate_tokens
 
 

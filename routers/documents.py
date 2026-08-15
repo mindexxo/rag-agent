@@ -36,7 +36,6 @@ from database import get_session
 from rag.cache import AnswerCache
 from rag.chunking import extract_text
 from rag.documents import handle_upload
-from rag.ingestion import _detect_mime
 from rag.models import Chunk, Document, Folder
 from routers.kms import get_tenant_id
 from schemas.kms import (ATTACHMENT_FILENAME_MAX, ATTACHMENT_MAX_TEXT_CHARS, DocumentExistsResponse,
@@ -150,11 +149,10 @@ async def upload_document(
             blob_path.unlink(missing_ok=True)      # 참조되지 않는 blob 남기지 않기
             return _version_conflict(filename, current)
 
-    # 4. 파일 인덱싱 후 저장
-    mime = _detect_mime(blob_path)
+    # 4. 파일 인덱싱 후 저장 (mime은 handle_upload가 blob_path에서 직접 구한다)
     try:
         doc = await handle_upload(
-            session, tenant_id, filename, mime, blob_path, description=description
+            session, tenant_id, filename, blob_path, description=description
         )
         await session.commit()
     except IntegrityError:

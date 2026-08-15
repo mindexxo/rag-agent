@@ -115,14 +115,12 @@ def fake_embed(monkeypatch):
 
     import rag.cache
     import rag.documents
-    import rag.ingestion
     import rag.retriever
     import routers.faqs
     from config import settings
 
     monkeypatch.setattr(routers.faqs, 'embed_texts', _texts)
     monkeypatch.setattr(rag.documents, 'embed_texts', _texts)
-    monkeypatch.setattr(rag.ingestion, 'embed_texts', _texts)   # CLI 인제스트 경로 (#34 테스트가 사용)
     monkeypatch.setattr(rag.retriever, 'embed_texts', _texts)   # 쿼리 확장(#5)으로 배치 임베딩 전환
     monkeypatch.setattr(rag.cache, 'embed_query', _query)
     monkeypatch.setattr(settings, 'rerank_enabled', False)

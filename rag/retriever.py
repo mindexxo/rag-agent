@@ -5,19 +5,19 @@
     query (+ 확장 변형, #5 Multi-Query)
       -> embed_texts                 쿼리 전체를 배치 1회로 임베딩
       -> _search_dense_per_query     쿼리별 dense top-N (cosine distance)
-      -> _rank_single / _rank_multi  순위 결정 — 이름이 슬라이스 시점을 말한다 (아래)
+      -> (단일: distance 순 그대로 / 멀티: _rank_multi 로 RRF 융합)
       -> _fetch_chunk_map            본문·메타 IN절 1회 조회
       -> rerank / rerank_maxpool     cross-encoder 재정렬 (rag.reranker, settings.rerank_enabled)
+      -> [:top_n]                    두 경로 공통 — 슬라이스는 항상 리랭크 뒤다
       -> _keep_single_table          표는 한 시트만 (F1a)
                                      == retrieve_candidates()
       -> apply_gate                  근거 게이트 (top-1 거리 임계값)
       -> RetrievalResult             == retrieve() 가 위 둘을 조합
 
-**단일/멀티 비대칭** — `_rank_single`은 top_n으로 자르고 `_rank_multi`는 자르지 않는다.
-그래서 리랭커가 보는 후보 수가 경로마다 다르다 (단일=top_n, 멀티=union 전체).
-#5가 멀티 경로를 얹으며 생긴 부작용이며 여기서 고치지 않는다 — 이슈 #39에서
-리랭커 점수 컷오프와 함께 판단한다. 함수 이름을 둘로 나눈 이유가 이 비대칭을
-시그니처에서 보이게 하려는 것이다.
+**리랭커는 두 경로 모두 후보 전체를 본다** — 단일이면 dense `candidates_per_branch`개,
+멀티면 union 전체. 슬라이스가 리랭크 뒤에 있어서 리랭커가 순위를 뒤집을 여지를 안 깎는다.
+한때 단일 경로만 리랭크 **앞에서** top_n으로 잘라(#5가 멀티를 얹으며 생긴 비대칭)
+dense 21~30위를 리랭커에게 보여주지 않았다 — #38에서 해소.
 
 평가(1.5.B)는 retrieve_candidates / apply_gate 를 직접 호출해 Recall@N·
 gate 전/후·threshold sweep 을 본다. 운영 /kms/query 는 retrieve() wrapper
@@ -176,21 +176,14 @@ async def _search_dense_per_query(
     return per_query_ids, dense_results
 
 
-def _rank_single(dense_ids: list[int], top_n: int) -> list[int]:
-    """단일 쿼리 순위 — distance 순 그대로, **여기서 top_n으로 자른다**.
-
-    자르는 시점이 리랭크 **앞**이라 리랭커는 top_n개만 본다 (짝인 `_rank_multi`는 자르지
-    않는다 — 비대칭의 배경은 모듈 docstring, 처리는 #39).
-    """
-    return dense_ids[:top_n]
-
-
 def _rank_multi(per_query_ids: list[list[int]]) -> list[int]:
-    """쿼리 확장(#5) 순위 — RRF로 union 전체를 정렬하고 **자르지 않는다**.
+    """쿼리 확장(#5) 순위 — RRF로 union 전체를 정렬한다. 자르지 않는다.
 
-    슬라이스를 리랭크 뒤로 미뤄 max-pool이 union 전체를 채점하게 한다.
+    슬라이스는 리랭크 뒤(호출부)라 max-pool이 union 전체를 채점한다.
     RRF는 max-pool 리랭크 실패 시의 폴백 순서다. 원본 쿼리가 항상 한 리스트로
     들어가므로, 의미 이탈한 변형이 순위를 지배하지 못한다.
+
+    단일 쿼리는 이 함수를 타지 않는다 — dense distance 순이 이미 순위라 그대로 쓴다.
     """
     scores = _rrf_fuse(per_query_ids)
     return [cid for cid, _ in sorted(scores.items(), key=lambda x: -x[1])]
@@ -260,8 +253,10 @@ async def retrieve_candidates(
     session: AsyncSession,
     tenant_id: str,
     query: str,
-    top_n: int = DEFAULT_TOP_N,
+    top_n: int = DEFAULT_TOP_N,           # 리랭크 **후** 남길 후보 수 (리랭커 입력 수가 아니다)
     candidates_per_branch: int = 30,      # 각 쿼리의 dense 검색에서 가져올 후보 수
+                                          # = 리랭커가 실제로 보는 수 (단일 경로 기준).
+                                          # TEI 배치 상한 32 이내라 20→30이 왕복을 늘리지 않는다.
     expanded_queries: list[str] | None = None,   # 쿼리 확장(#5) 변형 — 검색·RRF 융합 전용
 ) -> RetrievalCandidates:
     """dense 검색 → 순위 → 본문 → 리랭크 → 표 필터. 근거 게이트는 apply_gate가 담당.
@@ -284,8 +279,9 @@ async def retrieve_candidates(
     )
 
     # 분기 판정은 여기 한 곳. 아래 리랭크가 이 값을 그대로 받는다.
+    # 어느 쪽이든 자르지 않는다 — 슬라이스는 리랭크 뒤에서 한 번만(#38).
     multi = len(per_query_ids) > 1
-    top_ids = _rank_multi(per_query_ids) if multi else _rank_single(per_query_ids[0], top_n)
+    top_ids = _rank_multi(per_query_ids) if multi else per_query_ids[0]
 
     # 빈 결과 → 빈 후보 반환 (no_results 판정은 apply_gate가)
     if not top_ids:
@@ -315,8 +311,8 @@ async def retrieve_candidates(
                 from rag.reranker import rerank
                 result = await rerank(query, result)
 
-    # 멀티는 union 전체를 들고 왔으므로 top_n이 실제로 확정되는 지점이 여기다.
-    # 단일은 _rank_single이 이미 잘라놔서 no-op — 이 비대칭은 #39에서 판단한다.
+    # top_n이 확정되는 유일한 지점 — 두 경로 공통이다. 리랭크 뒤라서
+    # 리랭커가 하위 후보를 끌어올릴 여지를 슬라이스가 미리 깎지 않는다.
     result = result[:top_n]
     result = _keep_single_table(result)   # 버린 자리는 백필하지 않는다 (함수 docstring 참조)
 

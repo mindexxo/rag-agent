@@ -1,6 +1,8 @@
 """문서 업로드 서비스
 업로드 파일을 dedupe/버전 정책(supersede)에 따라 처리한다.
 """
+import asyncio
+import mimetypes
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,11 +11,31 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import AsyncSessionLocal
 from rag.cache import AnswerCache
-from rag.chunking import chunk_file, chunk_txt
-from rag.xlsx_chunking import chunk_xlsx
+from rag.chunking import chunk_file
 from rag.embeddings import embed_texts
 from rag.index_text import build_index_text
 from rag.models import Chunk, Document
+
+_MIME_OVERRIDES = {
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+
+def _detect_mime(blob_path: Path) -> str:
+    """확장자로 mime 추론 — 업로드 시점에 handle_upload가 부른다.
+
+    `mimetypes`가 docx를 못 알아보는 환경이 있어 override를 먼저 본다.
+    라우터의 SUPPORTED_SUFFIXES 5종이 전부 여기서 판별돼야 업로드가 500 없이 끝난다
+    (tests/test_small_utils.py가 그 조건을 고정한다).
+    """
+    suffix = blob_path.suffix.lower()
+    if suffix in _MIME_OVERRIDES:
+        return _MIME_OVERRIDES[suffix]
+    mime, _ = mimetypes.guess_type(str(blob_path))
+    if not mime:
+        raise ValueError(f"mime 추론 실패: {blob_path}")
+    return mime
+
 
 async def _mark_failed(document_id: int, reason: str) -> None:
     """인덱싱 실패 시 문서를 failed로 기록 (짧은 세션). status=='pending'일 때만."""
@@ -47,14 +69,13 @@ async def index_pending_document(document_id: int) -> None:
 
     try:
         # ── 2) 무거운 계산 — 트랜잭션 밖 (DB 커넥션 안 물고 청킹·임베딩) ──
-        #    형식별 분기: xlsx는 openpyxl(헤더 확실히), txt는 평문, 그 외 pdfplumber/python-docx
-        blob_lower = blob_path.lower()
-        if blob_lower.endswith('.xlsx'):
-            chunks = chunk_xlsx(blob_path, description=description)
-        elif blob_lower.endswith('.txt'):
-            chunks = chunk_txt(blob_path)
-        else:
-            chunks = chunk_file(blob_path)   # pdf/docx/md
+        # 청킹은 동기 CPU 작업(pdfplumber·python-docx·openpyxl)이라 스레드로 보낸다.
+        # 이벤트 루프에서 그대로 돌리면 PDF 하나에 100~200ms(실문서는 초 단위) 동안
+        # 워커 전체가 멈춰, max_jobs=10이 청킹 구간에선 사실상 1이 된다.
+        # to_thread(stdlib)를 쓴다 — 이 모듈은 워커와 라우터가 함께 import하므로
+        # starlette(run_in_threadpool)를 들이면 도메인 계층이 웹 프레임워크에 묶인다.
+        # 형식 분기는 chunk_file 안에 하나뿐이다 (#42 — 두 곳이던 게 xlsx 버그의 원인).
+        chunks = await asyncio.to_thread(chunk_file, blob_path, description=description)
         # 빈 파일·텍스트레이어 없는 PDF 등 → 청크 0개면 ready 승격 대신 failed (C2 유령 ready 방지)
         if not chunks:
             raise ValueError('추출된 텍스트가 없습니다 (빈 파일이거나 파싱 결과가 비어 있음)')
@@ -124,13 +145,13 @@ async def handle_upload(
         session: AsyncSession,
         tenant_id: str,
         filename: str,
-        mime: str,
         blob_path: Path,
         description: str | None = None,
 ) -> Document:
     """업로드 시점 처리: pending row 등록까지만.
     실제 청킹/임베딩/supersede는 워커(index_document)가 수행한다.
     description은 표 설명(xlsx 검색 보강) — 워커가 청킹 시 병합한다.
+    mime은 blob_path에서 직접 구한다 — 호출부가 계산해 넘길 이유가 없다.
 
     문서 식별은 **filename 완전 일치** 하나뿐 (2026-08-05 정책 확정).
     내용 해시(sha) dedupe는 제거 — 같은 이름이면 내용이 같아도 새 version이 된다.
@@ -151,7 +172,7 @@ async def handle_upload(
     doc = Document(
         tenant_id=tenant_id,
         filename=filename,
-        mime=mime,
+        mime=_detect_mime(blob_path),
         blob_path=str(blob_path),
         version=next_version,
         is_active=False,

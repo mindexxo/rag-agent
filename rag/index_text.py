@@ -44,8 +44,9 @@ def build_index_text(text: str, filename: str | None, heading_path: list[str] | 
     # 본문 첫 줄(마크다운 '#' 제거)과 정확히 같은 조각은 중복 — 부분일치로 빼면
     # 본문에 스쳐 나온 단어 때문에 상위 섹션 컨텍스트까지 날아가므로 완전일치만.
     # 조각끼리도 중복 제거 — 파일명 == 헤딩('배송지연대응.docx' + '# 배송지연대응') 대비.
-    # 실측 0건(2026-08-03, heading 보유 92청크)이라 지금은 값싼 예방책일 뿐. 발생 가능성은
-    # DOCX 헤딩 추출이 들어가면 올라간다 — 현재 heading_path는 해시 파일명인 md에만 있어서 0.
+    # 실측 0건(2026-08-03, heading 보유 92청크)이라 지금은 값싼 예방책일 뿐.
+    # 그 뒤 PDF·DOCX 헤딩 추출이 들어가 heading 커버리지가 100%가 됐으므로(2026-08-15)
+    # 파일명과 헤딩이 겹칠 여지는 그때보다 넓어졌다 — 재측정 시 이 주석도 갱신할 것.
     first_line = text.lstrip().split('\n', 1)[0].lstrip('#').strip()
     unique = []
     for part in parts:

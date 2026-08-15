@@ -32,11 +32,11 @@ import pdfplumber
 from docx import Document as DocxDocument
 from docx.table import Table as DocxTable
 from docx.text.paragraph import Paragraph as DocxParagraph
-from llama_index.core import Document as LiDocument
-from llama_index.core.node_parser import MarkdownNodeParser, SentenceSplitter
+from llama_index.core.node_parser import SentenceSplitter
 
 _HEADING_RE = re.compile(r'^(#{1,6})\s+(.+)$')
 _DOCX_HEADING_RE = re.compile(r'^Heading (\d+)$')     # python-docx는 빌트인 헤딩을 영문명으로 준다
+_MD_FENCE_RE = re.compile(r'^(`{3,}|~{3,})')          # 코드 펜스 — 안쪽 '#'은 헤딩이 아니다
 # 섹션 묶음 예산(문자). 섹션 하나하나는 보통 100~150자라, 섹션=청크로 두면 top_k=5가
 # 실어 나르는 컨텍스트가 옛 방식의 1/3로 줄어든다(실측 2211자→707자).
 # 주의: 이 값이 상한으로 작동하는 일은 드물다 — _pack_sections의 경계 규칙(같은 대분류
@@ -77,26 +77,6 @@ def _read_text(file_path) -> str:
             continue
     return raw.decode('utf-8', errors='replace')
 
-
-def _extract_heading_path(metadata: dict, text: str) -> list[str]:
-    """조상 헤딩(metadata.header_path) + 자기 헤딩(text 첫 줄)을 합쳐 반환.
-
-    MarkdownNodeParser는 'header_path'에 조상 경로만 '/' 구분자로 저장하고,
-    자기 자신의 헤딩은 chunk text 첫 줄에 그대로 둠.
-
-    예: metadata={'header_path': '/3. 표준 상담 스크립트/'}, text='### 3.1 ...\\n...'
-        -> ['3. 표준 상담 스크립트', '3.1 ...']
-    """
-    path_str = metadata.get('header_path', '/')
-    ancestors = [seg for seg in path_str.split('/') if seg]
-
-    # 본문 첫 줄에서 현재 헤딩 추출 (있으면)
-    first_line = text.lstrip().split('\n', 1)[0]
-    m = _HEADING_RE.match(first_line)
-    if m:
-        ancestors.append(m.group(2).strip())
-
-    return ancestors
 
 def _pdf_pages(file_path: str | Path) -> list[tuple[int, str]]:
     """PDF를 페이지별 텍스트로 (page 번호 보존 — 인용용). 텍스트 레이어 없으면 빈 문자열.
@@ -321,30 +301,64 @@ def _txt_sections(file_path: str | Path) -> list[_Section]:
     return [_Section([], None, text)] if text.strip() else []
 
 
-def _md_sections_legacy(file_path: str | Path, splitter) -> list[ChunkData]:
-    """md 기존 경로 — MarkdownNodeParser. 다음 커밋에서 _md_sections로 교체된다.
+def _md_sections(file_path: str | Path) -> list[_Section]:
+    """마크다운을 (heading_path, page=None, 본문) 섹션으로 — '#' 헤딩이 경계.
 
-    이 함수만 `_Section` 파이프라인 밖에 있다. 교체가 동작 변경(청크 경계·본문이
-    달라짐)이라 커밋을 분리했기 때문이고, 한 커밋 동안만 존재하는 과도기 형태다.
+    docx·pdf와 같은 스택 관리(`del stack[level-1:]`)를 쓴다. 세 파서가 같은 계약을
+    내놓아야 `_pack_sections` 이후를 공유할 수 있다.
+
+    **헤딩은 본문에 넣지 않는다** — `_docx_sections`와 같은 이유로, heading_path가
+    들고 있고 인덱스 입력엔 `rag/index_text`가 앞에 붙이므로 본문에까지 넣으면 같은
+    문구가 두 번 들어간다. 옛 MarkdownNodeParser 경로는 자기 헤딩을 본문 첫 줄에
+    남겨서 md만 이 원칙에서 벗어나 있었다.
+
+    **본문 없는 헤딩은 섹션이 되지 않는다** — 헤딩을 버퍼에 안 넣으므로 `flush()`의
+    가드에 자동으로 걸린다. 옛 경로는 이걸 안 해서 md 청크의 19%가 `'## 4. 결제·정산'`
+    같은 헤딩 한 줄뿐이었다(실측 78개 중 15개). `_docx_sections` docstring이 이 노이즈를
+    *"md 경로에서 실제로 관측된"* 이라고 적어두고도 docx에만 가드를 넣었던 것을 맞춘다.
+
+    **코드 펜스 안의 '#'은 헤딩이 아니다.** 백틱과 틸드 둘 다 본다 — 옛 파서는 백틱만
+    처리했다. 들여쓰기 코드블록은 `_HEADING_RE`가 열 0을 요구해 공짜로 걸러진다.
     """
-    text = _read_text(file_path)
-    nodes = splitter(MarkdownNodeParser()([LiDocument(text=text)]))
-    return [
-        ChunkData(
-            text=node.get_content(),
-            heading_path=_extract_heading_path(node.metadata, node.get_content()),
-            page=None,
-            chunk_index=i,
-        )
-        for i, node in enumerate(nodes)
-    ]
+    sections: list[_Section] = []
+    stack: list[str] = []
+    buf: list[str] = []
+    fence: str | None = None       # 열려 있는 펜스 마커('```'/'~~~~' 등), 없으면 None
+
+    def flush() -> None:
+        # 빈 줄만 남은 버퍼는 섹션이 아니다 — 헤딩 사이의 빈 줄이 빈 섹션을 만들지 않게.
+        # (docx·pdf는 파서가 빈 줄을 애초에 안 흘려서 `if buf:`로 충분하다.)
+        if any(line.strip() for line in buf):
+            sections.append(_Section(list(stack), None, '\n'.join(buf).strip('\n')))
+        buf.clear()
+
+    for line in _read_text(file_path).splitlines():
+        marker = _MD_FENCE_RE.match(line.strip())
+        if marker:
+            token = marker.group(1)
+            if fence is None:
+                fence = token
+            elif token[0] == fence[0] and len(token) >= len(fence):
+                fence = None       # 같은 문자·같은 길이 이상으로만 닫힌다 (CommonMark)
+            buf.append(line)
+            continue
+        m = None if fence else _HEADING_RE.match(line)
+        if m:
+            flush()
+            del stack[len(m.group(1)) - 1:]
+            stack.append(m.group(2).strip())
+        else:
+            buf.append(line)       # 빈 줄도 보존 — md는 빈 줄이 문단 구분이다
+    flush()
+    return sections
 
 
-# 형식 → 섹션 파서. 이 넷은 (heading_path, page, body)로 수렴하므로 뒤 단계를 공유한다.
+# 형식 → 섹션 파서. 이 넷은 _Section으로 수렴하므로 뒤 단계(묶기·분할)를 공유한다.
 # xlsx만 빠져 있다 — 시트=1청크·분할 없음·행상한 초과 시 거절이라 계약이 근본적으로 다르다.
 _SECTION_PARSERS = {
     '.pdf': _pdf_sections,      # 글자 크기 휴리스틱
     '.docx': _docx_sections,    # Heading 스타일
+    '.md': _md_sections,        # '#' 정규식 + 펜스 가드
     '.txt': _txt_sections,      # 헤딩 없음 — 통째로 섹션 1개
 }
 
@@ -365,9 +379,6 @@ def chunk_file(file_path: str | Path, *, description: str = '') -> list[ChunkDat
     if suffix == '.xlsx':
         from rag.xlsx_chunking import chunk_xlsx   # 지연 import (xlsx_chunking → chunking 순환 방지)
         return chunk_xlsx(str(file_path), description=description)
-
-    if suffix == '.md':
-        return _md_sections_legacy(file_path, splitter)
 
     parser = _SECTION_PARSERS.get(suffix)
     if parser is None:

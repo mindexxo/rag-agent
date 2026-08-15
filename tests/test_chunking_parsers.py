@@ -1,10 +1,13 @@
 """청킹 파서 단위 테스트 — _pdf_pages / _docx_text / chunk_file (비ML 파서 리팩토링 검증).
 
-입력은 corpus_v2 합성 문서 실물. 새 스펙: heading_path는 md만 채워진다.
+입력은 corpus_v2 합성 문서 실물. heading_path는 pdf·docx·md 모두 채워진다
+(txt만 헤딩 개념이 없어 빈다).
 """
 from pathlib import Path
 
-from rag.chunking import _docx_text, _extract_heading_path, _pdf_pages, chunk_file, chunk_txt
+import pytest
+
+from rag.chunking import _docx_text, _md_sections, _pdf_pages, chunk_file, chunk_txt
 
 CORPUS = Path(__file__).resolve().parent.parent / 'sample_docs' / 'corpus_v2'
 
@@ -41,28 +44,6 @@ class TestDocxText:
         text = _docx_text(DOCX)
         assert '정기후원' in text
         assert ' | ' in text          # 표 행은 셀을 ' | '로 조인 — 표 누락 방지
-
-
-class TestExtractHeadingPath:
-    """조상 경로(metadata) × 자기 헤딩(text 첫 줄) 4조합 — 간접 테스트로는 두 로직이 구분 안 됨."""
-
-    def test_조상과_자기헤딩_결합(self):
-        meta = {'header_path': '/1. 상위/1.2 중위/'}
-        assert _extract_heading_path(meta, '### 1.2.1 하위\n본문') == ['1. 상위', '1.2 중위', '1.2.1 하위']
-
-    def test_조상만(self):
-        meta = {'header_path': '/1. 상위/1.2 중위/'}
-        assert _extract_heading_path(meta, '헤딩 아닌 본문') == ['1. 상위', '1.2 중위']
-
-    def test_자기헤딩만(self):
-        assert _extract_heading_path({'header_path': '/'}, '# 제목\n본문') == ['제목']
-
-    def test_선행_공백_후_헤딩(self):
-        # lstrip 경로 — 노드 텍스트가 개행으로 시작해도 첫 줄 헤딩을 잡아야 함
-        assert _extract_heading_path({'header_path': '/'}, '\n\n# 제목\n본문') == ['제목']
-
-    def test_둘_다_없음(self):
-        assert _extract_heading_path({}, '그냥 본문') == []
 
 
 class TestChunkTxt:
@@ -143,3 +124,89 @@ class TestChunkFile:
 
     def test_긴_문서는_여러_청크로(self):
         assert len(chunk_file(MD)) > 1                     # 3,600자 문서 — 512자 분할
+
+
+class TestMdSections:
+    """md 섹션 파서 — pdf·docx와 같은 계약을 지키는지 (#42).
+
+    기존 md 테스트 3개(heading_path 채움 / chunk_index 순차 / 분할)는 `any(...)`,
+    `len(...) > 1`로 헐거워 청킹이 나빠져도 통과한다. 이 클래스가 이번 변경의
+    실제 계약(헤딩 제외·빈 섹션 스킵·펜스 가드)을 못박는다.
+    """
+
+    def _write(self, tmp_path, text):
+        p = tmp_path / 'doc.md'
+        p.write_text(text, encoding='utf-8')
+        return p
+
+    def test_본문_없는_헤딩은_섹션이_아니다(self, tmp_path):
+        # 옛 MarkdownNodeParser 경로는 '## 2. 봉제 불량' 한 줄짜리 청크를 만들었다
+        # (실측 md 청크의 19%). docx는 진작 막고 있던 것을 md에도 맞춘 것.
+        p = self._write(tmp_path, '# 제목\n\n## 2. 상위\n\n### 2.1 하위\n\n실제 본문이다.\n')
+        bodies = [s.body for s in _md_sections(p)]
+        assert bodies == ['실제 본문이다.']
+
+    def test_헤딩은_본문에_안_들어간다(self, tmp_path):
+        # heading_path가 들고 있고 index_text가 앞에 붙이므로 본문에 넣으면 중복
+        p = self._write(tmp_path, '# 제목\n\n## 1. 절\n\n내용 한 줄.\n')
+        section = _md_sections(p)[0]
+        assert section.heading_path == ['제목', '1. 절']
+        assert '#' not in section.body
+
+    def test_빈_줄은_보존된다(self, tmp_path):
+        # md는 빈 줄이 문단 구분 — 걷어내면 문단이 붙어버린다
+        p = self._write(tmp_path, '# 제목\n\n첫 문단.\n\n둘째 문단.\n')
+        assert _md_sections(p)[0].body == '첫 문단.\n\n둘째 문단.'
+
+    def test_백틱_펜스_안의_샾은_헤딩이_아니다(self, tmp_path):
+        p = self._write(tmp_path, '# 제목\n\n```bash\n# 이건 셸 주석이다\necho hi\n```\n끝.\n')
+        sections = _md_sections(p)
+        assert [s.heading_path for s in sections] == [['제목']]
+        assert '# 이건 셸 주석이다' in sections[0].body
+
+    def test_틸드_펜스도_가드한다(self, tmp_path):
+        # 옛 MarkdownNodeParser는 백틱만 봤다 — 여기는 개선분이라 회귀로 잠근다
+        p = self._write(tmp_path, '# 제목\n\n~~~python\n# 파이썬 주석\n~~~\n끝.\n')
+        assert [s.heading_path for s in _md_sections(p)] == [['제목']]
+
+    def test_펜스는_같은_문자로만_닫힌다(self, tmp_path):
+        # ``` 안에서 ~~~를 만나도 안 닫혀야 그 뒤 '#'이 헤딩으로 새지 않는다
+        p = self._write(tmp_path, '# 제목\n\n```\n~~~\n# 코드 안\n```\n\n실제 본문.\n')
+        assert [s.heading_path for s in _md_sections(p)] == [['제목']]
+
+    def test_들여쓰기_코드블록의_샾도_헤딩이_아니다(self, tmp_path):
+        # _HEADING_RE가 열 0을 요구해 공짜로 걸러진다 — 그 사실을 고정
+        p = self._write(tmp_path, '# 제목\n\n    # 들여쓴 코드\n\n본문.\n')
+        assert [s.heading_path for s in _md_sections(p)] == [['제목']]
+
+    def test_레벨_건너뛰기(self, tmp_path):
+        # H1 → H3 (H2 생략) — pdf·docx와 같은 `del stack[level-1:]` 동작
+        p = self._write(tmp_path, '# 제목\n\n### 건너뜀\n\n본문.\n')
+        assert _md_sections(p)[0].heading_path == ['제목', '건너뜀']
+
+    def test_page는_항상_None(self, tmp_path):
+        p = self._write(tmp_path, '# 제목\n\n본문.\n')
+        assert _md_sections(p)[0].page is None
+
+    def test_빈_파일은_섹션_0개(self, tmp_path):
+        assert _md_sections(self._write(tmp_path, '')) == []
+
+    def test_헤딩만_있는_파일도_섹션_0개(self, tmp_path):
+        assert _md_sections(self._write(tmp_path, '# 제목\n\n## 절\n')) == []
+
+
+class TestChunkFileDispatch:
+    """형식 분기가 chunk_file 한 곳뿐임을 고정 (#42 — 두 곳이던 게 xlsx 버그의 원인)."""
+
+    def test_xlsx는_chunk_xlsx로_위임된다(self):
+        # 옛 CLI 경로는 xlsx를 md로 취급해 ZIP 바이너리를 색인했다
+        xlsx = CORPUS / 'homeplus' / 'homeplus_10_멤버십혜택표.xlsx'
+        chunks = chunk_file(xlsx)
+        assert all(c.meta and c.meta.get('is_table') for c in chunks)
+        assert not any(c.text.startswith('PK') for c in chunks)
+
+    def test_지원하지_않는_형식은_ValueError(self, tmp_path):
+        p = tmp_path / 'x.bin'
+        p.write_bytes(b'\x00\x01')
+        with pytest.raises(ValueError, match='지원하지 않는 형식'):
+            chunk_file(p)

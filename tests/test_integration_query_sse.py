@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from database import AsyncSessionLocal
 from rag.models import AnswerCache as AnswerCacheRow, Message
-from rag.prompts import BLOCKED_INPUT_ANSWER, NO_EVIDENCE_ANSWER
+from rag.prompt_texts import BLOCKED_INPUT_ANSWER, NO_EVIDENCE_ANSWER
 from tests.conftest import register_faq, sse_events as _events, sse_answer
 
 

@@ -9,7 +9,7 @@ from sqlalchemy import select
 from database import AsyncSessionLocal
 from rag.cache import AnswerCache
 from rag.models import AnswerCache as AnswerCacheRow, Conversation
-from rag.prompts import NO_EVIDENCE_ANSWER
+from rag.prompt_texts import NO_EVIDENCE_ANSWER
 from rag.retriever import RetrievalResult
 from rag.service import PreparedRag, RagService
 from schemas.kms import SourceCitation
@@ -289,3 +289,39 @@ async def test_FAQ_스냅샷_검증도_테넌트_격리(tenant_id, other_tenant_
             select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
         )).scalars().all()
         assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_주입상한0이어도_신규첨부가_있으면_캐시를_우회한다(
+        client, tenant_id, fake_llm, pass_gate, monkeypatch):
+    """#36 버그 수정 — 캐시 가드는 주입용·신규분 첨부를 **둘 다** 봐야 한다.
+
+    max_attachments<=0이면 주입용(attachment_dicts)이 강제로 비므로, 신규분을 함께 보지 않으면
+    첨부가 있는 턴이 캐시 가드를 통과한다. 그러면 캐시 답변이 재생되고 캐시-히트 PreparedRag가
+    new_attachments를 안 채워, save()에서 **이번 턴 첨부가 조용히 유실**된다.
+    """
+    from config import settings
+    from rag.models import Message
+    from tests.conftest import register_faq, sse_meta
+
+    await register_faq(client)
+    # 1턴: 캐시를 채운다 (첨부 없음)
+    first = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
+    assert sse_meta(first)['cache_kind'] is None
+
+    monkeypatch.setattr(settings, 'max_attachments', 0)   # 주입 상한 0 — 주입용은 항상 빈다
+
+    # 2턴: 같은 질의 + 이번 턴 첨부 → 캐시를 타면 첨부가 사라진다
+    second = await client.post('/kms/query', json={
+        'query': '환불 기간 알려줘',
+        'attachments': [{'filename': '계약서.txt', 'text': '특약: 환불 30일'}],
+    })
+    assert sse_meta(second)['cache_kind'] is None, '첨부가 있는데 캐시가 히트했다 (#36)'
+
+    async with AsyncSessionLocal() as session:
+        user_msg = (await session.execute(
+            select(Message).where(Message.tenant_id == tenant_id)
+            .where(Message.role == 'user').order_by(Message.id.desc())
+        )).scalars().first()
+    assert user_msg.attachments, '이번 턴 첨부가 저장되지 않았다 — 데이터 유실 (#36)'
+    assert user_msg.attachments[0]['filename'] == '계약서.txt'

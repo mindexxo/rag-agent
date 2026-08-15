@@ -2,8 +2,8 @@
 
 라벨은 인용 형식을 견인한다(라벨=인용형식 설계) — 형식이 바뀌면 인용 전체가 회귀.
 """
+from rag.prompt_texts import DEFAULT_DOMAIN_HINT
 from rag.prompts import (
-    DEFAULT_DOMAIN_HINT,
     SYSTEM_PROMPT,
     build_attachment_blocks,
     build_chat_prompt,

@@ -1,8 +1,8 @@
 """LLM 클라이언트.
 
-Ollama / vLLM의 OpenAI 호환 API를 래핑.
-RagService는 이 클라이언트만 바라보며, 실제 서버가 무엇인지 알 필요 없음.
-URL/모델명은 config에서 주입 → 환경 변수만 바꾸면 Ollama ↔ vLLM 전환 가능.
+vLLM의 OpenAI 호환 API를 래핑. RagService는 이 클라이언트만 바라보며 서버 구현을 알 필요 없다.
+URL·모델명을 config에서 주입하므로 OpenAI 호환 서버라면 환경 변수만 바꿔 교체할 수 있다
+(초기엔 Ollama로 돌렸고 vllm_base_url 기본값 11434가 그 잔재 — 운영은 사내 GPU vLLM).
 """
 from collections.abc import AsyncIterator
 

@@ -18,12 +18,8 @@ from rag.models import Conversation, Message
 
 logger = logging.getLogger(__name__)
 from rag.tokens import estimate_tokens
-from rag.prompts import (
-    CONDENSE_MULTI_SYSTEM_PROMPT,
-    CONDENSE_SYSTEM_PROMPT,
-    build_chat_prompt,
-    build_condense_user_message,
-)
+from rag.prompt_texts import CONDENSE_MULTI_SYSTEM_PROMPT, CONDENSE_SYSTEM_PROMPT
+from rag.prompts import build_chat_prompt, build_condense_user_message
 
 
 # X-User-Id 미전송 시 created_by·스코핑에 쓰는 폴백 (#10).

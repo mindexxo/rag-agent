@@ -35,7 +35,7 @@ from config import settings
 from database import AsyncSessionLocal
 from rag import cancellation, otel
 from rag.limiter import Lease, query_limiter
-from rag.prompts import is_refusal
+from rag.answer_check import is_refusal
 from rag.service import PreparedRag, RagService
 
 logger = logging.getLogger(__name__)

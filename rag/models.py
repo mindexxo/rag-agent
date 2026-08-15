@@ -27,7 +27,7 @@
 """
 from datetime import datetime
 from typing import Any
-from pgvector.sqlalchemy import Vector   # SPARSEVEC는 원복 시 재추가 (113행 주석 참조)
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
     BigInteger,
@@ -124,8 +124,6 @@ class Chunk(Base):
     heading_path: Mapped[list[str]] = mapped_column(ARRAY(Text), server_default="{}")                     # 헤딩 계층 경로 ["3. 배송지연", "3.2 지급기준"]
     meta: Mapped[dict] = mapped_column("metadata", JSONB, server_default="{}")                            # 자유 키-값 확장 영역 (DB 컬럼명은 metadata)
     dense: Mapped[Any] = mapped_column(Vector(1024))                                                      # BGE-M3 dense 임베딩 (1024차원)
-    # [dense-only, F99] sparse 제거 — DB 컬럼도 DROP. 하이브리드 원복 시 해제 + 컬럼 재생성 + 재인제스트
-    # sparse: Mapped[Any] = mapped_column(SPARSEVEC(250002))                                              # BGE-M3 sparse 임베딩 (vocab 250002)
 
     __table_args__ = (
         UniqueConstraint("document_id", "chunk_index"),

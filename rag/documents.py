@@ -81,7 +81,6 @@ async def index_pending_document(document_id: int) -> None:
                     heading_path=chunk.heading_path,
                     meta=chunk.meta or {},
                     dense=embedding.dense,
-                    # sparse=SparseVector(embedding.sparse, 250002),   # [dense-only, F99]
                   ))
 
             # supersede: 같은 filename의 다른 active 버전 내리기 + 청크 삭제

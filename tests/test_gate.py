@@ -7,7 +7,7 @@ from rag.retriever import RetrievalCandidates, RetrievedChunk, _keep_single_tabl
 
 def _chunk(**kw) -> RetrievedChunk:
     base = dict(chunk_id=1, document_id=1, text='본문', heading_path=[], page=None,
-                rrf_score=0.03, branches=['dense'], filename='환불정책.pdf', version=1)
+                filename='환불정책.pdf', version=1)
     return RetrievedChunk(**{**base, **kw})
 
 

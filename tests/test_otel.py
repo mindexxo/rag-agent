@@ -43,6 +43,6 @@ def test_start_turn_핸드오프_수명주기_no_op에서_무해():
 
 def test_set_documents_no_op에서_무해():
     class _C:
-        chunk_id, rrf_score, text = 1, 0.5, '본문'
+        chunk_id, text = 1, '본문'          # set_documents가 읽는 두 속성뿐
     with otel.span('t', 'RETRIEVER') as sp:
         otel.set_documents(sp, [_C()])       # 예외 없이 통과하면 충분 (no-op)

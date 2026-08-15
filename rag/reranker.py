@@ -5,10 +5,13 @@ bi-encoder(임베딩)로 넓게 추린 후보를, query+청크를 함께 넣어 
 
 - retrieve_candidates() 후보의 '순서만' 바꾼다 (집합·Recall@N 불변).
 - 실패(서버 다운 등) 시 원 순서 유지 → graceful degrade (검색이 멈추지 않게).
-- 기존 인프로세스(FlagReranker) 구현은 하단 주석 보존 (서버 없이 돌리던 실험용).
+
+채점 전략 둘이 여기 함께 산다 — 단일 쿼리는 rerank(), 쿼리 확장(#5)은 rerank_maxpool().
+otel 계측은 호출부(retriever)가 맡는다: 이 모듈은 관측 의존이 없다.
 
 2026-07-17 비동기 전환 완료 — 공용 AsyncClient(rag.clients) 사용, 호출부는 await.
 """
+import asyncio
 import logging
 
 from config import settings
@@ -78,23 +81,21 @@ async def rerank(query: str, chunks: list, model_name: str | None = None) -> lis
     return [chunks[i] for i in order]
 
 
-# =====================================================================
-# [보관] 기존 인프로세스 FlagReranker (서버 없이 로컬 GPU/CPU로 돌리던 실험용).
-# 서버 대신 로컬 로드로 돌리려면 이 블록 활성화 + 위 rerank 교체.
-# =====================================================================
-# from functools import lru_cache
-# from FlagEmbedding import FlagReranker
-# _DEFAULT_MODEL = 'BAAI/bge-reranker-v2-m3'
-#
-# @lru_cache(maxsize=2)
-# def _model(name: str):
-#     return FlagReranker(name, use_fp16=False)
-#
-# def rerank(query, chunks, model_name=_DEFAULT_MODEL):
-#     if not chunks:
-#         return chunks
-#     scores = _model(model_name).compute_score([[query, c.text] for c in chunks])
-#     if not isinstance(scores, list):
-#         scores = [scores]
-#     ranked = sorted(zip(chunks, scores), key=lambda x: x[1], reverse=True)
-#     return [c for c, _ in ranked]
+async def rerank_maxpool(queries: list[str], chunks: list) -> tuple[list, list[float]] | None:
+    """쿼리 확장(#5) 채점 — 쿼리별로 각자 채점해 청크별 최고점(max-pool)으로 정렬.
+
+    (정렬된 chunks, 그 순서에 대응하는 채택 점수) 반환. 실패 시 None → 호출부가 RRF 순서 유지.
+
+    RRF→원본 쿼리 채점 방식은 변형이 찾아온 청크를 원본 어휘로 다시 채점해 이득이
+    소멸했다 (mt 90문항 실측: RRF+원본채점 = 풀확장+원본채점 = 개선 0, max-pool +4.5pp).
+
+    **부분 성공을 쓰지 않는다** — 쿼리 하나라도 실패하면 통째로 None이다. 성공분만
+    합치면 청크마다 max를 취한 쿼리 수가 달라져 점수가 서로 비교 불가능해지고,
+    어느 쿼리가 실패했느냐에 따라 순서가 달라져 재현성이 깨진다.
+    """
+    matrix = await asyncio.gather(*(rerank_scores(q, chunks) for q in queries))
+    if not all(s is not None for s in matrix):
+        return None
+    best = [max(col) for col in zip(*matrix)]
+    order = sorted(range(len(chunks)), key=lambda i: -best[i])
+    return [chunks[i] for i in order], [best[i] for i in order]

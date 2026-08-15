@@ -16,8 +16,7 @@ from rag.retriever import RetrievedChunk
 
 def _chunk(**kw) -> RetrievedChunk:
     base = dict(chunk_id=1, document_id=1, text='본문 내용', heading_path=['3. 배송비'],
-                page=None, rrf_score=0.0, branches=['dense'],
-                filename='환불반품정책.pdf', version=1)
+                page=None, filename='환불반품정책.pdf', version=1)
     return RetrievedChunk(**{**base, **kw})
 
 

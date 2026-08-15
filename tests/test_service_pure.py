@@ -12,8 +12,7 @@ from rag.service import PreparedRag, _source_doc_ids
 
 def _chunk(document_id=None, faq_id=None) -> RetrievedChunk:
     return RetrievedChunk(chunk_id=1, document_id=document_id, text='x', heading_path=[],
-                          page=None, rrf_score=0.03, branches=['dense'],
-                          filename='f.pdf', version=1, faq_id=faq_id)
+                          page=None, filename='f.pdf', version=1, faq_id=faq_id)
 
 
 def _prepared(**kw) -> PreparedRag:

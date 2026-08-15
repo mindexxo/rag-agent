@@ -102,8 +102,9 @@ def set_attrs(sp, attrs: dict) -> None:
 def set_documents(sp, chunks, prefix: str = 'retrieval.documents') -> None:
     """검색 결과 청크를 OpenInference 문서 속성으로 평탄화 (순서·본문만).
 
-    점수는 의도적으로 뺀다 — chunks의 rrf_score는 리랭크 '이전' 값이라 리랭크 후
-    순서와 어긋나 진단을 오도한다. 실제 채택 점수는 rerank 스팬이 기록한다.
+    점수는 담지 않는다 — RetrievedChunk에 점수 필드가 없다. 예전엔 rrf_score가 있었지만
+    리랭크 '이전' 값이라 순서와 어긋나 진단을 오도했고, 아무도 읽지 않아 제거했다(#38).
+    실제 채택 점수는 rerank 스팬이 기록한다 (멀티쿼리 경로만 — 단일 경로 점수는 12번 축).
     """
     if not sp.is_recording():
         return

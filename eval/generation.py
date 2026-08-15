@@ -65,8 +65,7 @@ async def oracle_context(session, chunk_ids: list[int]) -> list[RetrievedChunk]:
     )
     return [
         RetrievedChunk(chunk_id=c.id, document_id=c.document_id, text=c.text,
-                       heading_path=c.heading_path, page=c.page, rrf_score=0.0,
-                       branches=["oracle"], filename=fn, version=v)
+                       heading_path=c.heading_path, page=c.page, filename=fn, version=v)
         for c, fn, v in rows.all()
     ]
 

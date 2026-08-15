@@ -80,7 +80,6 @@ async def ingest_file(file_path: str | Path, tenant_id: str) -> int:
                     page=chunk.page,
                     heading_path=chunk.heading_path,
                     dense=embedding.dense,
-                    # sparse=SparseVector(embedding.sparse, 250002),   # [dense-only, F99]
                 ))
         return doc.id
 

@@ -11,7 +11,7 @@ from rag.models import Chunk, Faq
 
 
 def build_faq_chunk_text(question: str, variants: list[str], answer: str) -> str:
-    """질문+유사질문+답변을 한 청크로 — 질문 표현들이 dense/sparse 매칭을 견인한다."""
+    """질문+유사질문+답변을 한 청크로 — 질문 표현들이 dense 매칭을 견인한다."""
     lines = [f"Q: {question}"]
     clean = [v.strip() for v in variants if v.strip()]
     if clean:
@@ -35,5 +35,4 @@ async def reindex_faq(session: AsyncSession, faq: Faq, embedding) -> None:
         heading_path=[faq.question],
         page=None,
         dense=embedding.dense,
-        # sparse=SparseVector(embedding.sparse, 250002),   # [dense-only, F99]
     ))

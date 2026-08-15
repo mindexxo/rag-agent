@@ -179,9 +179,8 @@ async def _search_dense_per_query(
 def _rank_single(dense_ids: list[int], top_n: int) -> list[int]:
     """단일 쿼리 순위 — distance 순 그대로, **여기서 top_n으로 자른다**.
 
-    자르는 시점이 리랭크 **앞**이라 리랭커는 top_n개만 본다. 짝인 `_rank_multi`는
-    자르지 않아 리랭커가 union 전체를 본다 — 이 비대칭은 의도가 아니라 #5의 부작용이고
-    모듈 docstring·#39 참조. 두 함수로 나눈 이유가 그 차이를 이름에 남기려는 것이다.
+    자르는 시점이 리랭크 **앞**이라 리랭커는 top_n개만 본다 (짝인 `_rank_multi`는 자르지
+    않는다 — 비대칭의 배경은 모듈 docstring, 처리는 #39).
     """
     return dense_ids[:top_n]
 
@@ -305,15 +304,13 @@ async def retrieve_candidates(
                                 'kms.pool_size': len(result), 'kms.mode': 'maxpool' if multi else 'single'})
             if multi:
                 from rag.reranker import rerank_maxpool   # 지연 import (retriever ↔ reranker 순환 방지)
-                pooled = await rerank_maxpool(queries, result)
-                if pooled is None:
+                result, best = await rerank_maxpool(queries, result)
+                if best is None:
                     otel.set_attrs(sp, {'kms.fallback': 'rrf'})   # 점수 실패 → RRF 순서 유지
-                else:
-                    result, best = pooled
-                    if sp.is_recording():   # max-pool 채택 점수 — DB에 안 남는 진단 정보 (#5·#7)
-                        for i, (ch, score) in enumerate(zip(result[:top_n], best[:top_n])):
-                            sp.set_attribute(f'reranker.output_documents.{i}.document.id', str(ch.chunk_id))
-                            sp.set_attribute(f'reranker.output_documents.{i}.document.score', float(score))
+                elif sp.is_recording():   # max-pool 채택 점수 — DB에 안 남는 진단 정보 (#5·#7)
+                    for i, (ch, score) in enumerate(zip(result[:top_n], best[:top_n])):
+                        sp.set_attribute(f'reranker.output_documents.{i}.document.id', str(ch.chunk_id))
+                        sp.set_attribute(f'reranker.output_documents.{i}.document.score', float(score))
             else:
                 from rag.reranker import rerank
                 result = await rerank(query, result)

@@ -94,16 +94,19 @@ class TestRerankMaxpool:
         assert best == [0.9, 0.5, 0.1]        # 점수도 같은 순서로 대응해야 otel 기록이 맞는다
 
     @pytest.mark.asyncio
-    async def test_한_쿼리라도_실패하면_None(self, monkeypatch, chunks):
+    async def test_한_쿼리라도_실패하면_점수가_None(self, monkeypatch, chunks):
         """부분 성공을 쓰지 않는다 — 청크마다 max를 취한 쿼리 수가 달라져 비교 불가."""
-        result = await self._run(monkeypatch,
-                                 [[0.1, 0.2, 0.5], None],
-                                 ['q1', 'q2'], chunks)
-        assert result is None
+        ordered, best = await self._run(monkeypatch,
+                                        [[0.1, 0.2, 0.5], None],
+                                        ['q1', 'q2'], chunks)
+        assert best is None
+        assert ordered == chunks          # 실패해도 넘겨받은 순서(RRF)를 그대로 돌려준다
 
     @pytest.mark.asyncio
-    async def test_전부_실패하면_None(self, monkeypatch, chunks):
-        assert await self._run(monkeypatch, [None, None], ['q1', 'q2'], chunks) is None
+    async def test_전부_실패해도_원_순서를_돌려준다(self, monkeypatch, chunks):
+        ordered, best = await self._run(monkeypatch, [None, None], ['q1', 'q2'], chunks)
+        assert best is None
+        assert ordered == chunks
 
     @pytest.mark.asyncio
     async def test_동점이면_원_순서_유지(self, monkeypatch, chunks):

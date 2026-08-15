@@ -81,10 +81,12 @@ async def rerank(query: str, chunks: list, model_name: str | None = None) -> lis
     return [chunks[i] for i in order]
 
 
-async def rerank_maxpool(queries: list[str], chunks: list) -> tuple[list, list[float]] | None:
+async def rerank_maxpool(queries: list[str], chunks: list) -> tuple[list, list[float] | None]:
     """쿼리 확장(#5) 채점 — 쿼리별로 각자 채점해 청크별 최고점(max-pool)으로 정렬.
 
-    (정렬된 chunks, 그 순서에 대응하는 채택 점수) 반환. 실패 시 None → 호출부가 RRF 순서 유지.
+    (chunks, 그 순서에 대응하는 채택 점수) 반환. **실패해도 chunks는 항상 돌려준다** —
+    점수 자리만 None이 되고 순서는 넘겨받은 그대로(RRF)다. rerank()가 실패 시 원 순서를
+    돌려주는 것과 같은 모양이라, 호출부가 실패 분기에서 리스트를 따로 챙길 필요가 없다.
 
     RRF→원본 쿼리 채점 방식은 변형이 찾아온 청크를 원본 어휘로 다시 채점해 이득이
     소멸했다 (mt 90문항 실측: RRF+원본채점 = 풀확장+원본채점 = 개선 0, max-pool +4.5pp).
@@ -95,7 +97,7 @@ async def rerank_maxpool(queries: list[str], chunks: list) -> tuple[list, list[f
     """
     matrix = await asyncio.gather(*(rerank_scores(q, chunks) for q in queries))
     if not all(s is not None for s in matrix):
-        return None
+        return chunks, None
     best = [max(col) for col in zip(*matrix)]
     order = sorted(range(len(chunks)), key=lambda i: -best[i])
     return [chunks[i] for i in order], [best[i] for i in order]

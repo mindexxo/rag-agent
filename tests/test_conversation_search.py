@@ -13,7 +13,7 @@ from httpx import ASGITransport, AsyncClient
 
 from database import AsyncSessionLocal
 from rag.models import Conversation, Message
-from routers.conversations import _build_snippet, _escape_like
+from routers.conversations import SNIPPET_RADIUS, _build_snippet, _escape_like
 
 USER_A = {'X-User-Id': 'agent-a'}
 USER_B = {'X-User-Id': 'agent-b'}
@@ -57,7 +57,8 @@ def test_스니펫_중간매칭은_양쪽_말줄임():
     snippet = _build_snippet(content, '배송')
     assert snippet.startswith('…') and snippet.endswith('…')
     assert '배송' in snippet
-    assert len(snippet) == 40 + 2 + 40 + 2      # 전후 40자 + 검색어 + 말줄임 2개
+    # 전후 SNIPPET_RADIUS자 + 검색어 + 말줄임 2개. 상수를 참조해 값이 바뀌어도 계약만 검증한다.
+    assert len(snippet) == SNIPPET_RADIUS * 2 + len('배송') + 2
 
 
 def test_스니펫_경계에서는_해당쪽_말줄임_없음():

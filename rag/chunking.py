@@ -392,8 +392,3 @@ def chunk_file(file_path: str | Path, *, description: str = '') -> list[ChunkDat
             out.append(ChunkData(text=chunk, heading_path=list(section.heading_path),
                                  page=section.page, chunk_index=len(out)))
     return out
-
-
-def chunk_txt(file_path: str | Path) -> list[ChunkData]:
-    """평문 txt 청킹 — `chunk_file`의 별칭 (기존 호출부·테스트 호환)."""
-    return chunk_file(file_path)

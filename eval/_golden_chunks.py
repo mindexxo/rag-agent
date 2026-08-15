@@ -3,8 +3,8 @@
 청킹은 결정적이고 DB·TEI가 필요 없다. 그래서 검색을 거치지 않고 **청크 그 자체**를
 전수 캡처해 대조할 수 있다 — 2번 축의 검색 순서 골든보다 직접적이다.
 
-형식 분기는 **워커(rag/documents.py)와 동일하게** 맞춘다. 운영이 타는 경로가 그것이고,
-CLI(rag/ingestion.py)는 이 PR에서 삭제 대상이라 기준이 될 수 없다.
+`chunk_file` 하나만 부른다 — 형식 분기는 그 안에 한 곳뿐이다(#42). 여기서 확장자를
+다시 보면, 이 스크립트가 잡아야 할 바로 그 유형(분기가 두 곳이라 갈리는 버그)을 놓친다.
 
 sample_docs·docs 아래 294파일 2347청크를 13초에 훑는다. TEI·DB 불필요.
 
@@ -17,6 +17,9 @@ import argparse
 import json
 import sys
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 ROOTS = ('sample_docs', 'docs')
@@ -24,14 +27,8 @@ EXTS = ('.pdf', '.docx', '.md', '.txt', '.xlsx')
 
 
 def chunks_for(path: Path):
-    """rag/documents.py:51-57의 형식 분기를 그대로 따른다."""
-    from rag.chunking import chunk_file, chunk_txt
-    from rag.xlsx_chunking import chunk_xlsx
-    low = str(path).lower()
-    if low.endswith('.xlsx'):
-        return chunk_xlsx(str(path))
-    if low.endswith('.txt'):
-        return chunk_txt(path)
+    """운영과 같은 진입점 — chunk_file이 5형식을 전부 처리한다."""
+    from rag.chunking import chunk_file
     return chunk_file(path)
 
 
@@ -53,6 +50,10 @@ def capture() -> dict:
             ]
         except Exception as e:                    # 파싱 실패도 골든의 일부 — 전후가 같아야 한다
             out[rel] = {'error': f'{type(e).__name__}: {e}'}
+    # 전부 실패했으면 골든이 아니라 환경 문제다. 조용히 넘기면 오류 목록이 데이터처럼
+    # 보이고 diff가 '변화 없음'으로 나와 회귀를 놓친다 (실제로 한 번 겪었다).
+    if out and not any(isinstance(v, list) for v in out.values()):
+        raise SystemExit(f'전 파일 파싱 실패 — 환경을 확인할 것. 예: {next(iter(out.values()))}')
     return out
 
 

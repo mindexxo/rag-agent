@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from rag.chunking import _docx_text, _md_sections, _pdf_pages, chunk_file, chunk_txt
+from rag.chunking import _docx_text, _md_sections, _pdf_pages, chunk_file
 
 CORPUS = Path(__file__).resolve().parent.parent / 'sample_docs' / 'corpus_v2'
 
@@ -50,7 +50,7 @@ class TestChunkTxt:
     def test_기본_청킹(self, tmp_path):
         p = tmp_path / 'a.txt'
         p.write_text('첫 문장입니다. 둘째 문장입니다.', encoding='utf-8')
-        chunks = chunk_txt(p)
+        chunks = chunk_file(p)
         assert len(chunks) == 1
         assert chunks[0].text == '첫 문장입니다. 둘째 문장입니다.'
         assert chunks[0].heading_path == [] and chunks[0].page is None
@@ -58,7 +58,7 @@ class TestChunkTxt:
     def test_긴_텍스트는_분할되고_index_순차(self, tmp_path):
         p = tmp_path / 'b.txt'
         p.write_text('문장입니다. ' * 200, encoding='utf-8')   # 512자 초과
-        chunks = chunk_txt(p)
+        chunks = chunk_file(p)
         assert len(chunks) > 1
         assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
 
@@ -66,7 +66,7 @@ class TestChunkTxt:
         # split_text('')==[''] 함정 — 빈 청크가 임베딩·DB로 새지 않아야 함 (PDF 가드와 동일)
         p = tmp_path / 'c.txt'
         p.write_text('   \n  ', encoding='utf-8')
-        assert chunk_txt(p) == []
+        assert chunk_file(p) == []
 
 
 class TestChunkFile:

@@ -15,6 +15,10 @@ TEI 없이 돌아가고 30초면 끝난다. 검색 로직을 건드리는 축마
 import asyncio
 import hashlib
 import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import settings
 

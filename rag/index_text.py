@@ -5,7 +5,7 @@
 그 청크가 잡히지 않았다 (예: 본문에 '환불'이 없는 «환불정책» 청크).
 
 임베딩(인제스션)과 리랭커(검색 시)가 **같은 형태**를 보도록 조립을 이 한 곳으로 모은다.
-- 임베딩: rag/documents.py(워커), rag/ingestion.py(CLI)
+- 임베딩: rag/documents.py(워커)
 - 리랭커: rag/reranker.py
 
 **예외 — 폴더 설명(2026-08-05)**: `folder`는 리랭커에만 전달한다. 두 가지 이유다.
@@ -30,9 +30,10 @@ def build_index_text(text: str, filename: str | None, heading_path: list[str] | 
     FAQ 청크는 본문이 'Q: ...'로 이미 자기설명적이고 파일 개념이 없어 대상이 아니다
     (호출부가 filename=None으로 넘긴다).
 
-    본문 첫 줄과 겹치는 조각은 뺀다. MarkdownNodeParser는 자기 헤딩을 청크 본문
-    첫 줄에 그대로 남기므로(rag/chunking._extract_heading_path), 안 빼면 md 청크마다
-    같은 헤딩이 두 번 들어가 본문 대비 헤딩 비중이 부풀고 '헤딩만 매칭되는' 쪽으로 기운다.
+    본문 첫 줄과 겹치는 조각은 뺀다. 옛 md 경로(MarkdownNodeParser)가 자기 헤딩을 청크
+    본문 첫 줄에 남겨서, 안 빼면 md 청크마다 같은 헤딩이 두 번 들어가 본문 대비 헤딩 비중이
+    부풀었다. #42에서 md도 헤딩을 본문에서 빼도록 바뀌어 그 경로는 사라졌지만, 방어는 남긴다
+    — 파일명과 헤딩이 같은 문서(예: '배송지연대응.docx' + '# 배송지연대응')는 형식과 무관하다.
     """
     parts = []
     if folder:                      # 리랭커 전용 (위 docstring 참조)

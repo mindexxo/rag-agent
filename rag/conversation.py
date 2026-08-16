@@ -114,19 +114,23 @@ async def load_recent_messages(
             if not (m.id in dropped_questions or (m.role == 'assistant' and m.status != 'done'))]
     return kept[-limit:]   # 여유 조회분을 되돌려 원래 창 크기 유지
 
-async def condense_query(
+async def _condense_call(
         llm: LlmClient,
         query: str,
-        messages: list[Message]
-) -> str:
-    """후속 질문을 독립 질문으로 변환한다.
+        messages: list[Message],
+        multi: bool,
+) -> list[str]:
+    """condense_query·condense_to_queries 공용 골격(#46) — 두 함수의 34줄이 6단계
+    (history 조립 → span → 프롬프트 조립 → LLM 호출 → 파싱/폴백 → 계측) 전부 동일했다.
 
-    히스토리가 없으면 LLM을 호출하지 않고 원본 query를 그대로 반환한다.
-    LLM 결과가 비어 있거나 호출에 실패하면 원본 query로 폴백한다.
+    갈리는 건 프롬프트 상수·파싱·계측 속성뿐이라 multi 하나로 분기한다 — 호출부가
+    영원히 2개뿐이고(#15 DSPy 실험 종결로 condense는 손튜닝 확정) 차이가 파싱 1줄 +
+    otel 키 1개라, callable 파서 주입은 두 고정 케이스를 위한 과한 전략 패턴이다.
+
+    반환은 항상 list[str]: [0]=standalone, [1:]=검색 변형(멀티만 — 단일은 항상 []).
+    span 이름은 둘 다 'condense' 그대로(Phoenix 대시보드 연속성). multi=True일 때만
+    kms.expanded_queries를 남긴다 — 단일 경로 span엔 원래 이 속성이 없었다는 사실을 보존.
     """
-    if not messages:
-        return query
-
     history = [
         {'role': m.role, 'content': m.content}
         for m in messages
@@ -135,17 +139,39 @@ async def condense_query(
     with otel.span('condense', 'LLM') as sp:
         try:
             llm_messages = build_chat_prompt(
-                CONDENSE_SYSTEM_PROMPT,
+                CONDENSE_MULTI_SYSTEM_PROMPT if multi else CONDENSE_SYSTEM_PROMPT,
                 build_condense_user_message(query, history),
             )
             result = await llm.acomplete(llm_messages)
-            standalone = (result or '').strip() or query
+            queries = (_parse_multi_queries(result, query) if multi
+                       else [(result or '').strip() or query])
         except Exception:
-            logger.exception('LLM error(condense_query)')
-            standalone = query
-        otel.set_attrs(sp, {otel.INPUT_VALUE: query, otel.OUTPUT_VALUE: standalone,
-                            'kms.history_messages': len(history)})
-        return standalone
+            logger.exception('LLM error(%s)',
+                             'condense_to_queries' if multi else 'condense_query')
+            queries = [query]
+        attrs = {otel.INPUT_VALUE: query, otel.OUTPUT_VALUE: queries[0],
+                 'kms.history_messages': len(history)}
+        if multi:
+            attrs['kms.expanded_queries'] = queries[1:]   # 멀티쿼리 변형 (#5) — DB에 저장 안 되는 유일한 기록처
+        otel.set_attrs(sp, attrs)
+        return queries
+
+
+async def condense_query(
+        llm: LlmClient,
+        query: str,
+        messages: list[Message]
+) -> str:
+    """후속 질문을 독립 질문으로 변환한다.
+
+    히스토리가 없으면 LLM을 호출하지 않고 원본 query를 그대로 반환한다 —
+    이 게이트는 이 함수만의 계약이라 공용 골격(_condense_call) 밖에 남긴다.
+    LLM 결과가 비어 있거나 호출에 실패하면 원본 query로 폴백한다.
+    """
+    if not messages:
+        return query
+    queries = await _condense_call(llm, query, messages, multi=False)
+    return queries[0]
 
 
 async def condense_to_queries(
@@ -161,26 +187,7 @@ async def condense_to_queries(
     eval(retrieval_v2 --expand)이 빈 히스토리로 A/B를 돌려야 해서 게이트는 호출부 책임.
     실패·빈 결과 시 [query] 폴백 = 재작성·변형 없이 원본 단독 검색 (기능 자동 off).
     """
-    history = [
-        {'role': m.role, 'content': m.content}
-        for m in messages
-    ]
-
-    with otel.span('condense', 'LLM') as sp:
-        try:
-            llm_messages = build_chat_prompt(
-                CONDENSE_MULTI_SYSTEM_PROMPT,
-                build_condense_user_message(query, history),
-            )
-            result = await llm.acomplete(llm_messages)
-            queries = _parse_multi_queries(result, query)
-        except Exception:
-            logger.exception('LLM error(condense_to_queries)')
-            queries = [query]
-        otel.set_attrs(sp, {otel.INPUT_VALUE: query, otel.OUTPUT_VALUE: queries[0],
-                            'kms.expanded_queries': queries[1:],   # 멀티쿼리 변형 (#5) — DB에 저장 안 되는 유일한 기록처
-                            'kms.history_messages': len(history)})
-        return queries
+    return await _condense_call(llm, query, messages, multi=True)
 
 
 def _parse_multi_queries(result: str | None, query: str) -> list[str]:

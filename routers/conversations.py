@@ -1,6 +1,4 @@
 import logging
-from datetime import timedelta
-
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio.session import AsyncSession
@@ -23,16 +21,6 @@ from schemas.conversations import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/kms')
-
-# generating이 이 시간 넘게 지속되면 백그라운드 태스크/웹 프로세스 사망으로 고착 → failed 간주.
-#
-# 임계는 '정상 생성의 최대 소요'보다 **확실히 커야** 한다. 살아 있는 요청을 먼저 failed로
-# 선고하면 그 태스크가 완주할 때 finalize_turn이 그 행을 done으로 덮어써(좀비 플립), 이미
-# 실패로 보고된 턴이 조용히 성공이 되고 과거 통계까지 소급 변한다. LLM 호출 타임아웃이
-# 300초(rag/llm.py)라 이전 값 300은 그 경계에 딱 붙어 있었다 — 동시성 포화로 vLLM 큐에서
-# 밀리면 정상 요청이 스윕에 걸릴 수 있었다. 스윕은 '죽은 프로세스 회수'가 목적이라 늦게
-# 정리해도 손해가 없으므로 여유를 뒀다.
-GENERATION_STALE_SECONDS = 500
 
 MAX_CONVERSATIONS = 10   # 페이지 크기 상한 (#10부터 offset 페이지네이션의 limit 상한 의미)
 
@@ -114,20 +102,6 @@ async def get_conversation_messages(
 ):
     # 소유 검증 (#10) — 이전엔 메시지 tenant 필터뿐이라 같은 테넌트 남의 대화도 조회 가능했음
     await _get_owned_conversation(session, conversation_id, tenant_id, user_id)
-
-    # lazy 스윕: 오래 고착된 generating을 failed로 자기치유 (태스크가 소유하지만 웹 프로세스
-    # 사망 시 아무도 finalize 못 하므로, 조회 시점에 정리. 정상 진행 중인 건 최근이라 미매칭).
-    # 시간 비교는 서버측(func.now())으로 — created_at 컬럼이 naive/aware 혼선을 피한다.
-    res = await session.execute(
-        update(Message)
-        .where(Message.tenant_id == tenant_id)
-        .where(Message.conversation_id == conversation_id)
-        .where(Message.status == "generating")
-        .where(Message.created_at < func.now() - timedelta(seconds=GENERATION_STALE_SECONDS))
-        .values(status="failed")
-    )
-    if res.rowcount:
-        await session.commit()
 
     msgs = (await session.execute(
         select(Message)
@@ -222,9 +196,10 @@ async def cancel_generation(
     if msg is None:
         raise HTTPException(status_code=404, detail='메시지를 찾을 수 없습니다.')
 
-    # 소유가 확인됐으므로 이제 레지스트리를 봐도 안전하다. 상태보다 먼저 보는 이유: 300초 스테일
-    # 스윕이 '정말 진행 중인' 생성을 failed로 바꿔놓을 수 있는데(느린 GPU·동시성 포화. LLM
-    # 타임아웃이 300초라 도달 가능한 구간이다), 상태만 믿으면 살아 있는 태스크를 멈출 방법이
+    # 소유가 확인됐으므로 이제 레지스트리를 봐도 안전하다. 상태보다 먼저 보는 이유: 스테일
+    # 스윕(rag.conversation.GENERATION_STALE_SECONDS, cron 5분 주기)이 '정말 진행 중인'
+    # 생성을 failed로 바꿔놓을 수 있는데(느린 GPU·동시성 포화 — LLM 타임아웃 300초보다
+    # 임계가 크지만 초과 대기는 가능하다), 상태만 믿으면 살아 있는 태스크를 멈출 방법이
     # 사라진다. 태스크가 손에 있으면 DB가 뭐라 하든 멈추는 게 사용자 의사에 맞다.
     if cancellation.cancel_local(message_id):
         return Response(status_code=204)           # 이 프로세스가 들고 있었다

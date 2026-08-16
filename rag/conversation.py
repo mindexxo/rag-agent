@@ -8,6 +8,7 @@
       -> 답변 완료 후 user/assistant 메시지 저장
 """
 import logging
+from datetime import timedelta
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -357,6 +358,48 @@ async def finalize_turn(
     msg.cited_docs = cited_docs
     msg.is_refusal = is_refusal
     msg.intent = intent   # 라우팅 결과 — 답변률 분모(KNOWLEDGE) 집계용. DB 반영 완료로 원복 (#13)
+
+
+# generating이 이 시간 넘게 지속되면 백그라운드 태스크/웹 프로세스 사망으로 고착 → failed 간주.
+#
+# 임계는 '정상 생성의 최대 소요'보다 **확실히 커야** 한다. 살아 있는 요청을 먼저 failed로
+# 선고하면 그 태스크가 완주할 때 finalize_turn이 그 행을 done으로 덮어써(좀비 플립), 이미
+# 실패로 보고된 턴이 조용히 성공이 되고 과거 통계까지 소급 변한다. LLM 호출 타임아웃이
+# 300초(rag/llm.py)라 이전 값 300은 그 경계에 딱 붙어 있었다 — 동시성 포화로 vLLM 큐에서
+# 밀리면 정상 요청이 스윕에 걸릴 수 있었다. 스윕은 '죽은 프로세스 회수'가 목적이라 늦게
+# 정리해도 손해가 없으므로 여유를 뒀다.
+GENERATION_STALE_SECONDS = 500
+
+
+async def sweep_stale_generating(session: AsyncSession) -> int:
+    """고착된 generating 턴을 failed로 정리한다. 처리한 행 수 반환. **부수효과: UPDATE**
+    (commit은 호출자 담당 — sweep_stale_cache와 같은 규칙).
+
+    생성 태스크는 arq가 아니라 웹 앱의 asyncio 태스크다 — 웹 프로세스가 죽으면 코루틴이
+    증발해 자리표시(status='generating')만 DB에 남고, _finalize_out_of_band의 DB 기록
+    실패도 같은 상태를 남긴다. 그 회수를 arq cron(rag/worker.py, 5분 주기)이 맡는다(#46).
+
+    이전엔 GET /conversations/{id}/messages가 그 대화에 한해 조회 시점에 정리했다(lazy).
+    cron으로 옮긴 이유: lazy는 **열어본 대화만** 치유해서, 재방문 없는 대화의 고착 행이
+    영원히 generating으로 남아 운영 리포트 집계에 유령 상태로 끼고 cancel이 "진행 중"으로
+    오판했다. 대가는 회복 지연 — 최대 500초(조회 즉시)에서 최대 ~800초(500초+주기 5분)로.
+
+    전 테넌트 일괄이다(sweep_stale_cache와 같은 위생 성격) — 상태만 바꾸고 아무것도
+    반환·노출하지 않으므로 격리 위반이 아니다. 시간 비교는 서버측(func.now()) —
+    created_at 컬럼의 naive/aware 혼선을 피한다.
+
+    500초 넘게 살아 있는 생성(동시성 포화로 vLLM 큐 대기 등)도 걸린다 — lazy 시절엔
+    "마침 누가 조회해야" 걸렸지만 cron은 결정론적으로 걸리므로 finalize_turn의 좀비 플립
+    경고가 더 자주 보일 수 있다. 방어(무조건 덮어쓰기+경고, cancel의 레지스트리 우선)는
+    그대로 유효하다.
+    """
+    result = await session.execute(
+        update(Message)
+        .where(Message.status == 'generating')
+        .where(Message.created_at < func.now() - timedelta(seconds=GENERATION_STALE_SECONDS))
+        .values(status='failed')
+    )
+    return result.rowcount
 
 
 def trim_messages_for_condense(messages: list, budget_tokens: int) -> list:

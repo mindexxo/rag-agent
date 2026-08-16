@@ -26,9 +26,30 @@ async def sweep_stale_cache(ctx):
     if deleted:
         logger.info('미히트 캐시 %d행 삭제 (보존 %d일)', deleted, settings.cache_retention_days)
 
+
+async def sweep_stale_generating(ctx):
+    """고착 generating 턴 회수(#46) — 도메인 함수 호출 + commit. 5분 주기.
+
+    웹 프로세스가 생성 도중 죽으면 asyncio 태스크가 증발해 자리표시만 남는다 — 그 회수를
+    생성과 무관하게 살아있는 이 프로세스(워커)가 맡는다. 워커가 죽으면 이 치유도 멈추는데,
+    그건 index_document의 pending 고착과 같은 기존 실패 등급이다(새 위험 범주 아님).
+    """
+    from database import AsyncSessionLocal
+    from rag.conversation import sweep_stale_generating as _sweep
+    async with AsyncSessionLocal() as session:
+        swept = await _sweep(session)
+        await session.commit()
+    if swept:
+        logger.info('고착 generating %d행을 failed로 정리', swept)
+
 class WorkerSettings:
     functions = [ping, index_document]  # 워커가 처리할 함수 등록
-    cron_jobs = [cron(sweep_stale_cache, hour=19, minute=30)]  # arq는 UTC — 19:30 UTC = KST 새벽 4:30
+    cron_jobs = [
+        cron(sweep_stale_cache, hour=19, minute=30),   # arq는 UTC — 19:30 UTC = KST 새벽 4:30
+        # 5분 주기 — status='generating' 부분 인덱스(schema.sql #46)가 스캔을 받친다.
+        # arq cron은 unique=True(기본) + 시각 기반 job_id라 워커가 여러 대여도 1회만 돈다.
+        cron(sweep_stale_generating, minute=set(range(0, 60, 5))),
+    ]
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     max_jobs = 10       # 한 워커가 동시 진행하는 잡 수 (asyncio 코루틴 동시성, 스레드 아님). arq 기본값과 동일 — 명시.
     job_timeout = 600   # 대형 문서 임베딩 여유 (기본 300 초과 시 CancelledError로 pending 고착하던 것 완화)

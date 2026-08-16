@@ -13,7 +13,7 @@ from httpx import ASGITransport, AsyncClient
 
 from database import AsyncSessionLocal
 from rag.models import Conversation, Message
-from routers.conversations import SNIPPET_RADIUS, _build_snippet, _escape_like
+from rag.conversation_search import SNIPPET_RADIUS, _build_snippet, _escape_like
 
 USER_A = {'X-User-Id': 'agent-a'}
 USER_B = {'X-User-Id': 'agent-b'}
@@ -24,7 +24,7 @@ async def _seed_conv(tenant_id: str, title: str | None, contents: list[str],
     """대화 1건 + 메시지 여러 건. last_used_at을 분 단위로 벌려 정렬을 결정적이게.
 
     메시지의 created_at은 **전부 같은 값**을 준다 — 운영에서 한 턴의 user·assistant가
-    같은 커밋이라 now()가 동률이 되는 걸 그대로 재현한다(rag/conversation.py:81 참조).
+    같은 커밋이라 now()가 동률이 되는 걸 그대로 재현한다(load_recent_messages의 id 보조정렬 주석 참조).
     시간을 인위적으로 벌리면 '최근 매칭' 선택이 created_at만으로 결정돼, 실제로 동작하는
     id 보조정렬이 검증되지 않는다.
     """

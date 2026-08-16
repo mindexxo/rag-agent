@@ -193,9 +193,14 @@ CREATE TABLE IF NOT EXISTS messages (
 --                  ALTER TABLE messages ADD COLUMN IF NOT EXISTS feedback_text TEXT;
 CREATE INDEX IF NOT EXISTS idx_msg_conv_created
     ON messages (conversation_id, created_at);
+-- 고착 generating 회수용 (#46) — 워커 cron이 5분마다 전역 스윕하는데, status 인덱스가 없으면
+-- messages 전체를 매번 순차 스캔한다. generating 행만 담는 부분 인덱스라 크기가 사실상 0.
+CREATE INDEX IF NOT EXISTS idx_msg_generating
+    ON messages (created_at) WHERE status = 'generating';
 -- 대화 내용 부분일치 검색 (#28). attachments는 대상 아님 — 고객 개인 문서 본문이라 검색 제외.
 CREATE INDEX IF NOT EXISTS idx_msg_content_trgm
     ON messages USING gin (content gin_trgm_ops);
+-- 기존 DB 반영(#46): CREATE INDEX IF NOT EXISTS idx_msg_generating ON messages (created_at) WHERE status = 'generating';
 -- 기존 DB 반영(#28): CREATE EXTENSION IF NOT EXISTS pg_trgm;
 --                   CREATE INDEX IF NOT EXISTS idx_conv_owner_last ON conversations (tenant_id, created_by, last_used_at DESC) WHERE deleted_at IS NULL;
 --                   CREATE INDEX IF NOT EXISTS idx_conv_title_trgm  ON conversations USING gin (title gin_trgm_ops);

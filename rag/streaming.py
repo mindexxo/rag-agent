@@ -130,7 +130,7 @@ async def _finalize_out_of_band(lease: Lease, prepared: PreparedRag, answer: str
     """비정상 종료(취소·실패)의 상태 기록 — 새 세션으로, 실패는 삼킨다.
 
     본 흐름의 세션은 이미 롤백/닫힘 상태일 수 있어 자기 세션을 새로 연다.
-    기록이 실패하면 그 턴은 generating으로 남고 300초 스윕이 failed로 정리한다 — 의도(취소 vs
+    기록이 실패하면 그 턴은 generating으로 남고 스테일 스윕(rag.conversation.GENERATION_STALE_SECONDS, cron 5분 주기)이 failed로 정리한다 — 의도(취소 vs
     실패)는 잃지만 고착은 남지 않는다. 상태 기록 실패가 정리(finally)를 막아선 안 되므로 삼킨다.
     """
     try:
@@ -166,7 +166,7 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
             await session.commit()
     except asyncio.CancelledError:
         # 명시적 취소(#30). CancelledError는 BaseException 계열이라 아래 except Exception이
-        # 잡지 못한다 — 이 절이 없으면 finalize를 못 타고 generating으로 남아 300초 스윕이
+        # 잡지 못한다 — 이 절이 없으면 finalize를 못 타고 generating으로 남아 스테일 스윕이
         # failed로 만든다(사용자는 취소했는데 화면엔 실패).
         # 취소 예외는 한 번만 전달되므로 여기서 잡은 뒤의 await(세션·commit)는 정상 완료된다 — 실측 확인.
         # 낙관적으로 내보낸 인용을 정정한다 — 거절 판정(위)과 같은 이유·같은 방식.
@@ -199,7 +199,7 @@ async def queue_reader(prepared: PreparedRag, queue: asyncio.Queue) -> AsyncIter
     그 무영향이 성립하는 근거가 **큐가 unbounded**라는 것이다. 소비가 멈춰도 생산자의
     `await queue.put(...)`이 블록되지 않아 태스크가 완주하고 finalize·리미터 반납이 보장된다.
     여기에 maxsize를 걸면 읽지 않는 큐가 차는 순간 태스크가 put에서 영구 대기하고 finally가
-    실행되지 않는다 — generating 고착(300초 스윕)·리미터 슬롯(120초 prune)은 회수 장치가
+    실행되지 않는다 — generating 고착(스테일 스윕, cron 5분 주기)·리미터 슬롯(120초 prune)은 회수 장치가
     있지만 **태스크 세션의 DB 커넥션은 회수 장치가 없어 풀이 영구히 잠식된다.**
     쌓이는 양은 max_tokens 상한이 걸린 텍스트라 생성 1건당 수 KB에 불과하다.
     """

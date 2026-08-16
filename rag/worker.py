@@ -3,6 +3,10 @@ import logging
 from arq import cron
 from arq.connections import RedisSettings
 from config import settings
+from database import AsyncSessionLocal
+from rag.cache import AnswerCache
+# 도메인 스윕과 아래 cron 래퍼가 같은 이름이라 별칭 — cron_jobs엔 래퍼가 등록돼야 한다
+from rag.conversation import sweep_stale_generating as _sweep_generating
 from rag.documents import index_pending_document
 
 logger = logging.getLogger(__name__)
@@ -18,8 +22,6 @@ async def index_document(ctx, document_id: int):
 
 async def sweep_stale_cache(ctx):
     """미히트 캐시 청소(#16) — cache_retention_days(90일) 지난 row 삭제. 일 1회면 충분."""
-    from database import AsyncSessionLocal
-    from rag.cache import AnswerCache
     async with AsyncSessionLocal() as session:
         deleted = await AnswerCache().sweep_stale(session)
         await session.commit()
@@ -34,10 +36,8 @@ async def sweep_stale_generating(ctx):
     생성과 무관하게 살아있는 이 프로세스(워커)가 맡는다. 워커가 죽으면 이 치유도 멈추는데,
     그건 index_document의 pending 고착과 같은 기존 실패 등급이다(새 위험 범주 아님).
     """
-    from database import AsyncSessionLocal
-    from rag.conversation import sweep_stale_generating as _sweep
     async with AsyncSessionLocal() as session:
-        swept = await _sweep(session)
+        swept = await _sweep_generating(session)
         await session.commit()
     if swept:
         logger.info('고착 generating %d행을 failed로 정리', swept)

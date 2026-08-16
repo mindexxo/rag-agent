@@ -13,7 +13,7 @@ from httpx import ASGITransport, AsyncClient
 
 from database import AsyncSessionLocal
 from rag.models import Conversation, Message
-from routers.conversations import SNIPPET_RADIUS, _build_snippet, _escape_like
+from rag.conversation_search import SNIPPET_RADIUS, _build_snippet, _escape_like
 
 USER_A = {'X-User-Id': 'agent-a'}
 USER_B = {'X-User-Id': 'agent-b'}

@@ -1,6 +1,6 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
 from database import get_session
@@ -34,6 +34,28 @@ async def _get_owned_conversation(
     if conv is None:
         raise HTTPException(status_code=404, detail='대화를 찾을 수 없습니다.')
     return conv
+
+
+async def _get_owned_assistant_message(
+        session: AsyncSession, message_id: int, tenant_id: str, user_id: str | None,
+        *, status: str | None = None,
+) -> Message | None:
+    """소유 검증을 통과한 assistant 메시지 로드 — 피드백·취소 공용 (#46).
+
+    두 엔드포인트가 같은 5조건 쿼리를 반복하고 있었다(차이는 피드백의 status='done'뿐).
+    owned_filter로 대화 소유를, tenant WHERE로 메시지 격리를 함께 건다.
+    """
+    stmt = (
+        select(Message)
+        .join(Conversation, Message.conversation_id == Conversation.id)
+        .where(Message.id == message_id)
+        .where(Message.tenant_id == tenant_id)     # 격리 — 메시지에도 tenant WHERE 명시
+        .where(Message.role == 'assistant')
+        .where(owned_filter(tenant_id, user_id))
+    )
+    if status is not None:
+        stmt = stmt.where(Message.status == status)
+    return (await session.execute(stmt)).scalar_one_or_none()
 
 
 
@@ -140,15 +162,8 @@ async def set_message_feedback(
     assistant 메시지 + 본인 소유 대화만 허용 — 아니면 전부 404 (존재 여부 비노출,
     _get_owned_conversation과 같은 원칙). 👍/취소 시 태그·텍스트는 강제 NULL (👎 전용 축).
     """
-    msg = (await session.execute(
-        select(Message)
-        .join(Conversation, Message.conversation_id == Conversation.id)
-        .where(Message.id == message_id)
-        .where(Message.tenant_id == tenant_id)     # 격리 — 메시지에도 tenant WHERE 명시
-        .where(Message.role == 'assistant')
-        .where(Message.status == 'done')           # 실패/차단/생성중 턴엔 평가할 답변이 없음 — 집계 오염 방지
-        .where(owned_filter(tenant_id, user_id))
-    )).scalar_one_or_none()
+    # status='done' — 실패/차단/생성중 턴엔 평가할 답변이 없음 (집계 오염 방지)
+    msg = await _get_owned_assistant_message(session, message_id, tenant_id, user_id, status='done')
     if msg is None:
         raise HTTPException(status_code=404, detail='메시지를 찾을 수 없습니다.')
 
@@ -185,14 +200,7 @@ async def cancel_generation(
     # 이 await가 pop-then-cancel의 원자성을 깨지 않는다: 그 원자성은 cancel_local 내부의
     # pop↔cancel 사이에 await가 없다는 성질이고, 두 요청이 여기를 함께 통과해도 pop은 한쪽만
     # 성공한다(다른 쪽은 발행 경로로 빠져 헛수고 한 번을 할 뿐).
-    msg = (await session.execute(
-        select(Message)
-        .join(Conversation, Message.conversation_id == Conversation.id)
-        .where(Message.id == message_id)
-        .where(Message.tenant_id == tenant_id)     # 격리 — 메시지에도 tenant WHERE 명시
-        .where(Message.role == 'assistant')
-        .where(owned_filter(tenant_id, user_id))
-    )).scalar_one_or_none()
+    msg = await _get_owned_assistant_message(session, message_id, tenant_id, user_id)
     if msg is None:
         raise HTTPException(status_code=404, detail='메시지를 찾을 수 없습니다.')
 

@@ -1,11 +1,18 @@
-"""멀티턴 대화 관리 + condense 질의 재작성
+"""멀티턴 대화 관리 — 소유권·이력 조립·condense 질의 재작성·턴 상태.
 대화 테이블(conversations/messages)을 이용해 이전 턴을 불러오고,
 후속 질문('그럼 5일은?') 을 검색 가능한 독립 질문으로 변환한다.
 
-  핵심 흐름:
-      ensure_conversation -> load_recent_messages -> condense_query
-      -> retrieve는 standalone_query로 수행
-      -> 답변 완료 후 user/assistant 메시지 저장
+  질의 흐름:
+      ensure_conversation(owned_filter로 소유 검증) -> load_recent_messages
+      -> condense_query/condense_to_queries -> retrieve는 standalone_query로 수행
+      -> 답변 완료 후 user/assistant 메시지 저장 (save_exchange 또는
+         add_pending_turn -> finalize_turn)
+
+  질의 흐름 밖: sweep_stale_generating — 고착 턴 회수, 워커 cron 전용(#46).
+
+  주: 접근 제어·이력 조립·condense·턴 상태 네 관심사가 한 파일에 있다. 커지면
+  턴 상태 기계(save/pending/finalize/sweep)를 먼저 떼는 게 경계가 명확하다 —
+  질의 흐름 완료 이후의 저장/복구만 다뤄 결합이 약하다. (8번 축 재방문 시 후보)
 """
 import logging
 from datetime import timedelta

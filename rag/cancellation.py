@@ -32,9 +32,9 @@ Redis pub/sub은 전달 보장이 없다(fire-and-forget). 구독자가 없거�
 신뢰 경계: **소유권 검증은 이 모듈이 하지 않는다.** cancel_local/request_cancel은 둘 다
 message_id만 받으므로, 호출부(HTTP 엔드포인트)가 tenant·created_by를 먼저 검증한 뒤에만
 불러야 한다 — 검증을 건너뛰면 남의 테넌트 생성을 id 추측만으로 죽일 수 있다(messages.id는
-전 테넌트 공용 시퀀스). 여기서 tenant를 함께 들고 검사하지 않는 이유는 소유 규칙(_owned)의
-사본을 메모리에 하나 더 만들면 동기화 부담이 세 곳으로 늘기 때문이다(routers/conversations.py
-_owned ↔ rag/conversation.py ensure_conversation이 이미 이중화 상태).
+전 테넌트 공용 시퀀스). 여기서 tenant를 함께 들고 검사하지 않는 이유는 소유 규칙의
+사본을 메모리에 하나 더 만들지 않기 위해서다 — 소유 판정은 rag/conversation.owned_filter가
+단일 정의점이고(#46), 이 모듈이 자체 검사를 가지면 그 단일성이 깨진다.
 
 반면 Redis 채널은 검증할 방법이 없다 — 사내망에서 접근 가능한 누구든 임의 message_id를
 발행해 진행 중 생성을 죽일 수 있다. 리미터 ZSET이 이미 같은 수준으로 열려 있어(누구든

@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from rag.cache import AnswerCache
+from rag import cache
 from rag.documents import index_pending_document
 from rag.models import AnswerCache as AnswerCacheRow, Chunk, Document
 
@@ -56,7 +56,7 @@ async def test_같은_파일명_재업로드는_엎어치기(client, tenant_id, 
 
     # v1을 근거로 만든 캐시가 있다고 가정
     async with AsyncSessionLocal() as session:
-        await AnswerCache().set(session, tenant_id, '반품 기간', '14일', [], [v1['document_id']])
+        await cache.save_answer(session, tenant_id, '반품 기간', '14일', [], [v1['document_id']])
         await session.commit()
 
     v2 = await _upload(client, '환불정책.md', MD.replace(b'14', b'30'))
@@ -192,7 +192,7 @@ async def test_소프트_삭제_청크와_캐시_제거_row_보존(client, tenan
     body = await _upload(client, '환불정책.md', MD)
     await index_pending_document(body['document_id'])
     async with AsyncSessionLocal() as session:
-        await AnswerCache().set(session, tenant_id, '반품 기간', '14일', [], [body['document_id']])
+        await cache.save_answer(session, tenant_id, '반품 기간', '14일', [], [body['document_id']])
         await session.commit()
 
     res = await client.delete(f"/kms/documents/{body['document_id']}")

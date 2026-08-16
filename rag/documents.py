@@ -10,7 +10,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import AsyncSessionLocal
-from rag.cache import AnswerCache
+from rag import cache
 from rag.chunking import chunk_file
 from rag.embeddings import embed_texts
 from rag.index_text import build_index_text
@@ -132,9 +132,8 @@ async def index_pending_document(document_id: int) -> None:
             doc.indexed_at = datetime.now(timezone.utc).replace(tzinfo=None)   # naive 컬럼 — UTC 유지
 
             # 옛 문서 근거 캐시 무효화
-            cache = AnswerCache()
             for old_id in old_active_ids:
-                await cache.invalidate_document(session, doc.tenant_id, old_id)
+                await cache.invalidate_source(session, doc.tenant_id, old_id)
 
             await session.commit()
     except Exception as e:

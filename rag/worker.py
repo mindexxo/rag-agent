@@ -4,7 +4,7 @@ from arq import cron
 from arq.connections import RedisSettings
 from config import settings
 from database import AsyncSessionLocal
-from rag.cache import AnswerCache
+from rag import cache
 # 도메인 스윕과 아래 cron 래퍼가 같은 이름이라 별칭 — cron_jobs엔 래퍼가 등록돼야 한다
 from rag.conversation import sweep_stale_generating as _sweep_generating
 from rag.documents import index_pending_document
@@ -23,7 +23,7 @@ async def index_document(ctx, document_id: int):
 async def sweep_stale_cache(ctx):
     """미히트 캐시 청소(#16) — cache_retention_days(90일) 지난 row 삭제. 일 1회면 충분."""
     async with AsyncSessionLocal() as session:
-        deleted = await AnswerCache().sweep_stale(session)
+        deleted = await cache.sweep_stale(session)
         await session.commit()
     if deleted:
         logger.info('미히트 캐시 %d행 삭제 (보존 %d일)', deleted, settings.cache_retention_days)

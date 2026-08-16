@@ -103,7 +103,7 @@ class TestFolderCacheInvalidation:
     @staticmethod
     async def _setup(client, tenant_id, desc=None):
         from database import AsyncSessionLocal
-        from rag.cache import AnswerCache
+        from rag import cache
         from rag.models import Document
         from schemas.kms import SourceCitation
 
@@ -119,7 +119,7 @@ class TestFolderCacheInvalidation:
             s.add(doc)
             await s.flush()
             doc_id = doc.id
-            await AnswerCache().set(s, tenant_id, '배송비 얼마예요', '3천원입니다',
+            await cache.save_answer(s, tenant_id, '배송비 얼마예요', '3천원입니다',
                                     [SourceCitation(document_id=doc_id, filename='정책.pdf', version=1)],
                                     [doc_id])
             await s.commit()

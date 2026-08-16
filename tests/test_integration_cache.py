@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from rag.cache import AnswerCache
+from rag import cache
 from rag.models import AnswerCache as AnswerCacheRow, Conversation
 from rag.prompt_texts import NO_EVIDENCE_ANSWER
 from rag.retriever import RetrievalResult
@@ -17,10 +17,9 @@ from schemas.kms import SourceCitation
 
 @pytest.mark.asyncio
 async def test_같은_질의_같은_근거집합이면_hit(tenant_id, fake_embed):
-    cache = AnswerCache()
     src = [SourceCitation(document_id=5, filename='정책.pdf', version=1)]
     async with AsyncSessionLocal() as session:
-        await cache.set(session, tenant_id, '배송비 얼마예요', '3천원입니다', src, [5])
+        await cache.save_answer(session, tenant_id, '배송비 얼마예요', '3천원입니다', src, [5])
         await session.commit()
 
         hit = await cache.get_semantic(session, tenant_id, '배송비 얼마예요', [5])
@@ -36,9 +35,8 @@ async def test_같은_질의_같은_근거집합이면_hit(tenant_id, fake_embed
 
 @pytest.mark.asyncio
 async def test_다른_질의는_miss(tenant_id, fake_embed):
-    cache = AnswerCache()
     async with AsyncSessionLocal() as session:
-        await cache.set(session, tenant_id, '배송비 얼마예요', '3천원', [], [5])
+        await cache.save_answer(session, tenant_id, '배송비 얼마예요', '3천원', [], [5])
         await session.commit()
         # 가짜 벡터는 텍스트가 다르면 사실상 직교 → 유사도 미달 miss
         assert await cache.get_semantic(session, tenant_id, '환불 규정 알려줘', [5]) is None
@@ -46,9 +44,8 @@ async def test_다른_질의는_miss(tenant_id, fake_embed):
 
 @pytest.mark.asyncio
 async def test_근거_집합이_다르면_miss(tenant_id, fake_embed):
-    cache = AnswerCache()
     async with AsyncSessionLocal() as session:
-        await cache.set(session, tenant_id, '배송비 얼마예요', '3천원', [], [5, 7])
+        await cache.save_answer(session, tenant_id, '배송비 얼마예요', '3천원', [], [5, 7])
         await session.commit()
         # 부분집합·초집합 모두 miss — 문서 추가/제거가 답을 바꿀 수 있으므로
         assert await cache.get_semantic(session, tenant_id, '배송비 얼마예요', [5]) is None
@@ -58,10 +55,9 @@ async def test_근거_집합이_다르면_miss(tenant_id, fake_embed):
 @pytest.mark.asyncio
 async def test_테넌트_간_캐시_격리(tenant_id, fake_embed):
     import uuid
-    cache = AnswerCache()
     other = str(uuid.uuid4())
     async with AsyncSessionLocal() as session:
-        await cache.set(session, tenant_id, '배송비 얼마예요', 'A사 3천원', [], [5])
+        await cache.save_answer(session, tenant_id, '배송비 얼마예요', 'A사 3천원', [], [5])
         await session.commit()
         try:
             # 같은 질의·같은 doc id라도 타 테넌트에선 절대 hit 금지 (캐시판 격리)
@@ -134,11 +130,10 @@ async def test_첨부_대화_답변은_공용_캐시_유출_금지(tenant_id, fa
 @pytest.mark.asyncio
 async def test_같은_질의_재저장은_upsert(tenant_id, fake_embed):
     # 문서 추가로 doc집합이 바뀌면 같은 cache_key로 재저장됨 — upsert가 없으면 unique 위반 500 (생존자 킬)
-    cache = AnswerCache()
     async with AsyncSessionLocal() as session:
-        await cache.set(session, tenant_id, '배송비 얼마예요', '옛 답', [], [5])
+        await cache.save_answer(session, tenant_id, '배송비 얼마예요', '옛 답', [], [5])
         await session.commit()
-        await cache.set(session, tenant_id, '배송비 얼마예요', '새 답', [], [5, 7])
+        await cache.save_answer(session, tenant_id, '배송비 얼마예요', '새 답', [], [5, 7])
         await session.commit()
 
         row = (await session.execute(
@@ -150,14 +145,13 @@ async def test_같은_질의_재저장은_upsert(tenant_id, fake_embed):
 
 @pytest.mark.asyncio
 async def test_무효화는_해당_문서_참조_행만(tenant_id, fake_embed):
-    cache = AnswerCache()
     async with AsyncSessionLocal() as session:
-        await cache.set(session, tenant_id, '질의 하나', '답1', [], [5, 7])
-        await cache.set(session, tenant_id, '질의 둘', '답2', [], [7])
-        await cache.set(session, tenant_id, '질의 셋', '답3', [], [9])
+        await cache.save_answer(session, tenant_id, '질의 하나', '답1', [], [5, 7])
+        await cache.save_answer(session, tenant_id, '질의 둘', '답2', [], [7])
+        await cache.save_answer(session, tenant_id, '질의 셋', '답3', [], [9])
         await session.commit()
 
-        await cache.invalidate_document(session, tenant_id, 7)
+        await cache.invalidate_source(session, tenant_id, 7)
         await session.commit()
 
         remain = (await session.execute(
@@ -174,8 +168,6 @@ async def test_생성_중_FAQ_수정되면_캐시_저장_스킵(tenant_id, fake_
     FAQ는 id 불변이라 doc집합 비교가 자가치유 못 하는 유일한 출처 — 이 검증이 마지막 방어선."""
     from rag.cache import snapshot_faq_versions
     from rag.models import Faq
-
-    cache = AnswerCache()
     async with AsyncSessionLocal() as session:
         faq = Faq(tenant_id=tenant_id, question='반품 기간?', answer='14일')
         session.add(faq)
@@ -190,7 +182,7 @@ async def test_생성_중_FAQ_수정되면_캐시_저장_스킵(tenant_id, fake_
             row.answer = '7일'
             await s2.commit()
 
-        await cache.set(session, tenant_id, '반품 기간 알려줘', '14일입니다', [], [-faq.id],
+        await cache.save_answer(session, tenant_id, '반품 기간 알려줘', '14일입니다', [], [-faq.id],
                         faq_versions=snap)
         await session.commit()
         rows = (await session.execute(
@@ -203,15 +195,13 @@ async def test_생성_중_FAQ_수정되면_캐시_저장_스킵(tenant_id, fake_
 async def test_FAQ_변경_없으면_스냅샷_검증_통과_저장(tenant_id, fake_embed):
     from rag.cache import snapshot_faq_versions
     from rag.models import Faq
-
-    cache = AnswerCache()
     async with AsyncSessionLocal() as session:
         faq = Faq(tenant_id=tenant_id, question='반품 기간?', answer='14일')
         session.add(faq)
         await session.commit()
 
         snap = await snapshot_faq_versions(session, tenant_id, [-faq.id])
-        await cache.set(session, tenant_id, '반품 기간 알려줘', '14일입니다', [], [-faq.id],
+        await cache.save_answer(session, tenant_id, '반품 기간 알려줘', '14일입니다', [], [-faq.id],
                         faq_versions=snap)
         await session.commit()
         row = (await session.execute(
@@ -226,11 +216,9 @@ async def test_캐시_조회_저장_실패는_요청을_죽이지_않는다(tena
     async def boom(text):
         raise RuntimeError('TEI down')
     monkeypatch.setattr('rag.cache.embed_query', boom)
-
-    cache = AnswerCache()
     async with AsyncSessionLocal() as session:
         assert await cache.get_semantic(session, tenant_id, '배송비 얼마예요', [5]) is None
-        await cache.set(session, tenant_id, '배송비 얼마예요', '3천원', [], [5])   # 예외 없이 통과
+        await cache.save_answer(session, tenant_id, '배송비 얼마예요', '3천원', [], [5])   # 예외 없이 통과
         rows = (await session.execute(
             select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
         )).scalars().all()
@@ -241,11 +229,9 @@ async def test_캐시_조회_저장_실패는_요청을_죽이지_않는다(tena
 async def test_보존기간_지난_미히트_캐시만_청소(tenant_id, fake_embed):
     """sweep_stale(#16): last_hit_at이 cache_retention_days를 넘긴 row만 삭제."""
     from sqlalchemy import func, update as sa_update
-
-    cache = AnswerCache()
     async with AsyncSessionLocal() as session:
-        await cache.set(session, tenant_id, '오래된 질문', '옛 답', [], [5])
-        await cache.set(session, tenant_id, '최근 질문', '새 답', [], [7])
+        await cache.save_answer(session, tenant_id, '오래된 질문', '옛 답', [], [5])
+        await cache.save_answer(session, tenant_id, '최근 질문', '새 답', [], [7])
         await session.commit()
         # 한 행을 보존기간(90일) 밖으로 백데이트
         await session.execute(
@@ -270,8 +256,6 @@ async def test_FAQ_스냅샷_검증도_테넌트_격리(tenant_id, other_tenant_
     (WHERE-clause 격리 전략 — 새 테넌트 스코프 쿼리 경로마다 통합 테스트가 계약)."""
     from rag.cache import snapshot_faq_versions
     from rag.models import Faq
-
-    cache = AnswerCache()
     async with AsyncSessionLocal() as session:
         faq = Faq(tenant_id=other_tenant_id, question='반품 기간?', answer='14일')
         session.add(faq)
@@ -281,7 +265,7 @@ async def test_FAQ_스냅샷_검증도_테넌트_격리(tenant_id, other_tenant_
         assert await snapshot_faq_versions(session, tenant_id, [-faq.id]) == {}
 
         # 빈 스냅샷을 기준으로 한 검증은 '변경됨' 판정 → 저장 스킵 (보수적 안전)
-        await cache.set(session, tenant_id, '반품 기간 알려줘', '14일입니다', [], [-faq.id],
+        await cache.save_answer(session, tenant_id, '반품 기간 알려줘', '14일입니다', [], [-faq.id],
                         faq_versions={})
         await session.commit()
         rows = (await session.execute(

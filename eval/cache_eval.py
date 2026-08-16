@@ -19,7 +19,7 @@ from pathlib import Path
 from sqlalchemy import delete
 
 from database import AsyncSessionLocal
-from rag.cache import AnswerCache
+from rag import cache
 from rag.models import AnswerCache as AnswerCacheRow
 from rag.retriever import retrieve
 from rag.service import _source_doc_ids
@@ -41,7 +41,6 @@ async def _clear(session) -> None:
 async def compute() -> dict:
     """캐시 히트 정확성 채점 → 요약. 반환: {accuracy, n, false_hit, false_miss, by_kind, misses}."""
     pairs = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
-    cache = AnswerCache()
     rows = []
 
     async with AsyncSessionLocal() as session:
@@ -49,7 +48,7 @@ async def compute() -> dict:
         for p in pairs:
             # 1. q1의 doc집합으로 캐시에 심는다 (답변은 더미 — 히트 여부만 관심)
             ids1 = await _docids(session, p["tenant"], p["q1"])
-            await cache.set(session, EVAL_TENANT, p["q1"], "더미 답변", [], ids1)
+            await cache.save_answer(session, EVAL_TENANT, p["q1"], "더미 답변", [], ids1)
             await session.commit()
             # 2. q2로 조회 — 히트하나?
             ids2 = await _docids(session, p["tenant"], p["q2"])

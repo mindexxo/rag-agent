@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from rag.cache import AnswerCache
+from rag import cache
 from rag.models import AnswerCache as AnswerCacheRow, Chunk, Faq
 from rag.retriever import retrieve_candidates
 
@@ -63,7 +63,7 @@ async def test_off_단독_토글도_캐시_무효화(client, tenant_id, fake_emb
     # turned_off 분기 검증 — semantic 자가치유가 있어도 명시 무효화가 1차 방어선 (M7 킬)
     faq_id = await _create_faq(client)
     async with AsyncSessionLocal() as session:
-        await AnswerCache().set(session, tenant_id, 'q', 'a', [], [-faq_id])
+        await cache.save_answer(session, tenant_id, 'q', 'a', [], [-faq_id])
         await session.commit()
 
     await client.patch(f'/kms/faqs/{faq_id}', json={'is_active': False})
@@ -78,10 +78,9 @@ async def test_off_단독_토글도_캐시_무효화(client, tenant_id, fake_emb
 @pytest.mark.asyncio
 async def test_내용_수정시_해당_FAQ_근거_캐시_무효화(client, tenant_id, fake_embed):
     faq_id = await _create_faq(client)
-    cache = AnswerCache()
     async with AsyncSessionLocal() as session:
         # 이 FAQ(-faq_id)를 근거로 만든 semantic 캐시가 있다고 가정
-        await cache.set(session, tenant_id, '환불 얼마나 걸려요', '옛 답변', [], [-faq_id])
+        await cache.save_answer(session, tenant_id, '환불 얼마나 걸려요', '옛 답변', [], [-faq_id])
         await session.commit()
 
     res = await client.patch(f'/kms/faqs/{faq_id}', json={'answer': '5일 이내로 변경되었습니다.'})
@@ -111,10 +110,9 @@ async def test_꺼진_동안_캐시는_켠_후_doc집합_비교로_자가치유(
     """리뷰 P1-16 검증: off 동안 저장된 캐시(FAQ 미반영)가 on 후에도 서빙되는 빈틈.
     exact 캐시 제거 후 semantic의 doc-set 비교가 이를 구조적으로 막는지 확인."""
     faq_id = await _create_faq(client)
-    cache = AnswerCache()
     async with AsyncSessionLocal() as session:
         # off 기간의 답변: 문서 123만 근거 (FAQ 미포함)
-        await cache.set(session, tenant_id, '배송비 얼마예요', 'FAQ 없던 시절 답', [], [123])
+        await cache.save_answer(session, tenant_id, '배송비 얼마예요', 'FAQ 없던 시절 답', [], [123])
         await session.commit()
 
         # 같은 근거 집합이면 hit (전제 확인)
@@ -130,7 +128,7 @@ async def test_꺼진_동안_캐시는_켠_후_doc집합_비교로_자가치유(
 async def test_삭제시_청크_cascade와_캐시_무효화(client, tenant_id, fake_embed):
     faq_id = await _create_faq(client)
     async with AsyncSessionLocal() as session:
-        await AnswerCache().set(session, tenant_id, 'q', 'a', [], [-faq_id])
+        await cache.save_answer(session, tenant_id, 'q', 'a', [], [-faq_id])
         await session.commit()
 
     res = await client.delete(f'/kms/faqs/{faq_id}')

@@ -27,7 +27,6 @@ async def test_같은_질의_같은_근거집합이면_hit(tenant_id, fake_embed
         assert hit is not None
         assert hit.answer == '3천원입니다'
         assert hit.sources == src
-        assert hit.kind == 'semantic'
         await session.commit()
         row = (await session.execute(
             select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)

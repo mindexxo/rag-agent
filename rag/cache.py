@@ -13,7 +13,6 @@
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
 
 from hashlib import sha256
 from sqlalchemy import select, update, func, delete
@@ -33,7 +32,6 @@ class CacheHit:
     answer: str
     sources: list[SourceCitation]
     source_doc_ids: list[int]
-    kind: Literal["semantic"]
 
 def normalize_query(query: str) -> str:
     """캐시 키 생성을 위해 질의를 정규화한다."""
@@ -138,7 +136,6 @@ class AnswerCache:
             answer=cache_row.answer,
             sources=sources_from_json(cache_row.sources),
             source_doc_ids=cache_row.source_doc_ids,
-            kind="semantic",
         )
 
     async def set(
@@ -189,8 +186,7 @@ class AnswerCache:
         # 이후 비슷한 질문이 들어오면 pgvector cosine distance로 이 row를 찾는다.
         query_embedding = (await embed_query(query)).dense
 
-        # 4. Postgres answer_cache에 저장할 INSERT 문을 만든다.
-        # cache_key는 Redis key 전체가 아니라 정규화 query digest만 저장한다.
+        # cache_key = 정규화 query의 digest — UNIQUE(tenant_id, cache_key)의 충돌 판정 키.
         stmt = pg_insert(AnswerCacheRow).values(
             tenant_id=tenant_id,
             cache_key=build_cache_digest(query),
@@ -202,9 +198,9 @@ class AnswerCache:
             model=settings.vllm_model,
         )
 
-        # 5. 같은 tenant + cache_key가 이미 있으면 UPDATE한다.
-        # Redis TTL 만료 후 DB row가 남아 있거나, 동시 요청이 같은 캐시를 쓰는 경우
-        # unique 제약 오류 대신 최신 답변으로 갱신하기 위함이다.
+        # 같은 tenant + cache_key가 이미 있으면 UPDATE — 동시 요청이 같은 질의를 쓰거나,
+        # 무효화 후 재생성된 경우 unique 제약 오류 대신 최신 답변으로 갱신한다.
+        # hit_count=0 리셋은 의도다: 답변이 교체됐으니 옛 답의 적중 통계를 물려받지 않는다.
         stmt = stmt.on_conflict_do_update(
             index_elements=["tenant_id", "cache_key"],
             set_={

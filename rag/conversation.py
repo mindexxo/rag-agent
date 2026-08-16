@@ -27,6 +27,25 @@ from rag.prompts import build_chat_prompt, build_condense_user_message
 DEFAULT_USER = 'test-user'
 
 
+def owned_filter(tenant_id: str, user_id: str | None):
+    """대화 소유 판정 WHERE 표현식 — tenant + created_by + 미삭제 (#10). **단일 정의점(#46).**
+
+    ensure_conversation(질의 경로)과 routers/conversations.py의 조회 전부(목록·검색·
+    피드백/취소의 Message JOIN)가 이 함수를 공유한다 — 이전엔 같은 규칙이 두 곳에
+    중복 구현돼 docstring끼리 "함께 고칠 것"을 약속하고 있었다.
+    user_id=None(X-User-Id 미전송)의 DEFAULT_USER 폴백도 여기서 흡수한다.
+    기존 created_by NULL 대화(개발 데이터)는 어느 사용자와도 불일치 → 미노출.
+
+    SQL 술어 전용이다 — SQLAlchemy 표현식이라 로드된 객체에 파이썬으로 평가할 수 없다.
+    비-DB 경로에서 소유권을 물어야 하는 날이 오면 그건 별도 함수다.
+    """
+    return (
+        (Conversation.tenant_id == tenant_id)
+        & (Conversation.created_by == (user_id or DEFAULT_USER))
+        & (Conversation.deleted_at.is_(None))
+    )
+
+
 async def ensure_conversation(
         session: AsyncSession,
         tenant_id: str,
@@ -35,25 +54,24 @@ async def ensure_conversation(
 ) -> Conversation:
     """대화가 없으면 새로 만들고, 있으면 소유 대화인지 검증한다.
       conversation_id=None이면 새 Conversation을 INSERT (created_by 저장, #10).
-      conversation_id가 있으면 tenant + created_by + 미삭제까지 확인 —
+      conversation_id가 있으면 owned_filter로 소유 검증 —
       남의 대화 접근·삭제된 대화로의 질의 계속을 차단한다.
-      같은 규칙이 routers/conversations.py _owned(목록·조회 경로, WHERE절)에도 있다 —
-      소유권 규칙 변경 시 두 곳을 함께 고칠 것.
-      기존 created_by NULL 대화(개발 데이터)는 어느 사용자와도 불일치 → 미노출.
     """
-    user = user_id or DEFAULT_USER
     if conversation_id is None:
-        conversation = Conversation(tenant_id=tenant_id, created_by=user)
+        # 저장값의 폴백은 필터와 별개 책임이라 여기서 직접 계산한다 — owned_filter의
+        # 폴백과 표현이 겹쳐 보여도 하나는 "무엇을 저장하나", 하나는 "무엇이 보이나"다.
+        conversation = Conversation(tenant_id=tenant_id, created_by=user_id or DEFAULT_USER)
         session.add(conversation)
         await session.flush()
         return conversation
 
-    conversation = await session.get(Conversation, conversation_id)
-
-    if (conversation is None or conversation.tenant_id != tenant_id
-            or conversation.created_by != user or conversation.deleted_at is not None):
+    conversation = (await session.execute(
+        select(Conversation)
+        .where(Conversation.id == conversation_id)
+        .where(owned_filter(tenant_id, user_id))
+    )).scalar_one_or_none()
+    if conversation is None:
         raise ValueError(f'Conversation {conversation_id} not found')
-
     return conversation
 
 async def load_recent_messages(

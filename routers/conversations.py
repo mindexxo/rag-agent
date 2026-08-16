@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio.session import AsyncSession
 
 from database import get_session
 from rag import cancellation
-from rag.conversation import DEFAULT_USER
+from rag.conversation import owned_filter
 from rag.models import Conversation, Message
 from routers.kms import get_tenant_id, get_user_id
 from schemas.conversations import (
@@ -81,26 +81,12 @@ def _build_snippet(content: str, q: str) -> str | None:
     return f'{prefix}{content[start:end]}{suffix}'
 
 
-def _owned(tenant_id: str, user_id: str | None):
-    """대화 소유 필터 (#10) — tenant + created_by + 미삭제 (이 라우터의 조회 경로 공통).
-
-    같은 규칙이 rag/conversation.py ensure_conversation(질의 경로, ORM 인스턴스 비교)에도
-    있다 — 소유권 규칙을 바꾸면 두 곳을 함께 고칠 것.
-    created_by NULL인 기존 개발 데이터는 어느 사용자와도 불일치 → 자연 미노출.
-    """
-    return (
-        (Conversation.tenant_id == tenant_id)
-        & (Conversation.created_by == (user_id or DEFAULT_USER))
-        & (Conversation.deleted_at.is_(None))
-    )
-
-
 async def _get_owned_conversation(
         session: AsyncSession, conversation_id: int, tenant_id: str, user_id: str | None,
 ) -> Conversation:
     """소유 대화 로드 — 없거나 남의 것이거나 삭제됐으면 404 (존재 여부 노출 안 함)."""
     conv = (await session.execute(
-        select(Conversation).where(Conversation.id == conversation_id).where(_owned(tenant_id, user_id))
+        select(Conversation).where(Conversation.id == conversation_id).where(owned_filter(tenant_id, user_id))
     )).scalar_one_or_none()
     if conv is None:
         raise HTTPException(status_code=404, detail='대화를 찾을 수 없습니다.')
@@ -186,7 +172,7 @@ async def list_conversations(
     q = (q or '').strip() or None
     pattern = f'%{_escape_like(q)}%' if q else None
 
-    where = _owned(tenant_id, user_id) & _search_filter(tenant_id, pattern)
+    where = owned_filter(tenant_id, user_id) & _search_filter(tenant_id, pattern)
     total = (await session.execute(
         select(func.count(Conversation.id)).where(where)
     )).scalar_one()
@@ -281,7 +267,7 @@ async def set_message_feedback(
         .where(Message.tenant_id == tenant_id)     # 격리 — 메시지에도 tenant WHERE 명시
         .where(Message.role == 'assistant')
         .where(Message.status == 'done')           # 실패/차단/생성중 턴엔 평가할 답변이 없음 — 집계 오염 방지
-        .where(_owned(tenant_id, user_id))
+        .where(owned_filter(tenant_id, user_id))
     )).scalar_one_or_none()
     if msg is None:
         raise HTTPException(status_code=404, detail='메시지를 찾을 수 없습니다.')
@@ -325,7 +311,7 @@ async def cancel_generation(
         .where(Message.id == message_id)
         .where(Message.tenant_id == tenant_id)     # 격리 — 메시지에도 tenant WHERE 명시
         .where(Message.role == 'assistant')
-        .where(_owned(tenant_id, user_id))
+        .where(owned_filter(tenant_id, user_id))
     )).scalar_one_or_none()
     if msg is None:
         raise HTTPException(status_code=404, detail='메시지를 찾을 수 없습니다.')

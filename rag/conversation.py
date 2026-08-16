@@ -204,6 +204,21 @@ def _parse_multi_queries(result: str | None, query: str) -> list[str]:
     return [standalone, *variants[:2]]
 
 
+def _new_user_message(tenant_id: str, conversation_id: int, user_query: str,
+                      standalone_query: str, attachments: list[dict] | None,
+                      user_id: str | None) -> Message:
+    """user Message 생성 — save_exchange/add_pending_turn 공용 (필드 10줄이 sha 동일했다)."""
+    return Message(
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        role="user",
+        content=user_query,
+        standalone_query=standalone_query,
+        attachments=attachments,
+        user_id=user_id,
+    )
+
+
 async def save_exchange(
         session: AsyncSession,
         tenant_id: str,
@@ -229,15 +244,8 @@ async def save_exchange(
     commit은 호출자가 담당한다. 반환: assistant Message (id는 flush로 확정 —
     즉시 경로 meta의 assistant_message_id·피드백 PATCH 대상, #8).
     """
-    user_message = Message(
-        tenant_id=tenant_id,
-        conversation_id=conversation_id,
-        role="user",
-        content=user_query,
-        standalone_query=standalone_query,
-        attachments=attachments,
-        user_id=user_id,
-    )
+    user_message = _new_user_message(tenant_id, conversation_id, user_query,
+                                     standalone_query, attachments, user_id)
     session.add(user_message)
     await session.flush()   # user id 확보 — assistant의 question_message_id FK용
 
@@ -265,12 +273,11 @@ async def save_exchange(
 async def _touch_conversation(session: AsyncSession, tenant_id: str, conversation_id: int,
                                first_query: str | None = None) -> None:
     """대화의 last_used_at 갱신 + 제목이 비어 있으면 첫 질문으로 세팅 (목록 표시용)."""
-    values: dict = {'last_used_at': func.now()}
     await session.execute(
         update(Conversation)
         .where(Conversation.id == conversation_id)
         .where(Conversation.tenant_id == tenant_id)   # 격리 — WHERE 절 명시
-        .values(**values)
+        .values(last_used_at=func.now())
     )
     if first_query:
         await session.execute(
@@ -297,15 +304,8 @@ async def add_pending_turn(
     assistant는 content='', status='generating'으로 시작하고, 완료 시 finalize_turn이 채운다.
     commit은 호출자가 담당한다. 반환: assistant 자리표시 Message (id는 flush 후 확정).
     """
-    user_message = Message(
-        tenant_id=tenant_id,
-        conversation_id=conversation_id,
-        role="user",
-        content=user_query,
-        standalone_query=standalone_query,
-        attachments=attachments,
-        user_id=user_id,
-    )
+    user_message = _new_user_message(tenant_id, conversation_id, user_query,
+                                     standalone_query, attachments, user_id)
     session.add(user_message)
     await session.flush()   # user id 확보 — 자리표시에 짝 FK를 처음부터 박는다
     assistant_message = Message(

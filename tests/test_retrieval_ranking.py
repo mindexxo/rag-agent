@@ -71,28 +71,29 @@ class TestRerankMaxpool:
         result = await self._run(monkeypatch,
                                  [[0.1, 0.2, 0.5], [0.0, 0.9, 0.3]],
                                  ['q1', 'q2'], chunks)
-        ordered, best = result
+        ordered, best, best_qi = result
         assert [c.chunk_id for c in ordered] == [2, 3, 1]
         assert best == [0.9, 0.5, 0.1]        # 점수도 같은 순서로 대응해야 otel 기록이 맞는다
+        assert best_qi == [1, 0, 0]           # 채택 쿼리 인덱스(#54) — 청크2는 q2, 청크3·1은 q1이 최고점
 
     @pytest.mark.asyncio
     async def test_한_쿼리라도_실패하면_점수가_None(self, monkeypatch, chunks):
         """부분 성공을 쓰지 않는다 — 청크마다 max를 취한 쿼리 수가 달라져 비교 불가."""
-        ordered, best = await self._run(monkeypatch,
-                                        [[0.1, 0.2, 0.5], None],
-                                        ['q1', 'q2'], chunks)
-        assert best is None
+        ordered, best, best_qi = await self._run(monkeypatch,
+                                                 [[0.1, 0.2, 0.5], None],
+                                                 ['q1', 'q2'], chunks)
+        assert best is None and best_qi is None
         assert ordered == chunks          # 실패해도 넘겨받은 순서(RRF)를 그대로 돌려준다
 
     @pytest.mark.asyncio
     async def test_전부_실패해도_원_순서를_돌려준다(self, monkeypatch, chunks):
-        ordered, best = await self._run(monkeypatch, [None, None], ['q1', 'q2'], chunks)
-        assert best is None
+        ordered, best, best_qi = await self._run(monkeypatch, [None, None], ['q1', 'q2'], chunks)
+        assert best is None and best_qi is None
         assert ordered == chunks
 
     @pytest.mark.asyncio
     async def test_동점이면_원_순서_유지(self, monkeypatch, chunks):
         # sorted가 안정 정렬이므로 동점 청크의 상대 순서는 입력 순서 그대로
         result = await self._run(monkeypatch, [[0.5, 0.5, 0.5]], ['q1'], chunks)
-        ordered, _ = result
+        ordered, _, _ = result
         assert [c.chunk_id for c in ordered] == [1, 2, 3]

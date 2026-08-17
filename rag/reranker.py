@@ -6,7 +6,9 @@ bi-encoder(임베딩)로 넓게 추린 후보를, query+청크를 함께 넣어 
 - retrieve_candidates() 후보의 '순서만' 바꾼다 (집합·Recall@N 불변).
 - 실패(서버 다운 등) 시 원 순서 유지 → graceful degrade (검색이 멈추지 않게).
 
-채점 전략 둘이 여기 함께 산다 — 단일 쿼리는 rerank(), 쿼리 확장(#5)은 rerank_maxpool().
+정렬은 rerank_maxpool() 하나다 — 단일 쿼리는 원소 1개짜리 쿼리 리스트의 max-pool과 수학적으로
+동일해서(#54, 골든 140케이스 대조) retriever는 항상 rerank_maxpool을 부른다. rerank()는
+그 사실을 모르는 기존 호출부(eval 2곳)를 위한 위임 래퍼다.
 otel 계측은 호출부(retriever)가 맡는다: 이 모듈은 관측 의존이 없다.
 
 2026-07-17 비동기 전환 완료 — 공용 AsyncClient(rag.clients) 사용, 호출부는 await.
@@ -68,25 +70,14 @@ async def rerank_scores(query: str, chunks: list) -> list[float] | None:
         return None
 
 
-async def rerank(query: str, chunks: list, model_name: str | None = None) -> list:
-    """query 기준 cross-encoder 점수로 chunks 재정렬. 실패 시 원본 순서 그대로.
-
-    async(공용 AsyncClient) — 리랭크 대기 중 이벤트 루프 비블로킹.
-    model_name: TEI는 컨테이너당 모델 고정이라 무시 (구 eval 호출 호환용 인자).
-    """
-    scores = await rerank_scores(query, chunks)
-    if not scores:                        # 실패(None)·빈 입력 모두 원 순서 유지 (graceful degrade)
-        return chunks
-    order = sorted(range(len(chunks)), key=lambda i: -scores[i])
-    return [chunks[i] for i in order]
-
-
-async def rerank_maxpool(queries: list[str], chunks: list) -> tuple[list, list[float] | None]:
+async def rerank_maxpool(queries: list[str], chunks: list) -> tuple[list, list[float] | None, list[int] | None]:
     """쿼리 확장(#5) 채점 — 쿼리별로 각자 채점해 청크별 최고점(max-pool)으로 정렬.
 
-    (chunks, 그 순서에 대응하는 채택 점수) 반환. **실패해도 chunks는 항상 돌려준다** —
-    점수 자리만 None이 되고 순서는 넘겨받은 그대로(RRF)다. rerank()가 실패 시 원 순서를
-    돌려주는 것과 같은 모양이라, 호출부가 실패 분기에서 리스트를 따로 챙길 필요가 없다.
+    (chunks, 그 순서에 대응하는 채택 점수, 그 점수를 낸 쿼리 인덱스) 반환 —
+    인덱스는 queries의 위치(0=원본 standalone, 1..=확장 변형), 동점이면 앞 쿼리(결정적).
+    어느 변형이 채택을 이끌었는지의 진단 정보로, 스팬 기록(#54) 외에 랭킹엔 안 쓴다.
+    **실패해도 chunks는 항상 돌려준다** — 점수·인덱스 자리만 None이 되고 순서는 넘겨받은
+    그대로(RRF)다. 호출부가 실패 분기에서 리스트를 따로 챙길 필요가 없다.
 
     RRF→원본 쿼리 채점 방식은 변형이 찾아온 청크를 원본 어휘로 다시 채점해 이득이
     소멸했다 (mt 90문항 실측: RRF+원본채점 = 풀확장+원본채점 = 개선 0, max-pool +4.5pp).
@@ -97,7 +88,19 @@ async def rerank_maxpool(queries: list[str], chunks: list) -> tuple[list, list[f
     """
     matrix = await asyncio.gather(*(rerank_scores(q, chunks) for q in queries))
     if not all(s is not None for s in matrix):
-        return chunks, None
-    best = [max(col) for col in zip(*matrix)]
+        return chunks, None, None
+    per_chunk = list(zip(*matrix))                                     # [청크][쿼리] 점수
+    best_qi = [max(range(len(col)), key=col.__getitem__) for col in per_chunk]
+    best = [col[qi] for col, qi in zip(per_chunk, best_qi)]            # == max(col) — 값 불변
     order = sorted(range(len(chunks)), key=lambda i: -best[i])
-    return [chunks[i] for i in order], [best[i] for i in order]
+    return [chunks[i] for i in order], [best[i] for i in order], [best_qi[i] for i in order]
+
+
+async def rerank(query: str, chunks: list, model_name: str | None = None) -> list:
+    """단일 쿼리 재정렬 — rerank_maxpool([query], ...)의 위임 래퍼 (#54). 실패 시 원본 순서.
+
+    쿼리 1개의 max-pool은 그 쿼리 점수 정렬과 동일하다(원소 1개 max = 그 값, 같은 sorted 호출).
+    model_name: TEI는 컨테이너당 모델 고정이라 무시 (구 eval 호출 호환용 인자).
+    """
+    reranked, _, _ = await rerank_maxpool([query], chunks)
+    return reranked

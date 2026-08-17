@@ -46,3 +46,20 @@ def test_set_documents_no_op에서_무해():
         chunk_id, text = 1, '본문'          # set_documents가 읽는 두 속성뿐
     with otel.span('t', 'RETRIEVER') as sp:
         otel.set_documents(sp, [_C()])       # 예외 없이 통과하면 충분 (no-op)
+
+
+def test_record_turn_result_no_op에서_무해_그리고_clip_비용_회피():
+    """턴 결과 기록(#54) — no-op 스팬에서 무해해야 하고, is_recording 가드가 먼저라
+    clip(문자열 절단) 비용도 없어야 한다(otel.py 모듈 docstring 규약)."""
+    from unittest.mock import patch
+    from rag.streaming import _record_turn_result
+
+    sp, token = otel.start_turn()
+    assert not sp.is_recording()
+    try:
+        with patch.object(otel, 'clip', side_effect=AssertionError('no-op인데 clip이 호출됨')):
+            _record_turn_result(sp, '답변' * 1000, 'done', 1234, cited=['a.pdf'], refusal=False)
+            _record_turn_result(sp, '', 'failed', None, cited=[], refusal=False)   # None latency도 무해
+    finally:
+        otel.detach_turn(token)
+        sp.end()

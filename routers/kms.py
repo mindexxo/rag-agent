@@ -78,9 +78,10 @@ async def query(
     t_request = time.monotonic()   # 응답시간 기준점 — prepare(인텐트·검색·condense) 포함 (사용자 체감)
     service = RagService(tenant_id=tenant_id, session=session, user_id=user_id)
 
-    # 턴 루트 스팬(#7) — 데코레이터가 아닌 수동 관리: 생성 경로는 핸들러 반환 후 백그라운드
-    # 태스크가 끝나야 턴이 끝나므로, 그 경우 span.end()를 태스크에 핸드오프해 루트 duration이
-    # 턴 전체(생성 완료까지)를 반영하게 한다.
+    # 턴 루트 스팬(#7) — 데코레이터가 아닌 수동 관리: 두 스트림(즉시·생성) 모두 핸들러가
+    # 반환한 뒤에야 답이 확정되므로, span.end()를 스트림 쪽에 핸드오프해 루트 duration이
+    # 턴 전체를 반영하게 한다(#54). 핸들러 finally는 스트림이 시작되지 못한 경우
+    # (prepare 단계 예외)만 직접 종료한다.
     root_span, otel_token = otel.start_turn()
     root_handed_off = False
     try:
@@ -102,10 +103,16 @@ async def query(
 
         # ── 즉시 경로 (비LLM: 입력차단/캐시히트/근거없음) ──
         if not prepared.needs_generation:
-            return StreamingResponse(
-                streaming.immediate_stream(service, prepared, session, t_request),
+            response = StreamingResponse(
+                streaming.immediate_stream(service, prepared, session, t_request, root_span),
                 media_type="text/event-stream", headers=_SSE_HEADERS,
             )
+            # 스팬 종료는 immediate_stream의 finally가 담당(#54) — 플래그는 응답 객체 생성 '뒤'에
+            # 세워, 여기서 실패하면 핸들러 finally가 종료한다(생성 경로의 spawn 순서와 같은 원칙).
+            # lease는 손대지 않는다 — concurrency_guard(yield 의존성)가 스트림 종료까지 물고
+            # 있다가 반납하므로, handed_off를 세우면 아무도 반납하지 않는다(슬롯 영구 유출).
+            root_handed_off = True
+            return response
 
         # ── 생성 경로 (LLM → 백그라운드 태스크 + 큐 리더) ──
         await service.begin_turn(prepared)          # placeholder(generating) commit → assistant_message_id

@@ -71,6 +71,50 @@ async def test_소비자가_없어도_태스크는_완주해_finalize한다(clie
 
 
 @pytest.mark.asyncio
+async def test_생성_실패도_failed로_남고_정리가_끝난다(client, tenant_id, fake_llm, pass_gate, monkeypatch):
+    """단위: 생성 도중 예외 → except Exception 분기(#54에서 스팬 기록 추가)가 통째로 도는지.
+
+    이 분기는 다른 테스트가 아무도 안 탄다(리뷰 지적) — failed 기록·에러 이벤트·슬롯 반납·
+    no-op 스팬 기록(_record_turn_result)이 예외 없이 지나가는 것까지 여기서 고정한다.
+    """
+    await register_faq(client)
+
+    async with AsyncSessionLocal() as session:
+        svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
+        prepared = await svc.prepare('환불 기간 알려줘')
+        await svc.begin_turn(prepared)
+        assistant_id = prepared.assistant_message_id
+
+    async def _boom(self, prepared):
+        raise RuntimeError('LLM down')
+        yield   # async generator로 만들기 위한 도달 불가 yield
+
+    monkeypatch.setattr(RagService, 'generate', _boom)
+
+    lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
+    queue: asyncio.Queue = asyncio.Queue()
+    root_span, token = otel.start_turn()
+    try:
+        await _run_generation(prepared, queue, lease, t_request=0.0, root_span=root_span)
+    finally:
+        otel.detach_turn(token)
+
+    # 실패 기록: _finalize_out_of_band가 새 세션으로 failed를 남긴다 (latency는 규칙상 NULL)
+    async with AsyncSessionLocal() as session:
+        msg = await session.get(Message, assistant_id)
+        assert msg.status == 'failed'
+        assert msg.latency_ms is None
+
+    assert await _inflight_count(tenant_id) == 0     # 슬롯 반납 (finally)
+
+    drained = []
+    while not queue.empty():
+        drained.append(queue.get_nowait())
+    assert drained[-1] is None                       # 리더 종료 sentinel
+    assert any(item and item[0] == 'error' for item in drained)   # 에러 이벤트 전달
+
+
+@pytest.mark.asyncio
 async def test_스트림_중단해도_턴이_done으로_남는다(client, tenant_id, fake_llm, pass_gate):
     """통합: HTTP 레이어에서 meta만 읽고 응답을 닫는다 → 태스크는 계속 돌아 finalize해야 한다."""
     await register_faq(client)

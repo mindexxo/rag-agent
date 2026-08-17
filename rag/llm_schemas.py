@@ -19,6 +19,11 @@ condense 멀티)을 vLLM structured_outputs의 json 스키마 강제로 바꾼�
 스키마 필드에 기본값을 주지 말 것: 기본값이 있으면 json 스키마에서 required가 빠져
 guided 경로에서 모델이 필드를 생략해도 합법이 된다 — 강제력이 조용히 약화된다.
 누락은 검증 실패 → 폴백으로 가는 게 맞고, 그 편이 kms.schema_invalid로 관측까지 된다.
+(이 원칙은 구조를 결정하는 필드 — safe·intent·standalone — 에 한한다. reason·variants는
+원래 없을 수 있는 값이라 옵셔널이 맞다.)
+
+배치가 schemas/가 아니라 rag/인 이유: schemas/는 FastAPI 요청·응답(API 경계) 계약이고,
+이건 LLM에 거는 생성 제약이라는 내부 계약이다 — build_citation_grammar(rag/prompts)와 같은 축.
 """
 import logging
 from functools import cache

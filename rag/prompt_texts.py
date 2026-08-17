@@ -116,8 +116,8 @@ _INTENT_GUARD_SYSTEM_PROMPT_TEMPLATE = """당신은 한국어 콜센터 상담 �
   인사·자기소개·'이 대화(오간 말)' 자체의 요약·회상은 OTHER입니다.
   서비스 질문이 섞여 있거나 애매하면 KNOWLEDGE로 하십시오.
 
-출력 형식 — 다음 두 형태 중 하나의 JSON:
-{"safe": true, "intent": "KNOWLEDGE"}
+출력 형식 — safe·intent를 담은 JSON 한 줄. reason은 safe가 false일 때만 포함:
+{"safe": true, "intent": "KNOWLEDGE 또는 OTHER"}
 {"safe": false, "intent": "OTHER", "reason": "차단 사유 한 줄"}
 
 예시:
@@ -240,10 +240,11 @@ CONDENSE_SYSTEM_PROMPT = """당신은 한국어 콜센터 상담 대화에서 �
   {"standalone": "반품은 한 달 안에 아무 때나 가능한가요?"}
 """
 
-# 질의 재작성 의미 확장(#5) — condense 규칙(보존 계열)을 그대로 물려받고 출력만 3줄로 확장.
-# 첫 줄이 기존 condense 출력과 같은 역할(standalone — 저장·캐시 키·리랭크 기준),
-# 2·3번째 줄은 검색 전용 어휘 변형. 상충 목표(보존 vs 어휘 교체)를 한 프롬프트에서
-# 제어하는 실험이므로, 변형에도 보존 규칙(조건·수치·대상 불변)을 명시해 이탈을 막는다.
+# 질의 재작성 의미 확장(#5) — condense 규칙(보존 계열)을 그대로 물려받고 출력을
+# JSON(standalone + variants 최대 2, #43)으로 확장. standalone은 기존 condense 출력과
+# 같은 역할(저장·캐시 키·리랭크 기준), variants는 검색 전용 어휘 변형.
+# 상충 목표(보존 vs 어휘 교체)를 한 프롬프트에서 제어하는 실험이므로,
+# 변형에도 보존 규칙(조건·수치·대상 불변)을 명시해 이탈을 막는다.
 CONDENSE_MULTI_SYSTEM_PROMPT = """당신은 한국어 콜센터 상담 대화에서 후속 질문을 검색용 질문 여러 개로 변환하는 도우미입니다.
 아래 절차를 순서대로 수행하십시오.
 

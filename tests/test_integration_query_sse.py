@@ -188,6 +188,40 @@ async def test_꼬리가_잘린_답변은_인용_없이_완주한다(client, ten
 
 
 @pytest.mark.asyncio
+async def test_스키마_거부_서버에서도_가드와_condense가_동작한다(client, tenant_id, fake_llm, pass_gate):
+    """#43 fail-open 통합 — 구버전 vLLM(structured_outputs 거부)에서도 가드·condense가
+    무스키마 재시도로 계속 동작해야 한다. 재시도가 없으면 가드 전량 fail-open = 무력화."""
+    await register_faq(client)
+    fake_llm.reject_schema = True
+
+    first = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
+    assert first.status_code == 200
+    assert sse_done(first)['finish_reason'] == 'done'        # 가드가 재시도로 정상 판정
+    conv_id = next(d for e, d in _events(first.text) if e == 'meta')['conversation_id']
+
+    second = await client.post('/kms/query', json={'query': '그럼 교환은?', 'conversation_id': conv_id})
+    assert sse_done(second)['finish_reason'] == 'done'       # condense(멀티턴)도 재시도로 완주
+
+    # 재시도 증거 — 스키마 실린 호출과 무스키마 재호출이 쌍으로 남는다
+    bodies = fake_llm.acomplete_extra_bodies
+    assert any(b and 'structured_outputs' in b for b in bodies)
+    assert None in bodies
+
+
+@pytest.mark.asyncio
+async def test_인텐트_응답이_깨져도_fail_open으로_검색_경로(client, tenant_id, fake_llm, pass_gate):
+    """#43 — 스키마 미지원 폴백 응답이 형식을 안 지켜도 가드는 fail-open(KNOWLEDGE)으로
+    검색 경로를 태운다(안전 측). 구 _extract_json 시절과 같은 최종 동작, 이제는 관측됨."""
+    await register_faq(client)
+    fake_llm.intent_json = '형식을 지키지 않은 자유 서술 응답'
+
+    res = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
+    assert res.status_code == 200
+    assert sse_done(res)['finish_reason'] == 'done'          # blocked가 아니라 정상 완주
+    assert '테스트 답변입니다.' in sse_answer(res)           # KNOWLEDGE 경로로 생성까지 감
+
+
+@pytest.mark.asyncio
 async def test_없는_대화_id는_404(client, tenant_id, fake_llm):
     res = await client.post('/kms/query', json={'query': '환불?', 'conversation_id': 999999})
     assert res.status_code == 404                            # REVIEW ③ — 500 아닌 404

@@ -52,9 +52,11 @@ class TailSplitter:
 
     def feed(self, chunk: str) -> str:
         assert not self._done, 'finish() 이후 feed 불가'
-        if self._in_tail:
-            return self._feed_tail(chunk)
-        return self._feed_body(chunk)
+        emitted = self._feed_tail(chunk) if self._in_tail else self._feed_body(chunk)
+        # prose 누적은 여기 최상위 한 곳뿐이다 — 내부 헬퍼(_feed_body/_flush_false_alarm)가
+        # 각자 더하면 오탐 복귀가 같은 feed 호출 안에서 재귀할 때 이중 누적된다(리뷰 발견).
+        self.prose += emitted
+        return emitted
 
     def _feed_body(self, chunk: str) -> str:
         self._hold += chunk
@@ -80,9 +82,7 @@ class TailSplitter:
             else:
                 out.append(self._hold)
                 self._hold = ''
-        emitted = ''.join(out)
-        self.prose += emitted
-        return emitted
+        return ''.join(out)
 
     def _feed_tail(self, chunk: str) -> str:
         self._tail_buf += chunk
@@ -105,7 +105,6 @@ class TailSplitter:
         새로 시작하는 마커는 아직 판정 전이므로 정상 후보다.
         """
         flushed, self._tail_buf, self._in_tail = self._tail_buf, '', False
-        self.prose += TAIL_START
         return TAIL_START + self._feed_body(flushed)
 
     def finish(self) -> str:

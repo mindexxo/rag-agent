@@ -15,10 +15,15 @@ SRC = [SourceCitation(document_id=5, filename='환불규정.docx', version=2),
 
 
 def _run(chunks: list[str]) -> tuple[str, TailSplitter]:
-    """feed 반환값 누적(=화면에 보인 것)과 splitter를 돌려준다."""
+    """feed 반환값 누적(=화면에 보인 것)과 splitter를 돌려준다.
+
+    prose == 방출 누적 불변식을 모든 케이스에서 검증한다 — 오탐 복귀 경로의 이중 누적
+    버그(리뷰 발견)가 정확히 이 단언이 빠진 케이스에서만 살아남았었다.
+    """
     sp = TailSplitter()
     emitted = ''.join(sp.feed(c) for c in chunks)
     emitted += sp.finish()
+    assert sp.prose == emitted, f'prose 불변식 위반: {sp.prose!r} != {emitted!r}'
     return emitted, sp
 
 

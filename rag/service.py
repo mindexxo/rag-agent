@@ -340,7 +340,7 @@ class RagService:
         """
         # 이 값 하나를 SSE로 흘려도 되는 이유: 확정 답변은 쪼갤 필요가 없다. 예전엔 캐시 답변을
         # 40자로 잘라 yield했지만 소비처(immediate_stream)가 곧바로 ''.join으로 되붙여
-        # 단일 token 이벤트로 보낸다 — 청크 경계를 관측하는 곳이 없었다 (#26 정리의 잔재).
+        # 단일 delta 이벤트로 보낸다 — 청크 경계를 관측하는 곳이 없었다 (#26 정리의 잔재).
         answer = prepared.resolved_answer
         if answer is not None:
             yield answer

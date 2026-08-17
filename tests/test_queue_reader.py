@@ -95,6 +95,21 @@ async def test_소비_시작_후_도착하는_이벤트도_대기해_수신():
 
 
 @pytest.mark.asyncio
+async def test_큐_get_취소_직전에_들어온_아이템은_유실되지_않는다():
+    """ping 구현(wait_for가 get을 취소)의 전제를 결정적으로 재현 — put으로 깨어난 getter를
+    루프가 돌기 전에 취소해도 아이템은 큐에 남아 다음 get이 집는다 (타이밍 의존 없음)."""
+    import contextlib
+    queue: asyncio.Queue = asyncio.Queue()
+    getter = asyncio.ensure_future(queue.get())
+    await asyncio.sleep(0)                     # getter가 대기에 진입
+    queue.put_nowait(('delta', {'text': 'x'}))  # getter 깨우기 예약
+    getter.cancel()                            # 깨어나기 전에 취소 — 정확히 그 경합
+    with contextlib.suppress(asyncio.CancelledError):
+        await getter
+    assert queue.get_nowait() == ('delta', {'text': 'x'})   # 유실 없음
+
+
+@pytest.mark.asyncio
 async def test_유휴_시_ping이_나오고_이후_이벤트는_유실_없이_도착(monkeypatch):
     """ping 타임아웃(wait_for)이 큐 대기를 취소해도 아이템이 유실되지 않는다 (#56 회귀 고정).
 

@@ -97,12 +97,15 @@ async def test_근거없음은_즉시_거절_캐시_미저장(client, tenant_id,
 @pytest.mark.asyncio
 async def test_OTHER_경로_스몰토크(client, tenant_id, fake_llm):
     fake_llm.intent_json = '{"safe": true, "intent": "OTHER"}'
-    fake_llm.answer = '안녕하세요! 무엇을 도와드릴까요?'
+    # 마커 문자열을 일부러 본문에 — OTHER는 꼬리 분리(splitter) 미적용이라 그대로 통과해야
+    # 한다(게이트 회귀 검증). 실제 OTHER 프롬프트는 꼬리를 지시하지 않는다.
+    from rag.citation_labels import TAIL_START
+    fake_llm.answer = f'안녕하세요! 무엇을 도와드릴까요? {TAIL_START}표기_예시'
 
     res = await client.post('/kms/query', json={'query': '안녕'})
 
     assert sse_done(res)['citations'] == []                  # 검색 안 함 → 인용 없음
-    assert '안녕하세요!' in sse_answer(res)
+    assert TAIL_START in sse_answer(res)                     # splitter 미적용 — 본문 그대로
     assert 'stream:generate' in fake_llm.calls               # OTHER도 생성 경로(백그라운드)
 
 
@@ -119,6 +122,9 @@ async def test_캐시_히트는_즉시_경로_LLM_미호출(client, tenant_id, f
     assert events[0][1]['cached'] is True
     assert events[0][1]['cache_kind'] == 'semantic'
     assert '테스트 답변입니다.' in sse_answer(second)   # 캐시된 답 재생
+    # 캐시가 저장한 인용이 재생 턴의 done.citations로 복원된다 (#56 — 캐시는 인용만 저장)
+    assert sse_done(second)['citations'] == sse_done(first)['citations']
+    assert sse_done(second)['finish_reason'] == 'done'
     new_calls = fake_llm.calls[len(calls_after_first):]
     assert not any(c.startswith('stream:') for c in new_calls)  # 생성 LLM 재호출 없음
 
@@ -153,10 +159,28 @@ async def test_guided_미지원_서버는_문법_없이_재시도한다(client, 
             yield t
 
     fake_llm.astream = rejects_grammar
+    # 문법 없는 자유 생성이 꼬리 형식을 안 지키는 최악 조합 — citations는 조용히 [] 여야 한다
+    fake_llm.answer = '테스트 답변입니다. 출처는 환불규정 문서입니다.'
     res = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
     assert res.status_code == 200
     assert '테스트 답변입니다.' in sse_answer(res)
-    assert sse_done(res)['finish_reason'] == 'done'          # 재시도로 정상 완주
+    done = sse_done(res)
+    assert done['finish_reason'] == 'done'                   # 재시도로 정상 완주
+    assert done['citations'] == []                           # 꼬리 미준수 → 그럴듯한 복구 없이 빈 목록
+
+
+@pytest.mark.asyncio
+async def test_꼬리가_잘린_답변은_인용_없이_완주한다(client, tenant_id, fake_llm, pass_gate):
+    """max_tokens 도달 등으로 END 전에 스트림이 끝나는 경우(#56 truncated) — 잘린 버퍼는
+    화면·저장 어디에도 없고 citations는 빈 목록이어야 한다."""
+    await register_faq(client)
+    from rag.citation_labels import TAIL_START
+    fake_llm.answer = f'테스트 답변입니다. {TAIL_START}[FA'      # END 없이 끊김
+
+    res = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
+    assert sse_answer(res).strip() == '테스트 답변입니다.'       # 잘린 꼬리 조각 미노출
+    done = sse_done(res)
+    assert done['finish_reason'] == 'done' and done['citations'] == []
 
 
 @pytest.mark.asyncio

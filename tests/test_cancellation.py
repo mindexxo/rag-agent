@@ -20,8 +20,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from database import AsyncSessionLocal
-from rag import cancellation, otel
-from rag.limiter import query_limiter
+from rag import cancellation, limiter, otel
 from rag.models import Message
 from rag.service import RagService
 from rag.streaming import _run_generation, spawn_generation
@@ -62,7 +61,7 @@ async def cancel_subscriber():
 
 
 async def _inflight_count(tenant_id: str) -> int:
-    return await query_limiter._redis.zcard(f'kms:inflight:t:{tenant_id}')
+    return await limiter._redis().zcard(f'kms:inflight:t:{tenant_id}')
 
 
 async def _prepare_turn(tenant_id: str):
@@ -138,7 +137,7 @@ async def test_취소하면_부분답변이_cancelled로_남고_정리가_끝난
     prepared = await _prepare_turn(tenant_id)
     assistant_id = prepared.assistant_message_id
 
-    lease = await query_limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
+    lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
     assert await _inflight_count(tenant_id) == 1
 
     queue: asyncio.Queue = asyncio.Queue()
@@ -175,7 +174,7 @@ async def test_취소하면_인용을_빈_배열로_정정한다(client, tenant_
     await register_faq(client)
     fake_llm.pause_after_tokens = 2
     prepared = await _prepare_turn(tenant_id)
-    lease = await query_limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
+    lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
 
     queue: asyncio.Queue = asyncio.Queue()
     root_span, token = otel.start_turn()
@@ -205,7 +204,7 @@ async def test_스윕이_failed로_바꿔도_살아있는_태스크는_취소된
     fake_llm.pause_after_tokens = 2
     prepared = await _prepare_turn(tenant_id)
     assistant_id = prepared.assistant_message_id
-    lease = await query_limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
+    lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
     lease.handed_off = True
 
     root_span, token = otel.start_turn()
@@ -242,7 +241,7 @@ async def test_첫_토큰_전에_취소하면_빈_답변으로_남는다(client,
     await register_faq(client)
     fake_llm.pause_after_tokens = 0                   # 첫 토큰 전에 정지
     prepared = await _prepare_turn(tenant_id)
-    lease = await query_limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
+    lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
 
     root_span, token = otel.start_turn()
     task = asyncio.create_task(_run_generation(prepared, asyncio.Queue(), lease, 0.0, root_span))
@@ -266,7 +265,7 @@ async def test_정리_도중_취소요청은_대상을_못_찾는다(client, ten
     self-pop이 없을 때 정리가 파괴된다(실측). 자기를 먼저 빼두므로 요청은 빈손이어야 한다."""
     await register_faq(client)
     prepared = await _prepare_turn(tenant_id)
-    lease = await query_limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
+    lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
 
     root_span, token = otel.start_turn()
     try:
@@ -297,7 +296,7 @@ async def test_생성_중_취소요청은_204이고_cancelled로_귀결(client, 
     fake_llm.pause_after_tokens = 2
     prepared = await _prepare_turn(tenant_id)
     assistant_id = prepared.assistant_message_id
-    lease = await query_limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
+    lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
     lease.handed_off = True                            # 반납 책임은 태스크가 진다 (kms 라우터와 동일)
 
     root_span, token = otel.start_turn()
@@ -320,13 +319,13 @@ async def test_동시_상한이_가득_차도_취소는_동작한다(client, ten
     """concurrency_guard를 거치지 않는 이유 — 429가 나는 상황이 취소가 가장 필요한 때다."""
     await register_faq(client)
     prepared = await _prepare_turn(tenant_id)
-    leases = [await query_limiter.try_acquire(tenant_id, 1, 'agent-x', 1)]
+    leases = [await limiter.try_acquire(tenant_id, 1, 'agent-x', 1)]
     assert leases[0] is not None
-    assert await query_limiter.try_acquire(tenant_id, 1, 'agent-x', 1) is None   # 상한 포화 확인
+    assert await limiter.try_acquire(tenant_id, 1, 'agent-x', 1) is None   # 상한 포화 확인
 
     res = await client.post(f'/kms/messages/{prepared.assistant_message_id}/cancel', headers=USER)
     assert res.status_code != 429                       # 슬롯을 요구하지 않는다
-    await query_limiter.release(leases[0])
+    await limiter.release(leases[0])
 
 
 @pytest.mark.asyncio
@@ -358,7 +357,7 @@ async def test_진행_중인_남의_생성은_취소할_수_없다(client, tenan
     fake_llm.pause_after_tokens = 2
     prepared = await _prepare_turn(tenant_id)
     assistant_id = prepared.assistant_message_id
-    lease = await query_limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
+    lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
     lease.handed_off = True
 
     root_span, token = otel.start_turn()

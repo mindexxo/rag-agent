@@ -18,8 +18,8 @@ from starlette.responses import StreamingResponse
 
 from config import settings
 from database import get_session
-from rag import otel, streaming
-from rag.limiter import Lease, query_limiter
+from rag import limiter, otel, streaming
+from rag.limiter import Lease
 from rag.models import TenantQuota
 from rag.service import RagService
 from schemas.kms import KmsQueryRequest
@@ -57,14 +57,14 @@ async def concurrency_guard(
     tenant_limit = quota.concurrency_limit if quota else settings.concurrency_limit_default
     user_limit = quota.user_concurrency if quota else settings.user_concurrency_default
 
-    lease = await query_limiter.try_acquire(tenant_id, tenant_limit, user_id, user_limit)
+    lease = await limiter.try_acquire(tenant_id, tenant_limit, user_id, user_limit)
     if lease is None:
         raise HTTPException(status_code=429, detail='동시 요청이 많아 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.')
     try:
         yield lease
     finally:
         if not lease.handed_off:
-            await query_limiter.release(lease)
+            await limiter.release(lease)
 
 
 @router.post('/query')

@@ -13,18 +13,17 @@ import pytest
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from rag.limiter import Lease, query_limiter
 from rag.models import Message
 from rag.service import PreparedRag, RagService
 from rag.streaming import _run_generation
 from rag.retriever import RetrievalResult
-from rag import otel
+from rag import limiter, otel
 from tests.conftest import register_faq
 
 
 async def _inflight_count(tenant_id: str) -> int:
     """리미터 ZSET에 남아 있는 in-flight 항목 수 (슬롯 유출 관측)."""
-    return await query_limiter._redis.zcard(f'kms:inflight:t:{tenant_id}')
+    return await limiter._redis().zcard(f'kms:inflight:t:{tenant_id}')
 
 
 @pytest.mark.asyncio
@@ -43,7 +42,7 @@ async def test_소비자가_없어도_태스크는_완주해_finalize한다(clie
         assistant_id = prepared.assistant_message_id
     assert assistant_id is not None
 
-    lease = await query_limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
+    lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
     assert lease is not None
     assert await _inflight_count(tenant_id) == 1
 

@@ -3,6 +3,11 @@
 테넌트별/사용자별 "진행 중 요청 수"를 세서 GPU 병목을 앱 레벨에서 방어한다.
 LLM 스트리밍은 응답이 수십 초씩 걸려 분당 빈도(RPM)보다 동시 점유 수가 실제 부하를 반영.
 
+공개 표면: Lease · try_acquire · release. _redis는 내부 헬퍼(_).
+과거엔 상태 없는 ConcurrencyLimiter 클래스 + `/kms/query` 전용 싱글턴 query_limiter였다 —
+#52에서 모듈 함수로 해체. 키 prefix가 모듈 상수라 두 번째 인스턴스를 만들어도 같은 zset을
+때렸다 — 클래스가 표현하던 "리미터 여러 개" 일반성이 거짓이었다.
+
 카운터(단일 숫자) 대신 ZSET(멤버=요청 토큰, score=시작 시각)을 쓰는 이유(P1-11):
 크래시로 release가 누락돼 새어나간 항목을, 숫자 카운터는 "유출분 vs 진행 중"을 구분 못 해
 상한을 영구 잠식했다. ZSET은 시작 시각으로 오래된(=죽은) 항목만 개별 prune할 수 있어
@@ -65,49 +70,45 @@ class Lease:
     handed_off: bool = False
 
 
-class ConcurrencyLimiter:
-    @property
-    def _redis(self):
-        """공용 Redis 클라이언트 (rag/clients.py) — **호출 시점에** 모듈 속성을 읽는다.
+def _redis():
+    """공용 Redis 클라이언트 (rag/clients.py) — **호출 시점에** 모듈 속성을 읽는다.
 
-        생성자에서 붙잡으면 안 된다: 테스트가 루프 위생을 지키려고 '닫는 대신 교체'하는데
-        (닫힌 루프에 묶인 커넥션은 disconnect조차 실패한다) 붙잡아두면 교체가 안 먹는다.
-        http_async가 같은 규약을 쓴다.
-        지연 import는 embeddings/reranker와 같은 이유 — 동기 스크립트가 이 모듈만 쓸 때
-        LLM 클라이언트까지 만들어지지 않게 한다.
-        """
-        from rag import clients
-        return clients.shared_redis
-
-    async def try_acquire(
-            self, tenant_id: str, tenant_limit: int,
-            user_id: str | None = None, user_limit: int | None = None,
-    ) -> Lease | None:
-        """테넌트(+사용자) 상한 모두 미만이면 슬롯을 등록해 Lease 반환, 하나라도 꽉 차면 None.
-        Lua로 원자 실행 — prune+판정+등록이 1왕복, race 없음.
-
-        user_limit이 0/None이면 config 기본값을 쓴다 — 사용자 제한을 끄는 경로는 없다
-        (끄고 싶으면 user_id를 넘기지 않는다).
-        """
-        now = time.time()
-        token = uuid.uuid4().hex
-        keys = [_T_PREFIX + tenant_id]
-        if user_id:
-            keys.append(_U_PREFIX + f'{tenant_id}:{user_id}')
-            user_limit = user_limit or settings.user_concurrency_default
-        argv = [now, tenant_limit, user_limit or 0, settings.inflight_max_seconds, token]
-        ok = await self._redis.eval(_ACQUIRE_LUA, len(keys), *keys, *argv)
-        return Lease(tenant_id=tenant_id, token=token, user_id=user_id) if ok == 1 else None
-
-    async def release(self, lease: Lease | None) -> None:
-        """요청/태스크 종료(완료·중단·에러) 시 토큰을 두 zset에서 제거. lease 없으면 no-op.
-        zrem은 멱등이라 중복 호출도 안전하다."""
-        if lease is None:
-            return
-        await self._redis.zrem(_T_PREFIX + lease.tenant_id, lease.token)
-        if lease.user_id:
-            await self._redis.zrem(_U_PREFIX + f'{lease.tenant_id}:{lease.user_id}', lease.token)
+    모듈 로드 시점에 붙잡으면 안 된다: 테스트가 루프 위생을 지키려고 '닫는 대신 교체'하는데
+    (닫힌 루프에 묶인 커넥션은 disconnect조차 실패한다) 붙잡아두면 교체가 안 먹는다.
+    http_async가 같은 규약을 쓴다.
+    지연 import는 embeddings/reranker와 같은 이유 — 동기 스크립트가 이 모듈만 쓸 때
+    LLM 클라이언트까지 만들어지지 않게 한다.
+    """
+    from rag import clients
+    return clients.shared_redis
 
 
-# /kms/query 전용 공유 리미터
-query_limiter = ConcurrencyLimiter()
+async def try_acquire(
+        tenant_id: str, tenant_limit: int,
+        user_id: str | None = None, user_limit: int | None = None,
+) -> Lease | None:
+    """테넌트(+사용자) 상한 모두 미만이면 슬롯을 등록해 Lease 반환, 하나라도 꽉 차면 None.
+    Lua로 원자 실행 — prune+판정+등록이 1왕복, race 없음.
+
+    user_limit이 0/None이면 config 기본값을 쓴다 — 사용자 제한을 끄는 경로는 없다
+    (끄고 싶으면 user_id를 넘기지 않는다).
+    """
+    now = time.time()
+    token = uuid.uuid4().hex
+    keys = [_T_PREFIX + tenant_id]
+    if user_id:
+        keys.append(_U_PREFIX + f'{tenant_id}:{user_id}')
+        user_limit = user_limit or settings.user_concurrency_default
+    argv = [now, tenant_limit, user_limit or 0, settings.inflight_max_seconds, token]
+    ok = await _redis().eval(_ACQUIRE_LUA, len(keys), *keys, *argv)
+    return Lease(tenant_id=tenant_id, token=token, user_id=user_id) if ok == 1 else None
+
+
+async def release(lease: Lease | None) -> None:
+    """요청/태스크 종료(완료·중단·에러) 시 토큰을 두 zset에서 제거. lease 없으면 no-op.
+    zrem은 멱등이라 중복 호출도 안전하다."""
+    if lease is None:
+        return
+    await _redis().zrem(_T_PREFIX + lease.tenant_id, lease.token)
+    if lease.user_id:
+        await _redis().zrem(_U_PREFIX + f'{lease.tenant_id}:{lease.user_id}', lease.token)

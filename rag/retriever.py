@@ -298,18 +298,16 @@ async def retrieve_candidates(
         with otel.span('rerank', 'RERANKER') as sp:
             otel.set_attrs(sp, {otel.RERANK_QUERY: query, otel.RERANK_TOP_K: top_n,
                                 'kms.pool_size': len(result), 'kms.mode': 'maxpool' if multi else 'single'})
-            if multi:
-                from rag.reranker import rerank_maxpool   # 지연 import (retriever ↔ reranker 순환 방지)
-                result, best = await rerank_maxpool(queries, result)
-                if best is None:
-                    otel.set_attrs(sp, {'kms.fallback': 'rrf'})   # 점수 실패 → RRF 순서 유지
-                elif sp.is_recording():   # max-pool 채택 점수 — DB에 안 남는 진단 정보 (#5·#7)
-                    for i, (ch, score) in enumerate(zip(result[:top_n], best[:top_n])):
-                        sp.set_attribute(f'reranker.output_documents.{i}.document.id', str(ch.chunk_id))
-                        sp.set_attribute(f'reranker.output_documents.{i}.document.score', float(score))
-            else:
-                from rag.reranker import rerank
-                result = await rerank(query, result)
+            # 단일/멀티 공통 — 쿼리 1개의 max-pool은 단일 리랭크와 동일하다(#54, 골든 대조).
+            from rag.reranker import rerank_maxpool   # 지연 import (retriever ↔ reranker 순환 방지)
+            result, best = await rerank_maxpool(queries, result)
+            if best is None:
+                # 점수 실패 → 넘겨받은 순서 유지 (멀티=RRF 융합, 단일=dense)
+                otel.set_attrs(sp, {'kms.fallback': 'rrf' if multi else 'dense'})
+            elif sp.is_recording():   # 채택 점수 — DB에 안 남는 진단 정보 (#5·#7)
+                for i, (ch, score) in enumerate(zip(result[:top_n], best[:top_n])):
+                    sp.set_attribute(f'reranker.output_documents.{i}.document.id', str(ch.chunk_id))
+                    sp.set_attribute(f'reranker.output_documents.{i}.document.score', float(score))
 
     # top_n이 확정되는 유일한 지점 — 두 경로 공통이다. 리랭크 뒤라서
     # 리랭커가 하위 후보를 끌어올릴 여지를 슬라이스가 미리 깎지 않는다.

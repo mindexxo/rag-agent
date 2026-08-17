@@ -19,7 +19,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from rag.conversation import ensure_conversation, load_recent_messages, condense_query, condense_to_queries, build_prior_turns, trim_messages_for_condense, save_exchange, add_pending_turn, finalize_turn
-from rag import otel
 from rag.guardrail import classify_and_guard
 from rag.clients import shared_llm
 from rag.models import Conversation, Document, Message

@@ -142,6 +142,11 @@ def pass_gate(monkeypatch):
 
 # ── 가짜 LLM ─────────────────────────────────────────────────
 
+class FakeSchemaRejected(Exception):
+    """구버전 vLLM의 스키마 거부(400) 재현 — _is_schema_rejected가 보는 status_code 덕 타이핑."""
+    status_code = 400
+
+
 class FakeLlm:
     """시스템 프롬프트로 용도를 판별해 고정 응답을 주는 가짜 LLM.
 
@@ -160,6 +165,8 @@ class FakeLlm:
         self.calls: list[str] = []          # 어떤 용도로 호출됐는지 기록 (검증용)
         self.system_prompts: list[tuple[str, str]] = []   # (용도, 시스템 프롬프트) — 주입 내용 검증용
         self.extra_bodies: list[dict | None] = []   # astream별 extra_body — guided 문법 주입 검증용(#56)
+        self.acomplete_extra_bodies: list[dict | None] = []   # acomplete별 — 스키마 주입·재시도 증거(#43)
+        self.reject_schema = False   # True면 structured_outputs 실린 acomplete를 400으로 거부 — 구버전 서버 재현(#43)
         # 취소 테스트용 정지 지점 (#30). None이면 기존 동작 그대로.
         # 왜 필요한가: astream에 진짜 await가 없으면 이벤트 루프에 제어가 넘어가지 않아
         # task.cancel()이 전달될 지점 자체가 없다 — 생성이 그대로 완주한다(실측).
@@ -186,6 +193,9 @@ class FakeLlm:
         kind = self._kind(messages)
         self.calls.append(kind)
         self._record(kind, messages)
+        self.acomplete_extra_bodies.append(extra_body)
+        if self.reject_schema and extra_body and 'structured_outputs' in extra_body:
+            raise FakeSchemaRejected('structured_outputs를 모르는 구버전 서버 재현')
         if kind == 'intent':
             return self.intent_json
         if kind == 'condense':

@@ -1,4 +1,4 @@
-"""캐시 키·직렬화 단위 테스트 — cache.normalize_query / build_cache_digest / sources 직렬화.
+"""캐시 키·직렬화 단위 테스트 — cache._normalize_query / _build_cache_digest / sources 직렬화.
 
 digest는 semantic 캐시(answer_cache.cache_key)의 키 — 정규화가 바뀌면 기존 캐시 전체가 미스가 된다.
 """

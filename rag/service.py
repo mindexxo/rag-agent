@@ -59,7 +59,7 @@ class PreparedRag:
     domain_hint: str | None = None   # [임시] 테넌트 지식 범위 설명 — 생성 프롬프트 주입용, 저장 안 함 (#1)
     assistant_message_id: int | None = None   # 생성 경로: 자리표시 assistant 메시지 id (백그라운드 태스크가 UPDATE할 대상)
     block_reason: str | None = None   # route='blocked'일 때 가드 판정 사유 — 저장·집계용 (#22)
-    faq_versions: dict[int, datetime] | None = None   # 근거 FAQ {id: updated_at} 스냅샷 — cache.set 낙관적 검증 기준 (#16)
+    faq_versions: dict[int, datetime] | None = None   # 근거 FAQ {id: updated_at} 스냅샷 — cache.save_answer 낙관적 검증 기준 (#16)
 
     def __post_init__(self) -> None:
         """검색 여부와 route를 짝지어 생성 시점에 강제한다 (#36).
@@ -256,7 +256,7 @@ class RagService:
             sources = await _build_sources(self.session, self.tenant_id, retrieval.chunks)
 
         source_doc_ids = _source_doc_ids(retrieval.chunks)
-        # 근거 FAQ 버전 스냅샷 — 생성이 끝난 cache.set 시점에 재조회·등치 비교해,
+        # 근거 FAQ 버전 스냅샷 — 생성이 끝난 cache.save_answer 시점에 재조회·등치 비교해,
         # 생성 중 FAQ가 수정됐으면 저장을 스킵한다 (write-back 레이스 차단, #16)
         faq_versions = await cache.snapshot_faq_versions(self.session, self.tenant_id, source_doc_ids)
         prior_turns = build_prior_turns(messages, settings.history_budget_tokens)

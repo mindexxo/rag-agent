@@ -6,7 +6,7 @@
 - 과잉거절(false miss): 같은 질문의 다른 표현(paraphrase)인데 캐시 미스 → 캐시 무용.
 
 방식: doc_ids는 실제 코퍼스 테넌트(summers)에서 검색해 뽑되, 캐시 저장/조회는 버려도 되는
-가짜 테넌트(EVAL_TENANT)에 격리 → summers 실캐시 오염 없음. 쌍마다 set(q1)→조회(q2)→정리.
+가짜 테넌트(EVAL_TENANT)에 격리 → summers 실캐시 오염 없음. 쌍마다 save_answer(q1)→조회(q2)→정리.
 프롬프트 무관·LLM 생성 없음(임베딩+DB만). 임계값·doc집합 가드 변경 시 회귀 감지.
 
 실행: python -m eval.cache_eval

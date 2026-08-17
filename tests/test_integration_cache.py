@@ -183,7 +183,7 @@ async def test_생성_중_FAQ_수정되면_캐시_저장_스킵(tenant_id, fake_
             await s2.commit()
 
         await cache.save_answer(session, tenant_id, '반품 기간 알려줘', '14일입니다', [], [-faq.id],
-                        faq_versions=snap)
+                                faq_versions=snap)
         await session.commit()
         rows = (await session.execute(
             select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
@@ -202,7 +202,7 @@ async def test_FAQ_변경_없으면_스냅샷_검증_통과_저장(tenant_id, fa
 
         snap = await snapshot_faq_versions(session, tenant_id, [-faq.id])
         await cache.save_answer(session, tenant_id, '반품 기간 알려줘', '14일입니다', [], [-faq.id],
-                        faq_versions=snap)
+                                faq_versions=snap)
         await session.commit()
         row = (await session.execute(
             select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
@@ -266,7 +266,7 @@ async def test_FAQ_스냅샷_검증도_테넌트_격리(tenant_id, other_tenant_
 
         # 빈 스냅샷을 기준으로 한 검증은 '변경됨' 판정 → 저장 스킵 (보수적 안전)
         await cache.save_answer(session, tenant_id, '반품 기간 알려줘', '14일입니다', [], [-faq.id],
-                        faq_versions={})
+                                faq_versions={})
         await session.commit()
         rows = (await session.execute(
             select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)

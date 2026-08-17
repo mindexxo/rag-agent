@@ -300,14 +300,15 @@ async def retrieve_candidates(
                                 'kms.pool_size': len(result), 'kms.mode': 'maxpool' if multi else 'single'})
             # 단일/멀티 공통 — 쿼리 1개의 max-pool은 단일 리랭크와 동일하다(#54, 골든 대조).
             from rag.reranker import rerank_maxpool   # 지연 import (retriever ↔ reranker 순환 방지)
-            result, best = await rerank_maxpool(queries, result)
+            result, best, best_qi = await rerank_maxpool(queries, result)
             if best is None:
                 # 점수 실패 → 넘겨받은 순서 유지 (멀티=RRF 융합, 단일=dense)
                 otel.set_attrs(sp, {'kms.fallback': 'rrf' if multi else 'dense'})
-            elif sp.is_recording():   # 채택 점수 — DB에 안 남는 진단 정보 (#5·#7)
-                for i, (ch, score) in enumerate(zip(result[:top_n], best[:top_n])):
+            elif sp.is_recording():   # 채택 점수·기여 쿼리 — DB에 안 남는 진단 정보 (#5·#7·#54)
+                for i, (ch, score, qi) in enumerate(zip(result[:top_n], best[:top_n], best_qi[:top_n])):
                     sp.set_attribute(f'reranker.output_documents.{i}.document.id', str(ch.chunk_id))
                     sp.set_attribute(f'reranker.output_documents.{i}.document.score', float(score))
+                    sp.set_attribute(f'reranker.output_documents.{i}.document.query_index', qi)   # 0=원본, 1..=확장
 
     # top_n이 확정되는 유일한 지점 — 두 경로 공통이다. 리랭크 뒤라서
     # 리랭커가 하위 후보를 끌어올릴 여지를 슬라이스가 미리 깎지 않는다.

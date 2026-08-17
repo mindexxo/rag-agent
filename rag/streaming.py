@@ -35,7 +35,7 @@ from config import settings
 from database import AsyncSessionLocal
 from rag import cancellation, limiter, otel
 from rag.limiter import Lease
-from rag.answer_check import is_refusal
+from rag.answer_check import cited_filenames, is_refusal
 from rag.service import PreparedRag, RagService
 
 logger = logging.getLogger(__name__)
@@ -82,31 +82,64 @@ def _elapsed_ms(t_request: float) -> int:
     return int((time.monotonic() - t_request) * 1000)
 
 
+def _record_turn_result(root_span, answer: str, status: str, latency_ms: int | None,
+                        cited: list[str], refusal: bool) -> None:
+    """턴 결과를 루트 kms.query 스팬에 기록 — 값은 전부 DB 저장 규칙과 동일해야 한다 (#54).
+
+    트레이스와 DB가 서로 다른 얘기를 하면 교차검증이 무너진다(#34 NFC가 그렇게 잡혔다) —
+    호출자는 save/finalize에 넘긴 것과 같은 answer·latency_ms·cited·refusal을 넘길 것.
+    is_recording 가드가 먼저다 — no-op이면 clip(문자열 절단) 비용까지 없어야 한다(otel.py 규약).
+    """
+    if not root_span.is_recording():
+        return
+    otel.set_attrs(root_span, {
+        otel.OUTPUT_VALUE: otel.clip(answer),   # 답변은 절단 — 스팬 텍스트 정책(#7)
+        'kms.status': status,
+        'kms.latency_ms': latency_ms,           # failed는 None → 속성 자체가 안 실림 (DB NULL과 대응)
+        'kms.is_refusal': refusal,
+        'kms.cited_docs': cited,
+    })
+
+
 async def immediate_stream(service: RagService, prepared: PreparedRag, session,
-                           t_request: float) -> AsyncIterator[str]:
+                           t_request: float, root_span) -> AsyncIterator[str]:
     """즉시 경로(입력차단·캐시히트·근거없음): 답이 확정 → 인라인 저장·스트림. 태스크 불필요.
 
     persist-before-stream(#16): 답이 이미 확정된 경로이므로 저장·commit을 먼저 한다 —
     재생 중 disconnect여도 턴이 남고(이력 구멍 방지), get_semantic이 잡은 hit_count
     행 잠금도 스트림 전에 풀린다(동시 히트가 첫 클라이언트 수신 속도에 직렬화되던 문제).
-    """
-    answer = ''.join([chunk async for chunk in service.generate(prepared)])
-    # 저장 실패가 이미 확정된 답변의 '전달'까지 막으면 안 된다 (fail-open — 리뷰 반영).
-    # StreamingResponse는 첫 yield 전에 200 헤더가 이미 나가므로, 여기서 예외가 새면
-    # 사용자는 빈 스트림을 받는다. 실패는 로그만 남기고 전달은 계속한다.
-    try:
-        await service.save(prepared, answer, latency_ms=_elapsed_ms(t_request))
-        await session.commit()
-    except Exception:
-        logger.exception("즉시 경로 저장 실패 — 답변 전달은 계속 (conversation=%s)",
-                         prepared.conversation_id)
 
-    yield _meta_event(prepared)
-    yield _sources_event(prepared, answer)
-    # 확정된 답변은 한 번에 보낸다 — 쪼개도 await 없이 연달아 나가 같은 청크로 도착하고,
-    # FE가 자체 타자기(버퍼 길이 기준)로 그리므로 이벤트 개수는 렌더에 영향이 없다 (#26).
-    yield sse_event(EVENT_TOKEN, {"text": answer})
-    yield sse_event(EVENT_DONE, {})
+    루트 스팬 핸드오프(#54): 이 제너레이터는 핸들러가 반환한 '뒤' Starlette가 돌리므로,
+    핸들러 finally에서 스팬을 닫으면 답변·latency가 확정되기 전에 스팬이 죽는다. 그래서
+    생성 경로(_run_generation)처럼 스팬 종료를 이어받는다 — finally라 disconnect
+    (GeneratorExit)에도 닫힌다. 단 클라이언트가 첫 바이트 전에 끊겨 아예 iterate가 안 되면
+    스팬(과 저장 — 기존 리스크)이 유실된다: 알려진 트레이드오프, 저장과 운명을 같이한다.
+    """
+    try:
+        answer = ''.join([chunk async for chunk in service.generate(prepared)])
+        latency_ms = _elapsed_ms(t_request)   # 저장·스팬이 같은 값을 쓰도록 한 번만 계산 (#54)
+        # 저장 실패가 이미 확정된 답변의 '전달'까지 막으면 안 된다 (fail-open — 리뷰 반영).
+        # StreamingResponse는 첫 yield 전에 200 헤더가 이미 나가므로, 여기서 예외가 새면
+        # 사용자는 빈 스트림을 받는다. 실패는 로그만 남기고 전달은 계속한다.
+        try:
+            await service.save(prepared, answer, latency_ms=latency_ms)
+            await session.commit()
+        except Exception:
+            logger.exception("즉시 경로 저장 실패 — 답변 전달은 계속 (conversation=%s)",
+                             prepared.conversation_id)
+        refusal = is_refusal(answer)
+        _record_turn_result(root_span, answer, prepared.terminal_status, latency_ms,
+                            cited=[] if refusal else cited_filenames(answer, prepared.sources),
+                            refusal=refusal)
+
+        yield _meta_event(prepared)
+        yield _sources_event(prepared, answer)
+        # 확정된 답변은 한 번에 보낸다 — 쪼개도 await 없이 연달아 나가 같은 청크로 도착하고,
+        # FE가 자체 타자기(버퍼 길이 기준)로 그리므로 이벤트 개수는 렌더에 영향이 없다 (#26).
+        yield sse_event(EVENT_TOKEN, {"text": answer})
+        yield sse_event(EVENT_DONE, {})
+    finally:
+        root_span.end()                       # 핸드오프된 턴 루트 스팬 (#54)
 
 
 def spawn_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Lease,
@@ -157,13 +190,19 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
                     parts.append(chunk)
                     await queue.put((EVENT_TOKEN, {"text": chunk}))
                 answer = "".join(parts)
-                otel.set_attrs(sp, {otel.LLM_MODEL: settings.vllm_model, otel.OUTPUT_VALUE: otel.clip(answer)})
+                if sp.is_recording():   # 가드가 먼저 — no-op이면 clip 비용도 없어야 한다 (otel.py 규약, #54 시정)
+                    otel.set_attrs(sp, {otel.LLM_MODEL: settings.vllm_model, otel.OUTPUT_VALUE: otel.clip(answer)})
 
             # LLM이 스스로 거절(규칙 3)한 답변이면 이미 내보낸 인용을 정정
-            if is_refusal(answer):
+            refusal = is_refusal(answer)
+            if refusal:
                 await queue.put((EVENT_SOURCES, []))
-            await svc.finalize(prepared, answer, status="done", latency_ms=_elapsed_ms(t_request))
+            latency_ms = _elapsed_ms(t_request)   # 저장·스팬이 같은 값을 쓰도록 한 번만 계산 (#54)
+            await svc.finalize(prepared, answer, status="done", latency_ms=latency_ms)
             await session.commit()
+            _record_turn_result(root_span, answer, "done", latency_ms,
+                                cited=[] if refusal else cited_filenames(answer, prepared.sources),
+                                refusal=refusal)
     except asyncio.CancelledError:
         # 명시적 취소(#30). CancelledError는 BaseException 계열이라 아래 except Exception이
         # 잡지 못한다 — 이 절이 없으면 finalize를 못 타고 generating으로 남아 스테일 스윕이
@@ -173,12 +212,15 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
         # finalize가 status != done이면 sources를 []로 저장하므로, 정정하지 않으면 취소 직후
         # 화면엔 인용이 붙어 있는데 새로고침하면 사라지는 불일치가 남는다(실기동 확인).
         await queue.put((EVENT_SOURCES, []))
-        await _finalize_out_of_band(lease, prepared, "".join(parts), "cancelled",
-                                    _elapsed_ms(t_request))
+        answer, latency_ms = "".join(parts), _elapsed_ms(t_request)
+        await _finalize_out_of_band(lease, prepared, answer, "cancelled", latency_ms)
+        # 저장 규칙(finalize: status≠done → refusal=False·cited=[])과 동일 값 — 부분 텍스트는 저장값 그대로
+        _record_turn_result(root_span, answer, "cancelled", latency_ms, cited=[], refusal=False)
         raise                                    # 태스크가 '취소됨'으로 끝나도록 재전파
     except Exception:
         logger.exception("답변 생성 실패 (tenant=%s, conversation=%s)", lease.tenant_id, prepared.conversation_id)
         await _finalize_out_of_band(lease, prepared, "", "failed", None)
+        _record_turn_result(root_span, "", "failed", None, cited=[], refusal=False)
         # 예외 원문은 서버 로그로만 — str(exc)에 내부 경로·설정이 섞일 수 있어 클라이언트에 노출 금지
         await queue.put((EVENT_ERROR, {"code": "generation_failed",
                                        "message": "답변 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."}))

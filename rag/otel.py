@@ -13,6 +13,7 @@
 
 스팬 텍스트 정책(#7 결정): 질문·재작성·변형은 전문, 청크 본문·답변은
 otel_text_limit(기본 500자) 절단 — 개발계 진단 가치와 개인정보 노출 면적의 절충.
+답변 절단은 generate 스팬과 루트 kms.query의 output.value(턴 결과, #54) 양쪽에 적용.
 """
 from contextlib import contextmanager
 
@@ -104,7 +105,7 @@ def set_documents(sp, chunks, prefix: str = 'retrieval.documents') -> None:
 
     점수는 담지 않는다 — RetrievedChunk에 점수 필드가 없다. 예전엔 rrf_score가 있었지만
     리랭크 '이전' 값이라 순서와 어긋나 진단을 오도했고, 아무도 읽지 않아 제거했다(#38).
-    실제 채택 점수는 rerank 스팬이 기록한다 (멀티쿼리 경로만 — 단일 경로 점수는 12번 축).
+    실제 채택 점수는 rerank 스팬이 기록한다 (단일·멀티 공통 — #54에서 경로 통일).
     """
     if not sp.is_recording():
         return

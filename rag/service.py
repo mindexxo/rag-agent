@@ -99,6 +99,12 @@ class PreparedRag:
         return None
 
     @property
+    def terminal_status(self) -> str:
+        """즉시 경로 저장 status — 입력 차단 턴만 'blocked', 나머지는 'done' (단일 정의점 #54).
+        생성 경로의 status(done/cancelled/failed)는 실행 결과값이라 여기서 정할 수 없다."""
+        return "blocked" if self.route == "blocked" else "done"
+
+    @property
     def intent_label(self) -> str | None:
         """저장용 인텐트 라벨 — 답변률 분모(KNOWLEDGE) 판별에 쓴다.
         blocked는 인텐트 판정 자체가 무의미(unsafe 입력)라 NULL."""
@@ -392,7 +398,8 @@ class RagService:
             intent=prepared.intent_label,
             # 입력 차단 턴은 status로 식별 가능해야 한다 — 이력 격리(load_recent_messages)와
             # 차단 집계가 모두 이 값에 의존 (#22). 출력 차단은 finalize_turn 쪽이 담당.
-            status='blocked' if prepared.route == 'blocked' else 'done',
+            # 판정은 terminal_status 한 곳 — 루트 스팬 기록(streaming)이 같은 값을 쓴다 (#54).
+            status=prepared.terminal_status,
             block_reason=prepared.block_reason,
         )
         # 즉시 경로는 begin_turn을 안 거쳐 meta의 assistant_message_id가 비어 있었음 —

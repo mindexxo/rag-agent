@@ -40,7 +40,8 @@ from config import settings
 from database import AsyncSessionLocal
 from rag import cancellation, limiter, otel
 from rag.limiter import Lease
-from rag.answer_check import cited_filenames, is_refusal
+from rag.answer_check import is_refusal
+from rag.citation_tail import TailSplitter, resolve_citations
 from rag.service import PreparedRag, RagService
 from schemas.kms import SourceCitation
 
@@ -87,18 +88,6 @@ class TurnResult:
     finish_reason: Literal["done", "cancelled", "failed", "blocked"]
     latency_ms: int | None          # failed는 None (DB 규칙과 동일)
     is_refusal: bool = False
-
-
-def _cited_sources(answer: str, prepared: PreparedRag) -> list[SourceCitation]:
-    """답변이 실제 인용한 출처 객체만 — 거절이면 빈 목록 (저장 규칙과 동일).
-
-    산출은 현행 인라인 라벨 매칭(cited_filenames) — 인용 방식 전환(#56 커밋 B)은
-    이 함수의 내부만 바꾼다. 계약(done.citations)은 그대로.
-    """
-    if is_refusal(answer):
-        return []
-    names = set(cited_filenames(answer, prepared.sources))
-    return [s for s in prepared.sources if s.filename in names]
 
 
 def _done_payload(result: TurnResult) -> dict:
@@ -150,18 +139,21 @@ async def immediate_stream(service: RagService, prepared: PreparedRag, session,
     try:
         answer = ''.join([chunk async for chunk in service.generate(prepared)])
         latency_ms = _elapsed_ms(t_request)   # 저장·스팬·done이 같은 값을 쓰도록 한 번만 계산 (#54)
+        # 즉시 경로의 인용 = prepared.sources 그대로 (#56): 캐시 히트는 저장 시점에 이미
+        # 인용만 남긴 값이 복원된 것이고, 차단·근거없음은 sources가 애초에 빈 목록이다.
+        refusal = is_refusal(answer)
+        result = TurnResult(answer=answer, citations=[] if refusal else list(prepared.sources),
+                            finish_reason=prepared.terminal_status, latency_ms=latency_ms,
+                            is_refusal=refusal)
         # 저장 실패가 이미 확정된 답변의 '전달'까지 막으면 안 된다 (fail-open — 리뷰 반영).
         # StreamingResponse는 첫 yield 전에 200 헤더가 이미 나가므로, 여기서 예외가 새면
         # 사용자는 빈 스트림을 받는다. 실패는 로그만 남기고 전달은 계속한다.
         try:
-            await service.save(prepared, answer, latency_ms=latency_ms)
+            await service.save(prepared, answer, result.citations, latency_ms=latency_ms)
             await session.commit()
         except Exception:
             logger.exception("즉시 경로 저장 실패 — 답변 전달은 계속 (conversation=%s)",
                              prepared.conversation_id)
-        result = TurnResult(answer=answer, citations=_cited_sources(answer, prepared),
-                            finish_reason=prepared.terminal_status, latency_ms=latency_ms,
-                            is_refusal=is_refusal(answer))
         _record_turn_result(root_span, result)
 
         yield _meta_event(prepared)
@@ -200,7 +192,7 @@ async def _finalize_out_of_band(lease: Lease, prepared: PreparedRag, answer: str
     try:
         async with AsyncSessionLocal() as session:
             await RagService(tenant_id=lease.tenant_id, session=session).finalize(
-                prepared, answer, status=status, latency_ms=latency_ms)
+                prepared, answer, citations=[], status=status, latency_ms=latency_ms)
             await session.commit()
     except Exception:
         logger.exception("%s 상태 기록 실패 (tenant=%s, conversation=%s)",
@@ -213,23 +205,37 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
     자기 세션의 RagService 사용 (요청 세션은 응답 종료 시 닫히므로).
     """
     parts = []
+    # 출처 꼬리 분리(#56) — knowledge만 꼬리를 만든다(OTHER·즉시 경로는 인용 없음).
+    # 꼬리는 delta로 나가지 않고, parts(=화면=저장)에는 splitter가 방출한 본문만 쌓인다.
+    splitter = TailSplitter() if prepared.route == "knowledge" else None
     try:
         async with AsyncSessionLocal() as session:
             svc = RagService(tenant_id=lease.tenant_id, session=session)
             with otel.span('generate', 'LLM') as sp:   # 배경 태스크 — 컨텍스트 복사로 kms.query의 자식 (#7)
                 async for chunk in svc.generate(prepared):
-                    parts.append(chunk)
-                    await queue.put((EVENT_DELTA, {"text": chunk}))
+                    text = splitter.feed(chunk) if splitter else chunk
+                    if text:
+                        parts.append(text)
+                        await queue.put((EVENT_DELTA, {"text": text}))
+                if splitter and (tail_flush := splitter.finish()):
+                    parts.append(tail_flush)             # 마커 접두인 줄 알았던 본문 끝자락
+                    await queue.put((EVENT_DELTA, {"text": tail_flush}))
                 answer = "".join(parts)
                 if sp.is_recording():   # 가드가 먼저 — no-op이면 clip 비용도 없어야 한다 (otel.py 규약, #54 시정)
                     otel.set_attrs(sp, {otel.LLM_MODEL: settings.vllm_model, otel.OUTPUT_VALUE: otel.clip(answer)})
+                    if splitter and splitter.truncated:
+                        # "성공처럼 보이는 실패"를 관측 가능하게 — 꼬리가 max_tokens 등으로 잘림
+                        otel.set_attrs(sp, {'kms.tail_truncated': True})
 
+            refusal = is_refusal(answer)
+            citations = [] if refusal or splitter is None else resolve_citations(
+                splitter.tail_raw, prepared.sources,
+                [a['filename'] for a in (prepared.attachments or [])])
             latency_ms = _elapsed_ms(t_request)   # 저장·스팬·done이 같은 값을 쓰도록 한 번만 계산 (#54)
-            await svc.finalize(prepared, answer, status="done", latency_ms=latency_ms)
+            await svc.finalize(prepared, answer, citations, status="done", latency_ms=latency_ms)
             await session.commit()
-            result = TurnResult(answer=answer, citations=_cited_sources(answer, prepared),
-                                finish_reason="done", latency_ms=latency_ms,
-                                is_refusal=is_refusal(answer))
+            result = TurnResult(answer=answer, citations=citations,
+                                finish_reason="done", latency_ms=latency_ms, is_refusal=refusal)
             _record_turn_result(root_span, result)
             # done은 finalize·commit '뒤'에 — 값이 전부 확정된 다음 최종 상태로 내보낸다 (#56)
             await queue.put((EVENT_DONE, _done_payload(result)))

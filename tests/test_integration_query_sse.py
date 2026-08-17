@@ -22,9 +22,9 @@ from tests.conftest import register_faq, sse_events as _events, sse_answer, sse_
 @pytest.mark.asyncio
 async def test_KNOWLEDGE_생성_경로_SSE_전체흐름(client, tenant_id, fake_llm, pass_gate):
     faq_id = await register_faq(client)
-    # 기본 fake 답변은 존재하지 않는 문서를 인용한다(픽스처 결함 — 구 계약의 낙관 sources가
-    # 가려줬던 것). 실제 후보(FAQ)를 인용해야 done.citations 검증이 실질이 된다 (#56).
-    fake_llm.answer = '테스트 답변입니다. [FAQ]'
+    # 실제 후보(FAQ)를 출처 꼬리로 인용 — done.citations 검증이 실질이 되게 (#56)
+    from rag.citation_labels import TAIL_END, TAIL_START
+    fake_llm.answer = f'테스트 답변입니다. {TAIL_START}[FAQ]{TAIL_END}'
 
     res = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
     assert res.status_code == 200
@@ -51,9 +51,14 @@ async def test_KNOWLEDGE_생성_경로_SSE_전체흐름(client, tenant_id, fake_
     async with AsyncSessionLocal() as session:
         msg = await session.get(Message, meta['assistant_message_id'])
         assert msg.status == 'done'                          # 스트림 finish_reason과 같은 어휘 (#56)
-        assert msg.content.strip() == fake_llm.answer
+        assert msg.content.strip() == '테스트 답변입니다.'   # 꼬리는 본문·저장 어디에도 없다 (#56)
+        assert TAIL_START not in msg.content
         assert msg.tenant_id == tenant_id
         assert msg.cited_docs == ['FAQ']                     # done.citations와 같은 사실
+
+    # guided 문법이 생성 호출에 실렸는지 — 후보(FAQ) 라벨이 정규식 안에 있어야 한다 (#56)
+    grammar_bodies = [b for b in fake_llm.extra_bodies if b and 'structured_outputs' in b]
+    assert grammar_bodies and 'FAQ' in grammar_bodies[-1]['structured_outputs']['regex']
 
 
 @pytest.mark.asyncio
@@ -132,6 +137,26 @@ async def test_domain_hint가_인텐트와_생성_프롬프트에_주입(client,
     assert hint in injected['generate']
     # condense는 도메인 중립 — 스콥 밖 (#1). 첫 턴은 히스토리가 없어 호출 자체가 없을 수 있다.
     assert all(hint not in system for kind, system in fake_llm.system_prompts if kind == 'condense')
+
+
+@pytest.mark.asyncio
+async def test_guided_미지원_서버는_문법_없이_재시도한다(client, tenant_id, fake_llm, pass_gate):
+    """fail-open(#56) — structured_outputs를 모르는 vLLM(400)이어도 스트림은 살아야 한다.
+    재시도는 첫 토큰 전 실패에만 걸리므로 토큰 유실·중복이 없다."""
+    await register_faq(client)
+    original = fake_llm.astream
+
+    async def rejects_grammar(messages, extra_body=None):
+        if extra_body is not None:
+            raise RuntimeError('400: unknown field structured_outputs')   # 구버전 서버 재현
+        async for t in original(messages):
+            yield t
+
+    fake_llm.astream = rejects_grammar
+    res = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
+    assert res.status_code == 200
+    assert '테스트 답변입니다.' in sse_answer(res)
+    assert sse_done(res)['finish_reason'] == 'done'          # 재시도로 정상 완주
 
 
 @pytest.mark.asyncio

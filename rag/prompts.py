@@ -1,8 +1,12 @@
 """프롬프트 조립 — 텍스트 템플릿에 런타임 값을 채워 LLM 메시지를 만든다.
 
-문구 자체는 rag/prompt_texts.py, 답변 판정(거절·인용)은 rag/answer_check.py (#36 분리).
-LLM에게 "문서 블록만 근거로 답해라, 인용은 [파일명 v1] 형식"을 강제하는 규칙은 텍스트 쪽에 있다.
+문구 자체는 rag/prompt_texts.py, 거절 판정은 rag/answer_check.py (#36 분리).
+인용은 답변 끝 출처 꼬리(#56) — 라벨 문자열은 rag/citation_labels.py 단일 정의점,
+꼬리 강제 문법(build_citation_grammar)도 여기서 조립한다(런타임 값 → LLM 입력이라는 같은 성격).
 """
+import re
+
+from rag.citation_labels import TAIL_END, TAIL_START, attachment_label, source_label
 from rag.prompt_texts import (
     DEFAULT_DOMAIN_HINT,
     USER_TEMPLATE,
@@ -50,33 +54,52 @@ def build_chat_prompt(system_content: str, user_content: str) -> list[dict]:
 
 def build_context_blocks(chunks: list[RetrievedChunk]) -> str:
     """RetrievedChunk 리스트 -> <문서> 블록 안에 들어갈 텍스트 조립.
-    각 블록 앞 라벨을 인용 형식 [파일명 vN] 그대로 둔다 — 모델이 눈앞 라벨을
-    그대로 흉내 내므로, 라벨=인용형식이어야 규칙 6대로 [파일명 vN]으로 인용한다.
+    각 블록 앞 라벨은 출처 꼬리의 인용 형식과 같은 문자열이다(citation_labels 단일 정의점) —
+    모델이 눈앞 라벨을 그대로 복사해 꼬리에 쓰므로, 라벨=인용형식이어야 매칭이 성립한다.
+    FAQ 청크는 retriever가 filename='FAQ'로 강제하므로(F99) source_label이 [FAQ]를 낸다.
     """
     blocks = []
     for chunk in chunks:
         heading = ' > '.join(chunk.heading_path) if chunk.heading_path else ''
         page = chunk.page or '-'
-        # FAQ 청크는 버전 없는 [FAQ] 라벨 (파일·버전 개념이 없음 — F3)
-        label = '[FAQ]' if getattr(chunk, 'faq_id', None) else f'[{chunk.filename} v{chunk.version}]'
         blocks.append(
-            f'{label} 섹션: {heading} / 페이지: {page}\n'
+            f'{source_label(chunk)} 섹션: {heading} / 페이지: {page}\n'
             f'{chunk.text}\n---'
         )
     return '\n'.join(blocks)
 
 def build_attachment_blocks(attachments: list[dict]) -> str:
     """채팅 첨부 문서 -> <첨부 문서> 블록 조립. 없으면 빈 문자열.
-    라벨을 인용 형식 [첨부: 파일명] 그대로 둔다 (build_context_blocks와 같은 원리).
+    라벨은 꼬리 인용 형식 [첨부: 파일명] 그대로 (build_context_blocks와 같은 원리).
     attachments: [{"filename": "...", "text": "..."}, ...]
     """
     if not attachments:
         return ''
     blocks = [
-        f"[첨부: {a['filename']}]\n{a['text']}\n---"
+        f"{attachment_label(a['filename'])}\n{a['text']}\n---"
         for a in attachments
     ]
     return '<첨부 문서>\n' + '\n'.join(blocks) + '\n</첨부 문서>\n\n'
+
+
+def build_citation_grammar(sources, attachment_filenames: list[str]) -> dict:
+    """출처 꼬리를 강제하는 guided decoding 정규식 — LlmClient extra_body용 (#56).
+
+    꼬리는 **필수**다: 선택(`(...)?`)으로 두면 본문만으로도 문법이 완성돼 EOS가 항상
+    허용되고, 강제력이 0이 된다(설계 검토에서 확인). 필수라서 모델은 꼬리를 쓰기 전엔
+    끝낼 수 없고, 꼬리 안에는 아래 후보 라벨(또는 빈 목록)만 올 수 있다.
+    거절 답변도 꼬리는 붙는다 — 빈 목록으로 (프롬프트 규칙 7이 같은 것을 지시).
+
+    첨부 라벨을 빠뜨리면 첨부 인용이 문법에 막힌다(#41의 함정) — 반드시 양쪽 포함.
+    vLLM v0.12+ structured_outputs 형식. 서버가 미지원(400)이면 호출부가 문법 없이
+    재시도한다(fail-open) — 파서의 후보 교집합 검증은 문법 유무와 무관하게 동일.
+    """
+    labels = [source_label(s) for s in sources] + [attachment_label(f) for f in attachment_filenames]
+    # 후보 중복(같은 문서의 여러 청크는 sources에서 이미 문서 단위로 합쳐짐) 제거·순서 유지
+    alt = '|'.join(re.escape(l) for l in dict.fromkeys(labels))
+    tail = f'{re.escape(TAIL_START)}(?:{alt})*{re.escape(TAIL_END)}' if alt \
+        else f'{re.escape(TAIL_START)}{re.escape(TAIL_END)}'
+    return {"structured_outputs": {"regex": rf'[\s\S]*{tail}'}}
 
 
 def build_user_message(

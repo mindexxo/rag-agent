@@ -23,6 +23,7 @@ from types import SimpleNamespace
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
+from rag.citation_labels import TAIL_END, TAIL_START
 from rag.conversation import condense_query
 from rag.models import Chunk, Document
 from rag.retriever import retrieve_candidates, RetrievedChunk
@@ -169,6 +170,10 @@ def _citation_match(core: str, stem: str) -> bool:
 def citation_accuracy(answer: str, expected_docs: list[str]) -> float:
     """기대 문서 중 답변이 실제로 인용한 비율 (0..1).
 
+    v3 (#56): 인용이 본문 인라인에서 답변 끝 출처 꼬리(TAIL_START…TAIL_END)로 이동 —
+    토큰 추출을 꼬리 구간으로 한정한다. 본문의 무관한 대괄호([참고] 등)는 이제 오탐이 아니라
+    아예 스캔 대상이 아니다. 꼬리가 없으면(형식 미준수) 인용 0으로 집계 — 그게 사실이다.
+
     v2 개정 (기존 0/1 any-match와 비교 불가):
     - any-match는 multi_doc에서 문서 하나만 인용해도 만점 → 커버리지 비율로 교체.
     - FAQ 출처는 [FAQ]로 인용됨 — 기대에 'FAQ'를 넣으면 정확 매칭.
@@ -176,7 +181,9 @@ def citation_accuracy(answer: str, expected_docs: list[str]) -> float:
     """
     if not expected_docs:
         return 0.0
-    cites = re.findall(r"\[([^\]]+)\]", answer)          # [...] 안 토큰들
+    tail = answer.rsplit(TAIL_START, 1)[1] if TAIL_START in answer else ''
+    tail = tail.split(TAIL_END, 1)[0]
+    cites = re.findall(r"\[([^\]]+)\]", tail)            # 꼬리 안 라벨들만
     cores = [re.sub(r"\s*v\d+\s*$", "", c).strip() for c in cites]   # 끝의 'v1' 제거
     # 원소가 리스트면 대체 출처 그룹 — 같은 정보가 여러 문서에 있을 때 하나만 인용해도 인정
     groups = [[d] if isinstance(d, str) else d for d in expected_docs]

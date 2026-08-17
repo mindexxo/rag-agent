@@ -150,11 +150,16 @@ class FakeLlm:
     - 그 외(답변 생성) → answer를 어절 단위로 스트리밍
     """
 
-    def __init__(self, answer: str = '테스트 답변입니다. [테스트문서.pdf v1]'):
-        self.answer = answer
+    def __init__(self, answer: str | None = None):
+        # 기본 답변은 빈 출처 꼬리를 단다(#56) — 기본 경로가 항상 꼬리 분리(TailSplitter)를
+        # 타고 citations=[]가 된다. 인용 검증 테스트는 꼬리에 [라벨]을 넣은 answer로 교체.
+        # 어절 3개 유지 주의: pause_after_tokens=2(셋째 토큰 정지)를 쓰는 취소 테스트들의 전제.
+        from rag.citation_labels import TAIL_END, TAIL_START
+        self.answer = answer if answer is not None else f'테스트 답변입니다. {TAIL_START}{TAIL_END}'
         self.intent_json = '{"safe": true, "intent": "KNOWLEDGE"}'
         self.calls: list[str] = []          # 어떤 용도로 호출됐는지 기록 (검증용)
         self.system_prompts: list[tuple[str, str]] = []   # (용도, 시스템 프롬프트) — 주입 내용 검증용
+        self.extra_bodies: list[dict | None] = []   # astream별 extra_body — guided 문법 주입 검증용(#56)
         # 취소 테스트용 정지 지점 (#30). None이면 기존 동작 그대로.
         # 왜 필요한가: astream에 진짜 await가 없으면 이벤트 루프에 제어가 넘어가지 않아
         # task.cancel()이 전달될 지점 자체가 없다 — 생성이 그대로 완주한다(실측).
@@ -177,7 +182,7 @@ class FakeLlm:
     def _record(self, kind: str, messages: list[dict]) -> None:
         self.system_prompts.append((kind, messages[0]['content'] if messages else ''))
 
-    async def acomplete(self, messages: list[dict]) -> str:
+    async def acomplete(self, messages: list[dict], extra_body: dict | None = None) -> str:
         kind = self._kind(messages)
         self.calls.append(kind)
         self._record(kind, messages)
@@ -194,10 +199,11 @@ class FakeLlm:
             return f'{q}\n{q} 변형A\n{q} 변형B'
         return self.answer
 
-    async def astream(self, messages: list[dict]):
+    async def astream(self, messages: list[dict], extra_body: dict | None = None):
         kind = self._kind(messages)
         self.calls.append('stream:' + kind)
         self._record(kind, messages)
+        self.extra_bodies.append(extra_body)
         for i, token in enumerate(self.answer.split(' ')):
             if self.pause_after_tokens is not None and i == self.pause_after_tokens:
                 self.paused.set()

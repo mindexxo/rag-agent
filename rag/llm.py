@@ -20,18 +20,23 @@ class LlmClient:
             timeout=httpx.Timeout(300.0, connect=5.0),
         )
 
-    def _base_kwargs(self) -> dict:
-        """공통 호출 인자. temperature는 설정됐을 때만 전달 (None = 서버 기본값)."""
+    def _base_kwargs(self, extra_body: dict | None = None) -> dict:
+        """공통 호출 인자. temperature는 설정됐을 때만 전달 (None = 서버 기본값).
+
+        extra_body: 요청별 vLLM 확장 인자(#56 — guided decoding 등). 공통
+        chat_template_kwargs와 병합한다 — 덮어쓰면 enable_thinking이 유실된다.
+        """
         kwargs = {
             "model": settings.vllm_model,
             "max_tokens": settings.generation_reserve_tokens,   # 생성 몫 예약 + 폭주 방지 (F100)
-            "extra_body": {"chat_template_kwargs": {"enable_thinking": settings.llm_enable_thinking}},
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": settings.llm_enable_thinking},
+                           **(extra_body or {})},
         }
         if settings.llm_temperature is not None:
             kwargs["temperature"] = settings.llm_temperature
         return kwargs
 
-    async def acomplete(self, messages: list[dict]) -> str:
+    async def acomplete(self, messages: list[dict], extra_body: dict | None = None) -> str:
         """비스트리밍 호출. 응답 전체를 문자열로 반환.
 
         condense처럼 결과를 바로 파싱해야 할 때 사용.
@@ -39,16 +44,16 @@ class LlmClient:
         response = await self._client.chat.completions.create(
             messages=messages,
             stream=False,
-            **self._base_kwargs(),
+            **self._base_kwargs(extra_body),
         )
         return response.choices[0].message.content
 
-    async def astream(self, messages: list[dict]) -> AsyncIterator[str]:
+    async def astream(self, messages: list[dict], extra_body: dict | None = None) -> AsyncIterator[str]:
         """스트리밍 호출. vLLM이 토큰을 만들어내는 족족 yield."""
         stream = await self._client.chat.completions.create(
             messages=messages,
             stream=True,
-            **self._base_kwargs(),
+            **self._base_kwargs(extra_body),
         )
         try:
             async for chunk in stream:

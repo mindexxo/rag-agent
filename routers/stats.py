@@ -57,7 +57,8 @@ async def stats_summary(
     """), params)).all()
 
     # 인용 top 문서 — 저장 시 확정된 실인용 목록(cited_docs)만 집계. 본문 재파싱·전송 없음.
-    # (저장 시점에 cited_filenames()가 답변 텍스트와 인용 라벨을 대조해 확정 — 단일 정의점)
+    # (저장 시점에 출처 꼬리 해석(rag/citation_tail, #56)이 확정 — 단일 정의점.
+    #  첨부 인용은 '첨부: 파일명' 문자열로 함께 잡힌다 — 첨부 기반 답변도 지표에 노출)
     top_rows = (await session.execute(text("""
         SELECT d AS filename, count(*) AS cnt
         FROM messages, jsonb_array_elements_text(cited_docs) AS d

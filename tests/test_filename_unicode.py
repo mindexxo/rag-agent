@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
+from rag.citation_labels import TAIL_END, TAIL_START
 from rag.documents import index_pending_document
 from rag.models import Document, Message
 from tests.conftest import sse_meta
@@ -56,13 +57,13 @@ async def test_NFD로_올린_문서도_인용이_cited_docs에_잡힌다(
     """#34의 본질 — 업로드부터 DB를 거쳐 인용 매칭까지 관통 검증.
 
     LLM은 프롬프트의 라벨을 NFC로 출력한다(실측). 저장값이 NFD로 남아 있으면
-    cited_filenames의 부분문자열 검색이 실패해 cited_docs가 빈 배열이 된다.
+    출처 꼬리의 라벨 매칭(resolve_citations, #56)이 실패해 cited_docs가 빈 배열이 된다.
     """
     body = await _upload(client, FILENAME_NFD)
     await index_pending_document(body['document_id'])
 
     # 모델이 NFC 라벨로 인용하는 상황을 재현 (저장값이 NFD였다면 여기서 매칭이 깨진다)
-    fake_llm.answer = f'단순변심 반품은 14일 이내입니다. [{FILENAME_NFC} v1]'
+    fake_llm.answer = f'단순변심 반품은 14일 이내입니다. {TAIL_START}[{FILENAME_NFC} v1]{TAIL_END}'
 
     res = await client.post('/kms/query', json={'query': '반품 기간 알려줘'})
     assert res.status_code == 200
@@ -83,7 +84,8 @@ async def test_모델이_NFD로_인용해도_잡힌다(
     """방어층 — LLM 출력은 통제 불가 입력이라 어느 정규형으로 오든 견뎌야 한다."""
     body = await _upload(client, FILENAME_NFC)
     await index_pending_document(body['document_id'])
-    fake_llm.answer = f'14일 이내입니다. [{FILENAME_NFD} v1]'   # 모델이 분해형으로 냈다고 가정
+    # 모델이 분해형으로 냈다고 가정 — guided 미적용(fail-open) 경로의 자유 생성 방어 검증
+    fake_llm.answer = f'14일 이내입니다. {TAIL_START}[{FILENAME_NFD} v1]{TAIL_END}'
 
     res = await client.post('/kms/query', json={'query': '반품 기간 알려줘'})
     assistant_id = sse_meta(res)['assistant_message_id']

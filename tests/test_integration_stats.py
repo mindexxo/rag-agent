@@ -7,6 +7,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
+from rag.citation_labels import TAIL_END, TAIL_START
 from rag.models import Message
 
 
@@ -42,7 +43,7 @@ async def test_씨앗_저장_user_id_latency_cache_kind(client, tenant_id, fake_
 @pytest.mark.asyncio
 async def test_stats_집계_정확성(client, tenant_id, fake_llm, pass_gate):
     await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})
-    fake_llm.answer = '7일 이내 처리됩니다. [FAQ]'              # 실인용 라벨 포함
+    fake_llm.answer = f'7일 이내 처리됩니다. {TAIL_START}[FAQ]{TAIL_END}'   # 출처 꼬리 인용 (#56)
     await _ask(client, '환불 기간 알려줘', user='agent-kim')     # 답변 1 (생성)
     await _ask(client, '환불 기간 알려줘', user='agent-kim')     # 답변 2 (캐시)
     # 거절 유도: pass_gate를 우회할 수 없는 다른 질의? — 게이트가 항상 통과라 거절은
@@ -78,7 +79,7 @@ async def test_레거시_intent_NULL_거절은_답변률을_왜곡하지_않는�
     거절률>1 → 답변률이 음수가 된다 (셀프 검증에서 발견된 실버그).
     """
     await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})
-    fake_llm.answer = '7일 이내 처리됩니다. [FAQ]'
+    fake_llm.answer = f'7일 이내 처리됩니다. {TAIL_START}[FAQ]{TAIL_END}'
     await _ask(client, '환불 기간 알려줘', user='agent-kim')     # 신규 정상 답변 1
 
     async with AsyncSessionLocal() as session:                   # 레거시 거절 행 주입 (intent NULL)

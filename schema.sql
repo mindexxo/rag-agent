@@ -111,6 +111,9 @@ CREATE INDEX IF NOT EXISTS idx_chunks_dense_hnsw
     WITH (m = 16, ef_construction = 64);
 
 -- ---------- LLM 응답 캐시 ----------
+-- 기존 DB 반영(#56): 인용 방식 전환(인라인 라벨 → 출처 꼬리)으로 옛 캐시 행(라벨 박힌
+-- answer·후보 전체 sources)은 새 계약과 혼재 불가 — 배포 시 1회 실행:
+--   TRUNCATE answer_cache;   -- 재생성 가능한 데이터라 안전
 CREATE TABLE IF NOT EXISTS answer_cache (
     id               BIGSERIAL PRIMARY KEY,
     tenant_id        TEXT         NOT NULL,

@@ -33,8 +33,8 @@ from collections.abc import AsyncIterator
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import cancellation, otel
-from rag.limiter import Lease, query_limiter
+from rag import cancellation, limiter, otel
+from rag.limiter import Lease
 from rag.answer_check import is_refusal
 from rag.service import PreparedRag, RagService
 
@@ -189,7 +189,7 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
         # 못 찾아 cancel()을 호출하지 않고, 상태(done)를 근거로 404를 받는다.
         cancellation.unregister(prepared.assistant_message_id)
         await queue.put(None)                    # 리더 종료 sentinel — finalize·commit '뒤'에 넣는다
-        await query_limiter.release(lease)        # 리미터는 태스크 수명 끝에 (실제 GPU 점유 구간)
+        await limiter.release(lease)              # 리미터는 태스크 수명 끝에 (실제 GPU 점유 구간)
         root_span.end()                           # 핸드오프된 턴 루트 스팬 — duration=턴 전체 (#7)
 
 

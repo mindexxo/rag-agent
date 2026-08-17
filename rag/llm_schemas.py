@@ -51,9 +51,14 @@ class CondenseResult(BaseModel):
 class CondenseMultiResult(BaseModel):
     """condense_to_queries(멀티, #5) 출력. standalone은 저장·캐시 키·리랭크 기준,
     variants는 검색 전용 어휘 변형. 필드 이름이 구 '몇 번째 줄' 계약을 대체한다 —
-    라벨·머리말이 끼어들 자리가 구조적으로 없다."""
+    라벨·머리말이 끼어들 자리가 구조적으로 없다.
+
+    maxItems=2는 스키마에만 싣고(guided 경로 강제) 검증에는 안 건다(json_schema_extra) —
+    max_length로 걸면 무스키마 폴백 응답이 변형 3개를 줬을 때 멀쩡한 standalone까지
+    통째로 폴백된다(과잉). 초과분은 후처리의 [:2] 슬라이스가 자른다.
+    """
     standalone: str
-    variants: list[str] = Field(default_factory=list, max_length=2)
+    variants: list[str] = Field(default_factory=list, json_schema_extra={'maxItems': 2})
 
 
 @cache

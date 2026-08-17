@@ -142,6 +142,12 @@ def pass_gate(monkeypatch):
 
 # ── 가짜 LLM ─────────────────────────────────────────────────
 
+def _current_question(user_content: str) -> str:
+    """condense 유저 메시지에서 '현재 질문:' 다음 줄을 집는다 — FakeLlm 반향용."""
+    lines = [l.strip() for l in user_content.splitlines() if l.strip()]
+    return lines[lines.index('현재 질문:') + 1] if '현재 질문:' in lines else lines[-1]
+
+
 class FakeSchemaRejected(Exception):
     """구버전 vLLM의 스키마 거부(400) 재현 — _is_schema_rejected가 보는 status_code 덕 타이핑."""
     status_code = 400
@@ -199,14 +205,16 @@ class FakeLlm:
         if kind == 'intent':
             return self.intent_json
         if kind == 'condense':
-            return messages[-1]['content'].splitlines()[-1].strip()
+            # 실제 질문을 JSON으로 반향 (#43). 구현 주의: 옛 코드는 마지막 줄을 반향했는데
+            # 그건 질문이 아니라 라벨이었다(잠복 버그 — 이 값을 검증하는 테스트가 없어 안 드러남).
+            return json.dumps({'standalone': _current_question(messages[-1]['content'])},
+                              ensure_ascii=False)
         if kind == 'condense_multi':
-            # 멀티쿼리(#5) 규격(3줄) 반향 — 한 줄만 주면 변형이 조용히 비어
-            # 플래그 on 통합 테스트가 off와 동일 경로로 축소되는 걸 막는다.
-            # 유저 메시지 마지막 줄은 라벨('검색용 독립 질문:')이라 '현재 질문:' 다음 줄을 집는다.
-            lines = [l.strip() for l in messages[-1]['content'].splitlines() if l.strip()]
-            q = lines[lines.index('현재 질문:') + 1] if '현재 질문:' in lines else lines[-1]
-            return f'{q}\n{q} 변형A\n{q} 변형B'
+            # 멀티쿼리(#5) 규격 반향 — variants를 채워야 플래그 on 통합 테스트가
+            # off와 동일 경로로 축소되지 않는다.
+            q = _current_question(messages[-1]['content'])
+            return json.dumps({'standalone': q, 'variants': [f'{q} 변형A', f'{q} 변형B']},
+                              ensure_ascii=False)
         return self.answer
 
     async def astream(self, messages: list[dict], extra_body: dict | None = None):

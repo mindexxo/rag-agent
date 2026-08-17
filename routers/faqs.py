@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
-from rag.cache import AnswerCache
+from rag import cache
 from rag.embeddings import embed_texts
 from rag.faq_indexing import build_faq_chunk_text, reindex_faq
 from rag.models import Faq
@@ -115,7 +115,7 @@ async def update_faq(
         embedding = await _embed_chunk_text(faq.question, faq.variants or [], faq.answer)
         await reindex_faq(session, faq, embedding)
     if content_changed or turned_off:
-        await AnswerCache().invalidate_document(session, tenant_id, -faq.id)   # 음수 = FAQ 네임스페이스
+        await cache.invalidate_source(session, tenant_id, -faq.id)   # 음수 = FAQ 네임스페이스
 
     await session.commit()
     return _to_response(faq)
@@ -129,6 +129,6 @@ async def delete_faq(
 ):
     """항목 삭제 — 청크는 FK cascade로 함께 삭제, 관련 캐시 무효화."""
     faq = await _get_faq(session, tenant_id, faq_id)
-    await AnswerCache().invalidate_document(session, tenant_id, -faq.id)
+    await cache.invalidate_source(session, tenant_id, -faq.id)
     await session.delete(faq)
     await session.commit()

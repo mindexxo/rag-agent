@@ -33,7 +33,7 @@ from starlette.responses import FileResponse, JSONResponse
 
 from config import settings
 from database import get_session
-from rag.cache import AnswerCache
+from rag import cache
 from rag.chunking import extract_text
 from rag.documents import handle_upload
 from rag.models import Chunk, Document, Folder
@@ -325,7 +325,7 @@ async def update_document(
     # off된 문서를 근거로 만든 답변이 exact 캐시로 계속 나가는 것 방지. off→on은 무효화할 캐시가 없음.
     effective_after = doc.is_searchable and await _folder_is_on(session, tenant_id, doc.folder_id)
     if effective_before and not effective_after:
-        await AnswerCache().invalidate_document(session, tenant_id, doc.id)
+        await cache.invalidate_source(session, tenant_id, doc.id)
 
     await session.commit()
     return _to_response(doc)
@@ -366,9 +366,8 @@ async def delete_document(
 
     await session.execute(delete(Chunk).where(Chunk.document_id.in_(doc_ids)))
 
-    cache = AnswerCache()
     for did in doc_ids:
-        await cache.invalidate_document(session, tenant_id, did)
+        await cache.invalidate_source(session, tenant_id, did)
 
     await session.commit()
 

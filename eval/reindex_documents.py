@@ -27,7 +27,7 @@ from pathlib import Path
 from sqlalchemy import delete, select
 
 from database import AsyncSessionLocal
-from rag.cache import AnswerCache
+from rag import cache
 from rag.documents import index_pending_document
 from rag.models import Chunk, Document
 
@@ -73,7 +73,7 @@ async def reindex_one(document_id: int) -> None:
             raise FileNotFoundError(f'원본 없음: {doc.blob_path}')
 
         await session.execute(delete(Chunk).where(Chunk.document_id == doc.id))
-        await AnswerCache().invalidate_document(session, doc.tenant_id, doc.id)
+        await cache.invalidate_source(session, doc.tenant_id, doc.id)
         doc.status = 'pending'          # 워커 로직의 진입 조건
         await session.commit()
 

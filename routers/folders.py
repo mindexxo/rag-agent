@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
-from rag.cache import AnswerCache
+from rag import cache
 from rag.models import Document, Folder
 from routers.kms import get_tenant_id
 from schemas.kms import FolderInfo, FolderCreateRequest, FolderUpdateRequest
@@ -32,9 +32,8 @@ async def _invalidate_folder_docs(session: AsyncSession, tenant_id: str, folder_
         .where(Document.tenant_id == tenant_id)
         .where(Document.folder_id == folder_id)
     )).scalars().all()
-    cache = AnswerCache()
     for doc_id in doc_ids:
-        await cache.invalidate_document(session, tenant_id, doc_id)
+        await cache.invalidate_source(session, tenant_id, doc_id)
 
 
 async def _get_folder(session: AsyncSession, tenant_id: str, folder_id: int) -> Folder:

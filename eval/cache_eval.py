@@ -6,7 +6,7 @@
 - 과잉거절(false miss): 같은 질문의 다른 표현(paraphrase)인데 캐시 미스 → 캐시 무용.
 
 방식: doc_ids는 실제 코퍼스 테넌트(summers)에서 검색해 뽑되, 캐시 저장/조회는 버려도 되는
-가짜 테넌트(EVAL_TENANT)에 격리 → summers 실캐시 오염 없음. 쌍마다 set(q1)→조회(q2)→정리.
+가짜 테넌트(EVAL_TENANT)에 격리 → summers 실캐시 오염 없음. 쌍마다 save_answer(q1)→조회(q2)→정리.
 프롬프트 무관·LLM 생성 없음(임베딩+DB만). 임계값·doc집합 가드 변경 시 회귀 감지.
 
 실행: python -m eval.cache_eval
@@ -19,7 +19,7 @@ from pathlib import Path
 from sqlalchemy import delete
 
 from database import AsyncSessionLocal
-from rag.cache import AnswerCache
+from rag import cache
 from rag.models import AnswerCache as AnswerCacheRow
 from rag.retriever import retrieve
 from rag.service import _source_doc_ids
@@ -41,7 +41,6 @@ async def _clear(session) -> None:
 async def compute() -> dict:
     """캐시 히트 정확성 채점 → 요약. 반환: {accuracy, n, false_hit, false_miss, by_kind, misses}."""
     pairs = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
-    cache = AnswerCache()
     rows = []
 
     async with AsyncSessionLocal() as session:
@@ -49,7 +48,7 @@ async def compute() -> dict:
         for p in pairs:
             # 1. q1의 doc집합으로 캐시에 심는다 (답변은 더미 — 히트 여부만 관심)
             ids1 = await _docids(session, p["tenant"], p["q1"])
-            await cache.set(session, EVAL_TENANT, p["q1"], "더미 답변", [], ids1)
+            await cache.save_answer(session, EVAL_TENANT, p["q1"], "더미 답변", [], ids1)
             await session.commit()
             # 2. q2로 조회 — 히트하나?
             ids2 = await _docids(session, p["tenant"], p["q2"])

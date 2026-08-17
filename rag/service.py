@@ -31,7 +31,7 @@ from rag.retriever import RetrievalResult, retrieve, RetrievedChunk
 
 from schemas.kms import SourceCitation, QueryAttachment
 from typing import Literal
-from rag.cache import AnswerCache, snapshot_faq_versions
+from rag import cache
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ class PreparedRag:
     domain_hint: str | None = None   # [임시] 테넌트 지식 범위 설명 — 생성 프롬프트 주입용, 저장 안 함 (#1)
     assistant_message_id: int | None = None   # 생성 경로: 자리표시 assistant 메시지 id (백그라운드 태스크가 UPDATE할 대상)
     block_reason: str | None = None   # route='blocked'일 때 가드 판정 사유 — 저장·집계용 (#22)
-    faq_versions: dict[int, datetime] | None = None   # 근거 FAQ {id: updated_at} 스냅샷 — cache.set 낙관적 검증 기준 (#16)
+    faq_versions: dict[int, datetime] | None = None   # 근거 FAQ {id: updated_at} 스냅샷 — cache.save_answer 낙관적 검증 기준 (#16)
 
     def __post_init__(self) -> None:
         """검색 여부와 route를 짝지어 생성 시점에 강제한다 (#36).
@@ -138,7 +138,6 @@ class RagService:
         self.session = session
         self.user_id = user_id          # 지표 씨앗 — user 메시지에 기록 (X-User-Id)
         self._llm = shared_llm          # 공용 싱글톤 재사용 (요청마다 HTTP 풀 생성 방지 — P1-12)
-        self._cache = AnswerCache()
 
 
     async def prepare(
@@ -257,16 +256,16 @@ class RagService:
             sources = await _build_sources(self.session, self.tenant_id, retrieval.chunks)
 
         source_doc_ids = _source_doc_ids(retrieval.chunks)
-        # 근거 FAQ 버전 스냅샷 — 생성이 끝난 cache.set 시점에 재조회·등치 비교해,
+        # 근거 FAQ 버전 스냅샷 — 생성이 끝난 cache.save_answer 시점에 재조회·등치 비교해,
         # 생성 중 FAQ가 수정됐으면 저장을 스킵한다 (write-back 레이스 차단, #16)
-        faq_versions = await snapshot_faq_versions(self.session, self.tenant_id, source_doc_ids)
+        faq_versions = await cache.snapshot_faq_versions(self.session, self.tenant_id, source_doc_ids)
         prior_turns = build_prior_turns(messages, settings.history_budget_tokens)
 
         # semantic 캐시 조회 — 첨부가 있으면 우회한다. **주입용·신규분 둘 다 봐야 한다** (#36):
         # max_attachments<=0이면 주입용이 강제로 비므로, 신규 첨부만 확인하면 이 가드를 통과해
         # 캐시 답변이 재생되고 이번 턴 첨부가 save()에서 유실됐다 (설정 하나로 재현되는 데이터 유실).
         if not retrieval.no_evidence and not attachment_dicts and not new_attachment_dicts:
-            semantic_hit = await self._cache.get_semantic(
+            semantic_hit = await cache.get_semantic(
                 self.session, self.tenant_id, standalone_query, source_doc_ids)
             if semantic_hit is not None:
                 return PreparedRag(
@@ -455,7 +454,7 @@ class RagService:
         """
         if not prepared.should_cache or is_refusal(answer):
             return
-        await self._cache.set(
+        await cache.save_answer(
             self.session,
             self.tenant_id,
             prepared.standalone_query,
@@ -494,7 +493,7 @@ def _source_doc_ids(chunks: list[RetrievedChunk]) -> list[int]:
     """검색 청크의 출처 id 목록 (중복 제거) — semantic 캐시의 집합 비교·무효화 키.
 
     FAQ 출처는 문서 id와 충돌하지 않도록 음수 네임스페이스(-faq_id)로 표현한다.
-    FAQ 수정 시 invalidate_document(tenant, -faq_id)가 같은 키를 지우는 것과 짝 (routers/faqs.py).
+    FAQ 수정 시 invalidate_source(tenant, -faq_id)가 같은 키를 지우는 것과 짝 (routers/faqs.py).
     """
     ids = {chunk.document_id for chunk in chunks if chunk.document_id is not None}
     ids |= {-chunk.faq_id for chunk in chunks if chunk.faq_id is not None}

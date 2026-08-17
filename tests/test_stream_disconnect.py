@@ -67,7 +67,7 @@ async def test_소비자가_없어도_태스크는_완주해_finalize한다(clie
     while not queue.empty():
         drained.append(queue.get_nowait())
     assert drained[-1] is None                       # 리더 종료 sentinel
-    assert any(item and item[0] == 'token' for item in drained)
+    assert any(item and item[0] == 'delta' for item in drained)
 
 
 @pytest.mark.asyncio

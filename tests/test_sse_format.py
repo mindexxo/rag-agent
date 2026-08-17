@@ -10,12 +10,25 @@ from rag.streaming import _meta_event, sse_event
 
 
 def test_봉투_형식():
-    out = sse_event('token', {'text': '안녕'})
-    assert out == 'event: token\ndata: {"text": "안녕"}\n\n'
+    out = sse_event('delta', {'text': '안녕'})
+    assert out == 'event: delta\ndata: {"text": "안녕"}\n\n'
 
 
 def test_한글_이스케이프_안함():
-    assert '안녕' in sse_event('token', {'text': '안녕'})  # ensure_ascii=False
+    assert '안녕' in sse_event('delta', {'text': '안녕'})  # ensure_ascii=False
+
+
+def test_done_페이로드_형식():
+    """done은 빈 객체가 아니라 최종 상태를 싣는다 (#56) — 필드 셋이 FE 계약."""
+    from rag.streaming import TurnResult, _done_payload
+    from schemas.kms import SourceCitation
+    result = TurnResult(answer='답', citations=[SourceCitation(document_id=5, filename='정책.pdf', version=2)],
+                        finish_reason='done', latency_ms=123)
+    assert _done_payload(result) == {
+        'finish_reason': 'done',
+        'latency_ms': 123,
+        'citations': [{'document_id': 5, 'filename': '정책.pdf', 'version': 2}],
+    }
 
 
 def test_meta_필드():

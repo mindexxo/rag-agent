@@ -40,8 +40,13 @@ def sse_meta(res_or_text) -> dict:
 
 
 def sse_answer(res_or_text) -> str:
-    """token 이벤트를 이어붙인 최종 답변 텍스트."""
-    return ''.join(d['text'] for e, d in sse_events(res_or_text) if e == 'token')
+    """delta 이벤트를 이어붙인 최종 답변 텍스트."""
+    return ''.join(d['text'] for e, d in sse_events(res_or_text) if e == 'delta')
+
+
+def sse_done(res_or_text) -> dict:
+    """done 이벤트 payload — finish_reason·latency_ms·citations (#56)."""
+    return next(data for event, data in sse_events(res_or_text) if event == 'done')
 
 
 async def register_faq(client) -> int:

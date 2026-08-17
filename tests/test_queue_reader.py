@@ -2,15 +2,16 @@
 
 백그라운드 생성(_run_generation)이 큐에 넣은 이벤트를 SSE로 흘리는 코어.
 LLM·DB 없이 큐에 이벤트를 직접 넣어 순서·형식을 검증한다.
+#56 계약: 리더는 meta만 자체 생성하고 나머지는 순수 전달 — done도 큐로 온다(리더가 합성하지 않음).
 """
 import asyncio
 
 import pytest
 
+from config import settings
 from rag.retriever import RetrievalResult
 from rag.service import PreparedRag
 from rag.streaming import queue_reader
-from schemas.kms import SourceCitation
 from tests.conftest import sse_events
 
 
@@ -22,55 +23,58 @@ def _prepared(**kw) -> PreparedRag:
 
 
 async def _collect(prepared, queue) -> list[tuple[str, object]]:
-    """queue_reader가 yield한 SSE 청크들을 (event, data) 리스트로. no_evidence는
-    prepared에서 읽으므로(단일 정의점, #26) 따로 넘기지 않는다."""
+    """queue_reader가 yield한 SSE 청크들을 (event, data) 리스트로."""
     return sse_events(''.join([chunk async for chunk in queue_reader(prepared, queue)]))
 
 
+_DONE = {'finish_reason': 'done', 'latency_ms': 10, 'citations': []}
+
+
 @pytest.mark.asyncio
-async def test_이벤트_순서_meta_sources_token_done():
+async def test_이벤트_순서_meta_delta_done():
     queue = asyncio.Queue()
-    await queue.put(('token', {'text': '안녕'}))
-    await queue.put(('token', {'text': '하세요'}))
+    await queue.put(('delta', {'text': '안녕'}))
+    await queue.put(('delta', {'text': '하세요'}))
+    await queue.put(('done', _DONE))
     await queue.put(None)                                   # 생성 태스크의 종료 sentinel
 
     events = await _collect(_prepared(), queue)
-    assert [e for e, _ in events] == ['meta', 'sources', 'token', 'token', 'done']
-    assert events[2][1] == {'text': '안녕'}
+    assert [e for e, _ in events] == ['meta', 'delta', 'delta', 'done']
+    assert events[1][1] == {'text': '안녕'}
+
+
+@pytest.mark.asyncio
+async def test_done은_리더가_합성하지_않고_큐의_페이로드를_그대로_전달():
+    # 구 계약에선 리더가 빈 done을 하드코딩으로 붙였다 — 이제 최종 상태는 생성 태스크만 안다 (#56)
+    queue = asyncio.Queue()
+    payload = {'finish_reason': 'cancelled', 'latency_ms': 77,
+               'citations': [{'document_id': 5, 'filename': '정책.pdf', 'version': 2}]}
+    await queue.put(('done', payload))
+    await queue.put(None)
+
+    events = await _collect(_prepared(), queue)
+    assert events == [('meta', events[0][1]), ('done', payload)]
+
+
+@pytest.mark.asyncio
+async def test_done_없이_sentinel만_오면_done_없이_닫힘():
+    # 비정상 종료(태스크 급사 등) — 리더가 done을 지어내면 FE가 실패를 정상으로 오인한다
+    queue = asyncio.Queue()
+    await queue.put(None)
+    events = await _collect(_prepared(), queue)
+    assert [e for e, _ in events] == ['meta']
 
 
 @pytest.mark.asyncio
 async def test_에러_이벤트도_통과_후_done으로_닫힘():
     queue = asyncio.Queue()
     await queue.put(('error', {'code': 'generation_failed', 'message': 'x'}))
+    await queue.put(('done', {'finish_reason': 'failed', 'latency_ms': None, 'citations': []}))
     await queue.put(None)
 
     events = await _collect(_prepared(), queue)
-    assert [e for e, _ in events] == ['meta', 'sources', 'error', 'done']
-
-
-@pytest.mark.asyncio
-async def test_no_evidence면_sources가_있어도_빈_배열():
-    # sources가 비어있지 않아야 가드 유무가 관측됨 (기본값 []면 가드를 지워도 통과하는 허상)
-    queue = asyncio.Queue()
-    await queue.put(None)
-    p = _prepared(sources=[SourceCitation(document_id=5, filename='정책.pdf', version=1)],
-                  retrieval=RetrievalResult(chunks=[], no_evidence=True, reason='no_results'))
-    events = await _collect(p, queue)
-    assert events[0][1]['reason'] == 'no_evidence'   # meta도 함께 — 하드코딩 뮤테이션 방지
-    assert dict(events)['sources'] == []
-
-
-@pytest.mark.asyncio
-async def test_생산_이벤트_전체가_순서대로_통과():
-    # _run_generation이 넣을 수 있는 이벤트 타입 전부 (출력 가드 제거 #26 이후 token·sources·error)
-    queue = asyncio.Queue()
-    await queue.put(('token', {'text': 'x'}))
-    await queue.put(('sources', []))                        # LLM 자체 거절 시 인용 정정
-    await queue.put(None)
-
-    events = await _collect(_prepared(), queue)
-    assert [e for e, _ in events] == ['meta', 'sources', 'token', 'sources', 'done']
+    assert [e for e, _ in events] == ['meta', 'error', 'done']
+    assert dict(events)['done']['finish_reason'] == 'failed'
 
 
 @pytest.mark.asyncio
@@ -80,19 +84,36 @@ async def test_소비_시작_후_도착하는_이벤트도_대기해_수신():
 
     async def late_producer():
         await asyncio.sleep(0.05)
-        await queue.put(('token', {'text': '늦게 도착'}))
+        await queue.put(('delta', {'text': '늦게 도착'}))
+        await queue.put(('done', _DONE))
         await queue.put(None)
 
     task = asyncio.create_task(late_producer())
     events = await _collect(_prepared(), queue)
     await task
-    assert [e for e, _ in events] == ['meta', 'sources', 'token', 'done']
+    assert [e for e, _ in events] == ['meta', 'delta', 'done']
 
 
 @pytest.mark.asyncio
-async def test_sources_인용_직렬화():
+async def test_유휴_시_ping이_나오고_이후_이벤트는_유실_없이_도착(monkeypatch):
+    """ping 타임아웃(wait_for)이 큐 대기를 취소해도 아이템이 유실되지 않는다 (#56 회귀 고정).
+
+    시간 sleep 최소화: 주기를 0.05초로 줄이고 생산자는 그보다 늦게 넣는다.
+    """
+    monkeypatch.setattr(settings, 'sse_ping_interval_seconds', 0.05)
     queue = asyncio.Queue()
-    await queue.put(None)
-    p = _prepared(sources=[SourceCitation(document_id=5, filename='정책.pdf', version=2)])
-    events = await _collect(p, queue)
-    assert dict(events)['sources'] == [{'document_id': 5, 'filename': '정책.pdf', 'version': 2}]
+
+    async def late_producer():
+        await asyncio.sleep(0.12)                            # ping 최소 1회 발생할 시간
+        await queue.put(('delta', {'text': '유실되면 안 됨'}))
+        await queue.put(('done', _DONE))
+        await queue.put(None)
+
+    task = asyncio.create_task(late_producer())
+    events = await _collect(_prepared(), queue)
+    await task
+    names = [e for e, _ in events]
+    assert names.count('ping') >= 1                          # 유휴 구간에 ping이 나왔다
+    # ping을 걷어내면 정확히 원래 시퀀스 — 아이템 유실·중복 없음
+    assert [e for e in names if e != 'ping'] == ['meta', 'delta', 'done']
+    assert dict(events)['delta'] == {'text': '유실되면 안 됨'}

@@ -167,10 +167,9 @@ async def test_취소하면_부분답변이_cancelled로_남고_정리가_끝난
 
 
 @pytest.mark.asyncio
-async def test_취소하면_인용을_빈_배열로_정정한다(client, tenant_id, fake_llm, pass_gate):
-    """생성 경로는 첫 토큰 전에 인용을 낙관적으로 보낸다. 취소 시 정정하지 않으면 화면엔
-    인용이 붙어 있는데 새로고침하면 사라진다(finalize가 status != done이면 sources=[]로 저장).
-    거절 판정에 이미 있는 정정 패턴과 같은 방식 — SSE 계약이 '마지막 sources가 유효'다."""
+async def test_취소하면_done이_cancelled와_빈_인용을_싣는다(client, tenant_id, fake_llm, pass_gate):
+    """#56 계약: 인용은 done에서만 확정된다 — 구 계약의 '낙관 전송 후 [] 정정' 자체가 사라졌고,
+    취소 턴은 done.finish_reason='cancelled'·citations=[]로 닫힌다(저장 규칙과 같은 값)."""
     await register_faq(client)
     fake_llm.pause_after_tokens = 2
     prepared = await _prepare_turn(tenant_id)
@@ -190,8 +189,10 @@ async def test_취소하면_인용을_빈_배열로_정정한다(client, tenant_
     drained = []
     while not queue.empty():
         drained.append(queue.get_nowait())
-    sources_events = [payload for item in drained if item for kind, payload in [item] if kind == 'sources']
-    assert sources_events and sources_events[-1] == [], '취소 시 인용 정정 이벤트가 없다'
+    done_events = [payload for item in drained if item for kind, payload in [item] if kind == 'done']
+    assert len(done_events) == 1, '취소 턴도 done으로 닫혀야 한다'
+    assert done_events[0]['finish_reason'] == 'cancelled'
+    assert done_events[0]['citations'] == []
     async with AsyncSessionLocal() as session:
         assert (await session.get(Message, prepared.assistant_message_id)).sources == []
 

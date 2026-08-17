@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     concurrency_limit_default: int = 10   # 테넌트 동시 in-flight 기본 (quota 행 없을 때)
     user_concurrency_default: int = 10    # 사용자(X-User-Id)별 동시 in-flight 기본
     inflight_max_seconds: int = 120       # in-flight 유령 판정 — 넘으면 카운트서 제거(강제종료 아님)
+    sse_ping_interval_seconds: int = 15   # SSE 유휴 ping 주기 — 프록시 idle 종료 대비 (#56, 생성 경로만)
 
     # CORS — FE가 다른 origin에서 서빙될 때(배포·프록시 없는 로컬) 허용 목록.
     # 쉼표 구분 (.env 예: CORS_ALLOW_ORIGINS=http://localhost:5173,https://iccs.example.com)

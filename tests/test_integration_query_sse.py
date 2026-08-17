@@ -11,7 +11,7 @@ from sqlalchemy import select
 from database import AsyncSessionLocal
 from rag.models import AnswerCache as AnswerCacheRow, Message
 from rag.prompt_texts import BLOCKED_INPUT_ANSWER, NO_EVIDENCE_ANSWER
-from tests.conftest import register_faq, sse_events as _events, sse_answer
+from tests.conftest import register_faq, sse_events as _events, sse_answer, sse_done
 
 
 
@@ -22,28 +22,38 @@ from tests.conftest import register_faq, sse_events as _events, sse_answer
 @pytest.mark.asyncio
 async def test_KNOWLEDGE_생성_경로_SSE_전체흐름(client, tenant_id, fake_llm, pass_gate):
     faq_id = await register_faq(client)
+    # 기본 fake 답변은 존재하지 않는 문서를 인용한다(픽스처 결함 — 구 계약의 낙관 sources가
+    # 가려줬던 것). 실제 후보(FAQ)를 인용해야 done.citations 검증이 실질이 된다 (#56).
+    fake_llm.answer = '테스트 답변입니다. [FAQ]'
 
     res = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
     assert res.status_code == 200
     events = _events(res.text)
     names = [e for e, _ in events]
 
-    # 이벤트 순서: meta → sources → token+ → done
-    assert names[0] == 'meta' and names[1] == 'sources' and names[-1] == 'done'
-    assert 'token' in names
+    # 이벤트 순서(#56): meta → delta+ → done. 구 계약 이름은 하나도 없어야 한다(음성 검증)
+    assert names[0] == 'meta' and names[-1] == 'done'
+    assert 'delta' in names
+    assert 'sources' not in names and 'token' not in names
 
     meta = events[0][1]
     assert meta['cached'] is False
     assert meta['assistant_message_id'] is not None          # FE 재접속 폴링용
-    assert events[1][1] == [{'document_id': None, 'filename': 'FAQ', 'version': 1}]
     assert '테스트 답변입니다.' in sse_answer(res)
+
+    # done이 최종 상태를 싣는다 — 확정 인용·finish_reason·latency (#56)
+    done = sse_done(res)
+    assert done['finish_reason'] == 'done'
+    assert done['citations'] == [{'document_id': None, 'filename': 'FAQ', 'version': 1}]
+    assert isinstance(done['latency_ms'], int)
 
     # persist-before-stream: 스트림이 끝났으면 자리표시가 done으로 finalize돼 있어야 함
     async with AsyncSessionLocal() as session:
         msg = await session.get(Message, meta['assistant_message_id'])
-        assert msg.status == 'done'
+        assert msg.status == 'done'                          # 스트림 finish_reason과 같은 어휘 (#56)
         assert msg.content.strip() == fake_llm.answer
         assert msg.tenant_id == tenant_id
+        assert msg.cited_docs == ['FAQ']                     # done.citations와 같은 사실
 
 
 @pytest.mark.asyncio
@@ -55,6 +65,8 @@ async def test_차단_입력은_즉시_경로(client, tenant_id, fake_llm):
 
     assert sse_answer(res).strip() == BLOCKED_INPUT_ANSWER
     assert [e for e, _ in events][-1] == 'done'
+    assert sse_done(res)['finish_reason'] == 'blocked'       # 재조회 status와 같은 어휘 (#56)
+    assert sse_done(res)['citations'] == []
     assert not any(c.startswith('stream:') for c in fake_llm.calls)   # 생성 LLM 미호출
 
 
@@ -65,7 +77,8 @@ async def test_근거없음은_즉시_거절_캐시_미저장(client, tenant_id,
     events = _events(res.text)
 
     assert events[0][1]['reason'] == 'no_evidence'
-    assert dict(events)['sources'] == []
+    done = sse_done(res)
+    assert done['finish_reason'] == 'done' and done['citations'] == []
     assert sse_answer(res).strip() == NO_EVIDENCE_ANSWER
     assert not any(c.startswith('stream:') for c in fake_llm.calls)   # LLM 안 태움
 
@@ -82,9 +95,8 @@ async def test_OTHER_경로_스몰토크(client, tenant_id, fake_llm):
     fake_llm.answer = '안녕하세요! 무엇을 도와드릴까요?'
 
     res = await client.post('/kms/query', json={'query': '안녕'})
-    events = _events(res.text)
 
-    assert dict(events)['sources'] == []                     # 검색 안 함 → 인용 없음
+    assert sse_done(res)['citations'] == []                  # 검색 안 함 → 인용 없음
     assert '안녕하세요!' in sse_answer(res)
     assert 'stream:generate' in fake_llm.calls               # OTHER도 생성 경로(백그라운드)
 

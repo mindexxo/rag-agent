@@ -36,9 +36,10 @@ class ConversationMessage(BaseModel):
     role: str
     content: str
     status: str = "done"          # generating|done|failed|blocked|cancelled (FE 재접속 시 진행상태 판별)
-    sources: list[SourceCitation] | None = None
+    # 실제 인용된 출처 객체만 (#56) — SSE done.citations와 같은 이름·의미 (매핑 두 벌 금지).
+    # 구 계약의 sources(검색 후보 전체)+cited_docs(파일명)는 FE가 필터를 들고 있어야 했다 — 서버가 확정해 보낸다.
+    citations: list[SourceCitation] | None = None
     attachments: list[str] | None = None  # 이 턴에 첨부된 파일명 목록 (본문 텍스트는 내려주지 않음)
-    cited_docs: list[str] | None = None   # 실인용 파일명 (저장 시 확정) — FE 각주 필터가 본문 재파싱 없이 사용
     feedback: bool | None = None          # assistant: 👍/👎 현재 상태 — FE가 히스토리 재진입 시 버튼 상태 복원 (#8)
     feedback_tag: FeedbackTag | None = None
     feedback_text: str | None = None

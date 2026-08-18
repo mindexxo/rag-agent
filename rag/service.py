@@ -21,11 +21,12 @@ from config import settings
 from rag.conversation import ensure_conversation, load_recent_messages, condense_query, condense_to_queries, build_prior_turns, trim_messages_for_condense, save_exchange, add_pending_turn, finalize_turn
 from rag.guardrail import classify_and_guard
 from rag.clients import shared_llm
-from rag.models import Conversation, Document, Message
-from rag.answer_check import cited_filenames, is_refusal
+from rag.citation_labels import sources_from_chunks
+from rag.models import Conversation, Message
+from rag.answer_check import is_refusal
 from rag.prompt_texts import BLOCKED_INPUT_ANSWER, NO_EVIDENCE_ANSWER, SMALLTALK_ANSWER
-from rag.prompts import (build_chat_prompt, build_other_system_prompt, build_other_user_message,
-                         build_system_prompt, build_user_message)
+from rag.prompts import (build_chat_prompt, build_citation_grammar, build_other_system_prompt,
+                         build_other_user_message, build_system_prompt, build_user_message)
 from rag.retriever import RetrievalResult, retrieve, RetrievedChunk
 
 from schemas.kms import SourceCitation, QueryAttachment
@@ -256,9 +257,9 @@ class RagService:
         # 검색 (exact 캐시 제거 — semantic 캐시가 검색 후 doc집합 비교로 처리)
         retrieval = await retrieve(self.session, self.tenant_id, standalone_query, expanded_queries=expanded)
 
-        sources = []
-        if not retrieval.no_evidence:
-            sources = await _build_sources(self.session, self.tenant_id, retrieval.chunks)
+        # 인용 후보 (문서 단위) — 순서가 곧 인용 번호(citation_labels 불변식):
+        # 프롬프트 [번호]·guided 문법·꼬리 파서가 전부 이 리스트 순서를 공유한다.
+        sources = [] if retrieval.no_evidence else sources_from_chunks(retrieval.chunks)
 
         source_doc_ids = _source_doc_ids(retrieval.chunks)
         # 근거 FAQ 버전 스냅샷 — 생성이 끝난 cache.save_answer 시점에 재조회·등치 비교해,
@@ -340,7 +341,7 @@ class RagService:
         """
         # 이 값 하나를 SSE로 흘려도 되는 이유: 확정 답변은 쪼갤 필요가 없다. 예전엔 캐시 답변을
         # 40자로 잘라 yield했지만 소비처(immediate_stream)가 곧바로 ''.join으로 되붙여
-        # 단일 token 이벤트로 보낸다 — 청크 경계를 관측하는 곳이 없었다 (#26 정리의 잔재).
+        # 단일 delta 이벤트로 보낸다 — 청크 경계를 관측하는 곳이 없었다 (#26 정리의 잔재).
         answer = prepared.resolved_answer
         if answer is not None:
             yield answer
@@ -366,19 +367,33 @@ class RagService:
             ),
         )
 
-        async for token in self._llm.astream(prompt):
-            yield token
+        # 출처 꼬리 강제 문법 (#56) — 유효 범위의 후보 번호(검색 출처+첨부)만 꼬리에 올 수 있다.
+        # 서버가 미지원(400 등, 첫 토큰 전에 터진다)이면 문법 없이 재시도(fail-open) —
+        # 이때도 꼬리 파서의 번호 범위 검증은 동일하므로 조용한 오답 확정은 없다.
+        grammar = build_citation_grammar(
+            prepared.sources, [a['filename'] for a in (prepared.attachments or [])])
+        stream = self._llm.astream(prompt, extra_body=grammar)
+        try:
+            first = await anext(stream, None)
+        except Exception:
+            logger.warning('guided decoding 요청 실패 — 문법 없이 재시도 (fail-open, #56)')
+            stream = self._llm.astream(prompt)
+            first = await anext(stream, None)
+        if first is not None:
+            yield first
+            async for token in stream:
+                yield token
 
-    async def save(self, prepared: PreparedRag, answer: str, latency_ms: int | None = None) -> None:
+    async def save(self, prepared: PreparedRag, answer: str, citations: list[SourceCitation],
+                   latency_ms: int | None = None) -> None:
         """완성된 답변을 대화 메시지로 등록한다.
         이 함수는 session에 메시지를 add만 하고 commit은 호출자가 담당한다.
+
+        citations: 실제 인용된 출처만 (#56) — 호출자(스트림 조립부)가 확정해 넘긴다.
+        거절이면 빈 목록이어야 한다("확인 불가 + 인용" 모순 방지) — 스트림 쪽 TurnResult
+        조립 규칙과 동일. sources 컬럼도 인용만 저장한다(저장=응답=스트림 정합, #56 확정).
         """
-        # 거절 답변(규칙 3)엔 인용을 저장하지 않는다 — 대화 복원 시 "확인 불가 + 인용" 모순 방지.
-        # 캐시 제외(아래)와 같은 in 비교를 사용해 판정 기준을 단일화.
-        source_dicts = [] if is_refusal(answer) else [
-            source.model_dump()
-            for source in prepared.sources
-        ]
+        source_dicts = [c.model_dump() for c in citations]
 
         assistant = await save_exchange(
             self.session,
@@ -392,8 +407,8 @@ class RagService:
             user_id=self.user_id,
             latency_ms=latency_ms,
             cache_kind=prepared.cache_kind,   # 'semantic'=캐시 재생 답변 (기간별 히트율 집계용)
-            # 저장 순간에 사실 확정 — 조회는 순수 SQL (거절이면 sources처럼 인용도 비움: 모순 방지)
-            cited_docs=[] if is_refusal(answer) else cited_filenames(answer, prepared.sources),
+            # 저장 순간에 사실 확정 — 조회는 순수 SQL. cited_docs는 citations의 파일명 파생
+            cited_docs=[c.filename for c in citations],
             is_refusal=is_refusal(answer),
             intent=prepared.intent_label,
             # 입력 차단 턴은 status로 식별 가능해야 한다 — 이력 격리(load_recent_messages)와
@@ -405,12 +420,9 @@ class RagService:
         # 즉시 경로는 begin_turn을 안 거쳐 meta의 assistant_message_id가 비어 있었음 —
         # #16의 persist-before-stream 덕에 meta 전송 전에 id 확정 가능 → 피드백 대상 노출 (#8)
         prepared.assistant_message_id = assistant.id
-
-        # 신규 LLM 응답만 캐시에 저장한다.
-        # 게이트를 통과했어도 LLM이 스스로 거절한 답변은 제외 —
-        # 문서가 추가되면 답이 바뀌어야 하므로 (§14 규칙 6과 같은 취지).
-        # in 비교: 모델이 거절 문구 앞뒤에 인용 등을 덧붙이는 변형까지 잡는다.
-        await self._maybe_cache(prepared, answer)
+        # 캐시 저장은 여기서 하지 않는다 — 즉시 경로 3종(차단·캐시히트·근거없음)은 전부
+        # should_cache=False라 이 자리의 호출이 실은 죽은 코드였고(#56 재배치 때 확인),
+        # 캐시 적재는 생성 경로가 done 전송 뒤 maybe_cache로 수행한다.
 
     async def begin_turn(self, prepared: PreparedRag) -> None:
         """생성 경로에서 스트림 시작 전에 user 메시지 + assistant 자리표시(generating)를
@@ -430,33 +442,41 @@ class RagService:
         prepared.assistant_message_id = assistant.id
         await self.session.commit()   # generating 행 durable → 이후 태스크 spawn
 
-    async def finalize(self, prepared: PreparedRag, answer: str, status: str = "done",
-                       latency_ms: int | None = None) -> None:
-        """생성 완료/실패 시 assistant 자리표시를 UPDATE하고, 성공이면 캐시에 저장한다.
+    async def finalize(self, prepared: PreparedRag, answer: str, citations: list[SourceCitation],
+                       status: str = "done", latency_ms: int | None = None) -> None:
+        """생성 완료/실패 시 assistant 자리표시를 UPDATE한다.
         백그라운드 태스크가 '자기 세션으로 만든 RagService'에서 호출한다 (self.session=태스크 세션).
         commit은 호출자(태스크)가 담당. 실패면 status='failed', answer=''로 호출.
+
+        캐시 적재는 여기서 하지 않는다(#56 재배치) — done 전송보다 앞(크리티컬 패스)에 있으면
+        임베딩 TEI 왕복만큼 각주 표시가 늦고, 저장 실패가 완결된 턴을 failed로 오염시켰다.
+        호출자가 done을 내보낸 뒤 maybe_cache를 따로 부른다.
+
+        citations: 실제 인용된 출처만 (#56) — 호출자(스트림 조립부)가 확정해 넘긴다.
+        정상 완료(done)에만 의미 — 취소/실패는 status 가드가 어차피 비운다.
         """
-        source_dicts = [] if (status != "done" or is_refusal(answer)) else [
-            source.model_dump() for source in prepared.sources
-        ]
+        source_dicts = [] if status != "done" else [c.model_dump() for c in citations]
         await finalize_turn(
             self.session, self.tenant_id, prepared.assistant_message_id, answer, source_dicts,
             status=status, latency_ms=latency_ms,
-            # 거절 판정·인용 확정은 정상 완료(done)에만 의미 — blocked/failed는 항상 False/[]
-            cited_docs=cited_filenames(answer, prepared.sources) if status == "done" and not is_refusal(answer) else [],
+            # 인용 확정은 정상 완료(done)에만 의미 — blocked/failed/cancelled는 항상 []/False
+            cited_docs=[c.filename for c in citations] if status == "done" else [],
             is_refusal=is_refusal(answer) if status == "done" else False,
             intent=prepared.intent_label,
         )
-        if status == "done":
-            await self._maybe_cache(prepared, answer)
 
 
-    async def _maybe_cache(self, prepared: PreparedRag, answer: str) -> None:
-        """근거 있는 신규 LLM 응답만 semantic 캐시에 적재한다 — save·finalize 공용 (#36).
+    async def maybe_cache(self, prepared: PreparedRag, answer: str,
+                          citations: list[SourceCitation]) -> None:
+        """근거 있는 신규 LLM 응답만 semantic 캐시에 적재한다.
 
-        두 곳에 같은 7줄이 있었고 변경 이유도 같았다(캐시 저장 정책이 바뀌면 둘 다 바뀐다).
+        생성 경로가 done 전송 '뒤'에 부른다(#56 재배치, 사용자 결정 8/18) — 캐시는 있으면
+        좋은 부가물이지 턴 완결의 조건이 아니다. 임베딩 TEI 왕복+INSERT를 크리티컬 패스에서
+        빼 각주(done.citations) 표시가 빨라지고, 저장 실패는 로그로만 남는다(턴은 이미 done).
         거절 답변을 제외하는 이유: 문서가 추가되면 답이 바뀌어야 한다 (§14 규칙 6과 같은 취지).
-        in 비교라 모델이 거절 문구 앞뒤에 인용 등을 덧붙인 변형까지 잡는다.
+        캐시도 인용만 저장한다(#56) — 히트 재생 시 prepared.sources로 복원돼 그대로
+        citations가 된다. 무효화 키(source_doc_ids)는 검색 근거 전체 그대로 — 캐시 정확성의
+        기준은 "검색된 문서 집합"이지 인용 집합이 아니다.
         """
         if not prepared.should_cache or is_refusal(answer):
             return
@@ -465,34 +485,10 @@ class RagService:
             self.tenant_id,
             prepared.standalone_query,
             answer,
-            prepared.sources,
+            citations,
             prepared.source_doc_ids,
             faq_versions=prepared.faq_versions,
         )
-
-
-async def _build_sources(
-        session: AsyncSession,
-        tenant_id: str,
-        chunks: list[RetrievedChunk]
-) -> list[SourceCitation]:
-    """검색 청크 목록에서 API 응답용 문서 단위 sources를 만든다.
-
-    FAQ 청크(F3)가 섞여 있으면 'FAQ' 인용 1건으로 접는다 — 원본 파일이 없으므로
-    document_id 없이 내려가고, FE는 document_id 없는 인용을 비클릭으로 처리한다.
-    """
-    doc_ids = [i for i in _source_doc_ids(chunks) if i > 0]
-    citations: list[SourceCitation] = []
-    if doc_ids:
-        documents = (await session.execute(
-            select(Document)
-            .where(Document.tenant_id == tenant_id)   # 격리 — 모든 조회에 tenant WHERE (프로젝트 원칙, P2)
-            .where(Document.id.in_(doc_ids))
-        )).scalars().all()
-        citations = [SourceCitation(document_id=doc.id, filename=doc.filename, version=doc.version) for doc in documents]
-    if any(chunk.faq_id for chunk in chunks):
-        citations.append(SourceCitation(document_id=None, filename='FAQ', version=1))
-    return citations
 
 
 def _source_doc_ids(chunks: list[RetrievedChunk]) -> list[int]:

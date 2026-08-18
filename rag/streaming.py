@@ -12,38 +12,45 @@
 분리**해 태스크가 끝까지 완주하게 한다. 리미터 슬롯·OTel 루트 스팬의 소유권도 함께 넘겨받는다
 (실제 GPU 점유 구간을 반영해야 하므로).
 
-── FE 이벤트 계약 ──────────────────────────────────────────
+── FE 이벤트 계약 (#56에서 표준화) ─────────────────────────
 봉투는 `event: <name>\\ndata: <json>\\n\\n`. 이름은 아래 EVENT_* 상수가 유일한 정의점.
 
-  즉시 경로   meta → sources(확정) → token(1건) → done
-  생성 경로   meta → sources(낙관) → token×N → [sources([]) ← 거절일 때만] → done
-  오류        … → error → done          (done은 "스트림 종료" 신호이지 성공 신호가 아니다)
+  공통       meta → delta×N → done
+  오류       … → error → done          (done은 "스트림 종료" 신호이지 성공 신호가 아니다)
+  ping       유휴 시 수시 — 클라이언트는 무시 (프록시 유휴 종료 대비, 생성 경로만)
 
-**sources는 여러 번 올 수 있고 마지막 것이 유효하다.** 생성 경로는 첫 토큰보다 먼저 인용을
-보내야 FE가 각주 영역을 그릴 수 있는데, 그 시점엔 LLM이 스스로 거절할지 알 수 없다
-(is_refusal은 답변 완성 후 판정). 그래서 낙관적으로 보내고 거절로 판명되면 빈 배열로 정정한다.
-즉시 경로는 답이 이미 확정돼 있어 처음부터 정확한 값을 1회만 보낸다 — 두 경로의 타이밍 차이는
-버그가 아니라 의도된 설계라서, 공통화는 이벤트 조립까지만 하고 제어 흐름은 각자 둔다.
+원칙: 서버가 계산한 것을 서버가 보낸다 — 클라이언트가 본문을 파싱해 상태를 유추하지 않는다.
+- delta는 순수 텍스트 조각. done이 최종 상태를 싣는다:
+  {finish_reason, latency_ms, citations} — finish_reason 어휘는 messages.status와 동일
+  (done/cancelled/failed/blocked — 매핑 두 벌 금지), citations는 실제 인용된 출처 객체만.
+- 구 계약의 sources 이벤트(후보 낙관 전송 + 거절/취소 시 [] 정정)는 삭제 — "후보"와 "확정"을
+  한 이벤트가 겸하다 사고 났던 자리(FE 07-19). 확정 인용은 done 한 번에만 실린다.
+- done은 생성 태스크가 값과 함께 큐에 넣고 queue_reader는 순수 전달자다 — 이전처럼 리더가
+  빈 done을 합성하지 않는다. done 없이 스트림이 끊기면 비정상 종료다(FE는 이미 그렇게 처리).
 """
 import asyncio
 import json
 import logging
 import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from typing import Literal
 
 from config import settings
 from database import AsyncSessionLocal
 from rag import cancellation, limiter, otel
 from rag.limiter import Lease
-from rag.answer_check import cited_filenames, is_refusal
+from rag.answer_check import is_refusal
+from rag.citation_tail import TailSplitter, resolve_citations
 from rag.service import PreparedRag, RagService
+from schemas.kms import SourceCitation
 
 logger = logging.getLogger(__name__)
 
 # SSE 이벤트 이름 — FE 계약의 단일 정의점 (문자열 리터럴 산재 방지)
 EVENT_META = 'meta'
-EVENT_SOURCES = 'sources'
-EVENT_TOKEN = 'token'
+EVENT_DELTA = 'delta'
+EVENT_PING = 'ping'
 EVENT_ERROR = 'error'
 EVENT_DONE = 'done'
 
@@ -68,12 +75,27 @@ def _meta_event(prepared: PreparedRag) -> str:
     })
 
 
-def _sources_event(prepared: PreparedRag, answer: str | None = None) -> str:
-    """인용 이벤트. answer를 주면(즉시 경로 — 답 확정 후) 거절 판정까지 반영해 정확한 값을 낸다.
-    answer=None(생성 경로 프리앰블)은 아직 답이 없어 근거 유무만 반영한다 — 거절 정정은 뒤에서.
+@dataclass
+class TurnResult:
+    """턴 하나의 최종 결과 — done 페이로드·루트 스팬·DB 저장이 전부 이 한 객체를 소비한다 (#56).
+
+    같은 사실(답변·인용·상태·소요)을 세 소비처가 각자 재계산하면 반드시 어긋난다 —
+    4개 종료 분기(즉시/완료/취소/실패)가 여기서 한 번 조립하고, 이후는 읽기만 한다.
+    citations는 실제 인용된 출처 객체만 담는다(후보 전체가 아니라).
     """
-    hide = prepared.no_evidence or (answer is not None and is_refusal(answer))
-    return sse_event(EVENT_SOURCES, [] if hide else [s.model_dump() for s in prepared.sources])
+    answer: str
+    citations: list[SourceCitation]
+    finish_reason: Literal["done", "cancelled", "failed", "blocked"]
+    latency_ms: int | None          # failed는 None (DB 규칙과 동일)
+    is_refusal: bool = False
+
+
+def _done_payload(result: TurnResult) -> dict:
+    return {
+        "finish_reason": result.finish_reason,
+        "latency_ms": result.latency_ms,
+        "citations": [c.model_dump() for c in result.citations],
+    }
 
 
 def _elapsed_ms(t_request: float) -> int:
@@ -82,22 +104,21 @@ def _elapsed_ms(t_request: float) -> int:
     return int((time.monotonic() - t_request) * 1000)
 
 
-def _record_turn_result(root_span, answer: str, status: str, latency_ms: int | None,
-                        cited: list[str], refusal: bool) -> None:
+def _record_turn_result(root_span, result: TurnResult) -> None:
     """턴 결과를 루트 kms.query 스팬에 기록 — 값은 전부 DB 저장 규칙과 동일해야 한다 (#54).
 
-    트레이스와 DB가 서로 다른 얘기를 하면 교차검증이 무너진다(#34 NFC가 그렇게 잡혔다) —
-    호출자는 save/finalize에 넘긴 것과 같은 answer·latency_ms·cited·refusal을 넘길 것.
+    트레이스·DB·done 이벤트가 서로 다른 얘기를 하면 교차검증이 무너진다(#34 NFC가 그렇게
+    잡혔다) — 셋 다 같은 TurnResult를 소비한다 (#56).
     is_recording 가드가 먼저다 — no-op이면 clip(문자열 절단) 비용까지 없어야 한다(otel.py 규약).
     """
     if not root_span.is_recording():
         return
     otel.set_attrs(root_span, {
-        otel.OUTPUT_VALUE: otel.clip(answer),   # 답변은 절단 — 스팬 텍스트 정책(#7)
-        'kms.status': status,
-        'kms.latency_ms': latency_ms,           # failed는 None → 속성 자체가 안 실림 (DB NULL과 대응)
-        'kms.is_refusal': refusal,
-        'kms.cited_docs': cited,
+        otel.OUTPUT_VALUE: otel.clip(result.answer),   # 답변은 절단 — 스팬 텍스트 정책(#7)
+        'kms.status': result.finish_reason,
+        'kms.latency_ms': result.latency_ms,           # failed는 None → 속성 자체가 안 실림 (DB NULL과 대응)
+        'kms.is_refusal': result.is_refusal,
+        'kms.cited_docs': [c.filename for c in result.citations],
     })
 
 
@@ -117,27 +138,29 @@ async def immediate_stream(service: RagService, prepared: PreparedRag, session,
     """
     try:
         answer = ''.join([chunk async for chunk in service.generate(prepared)])
-        latency_ms = _elapsed_ms(t_request)   # 저장·스팬이 같은 값을 쓰도록 한 번만 계산 (#54)
+        latency_ms = _elapsed_ms(t_request)   # 저장·스팬·done이 같은 값을 쓰도록 한 번만 계산 (#54)
+        # 즉시 경로의 인용 = prepared.sources 그대로 (#56): 캐시 히트는 저장 시점에 이미
+        # 인용만 남긴 값이 복원된 것이고, 차단·근거없음은 sources가 애초에 빈 목록이다.
+        refusal = is_refusal(answer)
+        result = TurnResult(answer=answer, citations=[] if refusal else list(prepared.sources),
+                            finish_reason=prepared.terminal_status, latency_ms=latency_ms,
+                            is_refusal=refusal)
         # 저장 실패가 이미 확정된 답변의 '전달'까지 막으면 안 된다 (fail-open — 리뷰 반영).
         # StreamingResponse는 첫 yield 전에 200 헤더가 이미 나가므로, 여기서 예외가 새면
         # 사용자는 빈 스트림을 받는다. 실패는 로그만 남기고 전달은 계속한다.
         try:
-            await service.save(prepared, answer, latency_ms=latency_ms)
+            await service.save(prepared, answer, result.citations, latency_ms=latency_ms)
             await session.commit()
         except Exception:
             logger.exception("즉시 경로 저장 실패 — 답변 전달은 계속 (conversation=%s)",
                              prepared.conversation_id)
-        refusal = is_refusal(answer)
-        _record_turn_result(root_span, answer, prepared.terminal_status, latency_ms,
-                            cited=[] if refusal else cited_filenames(answer, prepared.sources),
-                            refusal=refusal)
+        _record_turn_result(root_span, result)
 
         yield _meta_event(prepared)
-        yield _sources_event(prepared, answer)
         # 확정된 답변은 한 번에 보낸다 — 쪼개도 await 없이 연달아 나가 같은 청크로 도착하고,
         # FE가 자체 타자기(버퍼 길이 기준)로 그리므로 이벤트 개수는 렌더에 영향이 없다 (#26).
-        yield sse_event(EVENT_TOKEN, {"text": answer})
-        yield sse_event(EVENT_DONE, {})
+        yield sse_event(EVENT_DELTA, {"text": answer})
+        yield sse_event(EVENT_DONE, _done_payload(result))
     finally:
         root_span.end()                       # 핸드오프된 턴 루트 스팬 (#54)
 
@@ -169,7 +192,7 @@ async def _finalize_out_of_band(lease: Lease, prepared: PreparedRag, answer: str
     try:
         async with AsyncSessionLocal() as session:
             await RagService(tenant_id=lease.tenant_id, session=session).finalize(
-                prepared, answer, status=status, latency_ms=latency_ms)
+                prepared, answer, citations=[], status=status, latency_ms=latency_ms)
             await session.commit()
     except Exception:
         logger.exception("%s 상태 기록 실패 (tenant=%s, conversation=%s)",
@@ -182,48 +205,81 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
     자기 세션의 RagService 사용 (요청 세션은 응답 종료 시 닫히므로).
     """
     parts = []
+    # 출처 꼬리 분리(#56) — knowledge만 꼬리를 만든다(OTHER·즉시 경로는 인용 없음).
+    # 꼬리는 delta로 나가지 않고, parts(=화면=저장)에는 splitter가 방출한 본문만 쌓인다.
+    splitter = TailSplitter() if prepared.route == "knowledge" else None
     try:
         async with AsyncSessionLocal() as session:
             svc = RagService(tenant_id=lease.tenant_id, session=session)
             with otel.span('generate', 'LLM') as sp:   # 배경 태스크 — 컨텍스트 복사로 kms.query의 자식 (#7)
                 async for chunk in svc.generate(prepared):
-                    parts.append(chunk)
-                    await queue.put((EVENT_TOKEN, {"text": chunk}))
+                    text = splitter.feed(chunk) if splitter else chunk
+                    if text:
+                        parts.append(text)
+                        await queue.put((EVENT_DELTA, {"text": text}))
+                if splitter and (tail_flush := splitter.finish()):
+                    parts.append(tail_flush)             # 마커 접두인 줄 알았던 본문 끝자락
+                    await queue.put((EVENT_DELTA, {"text": tail_flush}))
                 answer = "".join(parts)
                 if sp.is_recording():   # 가드가 먼저 — no-op이면 clip 비용도 없어야 한다 (otel.py 규약, #54 시정)
                     otel.set_attrs(sp, {otel.LLM_MODEL: settings.vllm_model, otel.OUTPUT_VALUE: otel.clip(answer)})
+                    if splitter and splitter.tail_raw is not None:
+                        # 꼬리 원문(번호 목록) — OUTPUT_VALUE는 걷어낸 본문이라 여기 없으면 어디에도
+                        # 안 남는다. 고객이 "인용 문서가 잘못됐다"고 할 때 모델 판단(번호 자체가
+                        # 틀림) vs 매핑 버그(번호는 맞는데 citations가 다름)를 가르는 유일한 증거.
+                        otel.set_attrs(sp, {'kms.citation_tail': otel.clip(splitter.tail_raw)})
+                    if splitter and splitter.truncated:
+                        # "성공처럼 보이는 실패"를 관측 가능하게 — 꼬리가 max_tokens 등으로 잘림
+                        otel.set_attrs(sp, {'kms.tail_truncated': True})
 
-            # LLM이 스스로 거절(규칙 3)한 답변이면 이미 내보낸 인용을 정정
             refusal = is_refusal(answer)
-            if refusal:
-                await queue.put((EVENT_SOURCES, []))
-            latency_ms = _elapsed_ms(t_request)   # 저장·스팬이 같은 값을 쓰도록 한 번만 계산 (#54)
-            await svc.finalize(prepared, answer, status="done", latency_ms=latency_ms)
+            citations = [] if refusal or splitter is None else resolve_citations(
+                splitter.tail_raw, prepared.sources,
+                [a['filename'] for a in (prepared.attachments or [])])
+            latency_ms = _elapsed_ms(t_request)   # 저장·스팬·done이 같은 값을 쓰도록 한 번만 계산 (#54)
+            await svc.finalize(prepared, answer, citations, status="done", latency_ms=latency_ms)
             await session.commit()
-            _record_turn_result(root_span, answer, "done", latency_ms,
-                                cited=[] if refusal else cited_filenames(answer, prepared.sources),
-                                refusal=refusal)
+            result = TurnResult(answer=answer, citations=citations,
+                                finish_reason="done", latency_ms=latency_ms, is_refusal=refusal)
+            _record_turn_result(root_span, result)
+            # done은 finalize·commit '뒤'에 — 값이 전부 확정된 다음 최종 상태로 내보낸다 (#56)
+            await queue.put((EVENT_DONE, _done_payload(result)))
+
+            # 캐시 적재는 done '뒤' (#56 재배치, 사용자 결정 8/18) — 임베딩 TEI 왕복이
+            # 크리티컬 패스에 있으면 각주 표시가 그만큼 늦고(실측 0.5~1초), 저장 실패가
+            # 완결된 턴을 failed로 오염시켰다. 실패는 로그만 — 턴은 이미 done.
+            # 취소 대상에서 먼저 빠진다(동기·멱등, finally의 unregister와 같은 근거) —
+            # 아래 await 중 늦은 취소가 done 턴을 cancelled로 덮어쓰는 레이스 차단.
+            cancellation.unregister(prepared.assistant_message_id)
+            try:
+                await svc.maybe_cache(prepared, answer, citations)
+                await session.commit()
+            except Exception:
+                logger.exception('캐시 저장 실패 — 턴은 이미 done (conversation=%s)',
+                                 prepared.conversation_id)
     except asyncio.CancelledError:
         # 명시적 취소(#30). CancelledError는 BaseException 계열이라 아래 except Exception이
         # 잡지 못한다 — 이 절이 없으면 finalize를 못 타고 generating으로 남아 스테일 스윕이
         # failed로 만든다(사용자는 취소했는데 화면엔 실패).
         # 취소 예외는 한 번만 전달되므로 여기서 잡은 뒤의 await(세션·commit)는 정상 완료된다 — 실측 확인.
-        # 낙관적으로 내보낸 인용을 정정한다 — 거절 판정(위)과 같은 이유·같은 방식.
-        # finalize가 status != done이면 sources를 []로 저장하므로, 정정하지 않으면 취소 직후
-        # 화면엔 인용이 붙어 있는데 새로고침하면 사라지는 불일치가 남는다(실기동 확인).
-        await queue.put((EVENT_SOURCES, []))
         answer, latency_ms = "".join(parts), _elapsed_ms(t_request)
         await _finalize_out_of_band(lease, prepared, answer, "cancelled", latency_ms)
-        # 저장 규칙(finalize: status≠done → refusal=False·cited=[])과 동일 값 — 부분 텍스트는 저장값 그대로
-        _record_turn_result(root_span, answer, "cancelled", latency_ms, cited=[], refusal=False)
+        # 저장 규칙(finalize: status≠done → refusal=False·citations=[])과 동일 값 — 부분 텍스트는 저장값 그대로.
+        # 구 계약의 "인용 [] 정정 이벤트"는 불필요해졌다 — 인용은 done에서만 확정되므로 (#56)
+        result = TurnResult(answer=answer, citations=[], finish_reason="cancelled",
+                            latency_ms=latency_ms)
+        _record_turn_result(root_span, result)
+        await queue.put((EVENT_DONE, _done_payload(result)))
         raise                                    # 태스크가 '취소됨'으로 끝나도록 재전파
     except Exception:
         logger.exception("답변 생성 실패 (tenant=%s, conversation=%s)", lease.tenant_id, prepared.conversation_id)
         await _finalize_out_of_band(lease, prepared, "", "failed", None)
-        _record_turn_result(root_span, "", "failed", None, cited=[], refusal=False)
+        result = TurnResult(answer="", citations=[], finish_reason="failed", latency_ms=None)
+        _record_turn_result(root_span, result)
         # 예외 원문은 서버 로그로만 — str(exc)에 내부 경로·설정이 섞일 수 있어 클라이언트에 노출 금지
         await queue.put((EVENT_ERROR, {"code": "generation_failed",
                                        "message": "답변 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."}))
+        await queue.put((EVENT_DONE, _done_payload(result)))   # 계약: error 뒤에도 done으로 닫는다
     finally:
         # 취소 대상에서 먼저 빠진다 (#30) — 반드시 아래 await들보다 앞, 그리고 동기 문장으로.
         # 답변이 done으로 커밋된 뒤 리미터를 반납하는 찰나에 취소가 도착하면 이 finally가
@@ -246,11 +302,16 @@ async def queue_reader(prepared: PreparedRag, queue: asyncio.Queue) -> AsyncIter
     쌓이는 양은 max_tokens 상한이 걸린 텍스트라 생성 1건당 수 KB에 불과하다.
     """
     yield _meta_event(prepared)
-    yield _sources_event(prepared)
     while True:
-        item = await queue.get()
+        try:
+            item = await asyncio.wait_for(queue.get(), timeout=settings.sse_ping_interval_seconds)
+        except asyncio.TimeoutError:
+            # 유휴 — 프록시가 idle 연결을 끊지 않게 ping (#56). 클라이언트는 무시하는 계약.
+            # wait_for가 내부 get을 취소해도 아이템은 큐에 남아 다음 get이 집는다(유실 없음 —
+            # asyncio.Queue의 취소 안전성, test_queue_reader가 회귀로 고정).
+            yield sse_event(EVENT_PING, {})
+            continue
         if item is None:
             break
         event, data = item
         yield sse_event(event, data)
-    yield sse_event(EVENT_DONE, {})

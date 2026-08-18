@@ -137,10 +137,11 @@ async def get_conversation_messages(
             role=m.role,
             content=m.content,
             status=m.status,
-            sources=m.sources,
+            # 실인용만 (#56) — sources(후보 스냅샷)를 cited_docs로 필터. 구 데이터는 sources가
+            # 후보 전체라 필터가 실질이고, 신 데이터는 저장 자체가 인용만이라 no-op이다.
+            citations=[s for s in (m.sources or []) if s['filename'] in (m.cited_docs or [])] or None,
             # 첨부 본문은 노출하지 않고 파일명만 (FE 뱃지/말풍선 표시용)
             attachments=[a['filename'] for a in m.attachments] if m.attachments else None,
-            cited_docs=m.cited_docs,
             feedback=m.feedback,
             feedback_tag=m.feedback_tag,
             feedback_text=m.feedback_text,

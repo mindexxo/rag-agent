@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
+from rag.citation_labels import TAIL_END, TAIL_START
 from rag.documents import index_pending_document
 from rag.models import Document, Message
 from tests.conftest import sse_meta
@@ -51,18 +52,20 @@ async def test_NFD_파일명_업로드는_NFC로_저장된다(client, tenant_id,
 
 
 @pytest.mark.asyncio
-async def test_NFD로_올린_문서도_인용이_cited_docs에_잡힌다(
+async def test_NFD로_올린_문서의_인용은_NFC_파일명으로_잡힌다(
         client, tenant_id, fake_llm, pass_gate, fake_queue, blob_tmp):
-    """#34의 본질 — 업로드부터 DB를 거쳐 인용 매칭까지 관통 검증.
+    """#34의 본질 — 업로드부터 DB를 거쳐 인용까지 관통 검증.
 
-    LLM은 프롬프트의 라벨을 NFC로 출력한다(실측). 저장값이 NFD로 남아 있으면
-    cited_filenames의 부분문자열 검색이 실패해 cited_docs가 빈 배열이 된다.
+    꼬리가 번호가 되면서(#56 개정) 라벨 문자열 매칭 자체는 사라졌지만, cited_docs의
+    파일명 값은 여전히 DB 저장값이다 — 저장이 NFD로 남으면 FE 각주·통계의 파일명이
+    분해형으로 새는 같은 계열의 회귀다. (모델이 NFD 라벨을 내는 경우의 매칭 방어
+    테스트는 전제가 소멸해 삭제 — 숫자에는 정규형이 없다.)
     """
     body = await _upload(client, FILENAME_NFD)
     await index_pending_document(body['document_id'])
 
-    # 모델이 NFC 라벨로 인용하는 상황을 재현 (저장값이 NFD였다면 여기서 매칭이 깨진다)
-    fake_llm.answer = f'단순변심 반품은 14일 이내입니다. [{FILENAME_NFC} v1]'
+    # 유일 문서 = 후보 1번 인용
+    fake_llm.answer = f'단순변심 반품은 14일 이내입니다. {TAIL_START}1{TAIL_END}'
 
     res = await client.post('/kms/query', json={'query': '반품 기간 알려줘'})
     assert res.status_code == 200
@@ -72,25 +75,9 @@ async def test_NFD로_올린_문서도_인용이_cited_docs에_잡힌다(
         msg = await session.get(Message, assistant_id)
         assert msg.status == 'done'
         assert msg.cited_docs == [FILENAME_NFC], (
-            f'인용이 잡히지 않았다 — cited_docs={msg.cited_docs!r}. '
-            'FE 각주와 stats 인용률이 조용히 0이 되는 회귀다 (#34).'
+            f'인용 파일명이 NFC가 아니다 — cited_docs={msg.cited_docs!r}. '
+            'FE 각주와 stats 인용률에 분해형 파일명이 새는 회귀다 (#34).'
         )
-
-
-@pytest.mark.asyncio
-async def test_모델이_NFD로_인용해도_잡힌다(
-        client, tenant_id, fake_llm, pass_gate, fake_queue, blob_tmp):
-    """방어층 — LLM 출력은 통제 불가 입력이라 어느 정규형으로 오든 견뎌야 한다."""
-    body = await _upload(client, FILENAME_NFC)
-    await index_pending_document(body['document_id'])
-    fake_llm.answer = f'14일 이내입니다. [{FILENAME_NFD} v1]'   # 모델이 분해형으로 냈다고 가정
-
-    res = await client.post('/kms/query', json={'query': '반품 기간 알려줘'})
-    assistant_id = sse_meta(res)['assistant_message_id']
-
-    async with AsyncSessionLocal() as session:
-        msg = await session.get(Message, assistant_id)
-        assert msg.cited_docs == [FILENAME_NFC]
 
 
 @pytest.mark.asyncio

@@ -1,8 +1,13 @@
 """프롬프트 조립 — 텍스트 템플릿에 런타임 값을 채워 LLM 메시지를 만든다.
 
-문구 자체는 rag/prompt_texts.py, 답변 판정(거절·인용)은 rag/answer_check.py (#36 분리).
-LLM에게 "문서 블록만 근거로 답해라, 인용은 [파일명 v1] 형식"을 강제하는 규칙은 텍스트 쪽에 있다.
+문구 자체는 rag/prompt_texts.py, 거절 판정은 rag/answer_check.py (#36 분리).
+인용은 답변 끝 출처 꼬리(#56) — 번호 순서는 rag/citation_labels.py 단일 정의점,
+꼬리 강제 문법(build_citation_grammar)도 여기서 조립한다(런타임 값 → LLM 입력이라는 같은 성격).
 """
+import re
+
+from rag.citation_labels import (TAIL_END, TAIL_START, attachment_display,
+                                 source_display, sources_from_chunks)
 from rag.prompt_texts import (
     DEFAULT_DOMAIN_HINT,
     USER_TEMPLATE,
@@ -50,33 +55,55 @@ def build_chat_prompt(system_content: str, user_content: str) -> list[dict]:
 
 def build_context_blocks(chunks: list[RetrievedChunk]) -> str:
     """RetrievedChunk 리스트 -> <문서> 블록 안에 들어갈 텍스트 조립.
-    각 블록 앞 라벨을 인용 형식 [파일명 vN] 그대로 둔다 — 모델이 눈앞 라벨을
-    그대로 흉내 내므로, 라벨=인용형식이어야 규칙 6대로 [파일명 vN]으로 인용한다.
+    각 블록 앞 [번호]가 출처 꼬리의 인용 번호다 — 번호 순서는 sources_from_chunks가
+    단일 정의점(citation_labels)이라, 문법·파서와 어긋날 수 없다. 같은 문서의 여러
+    청크는 같은 번호를 받는다(인용은 문서 단위). FAQ 청크는 retriever가 filename='FAQ'로
+    강제하므로(F99) 'FAQ' 후보 하나로 접힌다.
     """
+    numbers = {s.document_id if s.filename != 'FAQ' else 'FAQ': i
+               for i, s in enumerate(sources_from_chunks(chunks), start=1)}
     blocks = []
     for chunk in chunks:
         heading = ' > '.join(chunk.heading_path) if chunk.heading_path else ''
         page = chunk.page or '-'
-        # FAQ 청크는 버전 없는 [FAQ] 라벨 (파일·버전 개념이 없음 — F3)
-        label = '[FAQ]' if getattr(chunk, 'faq_id', None) else f'[{chunk.filename} v{chunk.version}]'
+        n = numbers['FAQ' if chunk.faq_id is not None else chunk.document_id]
         blocks.append(
-            f'{label} 섹션: {heading} / 페이지: {page}\n'
+            f'[{n}] {source_display(chunk)} 섹션: {heading} / 페이지: {page}\n'
             f'{chunk.text}\n---'
         )
     return '\n'.join(blocks)
 
-def build_attachment_blocks(attachments: list[dict]) -> str:
+def build_attachment_blocks(attachments: list[dict], start: int = 1) -> str:
     """채팅 첨부 문서 -> <첨부 문서> 블록 조립. 없으면 빈 문자열.
-    라벨을 인용 형식 [첨부: 파일명] 그대로 둔다 (build_context_blocks와 같은 원리).
+    [번호]는 검색 출처 번호에 이어 start부터 매긴다 (번호 불변식 — citation_labels).
     attachments: [{"filename": "...", "text": "..."}, ...]
     """
     if not attachments:
         return ''
     blocks = [
-        f"[첨부: {a['filename']}]\n{a['text']}\n---"
-        for a in attachments
+        f"[{start + i}] {attachment_display(a['filename'])}\n{a['text']}\n---"
+        for i, a in enumerate(attachments)
     ]
     return '<첨부 문서>\n' + '\n'.join(blocks) + '\n</첨부 문서>\n\n'
+
+
+def build_citation_grammar(sources, attachment_filenames: list[str]) -> dict:
+    """출처 꼬리를 강제하는 guided decoding 정규식 — LlmClient extra_body용 (#56).
+
+    꼬리는 **필수**다: 선택(`(...)?`)으로 두면 본문만으로도 문법이 완성돼 EOS가 항상
+    허용되고, 강제력이 0이 된다(설계 검토에서 확인). 필수라서 모델은 꼬리를 쓰기 전엔
+    끝낼 수 없고, 꼬리 안에는 유효 범위의 번호 목록(또는 빈 목록)만 올 수 있다.
+    거절 답변도 꼬리는 붙는다 — 빈 목록으로 (프롬프트 규칙 7이 같은 것을 지시).
+
+    첨부를 빠뜨리면 첨부 인용이 문법에 막힌다(#41의 함정) — 후보 수에 반드시 포함.
+    vLLM v0.12+ structured_outputs 형식. 서버가 미지원(400)이면 호출부가 문법 없이
+    재시도한다(fail-open) — 파서의 번호 범위 검증은 문법 유무와 무관하게 동일.
+    """
+    count = len(sources) + len(attachment_filenames)
+    nums = '|'.join(str(i) for i in range(1, count + 1))
+    inner = f'(?:(?:{nums})(?:,(?:{nums}))*)?' if count else ''
+    tail = f'{re.escape(TAIL_START)}{inner}{re.escape(TAIL_END)}'
+    return {"structured_outputs": {"regex": rf'[\s\S]*{tail}'}}
 
 
 def build_user_message(
@@ -101,7 +128,8 @@ def build_user_message(
     return USER_TEMPLATE.format(
         prior_turns_block=prior_turns_block,
         context_blocks=build_context_blocks(chunks),
-        attachment_blocks=build_attachment_blocks(attachments or []),
+        # 첨부 번호는 검색 출처 번호 다음부터 — 문법·파서의 후보 순서(sources + 첨부)와 동일
+        attachment_blocks=build_attachment_blocks(attachments or [], start=len(sources_from_chunks(chunks)) + 1),
         query=query
     )
 

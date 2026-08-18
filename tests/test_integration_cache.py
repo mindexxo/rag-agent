@@ -87,7 +87,8 @@ async def test_정상_답변은_캐시_저장(tenant_id, fake_embed):
     async with AsyncSessionLocal() as session:
         prepared = await _prepared_with_conversation(session, tenant_id)
         svc = RagService(tenant_id=tenant_id, session=session)
-        await svc.save(prepared, '배송비는 3천원입니다. [정책.pdf v1]')
+        # 캐시 정책 단위 검증 — 적재 진입점은 maybe_cache (save에서 분리, #56 재배치)
+        await svc.maybe_cache(prepared, '배송비는 3천원입니다.', list(prepared.sources))
         await session.commit()
 
         rows = (await session.execute(
@@ -102,7 +103,7 @@ async def test_거절_답변은_캐시_제외(tenant_id, fake_embed):
         prepared = await _prepared_with_conversation(session, tenant_id)
         svc = RagService(tenant_id=tenant_id, session=session)
         # 모델이 거절 문구 앞뒤에 덧붙이는 변형까지 — in 비교 계약
-        await svc.save(prepared, f'죄송합니다. {NO_EVIDENCE_ANSWER} 다른 질문을 주세요.')
+        await svc.maybe_cache(prepared, f'죄송합니다. {NO_EVIDENCE_ANSWER} 다른 질문을 주세요.', [])
         await session.commit()
 
         rows = (await session.execute(
@@ -118,7 +119,7 @@ async def test_첨부_대화_답변은_공용_캐시_유출_금지(tenant_id, fa
         prepared = await _prepared_with_conversation(session, tenant_id)
         prepared.attachments = [{'filename': '고객영수증.pdf', 'text': '개인 정보'}]
         svc = RagService(tenant_id=tenant_id, session=session)
-        await svc.save(prepared, '첨부 기준으로 답변드립니다.')
+        await svc.maybe_cache(prepared, '첨부 기준으로 답변드립니다.', [])
         await session.commit()
 
         rows = (await session.execute(

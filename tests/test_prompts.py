@@ -27,20 +27,34 @@ def _chunk(**kw) -> RetrievedChunk:
 
 class TestContextBlocks:
     def test_블록_전체_형식(self):
-        # 라벨·섹션·페이지·본문·구분자 전체 고정 — 본문 누락 시 RAG가 무근거가 되는 회귀 방어
+        # 번호·표시명·섹션·페이지·본문·구분자 전체 고정 — [번호]는 출처 꼬리의 인용 번호다
         out = build_context_blocks([_chunk()])
-        assert out == '[배송정책.pdf v1] 섹션: 3. 보상 > 3.2 기준 / 페이지: 2\n본문 내용\n---'
+        assert out == '[1] 배송정책.pdf v1 섹션: 3. 보상 > 3.2 기준 / 페이지: 2\n본문 내용\n---'
 
-    def test_다중_청크는_본문_보존하며_조인(self):
-        # 블록 '사이' 구분자까지 전체 고정 — 포함 단언만으로는 조인 문자 변경을 못 잡는다
+    def test_같은_문서의_청크들은_같은_번호(self):
+        # 인용은 문서 단위 — 블록 '사이' 구분자까지 전체 고정
         out = build_context_blocks([_chunk(text='첫 본문'), _chunk(chunk_id=2, text='둘째 본문')])
-        block = '[배송정책.pdf v1] 섹션: 3. 보상 > 3.2 기준 / 페이지: 2\n{}\n---'
+        block = '[1] 배송정책.pdf v1 섹션: 3. 보상 > 3.2 기준 / 페이지: 2\n{}\n---'
         assert out == block.format('첫 본문') + '\n' + block.format('둘째 본문')
 
-    def test_FAQ_청크는_버전없는_FAQ_라벨(self):
+    def test_다른_문서는_등장_순서대로_번호(self):
+        out = build_context_blocks([
+            _chunk(), _chunk(chunk_id=2, document_id=9, filename='환불정책.pdf'),
+            _chunk(chunk_id=3, text='같은 문서 재등장')])
+        assert '[1] 배송정책.pdf v1' in out and '[2] 환불정책.pdf v1' in out
+        assert out.count('[1] 배송정책.pdf v1') == 2   # 재등장 청크도 같은 번호
+
+    def test_FAQ_청크는_버전없는_FAQ_표시(self):
         out = build_context_blocks([_chunk(document_id=None, faq_id=7, filename='FAQ')])
-        assert '[FAQ]' in out
-        assert '[FAQ v' not in out               # 버전 붙으면 안 됨
+        assert '[1] FAQ' in out
+        assert 'FAQ v' not in out                # 버전 붙으면 안 됨
+
+    def test_FAQ는_문서들_뒤_번호를_받는다(self):
+        # sources_from_chunks가 FAQ를 마지막에 접는다 — 등장이 앞서도 번호는 뒤
+        out = build_context_blocks([
+            _chunk(chunk_id=1, document_id=None, faq_id=7, filename='FAQ', text='FAQ 본문'),
+            _chunk(chunk_id=2)])
+        assert '[2] FAQ' in out and '[1] 배송정책.pdf v1' in out
 
     def test_헤딩_없고_페이지_없으면_대시(self):
         out = build_context_blocks([_chunk(heading_path=[], page=None)])
@@ -52,11 +66,34 @@ class TestContextBlocks:
 
 class TestAttachmentBlocks:
     def test_첨부_블록_전체_형식(self):
-        out = build_attachment_blocks([{'filename': '영수증.pdf', 'text': '첨부 본문'}])
-        assert out == '<첨부 문서>\n[첨부: 영수증.pdf]\n첨부 본문\n---\n</첨부 문서>\n\n'
+        out = build_attachment_blocks([{'filename': '영수증.pdf', 'text': '첨부 본문'}], start=2)
+        assert out == '<첨부 문서>\n[2] 첨부: 영수증.pdf\n첨부 본문\n---\n</첨부 문서>\n\n'
 
     def test_없으면_빈_문자열(self):
         assert build_attachment_blocks([]) == ''
+
+
+class TestCitationGrammar:
+    def _regex(self, sources_n: int, attachments: list[str]):
+        from rag.prompts import build_citation_grammar
+        sources = [object()] * sources_n           # 문법은 개수만 쓴다 — 내용 무관
+        return build_citation_grammar(sources, attachments)['structured_outputs']['regex']
+
+    def test_유효_번호만_허용(self):
+        import re
+        pat = re.compile(self._regex(2, ['첨부.pdf']))     # 후보 3
+        from rag.prompt_texts import TAIL_END, TAIL_START
+        assert pat.fullmatch(f'답변 본문 {TAIL_START}1,3{TAIL_END}')
+        assert pat.fullmatch(f'거절 {TAIL_START}{TAIL_END}')          # 빈 목록 허용
+        assert not pat.fullmatch(f'답변 {TAIL_START}4{TAIL_END}')     # 범위 밖
+        assert not pat.fullmatch('꼬리 없는 답변')                    # 꼬리는 필수
+
+    def test_후보_없으면_빈_꼬리만(self):
+        import re
+        from rag.prompt_texts import TAIL_END, TAIL_START
+        pat = re.compile(self._regex(0, []))
+        assert pat.fullmatch(f'답변 {TAIL_START}{TAIL_END}')
+        assert not pat.fullmatch(f'답변 {TAIL_START}1{TAIL_END}')
 
 
 class TestUserMessage:
@@ -71,9 +108,10 @@ class TestUserMessage:
         assert '- Q: q1' in out and '- A: a1' in out
         assert '- A: a1\n\n<문서>' in out   # 이력 블록과 문서 블록 사이 빈 줄 (붙으면 경계 소실)
 
-    def test_첨부는_문서블록_뒤_질문_앞에_배치(self):
+    def test_첨부는_문서블록_뒤_질문_앞에_배치_번호는_출처_다음(self):
         out = build_user_message('질문?', [_chunk()], attachments=[{'filename': 'r.pdf', 'text': '첨부내용'}])
-        assert out.index('</문서>') < out.index('[첨부: r.pdf]') < out.index('질문: 질문?')
+        # 검색 출처 1건([1]) 다음 번호 — 문법·파서의 후보 순서와 같은 규칙
+        assert out.index('</문서>') < out.index('[2] 첨부: r.pdf') < out.index('질문: 질문?')
         assert '첨부내용' in out
 
     def test_템플릿_구조_고정(self):

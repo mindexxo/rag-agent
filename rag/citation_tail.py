@@ -15,8 +15,6 @@ rag/citation_labels.py가 단일 정의점 (프롬프트 조립과 공유).
 malformed 꼬리는 부분 복구를 시도하지 않고 citations=[] — 그럴듯한 복구는 실패를
 지표에서 숨긴다(탐지 가능한 오류를 탐지 불가능하게 만들지 않는다).
 """
-import re
-
 from rag.citation_labels import TAIL_END, TAIL_START, attachment_label, source_label
 from schemas.kms import SourceCitation
 from text_norm import nfc
@@ -24,8 +22,6 @@ from text_norm import nfc
 # 꼬리가 이 길이를 넘도록 END가 안 나오면 꼬리가 아니라 본문으로 판정(오탐 복구).
 # 후보 30~40건(라벨 ~50자)도 여유 있는 상한.
 MAX_TAIL_CHARS = 2000
-
-_LABEL_RE = re.compile(r'\[([^\[\]]*)\]')
 
 
 class TailSplitter:
@@ -125,24 +121,28 @@ class TailSplitter:
 
 
 def resolve_citations(tail_raw: str | None, sources, attachment_filenames: list[str]) -> list[SourceCitation]:
-    """꼬리 라벨을 후보 교집합으로 검증해 인용 객체로. 후보 밖·malformed는 버린다.
+    """꼬리에서 후보 라벨을 찾아 인용 객체로 — 후보 주도 매칭. 후보 밖·malformed는 버린다.
 
-    첨부 인용은 FAQ 선례(document_id=None인 가짜 인용)를 따라
+    매칭 주체가 후보다: "꼬리에서 라벨을 추출"(정규식)이 아니라 "각 후보 라벨이 꼬리 안에
+    통째로 있는가"(substring)를 본다. 라벨은 우리가 조립하는 문자열이라(citation_labels)
+    파일명에 대괄호 등 어떤 문자가 있든 추출 문법이 필요 없다 — 정규식 방식은
+    `환불[개정].pdf` 같은 파일명의 인용을 조용히 놓쳤다(중첩 대괄호 추출 불가).
+    구 cited_filenames(#41)와 같은 방향 — 후보→출력 매칭이라 오탐이 구조적으로 없다.
+    (남는 이론적 엣지: 파일명 자체에 '다른 후보의 라벨 전체'가 포함되면 오탐 가능 —
+    guided 경로에선 후보 라벨만 생성 가능해 실질 무해.)
+
+    반환 순서는 꼬리 등장 순서. 첨부 인용은 FAQ 선례(document_id=None인 가짜 인용)를 따라
     SourceCitation(document_id=None, filename='첨부: 파일명', version=1)이 된다 —
     cited_docs·stats 집계에 그대로 노출되는 것이 의도다(첨부 기반 답변도 지표에 잡히게).
     NFC: guided가 붙으면 후보 문자열이 그대로 복사돼 불일치가 없지만, fail-open 경로의
-    자유 생성은 정규형이 다를 수 있어 cited_filenames(#34)와 같은 방어를 유지한다.
+    자유 생성은 정규형이 다를 수 있어 구 cited_filenames(#34)와 같은 방어를 유지한다.
     """
     if not tail_raw:
         return []
-    by_label: dict[str, SourceCitation] = {nfc(source_label(s)): s for s in sources}
-    for name in attachment_filenames:
-        by_label[nfc(attachment_label(name))] = SourceCitation(
-            document_id=None, filename=f'첨부: {name}', version=1)
-    seen, cited = set(), []
-    for inner in _LABEL_RE.findall(tail_raw):
-        label = nfc(f'[{inner}]')
-        if label in by_label and label not in seen:
-            seen.add(label)
-            cited.append(by_label[label])
-    return cited
+    tail = nfc(tail_raw)
+    candidates: list[tuple[str, SourceCitation]] = [(source_label(s), s) for s in sources]
+    candidates += [(attachment_label(n),
+                    SourceCitation(document_id=None, filename=f'첨부: {n}', version=1))
+                   for n in attachment_filenames]
+    found = [(tail.find(nfc(label)), cit) for label, cit in candidates]
+    return [cit for pos, cit in sorted(found, key=lambda x: x[0]) if pos != -1]

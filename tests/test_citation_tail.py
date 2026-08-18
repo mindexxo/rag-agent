@@ -113,3 +113,14 @@ class TestResolveCitations:
     def test_malformed는_부분_복구_없이_빈_목록(self):
         # 라벨 형식이 아예 아니면(대괄호 없음) 아무것도 안 잡힌다 — 그럴듯한 복구 금지
         assert resolve_citations('환불규정.docx v2, FAQ', SRC, []) == []
+
+    def test_대괄호_든_파일명도_잡힌다(self):
+        # 후보 주도 매칭의 존재 이유 — 정규식 추출 방식은 중첩 대괄호를 못 뽑아 조용히 누락했다
+        src = [SourceCitation(document_id=7, filename='환불[개정].pdf', version=3)]
+        cited = resolve_citations('[환불[개정].pdf v3]', src, [])
+        assert [c.filename for c in cited] == ['환불[개정].pdf']
+
+    def test_반환_순서는_꼬리_등장_순서(self):
+        # 후보 리스트 순서(SRC: 환불규정, FAQ)와 반대로 인용된 꼬리 — 등장 순서가 이겨야 한다
+        cited = resolve_citations('[FAQ][환불규정.docx v2]', SRC, [])
+        assert [c.filename for c in cited] == ['FAQ', '환불규정.docx']

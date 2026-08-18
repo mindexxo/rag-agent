@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from rag import otel
 from rag.llm import LlmClient
+from rag.llm_schemas import CondenseMultiResult, CondenseResult, acomplete_validated
 from rag.models import Conversation, Message
 
 logger = logging.getLogger(__name__)
@@ -149,13 +150,18 @@ async def _condense_call(
                 CONDENSE_MULTI_SYSTEM_PROMPT if multi else CONDENSE_SYSTEM_PROMPT,
                 build_condense_user_message(query, history),
             )
-            result = await llm.acomplete(llm_messages)
-            queries = (_parse_multi_queries(result, query) if multi
-                       else [(result or '').strip() or query])
+            parsed = await acomplete_validated(
+                llm, llm_messages, CondenseMultiResult if multi else CondenseResult, span=sp)
         except Exception:
             logger.exception('LLM error(%s)',
                              'condense_to_queries' if multi else 'condense_query')
+            parsed = None
+        if parsed is None:
+            # 재작성 없이 원본 단독 검색 (기능 자동 off) — 폴백을 정상과 구분되게 관측 (#43)
+            otel.set_attrs(sp, {'kms.schema_fallback': True})
             queries = [query]
+        else:
+            queries = _postprocess_queries(parsed, query)
         attrs = {otel.INPUT_VALUE: query, otel.OUTPUT_VALUE: queries[0],
                  'kms.history_messages': len(history)}
         if multi:
@@ -197,23 +203,21 @@ async def condense_to_queries(
     return await _condense_call(llm, query, messages, multi=True)
 
 
-def _parse_multi_queries(result: str | None, query: str) -> list[str]:
-    """condense_to_queries 출력 파싱 — 계측 래핑으로 본체가 깊어져 분리."""
-    if result is None:
-        return [query]
-    lines = [l.strip() for l in result.strip().splitlines() if l.strip()]
-    # 머리말 라벨 방어 — 모델이 "검색용 독립 질문:" 같은 라벨 줄을 앞에 붙이는 경우가
-    # 실측됨(#5 mt003 3회 중 2회). 첫 줄을 무조건 standalone으로 쓰는 계약이라, 라벨이
-    # 검색 쿼리·생성 질문이 되어 거절 답변으로 이어진다. 콜론 종결 줄은 질문일 수 없어 제거.
-    lines = [l for l in lines if not l.endswith((':', '：'))]
-    if not lines:
-        return [query]
-    standalone = lines[0]
-    # standalone·변형 간 중복 제거 — 같은 줄이 반복되면 RRF에서 같은 순위 리스트를
-    # 중복 가산해 원본 상위 결과를 희석시킨다 (#3 A/B의 goodpeople_rl005 실측 부작용)
+def _postprocess_queries(parsed: CondenseResult | CondenseMultiResult, query: str) -> list[str]:
+    """스키마 검증을 통과한 결과의 후처리 (#43) — 스키마가 강제 못 하는 것만 남았다.
+
+    구 _parse_multi_queries의 줄 분리·라벨 줄 제거("검색용 독립 질문:" 실측 2/3)는
+    JSON 필드 이름이 구조를 확정하며 소멸. 남는 건 필드 간 관계다:
+    - 빈 standalone → 원본 폴백 (minLength가 전 서버에서 강제된다는 보장 없음)
+    - standalone·변형 간/변형끼리 중복 제거 — 같은 줄이 반복되면 RRF에서 같은 순위
+      리스트를 중복 가산해 원본 상위 결과를 희석시킨다 (#3 goodpeople_rl005 실측)
+    - variants[:2] 방어 슬라이스 (maxItems를 서버가 무시할 경우 대비)
+    """
+    standalone = parsed.standalone.strip() or query
+    raw_variants = getattr(parsed, 'variants', [])   # CondenseResult(단일)엔 variants가 없다
     variants: list[str] = []
-    for line in lines[1:]:
-        if line != standalone and line not in variants:
+    for line in (v.strip() for v in raw_variants):
+        if line and line != standalone and line not in variants:
             variants.append(line)
     return [standalone, *variants[:2]]
 

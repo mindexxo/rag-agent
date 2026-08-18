@@ -182,10 +182,12 @@ def build_condense_user_message(query: str, history: list[dict]) -> str:
 
     history_block = "\n".join(history_lines) if history_lines else "(이전 대화 없음)"
 
+    # 끝 라벨은 "출력:" — 구 "검색용 독립 질문:"은 프로즈 출력을 유도하던 완성 트릭인데
+    # JSON 스키마 강제(#43) 하에서는 혼선 신호다. build_classify_user_message와 같은 관례.
     return f"""이전 대화:
 {history_block}
 
 현재 질문:
 {query.strip()}
 
-검색용 독립 질문:"""
+출력:"""

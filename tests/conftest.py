@@ -142,6 +142,17 @@ def pass_gate(monkeypatch):
 
 # ── 가짜 LLM ─────────────────────────────────────────────────
 
+def _current_question(user_content: str) -> str:
+    """condense 유저 메시지에서 '현재 질문:' 다음 줄을 집는다 — FakeLlm 반향용."""
+    lines = [l.strip() for l in user_content.splitlines() if l.strip()]
+    return lines[lines.index('현재 질문:') + 1] if '현재 질문:' in lines else lines[-1]
+
+
+class FakeSchemaRejected(Exception):
+    """구버전 vLLM의 스키마 거부(400) 재현 — _is_schema_rejected가 보는 status_code 덕 타이핑."""
+    status_code = 400
+
+
 class FakeLlm:
     """시스템 프롬프트로 용도를 판별해 고정 응답을 주는 가짜 LLM.
 
@@ -160,6 +171,8 @@ class FakeLlm:
         self.calls: list[str] = []          # 어떤 용도로 호출됐는지 기록 (검증용)
         self.system_prompts: list[tuple[str, str]] = []   # (용도, 시스템 프롬프트) — 주입 내용 검증용
         self.extra_bodies: list[dict | None] = []   # astream별 extra_body — guided 문법 주입 검증용(#56)
+        self.acomplete_extra_bodies: list[dict | None] = []   # acomplete별 — 스키마 주입·재시도 증거(#43)
+        self.reject_schema = False   # True면 structured_outputs 실린 acomplete를 400으로 거부 — 구버전 서버 재현(#43)
         # 취소 테스트용 정지 지점 (#30). None이면 기존 동작 그대로.
         # 왜 필요한가: astream에 진짜 await가 없으면 이벤트 루프에 제어가 넘어가지 않아
         # task.cancel()이 전달될 지점 자체가 없다 — 생성이 그대로 완주한다(실측).
@@ -186,17 +199,22 @@ class FakeLlm:
         kind = self._kind(messages)
         self.calls.append(kind)
         self._record(kind, messages)
+        self.acomplete_extra_bodies.append(extra_body)
+        if self.reject_schema and extra_body and 'structured_outputs' in extra_body:
+            raise FakeSchemaRejected('structured_outputs를 모르는 구버전 서버 재현')
         if kind == 'intent':
             return self.intent_json
         if kind == 'condense':
-            return messages[-1]['content'].splitlines()[-1].strip()
+            # 실제 질문을 JSON으로 반향 (#43). 구현 주의: 옛 코드는 마지막 줄을 반향했는데
+            # 그건 질문이 아니라 라벨이었다(잠복 버그 — 이 값을 검증하는 테스트가 없어 안 드러남).
+            return json.dumps({'standalone': _current_question(messages[-1]['content'])},
+                              ensure_ascii=False)
         if kind == 'condense_multi':
-            # 멀티쿼리(#5) 규격(3줄) 반향 — 한 줄만 주면 변형이 조용히 비어
-            # 플래그 on 통합 테스트가 off와 동일 경로로 축소되는 걸 막는다.
-            # 유저 메시지 마지막 줄은 라벨('검색용 독립 질문:')이라 '현재 질문:' 다음 줄을 집는다.
-            lines = [l.strip() for l in messages[-1]['content'].splitlines() if l.strip()]
-            q = lines[lines.index('현재 질문:') + 1] if '현재 질문:' in lines else lines[-1]
-            return f'{q}\n{q} 변형A\n{q} 변형B'
+            # 멀티쿼리(#5) 규격 반향 — variants를 채워야 플래그 on 통합 테스트가
+            # off와 동일 경로로 축소되지 않는다.
+            q = _current_question(messages[-1]['content'])
+            return json.dumps({'standalone': q, 'variants': [f'{q} 변형A', f'{q} 변형B']},
+                              ensure_ascii=False)
         return self.answer
 
     async def astream(self, messages: list[dict], extra_body: dict | None = None):

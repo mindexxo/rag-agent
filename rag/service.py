@@ -419,11 +419,9 @@ class RagService:
         # 즉시 경로는 begin_turn을 안 거쳐 meta의 assistant_message_id가 비어 있었음 —
         # #16의 persist-before-stream 덕에 meta 전송 전에 id 확정 가능 → 피드백 대상 노출 (#8)
         prepared.assistant_message_id = assistant.id
-
-        # 신규 LLM 응답만 캐시에 저장한다.
-        # 게이트를 통과했어도 LLM이 스스로 거절한 답변은 제외 —
-        # 문서가 추가되면 답이 바뀌어야 하므로 (§14 규칙 6과 같은 취지).
-        await self._maybe_cache(prepared, answer, citations)
+        # 캐시 저장은 여기서 하지 않는다 — 즉시 경로 3종(차단·캐시히트·근거없음)은 전부
+        # should_cache=False라 이 자리의 호출이 실은 죽은 코드였고(#56 재배치 때 확인),
+        # 캐시 적재는 생성 경로가 done 전송 뒤 maybe_cache로 수행한다.
 
     async def begin_turn(self, prepared: PreparedRag) -> None:
         """생성 경로에서 스트림 시작 전에 user 메시지 + assistant 자리표시(generating)를
@@ -445,9 +443,13 @@ class RagService:
 
     async def finalize(self, prepared: PreparedRag, answer: str, citations: list[SourceCitation],
                        status: str = "done", latency_ms: int | None = None) -> None:
-        """생성 완료/실패 시 assistant 자리표시를 UPDATE하고, 성공이면 캐시에 저장한다.
+        """생성 완료/실패 시 assistant 자리표시를 UPDATE한다.
         백그라운드 태스크가 '자기 세션으로 만든 RagService'에서 호출한다 (self.session=태스크 세션).
         commit은 호출자(태스크)가 담당. 실패면 status='failed', answer=''로 호출.
+
+        캐시 적재는 여기서 하지 않는다(#56 재배치) — done 전송보다 앞(크리티컬 패스)에 있으면
+        임베딩 TEI 왕복만큼 각주 표시가 늦고, 저장 실패가 완결된 턴을 failed로 오염시켰다.
+        호출자가 done을 내보낸 뒤 maybe_cache를 따로 부른다.
 
         citations: 실제 인용된 출처만 (#56) — 호출자(스트림 조립부)가 확정해 넘긴다.
         정상 완료(done)에만 의미 — 취소/실패는 status 가드가 어차피 비운다.
@@ -461,15 +463,15 @@ class RagService:
             is_refusal=is_refusal(answer) if status == "done" else False,
             intent=prepared.intent_label,
         )
-        if status == "done":
-            await self._maybe_cache(prepared, answer, citations)
 
 
-    async def _maybe_cache(self, prepared: PreparedRag, answer: str,
-                           citations: list[SourceCitation]) -> None:
-        """근거 있는 신규 LLM 응답만 semantic 캐시에 적재한다 — save·finalize 공용 (#36).
+    async def maybe_cache(self, prepared: PreparedRag, answer: str,
+                          citations: list[SourceCitation]) -> None:
+        """근거 있는 신규 LLM 응답만 semantic 캐시에 적재한다.
 
-        두 곳에 같은 7줄이 있었고 변경 이유도 같았다(캐시 저장 정책이 바뀌면 둘 다 바뀐다).
+        생성 경로가 done 전송 '뒤'에 부른다(#56 재배치, 사용자 결정 8/18) — 캐시는 있으면
+        좋은 부가물이지 턴 완결의 조건이 아니다. 임베딩 TEI 왕복+INSERT를 크리티컬 패스에서
+        빼 각주(done.citations) 표시가 빨라지고, 저장 실패는 로그로만 남는다(턴은 이미 done).
         거절 답변을 제외하는 이유: 문서가 추가되면 답이 바뀌어야 한다 (§14 규칙 6과 같은 취지).
         캐시도 인용만 저장한다(#56) — 히트 재생 시 prepared.sources로 복원돼 그대로
         citations가 된다. 무효화 키(source_doc_ids)는 검색 근거 전체 그대로 — 캐시 정확성의

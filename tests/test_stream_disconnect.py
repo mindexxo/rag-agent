@@ -71,6 +71,44 @@ async def test_소비자가_없어도_태스크는_완주해_finalize한다(clie
 
 
 @pytest.mark.asyncio
+async def test_캐시_저장이_실패해도_턴은_done이다(client, tenant_id, fake_llm, pass_gate, monkeypatch):
+    """캐시 적재는 done 뒤의 부가물(#56 재배치) — 저장 실패(TEI 블립 등)가 완결된 턴을
+    failed로 오염시키지 않아야 한다. 재배치 전엔 finalize 안에 있어서 턴 전체가 failed였다."""
+    await register_faq(client)
+    from rag import cache
+
+    async def boom(*a, **kw):
+        raise RuntimeError('TEI 블립 재현')
+
+    monkeypatch.setattr(cache, 'save_answer', boom)
+
+    async with AsyncSessionLocal() as session:
+        svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
+        prepared = await svc.prepare('환불 기간 알려줘')
+        await svc.begin_turn(prepared)
+        assistant_id = prepared.assistant_message_id
+
+    lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
+    queue: asyncio.Queue = asyncio.Queue()
+    root_span, token = otel.start_turn()
+    try:
+        await _run_generation(prepared, queue, lease, t_request=0.0, root_span=root_span)
+    finally:
+        otel.detach_turn(token)
+
+    async with AsyncSessionLocal() as session:
+        msg = await session.get(Message, assistant_id)
+        assert msg.status == 'done', '캐시 저장 실패가 턴을 오염시켰다'
+
+    drained = []
+    while not queue.empty():
+        drained.append(queue.get_nowait())
+    done_events = [d for item in drained if item for k, d in [item] if k == 'done']
+    assert done_events and done_events[0]['finish_reason'] == 'done'   # done도 정상 전송
+    assert not any(item and item[0] == 'error' for item in drained)    # 에러 이벤트 없음
+
+
+@pytest.mark.asyncio
 async def test_생성_실패도_failed로_남고_정리가_끝난다(client, tenant_id, fake_llm, pass_gate, monkeypatch):
     """단위: 생성 도중 예외 → except Exception 분기(#54에서 스팬 기록 추가)가 통째로 도는지.
 

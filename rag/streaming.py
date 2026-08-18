@@ -239,6 +239,19 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
             _record_turn_result(root_span, result)
             # done은 finalize·commit '뒤'에 — 값이 전부 확정된 다음 최종 상태로 내보낸다 (#56)
             await queue.put((EVENT_DONE, _done_payload(result)))
+
+            # 캐시 적재는 done '뒤' (#56 재배치, 사용자 결정 8/18) — 임베딩 TEI 왕복이
+            # 크리티컬 패스에 있으면 각주 표시가 그만큼 늦고(실측 0.5~1초), 저장 실패가
+            # 완결된 턴을 failed로 오염시켰다. 실패는 로그만 — 턴은 이미 done.
+            # 취소 대상에서 먼저 빠진다(동기·멱등, finally의 unregister와 같은 근거) —
+            # 아래 await 중 늦은 취소가 done 턴을 cancelled로 덮어쓰는 레이스 차단.
+            cancellation.unregister(prepared.assistant_message_id)
+            try:
+                await svc.maybe_cache(prepared, answer, citations)
+                await session.commit()
+            except Exception:
+                logger.exception('캐시 저장 실패 — 턴은 이미 done (conversation=%s)',
+                                 prepared.conversation_id)
     except asyncio.CancelledError:
         # 명시적 취소(#30). CancelledError는 BaseException 계열이라 아래 except Exception이
         # 잡지 못한다 — 이 절이 없으면 finalize를 못 타고 generating으로 남아 스테일 스윕이

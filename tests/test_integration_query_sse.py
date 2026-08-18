@@ -22,9 +22,9 @@ from tests.conftest import register_faq, sse_events as _events, sse_answer, sse_
 @pytest.mark.asyncio
 async def test_KNOWLEDGE_생성_경로_SSE_전체흐름(client, tenant_id, fake_llm, pass_gate):
     faq_id = await register_faq(client)
-    # 실제 후보(FAQ)를 출처 꼬리로 인용 — done.citations 검증이 실질이 되게 (#56)
+    # 실제 후보(FAQ, 유일 후보 = 1번)를 출처 꼬리로 인용 — done.citations 검증이 실질이 되게 (#56)
     from rag.citation_labels import TAIL_END, TAIL_START
-    fake_llm.answer = f'테스트 답변입니다. {TAIL_START}[FAQ]{TAIL_END}'
+    fake_llm.answer = f'테스트 답변입니다. {TAIL_START}1{TAIL_END}'
 
     res = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
     assert res.status_code == 200
@@ -56,9 +56,13 @@ async def test_KNOWLEDGE_생성_경로_SSE_전체흐름(client, tenant_id, fake_
         assert msg.tenant_id == tenant_id
         assert msg.cited_docs == ['FAQ']                     # done.citations와 같은 사실
 
-    # guided 문법이 생성 호출에 실렸는지 — 후보(FAQ) 라벨이 정규식 안에 있어야 한다 (#56)
+    # guided 문법이 생성 호출에 실렸는지 — 후보 1건이면 번호 1만 허용하는 정규식 (#56)
     grammar_bodies = [b for b in fake_llm.extra_bodies if b and 'structured_outputs' in b]
-    assert grammar_bodies and 'FAQ' in grammar_bodies[-1]['structured_outputs']['regex']
+    assert grammar_bodies
+    import re as _re
+    grammar = _re.compile(grammar_bodies[-1]['structured_outputs']['regex'])
+    assert grammar.fullmatch(fake_llm.answer)                                 # 인용 답변 통과
+    assert not grammar.fullmatch(f'답변 {TAIL_START}2{TAIL_END}')             # 범위 밖 번호 차단
 
 
 @pytest.mark.asyncio
@@ -175,7 +179,7 @@ async def test_꼬리가_잘린_답변은_인용_없이_완주한다(client, ten
     화면·저장 어디에도 없고 citations는 빈 목록이어야 한다."""
     await register_faq(client)
     from rag.citation_labels import TAIL_START
-    fake_llm.answer = f'테스트 답변입니다. {TAIL_START}[FA'      # END 없이 끊김
+    fake_llm.answer = f'테스트 답변입니다. {TAIL_START}1'        # END 없이 끊김
 
     res = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
     assert sse_answer(res).strip() == '테스트 답변입니다.'       # 잘린 꼬리 조각 미노출

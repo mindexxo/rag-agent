@@ -1,27 +1,29 @@
-"""출처 꼬리 분리·해석 (#56) — 스트리밍 본문에서 §§CITED§§…§§END§§ 꼬리를 걷어낸다.
+"""출처 꼬리 분리·해석 (#56) — 스트리밍 본문에서 ««1,3»» 꼬리를 걷어낸다.
 
 인라인 인용을 없애면서 "이 답변이 실제로 어느 문서를 썼나"는 답변 끝의 출처 꼬리
 (guided decoding으로 형식 강제)가 나른다. 이 모듈이 하는 일 둘:
 
   TailSplitter        스트리밍 도중 꼬리가 delta로 새어나가지 않게 분리 (상태 기계)
-  resolve_citations   꼬리 라벨 → 후보 교집합 검증 → SourceCitation 목록
+  resolve_citations   꼬리 번호 목록 → 범위 검증 → SourceCitation 목록
 
 rag/answer_check.py에 두지 않은 이유: 그쪽은 "완성된 answer 문자열의 순수 판정"이고
-이쪽은 스트리밍 도중 상태를 갖는다 — 성격이 다르다. 라벨 문자열 자체는
+이쪽은 스트리밍 도중 상태를 갖는다 — 성격이 다르다. 번호↔문서의 순서는
 rag/citation_labels.py가 단일 정의점 (프롬프트 조립과 공유).
 
 검증 원칙(#56): guided decoding은 확률을 낮추는 최적화지 신뢰의 근거가 아니다 —
-문법이 붙었든(정상) 떨어졌든(fail-open) 파싱 결과는 항상 후보 교집합만 통과한다.
-malformed 꼬리는 부분 복구를 시도하지 않고 citations=[] — 그럴듯한 복구는 실패를
+문법이 붙었든(정상) 떨어졌든(fail-open) 파싱 결과는 항상 유효 범위 번호만 통과한다.
+malformed 꼬리는 부분 복구를 시도하지 않고 그 번호만 버린다 — 그럴듯한 복구는 실패를
 지표에서 숨긴다(탐지 가능한 오류를 탐지 불가능하게 만들지 않는다).
 """
-from rag.citation_labels import TAIL_END, TAIL_START, attachment_label, source_label
+import re
+
+from rag.citation_labels import TAIL_END, TAIL_START, attachment_display
 from schemas.kms import SourceCitation
-from text_norm import nfc
 
 # 꼬리가 이 길이를 넘도록 END가 안 나오면 꼬리가 아니라 본문으로 판정(오탐 복구).
-# 후보 30~40건(라벨 ~50자)도 여유 있는 상한.
-MAX_TAIL_CHARS = 2000
+# 번호 목록은 후보 30~40건 전부 인용해도 ~120자 — 200이면 여유 있는 상한이고,
+# 본문 속 우연한 마커(오탐)를 붙잡아 두는 창을 짧게 유지한다.
+MAX_TAIL_CHARS = 200
 
 
 class TailSplitter:
@@ -121,28 +123,30 @@ class TailSplitter:
 
 
 def resolve_citations(tail_raw: str | None, sources, attachment_filenames: list[str]) -> list[SourceCitation]:
-    """꼬리에서 후보 라벨을 찾아 인용 객체로 — 후보 주도 매칭. 후보 밖·malformed는 버린다.
+    """꼬리의 번호 목록 → 인용 객체. 범위 밖·중복·비숫자는 버린다.
 
-    매칭 주체가 후보다: "꼬리에서 라벨을 추출"(정규식)이 아니라 "각 후보 라벨이 꼬리 안에
-    통째로 있는가"(substring)를 본다. 라벨은 우리가 조립하는 문자열이라(citation_labels)
-    파일명에 대괄호 등 어떤 문자가 있든 추출 문법이 필요 없다 — 정규식 방식은
-    `환불[개정].pdf` 같은 파일명의 인용을 조용히 놓쳤다(중첩 대괄호 추출 불가).
-    구 cited_filenames(#41)와 같은 방향 — 후보→출력 매칭이라 오탐이 구조적으로 없다.
-    (남는 이론적 엣지: 파일명 자체에 '다른 후보의 라벨 전체'가 포함되면 오탐 가능 —
-    guided 경로에선 후보 라벨만 생성 가능해 실질 무해.)
+    번호 불변식(citation_labels): 후보 i(1-based) = sources[i-1], 이어서 첨부 순서 —
+    프롬프트 컨텍스트 블록의 [번호]와 같은 규칙이므로, 여기 sources는 반드시
+    프롬프트를 만든 그 청크의 sources_from_chunks 산출물(prepared.sources)이어야 한다.
 
-    반환 순서는 꼬리 등장 순서. 첨부 인용은 FAQ 선례(document_id=None인 가짜 인용)를 따라
+    파싱은 숫자 뭉치 추출(\\d+)만 — 구분자가 쉼표든 공백이든 관용한다(fail-open 경로의
+    자유 생성 대비). 구 라벨 방식이 필요로 했던 NFC 방어·대괄호 파일명 처리(b83dcd3)는
+    숫자에는 해당 없음. 반환 순서는 꼬리 등장 순서.
+
+    첨부 인용은 FAQ 선례(document_id=None인 가짜 인용)를 따라
     SourceCitation(document_id=None, filename='첨부: 파일명', version=1)이 된다 —
     cited_docs·stats 집계에 그대로 노출되는 것이 의도다(첨부 기반 답변도 지표에 잡히게).
-    NFC: guided가 붙으면 후보 문자열이 그대로 복사돼 불일치가 없지만, fail-open 경로의
-    자유 생성은 정규형이 다를 수 있어 구 cited_filenames(#34)와 같은 방어를 유지한다.
     """
     if not tail_raw:
         return []
-    tail = nfc(tail_raw)
-    candidates: list[tuple[str, SourceCitation]] = [(source_label(s), s) for s in sources]
-    candidates += [(attachment_label(n),
-                    SourceCitation(document_id=None, filename=f'첨부: {n}', version=1))
+    candidates: list[SourceCitation] = list(sources)
+    candidates += [SourceCitation(document_id=None, filename=attachment_display(n), version=1)
                    for n in attachment_filenames]
-    found = [(tail.find(nfc(label)), cit) for label, cit in candidates]
-    return [cit for pos, cit in sorted(found, key=lambda x: x[0]) if pos != -1]
+    cited: list[SourceCitation] = []
+    seen: set[int] = set()
+    for token in re.findall(r'\d+', tail_raw):
+        n = int(token)
+        if 1 <= n <= len(candidates) and n not in seen:
+            seen.add(n)
+            cited.append(candidates[n - 1])
+    return cited

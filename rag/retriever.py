@@ -196,7 +196,7 @@ async def _fetch_chunk_map(
     """id → RetrievedChunk 본문·메타 조회. IN 절 한 번 (개별 SELECT N번 안 함).
 
     부수효과 없음 (DB 읽기 전용). 순서는 호출부가 정한다 — 여기선 dict만 만든다.
-    FAQ 청크는 라벨을 'FAQ'로 — 컨텍스트 라벨=인용 형식 원칙에 따라 모델이 [FAQ]로 인용하게 됨.
+    FAQ 청크는 filename을 'FAQ'로 — 인용 후보 접기(sources_from_chunks)와 표시명이 이 값을 따름.
     """
     rows = await session.execute(
         select(Chunk, Document.filename, Document.version, Folder.name, Folder.description)

@@ -223,6 +223,11 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
                 answer = "".join(parts)
                 if sp.is_recording():   # 가드가 먼저 — no-op이면 clip 비용도 없어야 한다 (otel.py 규약, #54 시정)
                     otel.set_attrs(sp, {otel.LLM_MODEL: settings.vllm_model, otel.OUTPUT_VALUE: otel.clip(answer)})
+                    if splitter and splitter.tail_raw is not None:
+                        # 꼬리 원문(번호 목록) — OUTPUT_VALUE는 걷어낸 본문이라 여기 없으면 어디에도
+                        # 안 남는다. 고객이 "인용 문서가 잘못됐다"고 할 때 모델 판단(번호 자체가
+                        # 틀림) vs 매핑 버그(번호는 맞는데 citations가 다름)를 가르는 유일한 증거.
+                        otel.set_attrs(sp, {'kms.citation_tail': otel.clip(splitter.tail_raw)})
                     if splitter and splitter.truncated:
                         # "성공처럼 보이는 실패"를 관측 가능하게 — 꼬리가 max_tokens 등으로 잘림
                         otel.set_attrs(sp, {'kms.tail_truncated': True})

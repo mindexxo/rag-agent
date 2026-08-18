@@ -16,7 +16,7 @@
 cross-encoder는 질의·문서를 한 쌍으로 보므로 1)의 벡터 공간 효과가 없다.
 
 DB의 chunks.text는 원문 그대로 둔다 — 인용·프롬프트 컨텍스트·본문 미리보기가 쓰는 값이라
-파생 정보를 섞지 않는다. 프롬프트는 이미 build_context_blocks가 '[파일명 vN] 섹션: ...'
+파생 정보를 섞지 않는다. 프롬프트는 이미 build_context_blocks가 '[번호] 파일명 vN 섹션: ...'
 라벨을 따로 찍으므로 본문에까지 넣으면 중복이다.
 """
 from pathlib import Path

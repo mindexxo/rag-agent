@@ -23,7 +23,8 @@ from types import SimpleNamespace
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from rag.citation_labels import TAIL_END, TAIL_START
+from rag.citation_labels import TAIL_END, TAIL_START, sources_from_chunks
+from rag.citation_tail import resolve_citations
 from rag.conversation import condense_query
 from rag.models import Chunk, Document
 from rag.retriever import retrieve_candidates, RetrievedChunk
@@ -167,27 +168,31 @@ def _citation_match(core: str, stem: str) -> bool:
     return len(shorter) >= 4 and shorter in longer
 
 
-def citation_accuracy(answer: str, expected_docs: list[str]) -> float:
+def citation_accuracy(answer: str, expected_docs: list[str], chunks: list[RetrievedChunk]) -> float:
     """기대 문서 중 답변이 실제로 인용한 비율 (0..1).
 
     v3 (#56, **v2 이전 결과와 비교 불가**): 인용이 본문 인라인에서 답변 끝 출처 꼬리
-    (TAIL_START…TAIL_END)로 이동 — 토큰 추출을 꼬리 구간으로 한정한다. #56 이전
-    아카이브(report_generation_v1 등)의 Cite 수치와 이 채점기의 수치를 나란히 놓지 말 것 —
-    채점 정의가 바뀐 것이지 모델이 좋아지거나 나빠진 게 아니다. 본문의 무관한 대괄호
-    ([참고] 등)는 이제 오탐이 아니라 아예 스캔 대상이 아니다. 꼬리가 없으면(형식 미준수)
-    인용 0으로 집계 — 그게 사실이다.
+    (TAIL_START…TAIL_END, 번호 목록)로 이동 — 운영과 같은 배관(sources_from_chunks →
+    resolve_citations)으로 번호를 파일명으로 되돌려 채점한다. 채점기가 배관을 따로 들면
+    운영과 다른 번호 해석이 생길 수 있다(단일 정의점 원칙). #56 이전 아카이브
+    (report_generation_v1 등)의 Cite 수치와 이 채점기의 수치를 나란히 놓지 말 것 —
+    채점 정의가 바뀐 것이지 모델이 좋아지거나 나빠진 게 아니다. 꼬리가 없으면
+    (형식 미준수) 인용 0으로 집계 — 그게 사실이다.
+    eval/rescore_v2.py는 v2 라벨 꼬리 전용이라 이 시그니처로는 동작하지 않는다(의도적).
 
     v2 개정 (기존 0/1 any-match와 비교 불가):
     - any-match는 multi_doc에서 문서 하나만 인용해도 만점 → 커버리지 비율로 교체.
-    - FAQ 출처는 [FAQ]로 인용됨 — 기대에 'FAQ'를 넣으면 정확 매칭.
+    - FAQ 출처는 'FAQ'로 인용됨 — 기대에 'FAQ'를 넣으면 정확 매칭.
     - 확장자 스트립을 5개 형식 전체로 확장 (corpus v2 대응).
     """
     if not expected_docs:
         return 0.0
-    tail = answer.rsplit(TAIL_START, 1)[1] if TAIL_START in answer else ''
-    tail = tail.split(TAIL_END, 1)[0]
-    cites = re.findall(r"\[([^\]]+)\]", tail)            # 꼬리 안 라벨들만
-    cores = [re.sub(r"\s*v\d+\s*$", "", c).strip() for c in cites]   # 끝의 'v1' 제거
+    tail = answer.rsplit(TAIL_START, 1)[1] if TAIL_START in answer else None
+    if tail is not None:
+        tail = tail.split(TAIL_END, 1)[0]
+    cited = resolve_citations(tail, sources_from_chunks(chunks), [])
+    # 기대 stem과 같은 규칙으로 확장자 제거 — '공지.txt' vs '공지'는 4자 미만이라 포함 매칭도 못 탄다
+    cores = [re.sub(r"\.(pdf|docx|xlsx|txt|md)$", "", c.filename) for c in cited]
     # 원소가 리스트면 대체 출처 그룹 — 같은 정보가 여러 문서에 있을 때 하나만 인용해도 인정
     groups = [[d] if isinstance(d, str) else d for d in expected_docs]
     covered = 0
@@ -273,7 +278,7 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved):
             ],
             "scores": {
                 "expected_points_coverage": expected_points_coverage(answer, g.get("expected_points", [])),
-                "citation_accuracy": citation_accuracy(answer, g.get("expected_docs", [])),
+                "citation_accuracy": citation_accuracy(answer, g.get("expected_docs", []), chunks),
                 "answer_relevancy": await judge_relevancy(g["query"], answer),
                 "faithfulness": await judge_faithfulness(answer, chunks),
             },

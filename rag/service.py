@@ -21,7 +21,8 @@ from config import settings
 from rag.conversation import ensure_conversation, load_recent_messages, condense_query, condense_to_queries, build_prior_turns, trim_messages_for_condense, save_exchange, add_pending_turn, finalize_turn
 from rag.guardrail import classify_and_guard
 from rag.clients import shared_llm
-from rag.models import Conversation, Document, Message
+from rag.citation_labels import sources_from_chunks
+from rag.models import Conversation, Message
 from rag.answer_check import is_refusal
 from rag.prompt_texts import BLOCKED_INPUT_ANSWER, NO_EVIDENCE_ANSWER, SMALLTALK_ANSWER
 from rag.prompts import (build_chat_prompt, build_citation_grammar, build_other_system_prompt,
@@ -256,9 +257,9 @@ class RagService:
         # 검색 (exact 캐시 제거 — semantic 캐시가 검색 후 doc집합 비교로 처리)
         retrieval = await retrieve(self.session, self.tenant_id, standalone_query, expanded_queries=expanded)
 
-        sources = []
-        if not retrieval.no_evidence:
-            sources = await _build_sources(self.session, self.tenant_id, retrieval.chunks)
+        # 인용 후보 (문서 단위) — 순서가 곧 인용 번호(citation_labels 불변식):
+        # 프롬프트 [번호]·guided 문법·꼬리 파서가 전부 이 리스트 순서를 공유한다.
+        sources = [] if retrieval.no_evidence else sources_from_chunks(retrieval.chunks)
 
         source_doc_ids = _source_doc_ids(retrieval.chunks)
         # 근거 FAQ 버전 스냅샷 — 생성이 끝난 cache.save_answer 시점에 재조회·등치 비교해,
@@ -366,9 +367,9 @@ class RagService:
             ),
         )
 
-        # 출처 꼬리 강제 문법 (#56) — 후보(검색 출처+첨부) 라벨만 꼬리에 올 수 있다.
+        # 출처 꼬리 강제 문법 (#56) — 유효 범위의 후보 번호(검색 출처+첨부)만 꼬리에 올 수 있다.
         # 서버가 미지원(400 등, 첫 토큰 전에 터진다)이면 문법 없이 재시도(fail-open) —
-        # 이때도 꼬리 파서의 후보 교집합 검증은 동일하므로 조용한 오답 확정은 없다.
+        # 이때도 꼬리 파서의 번호 범위 검증은 동일하므로 조용한 오답 확정은 없다.
         grammar = build_citation_grammar(
             prepared.sources, [a['filename'] for a in (prepared.attachments or [])])
         stream = self._llm.astream(prompt, extra_body=grammar)
@@ -488,30 +489,6 @@ class RagService:
             prepared.source_doc_ids,
             faq_versions=prepared.faq_versions,
         )
-
-
-async def _build_sources(
-        session: AsyncSession,
-        tenant_id: str,
-        chunks: list[RetrievedChunk]
-) -> list[SourceCitation]:
-    """검색 청크 목록에서 API 응답용 문서 단위 sources를 만든다.
-
-    FAQ 청크(F3)가 섞여 있으면 'FAQ' 인용 1건으로 접는다 — 원본 파일이 없으므로
-    document_id 없이 내려가고, FE는 document_id 없는 인용을 비클릭으로 처리한다.
-    """
-    doc_ids = [i for i in _source_doc_ids(chunks) if i > 0]
-    citations: list[SourceCitation] = []
-    if doc_ids:
-        documents = (await session.execute(
-            select(Document)
-            .where(Document.tenant_id == tenant_id)   # 격리 — 모든 조회에 tenant WHERE (프로젝트 원칙, P2)
-            .where(Document.id.in_(doc_ids))
-        )).scalars().all()
-        citations = [SourceCitation(document_id=doc.id, filename=doc.filename, version=doc.version) for doc in documents]
-    if any(chunk.faq_id for chunk in chunks):
-        citations.append(SourceCitation(document_id=None, filename='FAQ', version=1))
-    return citations
 
 
 def _source_doc_ids(chunks: list[RetrievedChunk]) -> list[int]:

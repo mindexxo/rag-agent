@@ -10,6 +10,8 @@ from rag.citation_labels import (TAIL_END, TAIL_START, attachment_display,
                                  source_display, sources_from_chunks)
 from rag.prompt_texts import (
     DEFAULT_DOMAIN_HINT,
+    PRIOR_TURNS_LABEL,
+    STANDALONE_QUERY_LABEL,
     USER_TEMPLATE,
     _INTENT_GUARD_SYSTEM_PROMPT_TEMPLATE,
     _OTHER_SYSTEM_PROMPT_TEMPLATE,
@@ -111,13 +113,18 @@ def build_user_message(
         chunks: list[RetrievedChunk],
         prior_turns: list[dict] | None = None,
         attachments: list[dict] | None = None,
+        standalone_query: str | None = None,
 ) -> str:
     """유저 메시지 전체 조립.
+    query: "질문:" 슬롯에 표시할 **원 질문**(original_query).
     prior_turns: [{"q": "...", "a": "..."}, ...] 형태. Stage E.1(멀티턴)에서 채워짐.
     attachments: 채팅 첨부 문서 [{"filename", "text"}]. 없으면 블록 생략.
+    standalone_query: 검색에 실제로 쓴 재작성 질의. query와 다를 때만 참고 줄로 병기한다 —
+      같으면(단일턴) 중복이라 생략. 왜 교체가 아니라 병기인지는 prompt_texts.py의
+      STANDALONE_QUERY_LABEL 주석에 실측과 함께 있다 (#48).
     """
     if prior_turns:
-        lines = ['이전 맥락(참고용, 근거 아님):']
+        lines = [PRIOR_TURNS_LABEL]
         for t in prior_turns:
             lines.append(f"- Q: {t['q']}")
             lines.append(f"- A: {t['a']}")
@@ -125,12 +132,47 @@ def build_user_message(
     else:
         prior_turns_block = ''
 
+    # 양쪽을 strip해서 비교한다 — 스키마가 query의 앞뒤 공백을 벗기지 않으므로(schemas/kms.py),
+    # 공백 차이만으로 "다르다"고 보고 같은 문장을 두 번 싣는 일을 막는다. 공백만인
+    # standalone_query가 빈 참고 줄로 실리는 것도 여기서 걸러진다.
+    standalone = (standalone_query or '').strip()
+    standalone_line = (f'\n{STANDALONE_QUERY_LABEL} {standalone}'
+                       if standalone and standalone != (query or '').strip() else '')
+
     return USER_TEMPLATE.format(
         prior_turns_block=prior_turns_block,
         context_blocks=build_context_blocks(chunks),
         # 첨부 번호는 검색 출처 번호 다음부터 — 문법·파서의 후보 순서(sources + 첨부)와 동일
         attachment_blocks=build_attachment_blocks(attachments or [], start=len(sources_from_chunks(chunks)) + 1),
-        query=query
+        query=query,
+        standalone_line=standalone_line,
+    )
+
+
+def build_knowledge_generation_prompt(
+        original_query: str,
+        chunks: list[RetrievedChunk],
+        *,
+        standalone_query: str | None = None,
+        prior_turns: list[dict] | None = None,
+        attachments: list[dict] | None = None,
+        domain_hint: str | None = None,
+) -> list[dict]:
+    """KNOWLEDGE 답변 생성용 messages 조립 — 운영과 eval이 공유하는 단일 조립점.
+
+    이전엔 rag/service.py와 eval/generation.py가 각자 system+user를 조립했고, 그래서
+    eval 쪽에 prior_turns를 넘기지 않는 누락이 생겨도 어디에도 걸리지 않았다(#48에서 발견 —
+    이력 없이 측정한 결과가 "재작성 오염 때문에 오답"이라는 오진으로 이어졌다). 조립점을
+    하나로 모아, 인자가 늘어날 때 두 호출부가 함께 드러나게 한다.
+
+    선택 인자를 키워드 전용(*)으로 강제한 이유: original_query와 standalone_query는 둘 다
+    질문 문자열이라 위치로 넘기면 뒤바꿔도 타입 오류가 안 나고 답변도 그럴듯하게 나온다 —
+    어떤 테스트도 못 잡는 종류의 사고다. 이름을 쓰게 만들어 그 여지를 없앤다.
+    """
+    return build_chat_prompt(
+        build_system_prompt(domain_hint),
+        build_user_message(original_query, chunks, prior_turns=prior_turns,
+                           attachments=attachments, standalone_query=standalone_query),
     )
 
 

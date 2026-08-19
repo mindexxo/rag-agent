@@ -81,15 +81,30 @@ _SYSTEM_PROMPT_TEMPLATE = f"""당신은 한국어 콜센터 상담원을 돕는 
 """
 
 
+# 이전 맥락 블록 라벨 — build_user_message가 prior_turns 앞에 붙인다.
+# "근거 아님"을 못 박는 것이 규칙 5와 짝이다. 이 라벨을 중립화(예: '이전 대화:')하면
+# 모델이 이력을 사실 근거로 쓰기 시작해 부재 단정이 늘었다 — #48 실측(3건 → 6건,
+# 그중 2건은 인용까지 달아 꼬리 기반 사후 차단도 안 된다). 문구를 지킬 이유가 여기 있다.
+PRIOR_TURNS_LABEL = '이전 맥락(참고용, 근거 아님):'
+
+# "질문:" 슬롯 아래 붙는 재작성 질의 참고 줄의 라벨 (#48).
+# "질문:"에는 원 질문이 들어가고, 검색에 쓴 재작성 질의는 지우지 않고 여기 병기한다.
+# 재작성본이 검색 키라서 정답 청크와 어휘가 겹치고 그 겹침이 인용 번호 지목의 앵커가 된다 —
+# 프롬프트에서 빼면 앵커가 사라져 인용이 어긋나고 답이 인접 문서로 흐른다(#48 실측·기각 근거).
+# 두 값이 같은 단일턴에는 붙이지 않는다 — 판정은 rag/prompts.py:build_user_message.
+STANDALONE_QUERY_LABEL = '검색에 사용한 재작성 질문:'
+
 # {prior_turns_block}  : 이전 대화 2턴 (없으면 빈 문자열)
 # {context_blocks}     : 검색된 청크들을 [번호] 파일명 vN 라벨로 나열한 텍스트 (번호 = 인용 꼬리의 후보 번호)
 # {attachment_blocks}  : 채팅 첨부 문서들 (없으면 빈 문자열)
-# {query}              : 사용자 질문
+# {query}              : 사용자 질문 — 원 질문(original_query) 그대로
+# {standalone_line}    : 검색에 쓴 재작성 질의 참고 줄 — 원 질문과 다를 때만 붙는다(없으면 빈 문자열).
+#                        빈 문자열이면 렌더 결과가 이 슬롯 도입 전과 바이트 단위로 동일하다.
 USER_TEMPLATE = """{prior_turns_block}<문서>
 {context_blocks}
 </문서>
 
-{attachment_blocks}질문: {query}
+{attachment_blocks}질문: {query}{standalone_line}
 
 위 규칙을 지켜 한국어로 답하십시오."""
 

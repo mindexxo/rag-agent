@@ -134,3 +134,41 @@ class TestResolvedAnswer:
                   _prepared(retrieval=RetrievalResult(chunks=[], no_evidence=True, reason='no_results')),
                   _prepared(route='other', retrieval=None), _prepared()):
             assert p.needs_generation == (p.resolved_answer is None)
+
+
+class TestGenerateQuerySlot:
+    """generate()가 "질문:" 자리에 원 질문을, 재작성 질의는 참고로 넘기는지 (#48).
+
+    조립 자체는 test_prompts.py가 검증한다. 여기서 고정하는 건 **호출부가 두 값을 뒤바꿔
+    넘기지 않는다**는 것 — 뒤바뀌어도 답변은 그럴듯하게 나오므로 어떤 테스트도 못 잡는다.
+    """
+
+    @pytest.mark.asyncio
+    async def test_원질문과_재작성질의를_각각_넘긴다(self, monkeypatch):
+        captured = {}
+
+        def fake_build(original_query, chunks, *, standalone_query=None, prior_turns=None,
+                       attachments=None, domain_hint=None):
+            captured.update(original_query=original_query, standalone_query=standalone_query,
+                            prior_turns=prior_turns, domain_hint=domain_hint)
+            return [{'role': 'system', 'content': 's'}, {'role': 'user', 'content': 'u'}]
+
+        monkeypatch.setattr('rag.service.build_knowledge_generation_prompt', fake_build)
+
+        class _Llm:
+            async def astream(self, prompt, extra_body=None):
+                yield 'ok'
+
+        from rag.service import RagService
+        svc = RagService(tenant_id='t', session=None)
+        svc._llm = _Llm()
+        prepared = _prepared(original_query='그건 한 마리에 얼마예요?',
+                             standalone_query='냉장 생닭 한 마리 가격은?',
+                             prior_turns=[{'q': '유통기한?', 'a': '5일입니다'}],
+                             domain_hint='식품 상담')
+
+        assert ''.join([t async for t in svc.generate(prepared)]) == 'ok'
+        assert captured['original_query'] == '그건 한 마리에 얼마예요?'
+        assert captured['standalone_query'] == '냉장 생닭 한 마리 가격은?'
+        assert captured['prior_turns'] == [{'q': '유통기한?', 'a': '5일입니다'}]
+        assert captured['domain_hint'] == '식품 상담'

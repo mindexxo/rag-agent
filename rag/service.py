@@ -25,8 +25,9 @@ from rag.citation_labels import sources_from_chunks
 from rag.models import Conversation, Message
 from rag.answer_check import is_refusal
 from rag.prompt_texts import BLOCKED_INPUT_ANSWER, NO_EVIDENCE_ANSWER, SMALLTALK_ANSWER
-from rag.prompts import (build_chat_prompt, build_citation_grammar, build_other_system_prompt,
-                         build_other_user_message, build_system_prompt, build_user_message)
+from rag.prompts import (build_chat_prompt, build_citation_grammar,
+                         build_knowledge_generation_prompt, build_other_system_prompt,
+                         build_other_user_message)
 from rag.retriever import RetrievalResult, retrieve, RetrievedChunk
 
 from schemas.kms import SourceCitation, QueryAttachment
@@ -357,14 +358,15 @@ class RagService:
                 yield SMALLTALK_ANSWER   # 생성 실패 시 폴백
             return
 
-        prompt = build_chat_prompt(
-            build_system_prompt(prepared.domain_hint),
-            build_user_message(
-                prepared.standalone_query,
-                prepared.retrieval.chunks,
-                prior_turns=prepared.prior_turns,
-                attachments=prepared.attachments,
-            ),
+        # "질문:" 자리는 원 질문, 검색에 쓴 재작성 질의는 참고로 병기한다 (#48).
+        # 검색·캐시 키·메시지 저장은 그대로 standalone_query를 쓴다 — 바뀌는 건 이 슬롯뿐이다.
+        prompt = build_knowledge_generation_prompt(
+            prepared.original_query,
+            prepared.retrieval.chunks,
+            standalone_query=prepared.standalone_query,
+            prior_turns=prepared.prior_turns,
+            attachments=prepared.attachments,
+            domain_hint=prepared.domain_hint,
         )
 
         # 출처 꼬리 강제 문법 (#56) — 유효 범위의 후보 번호(검색 출처+첨부)만 꼬리에 올 수 있다.

@@ -29,17 +29,26 @@ async def stats_summary(
     # 롤링 윈도(now()-7일)를 쓰면 윈도 첫 부분날의 데이터가 "질문 수엔 있는데 일별 합계엔 없는"
     # 불일치가 난다 (일별 표는 날짜 단위라 부분날을 표현할 수 없음).
     #
-    # 답변률: 분모는 KNOWLEDGE 인텐트만 — OTHER(인사·요약 등)는 거절이 나올 수 없는 경로라
-    # 분모에 넣으면 답변률이 잡담 비율만큼 부풀어 "지식 커버리지 신호"가 못 된다 (2026-08-07).
-    # 분자도 같은 조건 필수 — intent NULL(컬럼 도입 전 행)의 거절이 분자에만 들어가면
-    # 분자가 분모의 부분집합이 아니게 돼 거절률이 1을 넘거나 답변률이 음수가 된다.
+    # 답변률: 분모는 KNOWLEDGE 인텐트만 — OTHER(인사·요약 등)는 애초에 근거를 댈 일이 없는
+    # 경로라 분모에 넣으면 답변률이 잡담 비율만큼 부풀어 "지식 커버리지 신호"가 못 된다
+    # (2026-08-07). #61 이후 이 필터는 **더 중요해졌다** — 판정이 인용 개수로 바뀌면서 OTHER는
+    # 꼬리 메커니즘 자체가 없어 항상 인용 0건이 되므로, 필터가 없으면 잡담이 전부 분자에
+    # 들어간다(같은 이유로 stats_unanswered에도 이 필터를 새로 넣었다).
+    # 분자도 같은 조건 필수 — intent NULL(컬럼 도입 전 행)이 분자에만 들어가면 분자가 분모의
+    # 부분집합이 아니게 돼 근거미확인율이 1을 넘거나 답변률이 음수가 된다.
     row = (await session.execute(text("""
         SELECT
           count(*) FILTER (WHERE role = 'user')                                        AS questions,
           count(*) FILTER (WHERE role = 'assistant' AND status = 'done'
                              AND intent = 'KNOWLEDGE')                                 AS knowledge_done,
+          -- 근거없음(#61): 거절 문구 부분일치(옛 is_refusal 컬럼)를 실인용 0건으로 대체했다.
+          -- 폐기 사유·실측은 rag/citation_tail.py 모듈 docstring(단일 정의점).
+          -- coalesce: cited_docs NULL도 0건으로 본다 — routers/conversations.py의
+          -- `m.cited_docs or []` 관례와 같은 결론. (assistant·done 행에는 NULL이 없는 것을
+          -- 개발계에서 확인했지만, 컬럼이 nullable이라 방어는 남긴다.)
           count(*) FILTER (WHERE role = 'assistant' AND status = 'done'
-                             AND intent = 'KNOWLEDGE' AND is_refusal)                  AS refusals
+                             AND intent = 'KNOWLEDGE'
+                             AND coalesce(jsonb_array_length(cited_docs), 0) = 0)      AS ungrounded
         FROM messages
         WHERE tenant_id = :tenant_id
           AND created_at >= (now() - make_interval(days => :days))::date + 1
@@ -73,8 +82,8 @@ async def stats_summary(
         period_days=days,
         questions=row.questions or 0,
         knowledge_done=knowledge_done,
-        refusals=row.refusals or 0,
-        refusal_rate=round((row.refusals or 0) / knowledge_done, 3) if knowledge_done else 0.0,
+        ungrounded=row.ungrounded or 0,
+        ungrounded_rate=round((row.ungrounded or 0) / knowledge_done, 3) if knowledge_done else 0.0,
         daily=[DailyCount(date=r.d, questions=r.n) for r in daily_rows],
         top_documents=[TopDocument(filename=r.filename, citations=r.cnt) for r in top_rows],
     )
@@ -87,10 +96,15 @@ async def stats_unanswered(
         tenant_id: str = Depends(get_tenant_id),
         session: AsyncSession = Depends(get_session),
 ):
-    """지식 갭 — 거절당한 질문 원문 (최신순). FAQ/문서 보강의 직접 재료.
+    """지식 갭 — 근거를 못 댄 질문 원문 (최신순). FAQ/문서 보강의 직접 재료.
 
-    거절 여부·질문 짝 모두 저장 시 확정된 컬럼(is_refusal, question_message_id) —
+    판정·질문 짝 모두 저장 시 확정된 컬럼(cited_docs, question_message_id) —
     본문 재파싱·휴리스틱 없음.
+
+    #61에서 판정이 "거절 문구"에서 "실인용 0건"으로 바뀌었다. 목록의 성격도 그만큼
+    넓어진다 — 거절뿐 아니라 "근거 없이 답한" 답변도 여기 들어온다. KB 보강이라는
+    목적에는 그게 맞다(둘 다 근거가 없다는 뜻이므로). 다만 API 응답만으로는 그 둘을
+    구별할 수 없다는 것을 알고 볼 것 — 필요하면 messages.content를 직접 감사해야 한다.
     """
     rows = (await session.execute(text("""
         SELECT u.content AS question, a.created_at AS asked_at
@@ -98,7 +112,12 @@ async def stats_unanswered(
         JOIN messages u ON u.id = a.question_message_id
                        AND u.tenant_id = a.tenant_id
         WHERE a.tenant_id = :tenant_id
-          AND a.role = 'assistant' AND a.status = 'done' AND a.is_refusal
+          -- intent 필터는 #61에서 **새로 필수**가 됐다: 문구 판정 시절엔 OTHER(잡담)
+          -- 답변이 우연히 거절 문구를 담을 일이 없어 안 걸렸는데, 인용 기반 판정에서는
+          -- OTHER가 항상 인용 0건이다(꼬리 메커니즘 자체가 없다) — 이 필터가 없으면
+          -- 잡담이 전부 지식 갭 목록을 덮는다(개발계 실측: OTHER·done 53건 전부 빈 배열).
+          AND a.role = 'assistant' AND a.status = 'done' AND a.intent = 'KNOWLEDGE'
+          AND coalesce(jsonb_array_length(a.cited_docs), 0) = 0
           AND a.created_at >= (now() - make_interval(days => :days))::date + 1
         ORDER BY a.created_at DESC
         LIMIT :limit

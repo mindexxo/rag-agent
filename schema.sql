@@ -179,8 +179,12 @@ CREATE TABLE IF NOT EXISTS messages (
     user_id         TEXT,        -- user 메시지: 질문한 상담원 (X-User-Id)
     latency_ms      INTEGER,     -- assistant 메시지: 생성 소요(ms)
     cache_kind      TEXT,        -- assistant 메시지: 'semantic'=캐시 재생, NULL=신규 생성
-    cited_docs      JSONB,       -- assistant: 실인용 파일명 배열 (저장 시 확정 — 지표 집계는 이 컬럼만)
-    is_refusal      BOOLEAN,     -- assistant(status=done만): 거절 답변 여부 (저장 시 확정 — 문구 변경에도 과거 통계 불변)
+    cited_docs      JSONB,       -- assistant: 실인용 파일명 배열 (저장 시 확정 — 지표 집계는 이 컬럼만).
+                                 -- **근거없음(ungrounded) = 이 배열이 비어 있음** — 별도 컬럼 없다 (#61).
+                                 -- 옛 is_refusal(거절 문구 부분일치)을 대체한 판정이다. NULL도 없음으로 본다
+                                 -- (routers/conversations.py의 `m.cited_docs or []` 관례와 같은 결론).
+                                 -- 주의: #56 이전 행은 인라인 인용 시절이라 이 컬럼이 비어 있어도
+                                 -- 실제로는 근거를 댄 답변이다 — 그 구간 지표는 무의미하다.
     question_message_id BIGINT REFERENCES messages(id) ON DELETE SET NULL,  -- assistant: 답한 user 메시지 (미답변 짝짓기)
     intent          TEXT,        -- assistant: 라우팅 결과 'KNOWLEDGE'|'OTHER' (2026-08-07 — 답변률 분모를 지식 질문으로 한정). NULL=차단 턴·컬럼 도입 전 행
     block_reason    TEXT,        -- assistant(status='blocked'): 입력 가드(classify_and_guard) 차단 사유. 출력 가드는 제거됨(#26)
@@ -194,6 +198,12 @@ CREATE TABLE IF NOT EXISTS messages (
 -- 기존 DB 반영(#8): ALTER TABLE messages ADD COLUMN IF NOT EXISTS feedback BOOLEAN;
 --                  ALTER TABLE messages ADD COLUMN IF NOT EXISTS feedback_tag TEXT;
 --                  ALTER TABLE messages ADD COLUMN IF NOT EXISTS feedback_text TEXT;
+-- 기존 DB 반영(#61): 거절 문구 판정 폐기 — cited_docs 빈 배열이 그 자리를 대신한다.
+--                  ALTER TABLE messages DROP COLUMN IF EXISTS is_refusal;
+--   왜 재구성이 아니라 DROP인가: 이 컬럼은 문구 매칭 결과의 스냅샷이라 재계산이 불가능했고
+--   (그게 "문구 변경에도 과거 통계 불변"이라는 원래 설명의 뜻이다), 대체 신호(cited_docs)는
+--   이미 같은 행에 같은 시점으로 저장돼 있다. 과거 값이 사라지는 것은 인지하고 택한 손실 —
+--   운영 배포 전이라(NCP↔사내GPU 사설연동 미비) 실사용 추이가 아직 없어 비용이 0인 시점이다.
 CREATE INDEX IF NOT EXISTS idx_msg_conv_created
     ON messages (conversation_id, created_at);
 -- 고착 generating 회수용 (#46) — 워커 cron이 5분마다 전역 스윕하는데, status 인덱스가 없으면

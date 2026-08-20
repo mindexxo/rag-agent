@@ -162,7 +162,7 @@ def _current_question(user_content: str) -> str:
 
 
 class FakeSchemaRejected(Exception):
-    """구버전 vLLM의 스키마 거부(400) 재현 — _is_schema_rejected가 보는 status_code 덕 타이핑."""
+    """구버전 vLLM의 스키마 거부(400) 재현 — is_schema_rejected가 보는 status_code 덕 타이핑."""
     status_code = 400
 
 
@@ -175,11 +175,16 @@ class FakeLlm:
     """
 
     def __init__(self, answer: str | None = None):
-        # 기본 답변은 빈 출처 꼬리를 단다(#56) — 기본 경로가 항상 꼬리 분리(TailSplitter)를
-        # 타고 citations=[]가 된다. 인용 검증 테스트는 꼬리에 [라벨]을 넣은 answer로 교체.
+        # 기본 답변은 **1번 문서를 인용하는** 출처 꼬리를 단다 (#56 도입, #61에서 빈 꼬리→1번).
+        # 빈 꼬리였던 것을 바꾼 이유: #61부터 인용 0건이 "근거없음"의 정의가 되어 캐시 제외·
+        # 지표 분자에 걸린다. 빈 꼬리를 기본값으로 두면 대다수 테스트의 "정상 답변"이 근거없음으로
+        # 분류돼(실제로 캐시 저장이 스킵돼 3개 테스트가 깨졌다) 픽스처가 비현실적인 전제를 깔게 된다.
+        # 후보가 없는 테스트(차단·근거없음·OTHER)에서는 1번이 범위 밖이라 resolve_citations가
+        # 걸러내 citations=[]가 그대로 유지된다 — 그 경로의 기대값은 안 바뀐다.
+        # 인용 검증 테스트는 여전히 answer를 직접 교체해서 쓴다.
         # 어절 3개 유지 주의: pause_after_tokens=2(셋째 토큰 정지)를 쓰는 취소 테스트들의 전제.
         from rag.citation_labels import TAIL_END, TAIL_START
-        self.answer = answer if answer is not None else f'테스트 답변입니다. {TAIL_START}{TAIL_END}'
+        self.answer = answer if answer is not None else f'테스트 답변입니다. {TAIL_START}1{TAIL_END}'
         self.intent_json = '{"safe": true, "intent": "KNOWLEDGE"}'
         self.calls: list[str] = []          # 어떤 용도로 호출됐는지 기록 (검증용)
         self.system_prompts: list[tuple[str, str]] = []   # (용도, 시스템 프롬프트) — 주입 내용 검증용

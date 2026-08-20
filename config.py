@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     vllm_model: str = "qwen3:4b"
     # 문서 기반 사실 제공 서비스라 다양성이 손해 — 낮게 고정 (2026-08-05).
     # None이면 서버 기본값(Qwen3 non-thinking 권장 0.7)이 쓰이는데, 실측 4회 반복에서 매번 다른 답이
-    # 나왔다. is_refusal의 문자열 판정·인용 형식 파싱·시맨틱 캐시가 모두 결정성에 의존해 불리하다.
+    # 나왔다. 인용 형식 파싱(출처 꼬리)·시맨틱 캐시가 모두 결정성에 의존해 불리하다.
     # 0.0(greedy)은 배제 — Qwen3 모델 카드가 "성능 저하·무한 반복" 위험으로 명시 금지.
     # 0.2는 greedy를 피하는 최소 대역이고 저온이라 top_p·top_k는 거의 개입하지 않아 따로 안 보낸다.
     llm_temperature: float | None = 0.2

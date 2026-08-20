@@ -23,7 +23,6 @@ from rag.guardrail import classify_and_guard
 from rag.clients import shared_llm
 from rag.citation_labels import sources_from_chunks
 from rag.models import Conversation, Message
-from rag.answer_check import is_refusal
 from rag.prompt_texts import BLOCKED_INPUT_ANSWER, NO_EVIDENCE_ANSWER, SMALLTALK_ANSWER
 from rag.prompts import (build_chat_prompt, build_citation_grammar,
                          build_knowledge_generation_prompt, build_other_system_prompt,
@@ -401,8 +400,12 @@ class RagService:
         이 함수는 session에 메시지를 add만 하고 commit은 호출자가 담당한다.
 
         citations: 실제 인용된 출처만 (#56) — 호출자(스트림 조립부)가 확정해 넘긴다.
-        거절이면 빈 목록이어야 한다("확인 불가 + 인용" 모순 방지) — 스트림 쪽 TurnResult
-        조립 규칙과 동일. sources 컬럼도 인용만 저장한다(저장=응답=스트림 정합, #56 확정).
+        sources 컬럼도 인용만 저장한다(저장=응답=스트림 정합, #56 확정).
+
+        옛 규약("거절이면 빈 목록이어야 한다 — 확인 불가 + 인용 모순 방지")은 #61에서
+        폐기됐다. 인용 개수가 곧 근거 유무의 정의가 됐으므로, 답변 문구를 보고 인용을
+        비우는 보정을 더 하지 않는다 — 그 보정은 비대칭이었고(거절 문구+번호만 잡고,
+        확신에 찬 답변+빈 꼬리는 못 잡았다) 후자를 드러내는 것이 이번 변경의 목적이다.
         """
         source_dicts = [c.model_dump() for c in citations]
 
@@ -420,7 +423,6 @@ class RagService:
             cache_kind=prepared.cache_kind,   # 'semantic'=캐시 재생 답변 (기간별 히트율 집계용)
             # 저장 순간에 사실 확정 — 조회는 순수 SQL. cited_docs는 citations의 파일명 파생
             cited_docs=[c.filename for c in citations],
-            is_refusal=is_refusal(answer),
             intent=prepared.intent_label,
             # 입력 차단 턴은 status로 식별 가능해야 한다 — 이력 격리(load_recent_messages)와
             # 차단 집계가 모두 이 값에 의존 (#22). 출력 차단은 finalize_turn 쪽이 담당.
@@ -472,7 +474,6 @@ class RagService:
             status=status, latency_ms=latency_ms,
             # 인용 확정은 정상 완료(done)에만 의미 — blocked/failed/cancelled는 항상 []/False
             cited_docs=[c.filename for c in citations] if status == "done" else [],
-            is_refusal=is_refusal(answer) if status == "done" else False,
             intent=prepared.intent_label,
         )
 
@@ -486,12 +487,17 @@ class RagService:
         (done.citations) 표시가 빨라지고, 저장 실패는 로그로만 남는다(턴은 이미 done).
         (재배치 당시엔 임베딩 TEI 왕복도 여기 있었다 — #50에서 prepared.query_embedding
         재사용으로 없어져 지금 뒤로 미루는 비용은 INSERT뿐이다.)
-        거절 답변을 제외하는 이유: 문서가 추가되면 답이 바뀌어야 한다 (§14 규칙 6과 같은 취지).
+        근거 없는 답변을 제외하는 이유: 문서가 추가되면 답이 바뀌어야 한다 (§14 규칙 6과 같은 취지).
         캐시도 인용만 저장한다(#56) — 히트 재생 시 prepared.sources로 복원돼 그대로
         citations가 된다. 무효화 키(source_doc_ids)는 검색 근거 전체 그대로 — 캐시 정확성의
         기준은 "검색된 문서 집합"이지 인용 집합이 아니다.
         """
-        if not prepared.should_cache or is_refusal(answer):
+        # 판정을 거절 문구 부분일치(옛 is_refusal)에서 **실인용 개수**로 바꿨다 (#61).
+        # 캐시가 묻는 질문은 "거절했나"가 아니라 "근거 없이 나온 답인가"이고, citations가
+        # 그 질문에 직접 답한다. 폐기 사유·실측은 rag/citation_tail.py 모듈 docstring(단일 정의점).
+        # should_cache 스코프가 knowledge 실생성 경로로 한정되므로(즉시 경로는 should_cache=False)
+        # 여기서의 citations는 항상 resolve_citations의 실결과다.
+        if not prepared.should_cache or not citations:
             return
         await cache.save_answer(
             self.session,

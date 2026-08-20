@@ -40,7 +40,6 @@ from config import settings
 from database import AsyncSessionLocal
 from rag import cancellation, limiter, otel
 from rag.limiter import Lease
-from rag.answer_check import is_refusal
 from rag.citation_tail import TailSplitter, resolve_citations
 from rag.service import PreparedRag, RagService
 from schemas.kms import SourceCitation
@@ -87,7 +86,6 @@ class TurnResult:
     citations: list[SourceCitation]
     finish_reason: Literal["done", "cancelled", "failed", "blocked"]
     latency_ms: int | None          # failed는 None (DB 규칙과 동일)
-    is_refusal: bool = False
 
 
 def _done_payload(result: TurnResult) -> dict:
@@ -117,7 +115,6 @@ def _record_turn_result(root_span, result: TurnResult) -> None:
         otel.OUTPUT_VALUE: otel.clip(result.answer),   # 답변은 절단 — 스팬 텍스트 정책(#7)
         'kms.status': result.finish_reason,
         'kms.latency_ms': result.latency_ms,           # failed는 None → 속성 자체가 안 실림 (DB NULL과 대응)
-        'kms.is_refusal': result.is_refusal,
         'kms.cited_docs': [c.filename for c in result.citations],
     })
 
@@ -141,10 +138,11 @@ async def immediate_stream(service: RagService, prepared: PreparedRag, session,
         latency_ms = _elapsed_ms(t_request)   # 저장·스팬·done이 같은 값을 쓰도록 한 번만 계산 (#54)
         # 즉시 경로의 인용 = prepared.sources 그대로 (#56): 캐시 히트는 저장 시점에 이미
         # 인용만 남긴 값이 복원된 것이고, 차단·근거없음은 sources가 애초에 빈 목록이다.
-        refusal = is_refusal(answer)
-        result = TurnResult(answer=answer, citations=[] if refusal else list(prepared.sources),
-                            finish_reason=prepared.terminal_status, latency_ms=latency_ms,
-                            is_refusal=refusal)
+        # #61에서 답변 텍스트 판정(옛 is_refusal)을 걷어냈다 — 이 경로엔 애초에 불필요했다.
+        # 세 경우 모두 sources가 라우팅·저장 단계에서 이미 확정돼 있어, 답변 문구를 다시
+        # 들여다볼 근거가 없었다(차단·근거없음은 rag/service.py에서 [], 히트는 복원값).
+        result = TurnResult(answer=answer, citations=list(prepared.sources),
+                            finish_reason=prepared.terminal_status, latency_ms=latency_ms)
         # 저장 실패가 이미 확정된 답변의 '전달'까지 막으면 안 된다 (fail-open — 리뷰 반영).
         # StreamingResponse는 첫 yield 전에 200 헤더가 이미 나가므로, 여기서 예외가 새면
         # 사용자는 빈 스트림을 받는다. 실패는 로그만 남기고 전달은 계속한다.
@@ -232,15 +230,19 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
                         # "성공처럼 보이는 실패"를 관측 가능하게 — 꼬리가 max_tokens 등으로 잘림
                         otel.set_attrs(sp, {'kms.tail_truncated': True})
 
-            refusal = is_refusal(answer)
-            citations = [] if refusal or splitter is None else resolve_citations(
+            # citations가 곧 '근거 있음'의 정의가 됐으므로(#61) 문구 판정으로 이 값을
+            # 덮어쓰지 않는다. 옛 `refusal or` 절은 "본문은 거절인데 꼬리에 번호가 남는"
+            # 모델 모순을 []로 덮는 안전장치였는데, 비대칭이었다 — 반대 방향(확신에 찬
+            # 답변인데 꼬리가 빈 경우)은 원래 못 잡았다. 그 절을 지우면 후자가 처음으로
+            # 드러난다. 범위 검증은 resolve_citations가 문법 유무와 무관하게 수행한다.
+            citations = [] if splitter is None else resolve_citations(
                 splitter.tail_raw, prepared.sources,
                 [a['filename'] for a in (prepared.attachments or [])])
             latency_ms = _elapsed_ms(t_request)   # 저장·스팬·done이 같은 값을 쓰도록 한 번만 계산 (#54)
             await svc.finalize(prepared, answer, citations, status="done", latency_ms=latency_ms)
             await session.commit()
             result = TurnResult(answer=answer, citations=citations,
-                                finish_reason="done", latency_ms=latency_ms, is_refusal=refusal)
+                                finish_reason="done", latency_ms=latency_ms)
             _record_turn_result(root_span, result)
             # done은 finalize·commit '뒤'에 — 값이 전부 확정된 다음 최종 상태로 내보낸다 (#56)
             await queue.put((EVENT_DONE, _done_payload(result)))

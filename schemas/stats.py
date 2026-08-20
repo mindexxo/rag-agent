@@ -22,12 +22,16 @@ class StatsSummary(BaseModel):
     period_days: int
     questions: int               # 기간 내 질문 수 (user 메시지 — OTHER 포함 전체 사용량)
     knowledge_done: int          # 완료된 지식 질문 답변 수 (intent='KNOWLEDGE') — 답변률의 분모
-    refusals: int                # "확인할 수 없습니다" 거절 답변 수
-    refusal_rate: float          # 거절률 = refusals / knowledge_done — 잡담(OTHER)이 분모에 안 섞인 지식 커버리지
+    # 근거없음(ungrounded) = 인용한 문서가 0건인 답변 (#61). 옛 이름은 refusals/refusal_rate로,
+    # 판정이 "거절 문구 부분일치"였다 — 프롬프트 문구에 묶여 규칙 완화 시 검출률이 붕괴했다.
+    # 이제 판정은 messages.cited_docs가 비었는지이고, 문구와 무관하다. 거절뿐 아니라
+    # "근거 없이 답한" 경우도 포함하므로 옛 '거절률'보다 넓은 개념이다.
+    ungrounded: int              # 근거 미확인 답변 수
+    ungrounded_rate: float       # 근거미확인율 = ungrounded / knowledge_done — 잡담(OTHER)이 분모에 안 섞인 지식 커버리지
     daily: list[DailyCount]      # 질문 없는 날도 0으로 채워짐 (기간 내 연속)
     top_documents: list[TopDocument]
 
 
 class UnansweredItem(BaseModel):
-    question: str        # 거절당한 사용자 질문 원문 — FAQ 보강 재료 (지식 갭)
+    question: str        # 근거를 못 댄 답변의 사용자 질문 원문 — FAQ 보강 재료 (지식 갭, #61)
     asked_at: datetime

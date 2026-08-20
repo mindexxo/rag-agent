@@ -61,6 +61,12 @@ class PreparedRag:
     assistant_message_id: int | None = None   # 생성 경로: 자리표시 assistant 메시지 id (백그라운드 태스크가 UPDATE할 대상)
     block_reason: str | None = None   # route='blocked'일 때 가드 판정 사유 — 저장·집계용 (#22)
     faq_versions: dict[int, datetime] | None = None   # 근거 FAQ {id: updated_at} 스냅샷 — cache.save_answer 낙관적 검증 기준 (#16)
+    # 검색이 만든 원본(standalone) 쿼리 dense 벡터 — maybe_cache가 save_answer로 넘겨
+    # TEI 재임베딩을 없앤다 (#50, 사유는 rag/cache.py:get_semantic docstring).
+    # 캐시 히트 분기는 채우지 않는다: should_cache=False라 maybe_cache가 아예 안 불려
+    # 죽은 값이 된다. 이 필드는 "저장에 쓸 벡터"라는 의미만 갖는다.
+    # repr=False — 1024차원 float가 로그·트레이스백에 새는 것 차단.
+    query_embedding: list[float] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         """검색 여부와 route를 짝지어 생성 시점에 강제한다 (#36).
@@ -273,7 +279,9 @@ class RagService:
         # 캐시 답변이 재생되고 이번 턴 첨부가 save()에서 유실됐다 (설정 하나로 재현되는 데이터 유실).
         if not retrieval.no_evidence and not attachment_dicts and not new_attachment_dicts:
             semantic_hit = await cache.get_semantic(
-                self.session, self.tenant_id, standalone_query, source_doc_ids)
+                self.session, self.tenant_id, standalone_query, source_doc_ids,
+                # 검색이 방금 만든 벡터를 그대로 넘긴다 — 같은 문자열을 다시 임베딩하지 않는다 (#50)
+                query_embedding=retrieval.query_embedding)
             if semantic_hit is not None:
                 return PreparedRag(
                     conversation_id=conversation_id,
@@ -302,6 +310,7 @@ class RagService:
             new_attachments=new_attachment_dicts,
             domain_hint=domain_hint,
             faq_versions=faq_versions,
+            query_embedding=retrieval.query_embedding,   # maybe_cache가 save_answer로 넘긴다 (#50)
         )
 
     async def _load_history_attachments(self, conversation_id: int, limit: int) -> list[dict]:
@@ -473,8 +482,10 @@ class RagService:
         """근거 있는 신규 LLM 응답만 semantic 캐시에 적재한다.
 
         생성 경로가 done 전송 '뒤'에 부른다(#56 재배치, 사용자 결정 8/18) — 캐시는 있으면
-        좋은 부가물이지 턴 완결의 조건이 아니다. 임베딩 TEI 왕복+INSERT를 크리티컬 패스에서
-        빼 각주(done.citations) 표시가 빨라지고, 저장 실패는 로그로만 남는다(턴은 이미 done).
+        좋은 부가물이지 턴 완결의 조건이 아니다. INSERT를 크리티컬 패스에서 빼 각주
+        (done.citations) 표시가 빨라지고, 저장 실패는 로그로만 남는다(턴은 이미 done).
+        (재배치 당시엔 임베딩 TEI 왕복도 여기 있었다 — #50에서 prepared.query_embedding
+        재사용으로 없어져 지금 뒤로 미루는 비용은 INSERT뿐이다.)
         거절 답변을 제외하는 이유: 문서가 추가되면 답이 바뀌어야 한다 (§14 규칙 6과 같은 취지).
         캐시도 인용만 저장한다(#56) — 히트 재생 시 prepared.sources로 복원돼 그대로
         citations가 된다. 무효화 키(source_doc_ids)는 검색 근거 전체 그대로 — 캐시 정확성의
@@ -490,6 +501,7 @@ class RagService:
             citations,
             prepared.source_doc_ids,
             faq_versions=prepared.faq_versions,
+            query_embedding=prepared.query_embedding,   # 검색이 만든 벡터 재사용 (#50)
         )
 
 

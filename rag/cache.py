@@ -85,20 +85,34 @@ async def snapshot_faq_versions(
 async def get_semantic(
         session: AsyncSession, tenant_id: str, query: str,
         current_source_doc_ids: list[int],
+        query_embedding: list[float] | None = None,
 ) -> CacheHit | None:
     """Postgres semantic cache를 조회한다.
 
     질문 임베딩 유사도가 충분히 높고, 현재 검색된 문서 집합이 캐시 엔트리의
     문서 집합과 같을 때만 hit로 인정한다.
 
+    query_embedding: 검색이 이미 만든 원본 쿼리 벡터(#50). 있으면 그대로 쓴다 —
+    검색·캐시 조회·캐시 저장이 같은 문자열을 각자 임베딩해 TEI를 3번 때리던 것을 1번으로
+    줄인다. 재사용이 안전한 근거: 벡터의 출처가 물리적으로 같다(embed_query는
+    embed_texts([text])[0] 래퍼고, 쿼리에는 색인 때 붙는 '파일명>헤딩' 프리픽스가 없다).
+    게다가 TEI는 호출마다 비결정적(실측 1.4e-4)이라 "매번 새로 임베딩"해도 애초에 같은
+    벡터가 아니었다 — 재사용본도 그 노이즈 폭 안이고, 임계값(semantic 0.95) 판정을 흔들
+    수준이 아니다. **이 rationale의 단일 정의점이 여기다** — retriever·service는 참조만 한다.
+
+    None이면 예전처럼 embed_query(query)로 직접 만든다. 벡터를 손에 들지 않은 호출부
+    (테스트, eval/cache_eval.py)를 위한 폴백이다 — 운영 경로는 항상 벡터를 넘긴다.
+
     fail-open(#16): 캐시는 어떤 경우에도 요청을 죽이면 안 된다 — 조회 실패는 miss 취급.
-    (실측 실패 모드: 임베딩 TEI 블립. 검색까지 성공한 요청이 캐시 조회에서 500 나던 문제)
+    (실측 실패 모드: 임베딩 TEI 블립. 검색까지 성공한 요청이 캐시 조회에서 500 나던 문제.
+    #50 이후 운영 경로는 여기서 임베딩을 안 하므로 남는 실패 모드는 DB 쪽이다.)
     try가 본문 전체를 감싼다 — reranker.rerank_scores의 graceful degrade와 같은 모양.
     (구조상 public/_private 2겹이었던 것을 단일 함수로 — 내부판을 직접 부르는 곳이 없었다)
     """
     try:
-        # 1. 새 질문을 임베딩해서 기존 캐시 질문들과 벡터 유사도 비교에 사용한다.
-        query_embedding = (await embed_query(query)).dense
+        # 1. 질의 벡터 확보 — 검색이 넘겨줬으면 재사용, 없으면 직접 임베딩 (#50).
+        if query_embedding is None:
+            query_embedding = (await embed_query(query)).dense
 
         # 2. pgvector cosine distance 식을 만든다.
         # distance는 작을수록 유사하다. similarity로 바꿀 때는 1 - distance를 사용한다.
@@ -157,6 +171,7 @@ async def save_answer(
         sources: list[SourceCitation],
         source_doc_ids: list[int],
         faq_versions: dict[int, datetime] | None = None,
+        query_embedding: list[float] | None = None,
 ) -> None:
     """LLM 응답을 Postgres semantic cache에 저장한다.
 
@@ -166,10 +181,14 @@ async def save_answer(
     faq_versions: prepare 시점의 {faq_id: updated_at} 스냅샷(snapshot_faq_versions).
     None이면 검증 생략(FAQ 근거가 없거나 테스트 등 직접 호출).
 
+    query_embedding: get_semantic과 같은 계약 — 있으면 재사용, None이면 embed_query 폴백.
+    사유·안전성 근거는 get_semantic docstring 참조 (#50).
+
     fail-open(#16): 저장 실패는 삼키고 로그만 — 이미 완성돼 클라이언트로 나간 답변이
     캐시 저장 실패 때문에 failed로 기록되던 문제 방지. 단 DB 오류로 세션이 오염된
     경우는 이후 커밋이 어차피 실패하므로 여기서 감추지 않는 편이 낫지만, 주 실패
     모드(임베딩 TEI 블립)는 DB 접근 전이라 세션이 깨끗하다.
+    (#50 이후 운영 경로는 벡터를 받아 오므로 그 실패 모드 자체가 여기서 사라진다.)
     """
     try:
         # 낙관적 검증(#16): 생성하는 동안 근거 FAQ가 수정/삭제/비활성됐으면 저장을 스킵.
@@ -183,7 +202,9 @@ async def save_answer(
 
         # semantic cache용으로 query embedding을 저장한다.
         # 이후 비슷한 질문이 들어오면 pgvector cosine distance로 이 row를 찾는다.
-        query_embedding = (await embed_query(query)).dense
+        # 검색이 넘겨줬으면 재사용, 없으면 직접 임베딩 (#50).
+        if query_embedding is None:
+            query_embedding = (await embed_query(query)).dense
 
         # cache_key = 정규화 query의 digest — UNIQUE(tenant_id, cache_key)의 충돌 판정 키.
         stmt = pg_insert(AnswerCacheRow).values(

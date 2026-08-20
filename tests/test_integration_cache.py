@@ -13,6 +13,7 @@ from rag.prompt_texts import NO_EVIDENCE_ANSWER
 from rag.retriever import RetrievalResult
 from rag.service import PreparedRag, RagService
 from schemas.kms import SourceCitation
+from tests.conftest import fake_vector, register_faq
 
 
 @pytest.mark.asyncio
@@ -213,17 +214,81 @@ async def test_FAQ_변경_없으면_스냅샷_검증_통과_저장(tenant_id, fa
 
 @pytest.mark.asyncio
 async def test_캐시_조회_저장_실패는_요청을_죽이지_않는다(tenant_id, monkeypatch):
-    """fail-open(#16): 임베딩(TEI) 실패 시 조회는 miss, 저장은 스킵 — 예외 전파 금지."""
-    async def boom(text):
-        raise RuntimeError('TEI down')
-    monkeypatch.setattr('rag.cache.embed_query', boom)
+    """fail-open(#16): DB 실행 실패 시 조회는 miss, 저장은 스킵 — 예외 전파 금지.
+
+    실패 주입을 임베딩(TEI)에서 DB로 바꿨다 (#50): 운영 경로는 검색이 만든 벡터를 받아
+    쓰므로 캐시 안에서 embed_query를 타지 않는다 — 임베딩 실패를 주입하면 운영에서
+    도달하지 않는 폴백 경로만 검증하는 셈이다. 남은 실질 실패 모드가 DB 쪽이다.
+    """
+    vec = [0.0] * 1024      # 값은 무관 — 넘겨주는 것 자체가 embed_query 폴백을 비켜가게 한다
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError('DB down')
+
     async with AsyncSessionLocal() as session:
-        assert await cache.get_semantic(session, tenant_id, '배송비 얼마예요', [5]) is None
-        await cache.save_answer(session, tenant_id, '배송비 얼마예요', '3천원', [], [5])   # 예외 없이 통과
-        rows = (await session.execute(
+        # 이 세션 인스턴스의 execute만 깨뜨린다 — get_semantic의 SELECT와
+        # save_answer의 upsert INSERT 양쪽이 같은 방식으로 터진다.
+        monkeypatch.setattr(session, 'execute', boom)
+        assert await cache.get_semantic(
+            session, tenant_id, '배송비 얼마예요', [5], query_embedding=vec) is None
+        await cache.save_answer(                                           # 예외 없이 통과
+            session, tenant_id, '배송비 얼마예요', '3천원', [], [5], query_embedding=vec)
+
+    async with AsyncSessionLocal() as verify:      # 패치 안 된 새 세션으로 확인
+        rows = (await verify.execute(
             select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
         )).scalars().all()
         assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_벡터를_넘기면_임베딩을_다시_하지_않는다(tenant_id, monkeypatch):
+    """#50 계약: query_embedding이 주어지면 cache는 embed_query를 부르지 않는다.
+
+    embed_query를 터지게 두고도 조회·저장이 정상 동작하는 것으로 증명한다 — 호출하면
+    RuntimeError가 fail-open에 삼켜져 miss/스킵이 되므로, 성공했다는 것 자체가 미호출의 증거다.
+    """
+    async def boom(text):
+        raise RuntimeError('불려선 안 된다')
+    monkeypatch.setattr('rag.cache.embed_query', boom)
+
+    vec = fake_vector('배송비 얼마예요')     # 검색이 넘겨줬을 벡터를 손으로 재현
+    src = [SourceCitation(document_id=5, filename='정책.pdf', version=1)]
+    async with AsyncSessionLocal() as session:
+        await cache.save_answer(session, tenant_id, '배송비 얼마예요', '3천원입니다',
+                                src, [5], query_embedding=vec)
+        await session.commit()
+
+        hit = await cache.get_semantic(session, tenant_id, '배송비 얼마예요', [5],
+                                       query_embedding=vec)
+        assert hit is not None and hit.answer == '3천원입니다'
+
+
+@pytest.mark.asyncio
+async def test_턴당_임베딩_왕복은_1회(client, tenant_id, fake_llm, pass_gate, fake_embed):
+    """#50: 한 턴에 같은 질의를 세 번 임베딩하던 것을 검색 1회로 통일.
+
+    HTTP 전체 턴으로 재는 이유: 이 변경의 실체는 retriever→service→cache 배선이라
+    함수 단위 테스트로는 "벡터가 실제로 끝까지 전달되는지"가 안 잡힌다. 중간 어느 고리가
+    끊기면 cache가 None 폴백으로 조용히 되돌아가 **에러 없이 왕복만 늘어난다** —
+    그 회귀를 잡는 게 이 테스트의 목적이다.
+
+    값이 아니라 횟수를 세는 이유는 tests/conftest._CountingFakeVector docstring 참조.
+    """
+    from tests.conftest import sse_meta
+
+    await register_faq(client)          # FAQ 색인 임베딩은 턴 바깥 — 리셋으로 배제한다
+    fake_embed.embed_calls = 0
+
+    first = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
+    assert sse_meta(first)['cache_kind'] is None                  # 미스 턴임을 먼저 확정
+    assert fake_embed.embed_calls == 1, (
+        '미스 턴 임베딩 왕복이 1회가 아니다 — get_semantic/save_answer가 재계산하고 있다')
+
+    second = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
+    assert sse_meta(second)['cache_kind'] == 'semantic'            # 히트 턴임을 확정
+    assert fake_embed.embed_calls == 2, (
+        '히트 턴 임베딩 왕복이 1회가 아니다 — get_semantic이 재계산하고 있다')
 
 
 @pytest.mark.asyncio

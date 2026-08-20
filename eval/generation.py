@@ -24,13 +24,14 @@ from sqlalchemy import select
 
 from config import settings
 from database import AsyncSessionLocal
-from rag.citation_labels import TAIL_END, TAIL_START, sources_from_chunks
-from rag.citation_tail import resolve_citations
+from rag.citation_labels import sources_from_chunks
+from rag.citation_tail import TailSplitter, resolve_citations
 from rag.conversation import build_prior_turns, condense_query
 from rag.models import Chunk, Document
 from rag.retriever import retrieve_candidates, RetrievedChunk
 from rag.embeddings import embed_texts_sync
-from rag.prompts import build_knowledge_generation_prompt
+from rag.llm_schemas import is_schema_rejected
+from rag.prompts import build_citation_grammar, build_knowledge_generation_prompt
 from rag.llm import LlmClient
 from eval.retrieval import resolve_gold
 
@@ -100,9 +101,32 @@ async def generate(llm: LlmClient, original_query: str, chunks: list[RetrievedCh
 
     운영(rag/service.py)과 같은 조립점을 쓴다 — 인자를 한쪽에서만 빼먹는 종류의 어긋남을
     구조적으로 막기 위해서다(#48: 여기서 prior_turns가 빠져 있었고 아무 데도 안 걸렸다).
+
+    출처 꼬리 문법도 운영과 같이 붙인다 (#61) — 이전엔 하네스만 문법 없이 생성했다.
+    첨부는 []다 — gold set에 첨부 문항이 0건이다.
+
+    ⚠ **다만 이 문법은 현재 배포에서 강제되지 않는다** — 붙이기 전후 문법 위반율이
+    같다(oracle 1.1%·retrieved 1.6%). 원인·사다리 실측은 rag/prompts.py의
+    build_citation_grammar docstring 참조. 그러니 이 인자는 지금 **측정값을 바꾸지 않고**,
+    운영과 코드 조건을 맞추는 의미만 있다(서버·형식이 고쳐지면 자동으로 효과가 생긴다).
+    "문법을 붙였으니 하네스 Cite가 운영에 가까워졌다"고 읽지 말 것 — 원래 같았다.
+
+    fail-open: 서버가 문법을 거부하면(400/422) 문법 없이 1회 재시도한다.
+    400/422로 좁힌 것은 rag/llm_schemas.py의 선례를 따른 것이다 — 운영 답변 생성 경로
+    (rag/service.py의 astream)는 except Exception으로 넓게 잡지만, 그쪽은 첫 토큰을 당기는
+    시점이라 재시도 비용이 0에 가깝다. acomplete는 블로킹이라 넓게 잡으면 타임아웃 대기가
+    배가된다. 호출 형태가 같은 쪽(acomplete_validated)의 판단을 따른다.
     """
-    return await llm.acomplete(build_knowledge_generation_prompt(
-        original_query, chunks, standalone_query=standalone_query, prior_turns=prior_turns))
+    prompt = build_knowledge_generation_prompt(
+        original_query, chunks, standalone_query=standalone_query, prior_turns=prior_turns)
+    grammar = build_citation_grammar(sources_from_chunks(chunks), [])
+    try:
+        return await llm.acomplete(prompt, extra_body=grammar)
+    except Exception as exc:
+        if not is_schema_rejected(exc):
+            raise
+        print('  [warn] 꼬리 문법 거부 — 문법 없이 재시도 (fail-open, #61)')
+        return await llm.acomplete(prompt)
 
 
 # ===== 채점 — deterministic (서버 무관) ==============================
@@ -186,6 +210,16 @@ def _citation_match(core: str, stem: str) -> bool:
 def citation_accuracy(answer: str, expected_docs: list[str], chunks: list[RetrievedChunk]) -> float:
     """기대 문서 중 답변이 실제로 인용한 비율 (0..1).
 
+    v4 (#61, **v3 이전 결과와 비교 불가**): 두 가지가 운영과 일치하게 바뀌었다.
+      1) 꼬리 분리를 운영 배관(TailSplitter)으로 교체 — 이전엔 rsplit/split으로 직접
+         잘랐고, 그건 운영의 오탐 복구를 갖지 않았다. 원리적으로 갈리는 케이스:
+         `««1»» 추가 설명` → 옛 파싱 '1' / 운영 None(END 뒤 텍스트 = 오탐),
+         `««1,2 그리고 3개 항목이…`(END 없음) → 옛 파싱이 **본문에서 숫자를 뽑는다** / 운영 None.
+         실데이터 450문항 전수 대조에서는 불일치 0이었지만(모델이 얌전했다는 뜻),
+         채점 정의가 운영과 달랐다는 사실은 그대로다.
+      2) generate()가 운영과 같은 꼬리 문법을 붙인다 — 생성 조건 변경(위 generate 참조).
+    채점 정의가 바뀐 것이지 모델이 좋아지거나 나빠진 게 아니다.
+
     v3 (#56, **v2 이전 결과와 비교 불가**): 인용이 본문 인라인에서 답변 끝 출처 꼬리
     (TAIL_START…TAIL_END, 번호 목록)로 이동 — 운영과 같은 배관(sources_from_chunks →
     resolve_citations)으로 번호를 파일명으로 되돌려 채점한다. 채점기가 배관을 따로 들면
@@ -202,10 +236,13 @@ def citation_accuracy(answer: str, expected_docs: list[str], chunks: list[Retrie
     """
     if not expected_docs:
         return 0.0
-    tail = answer.rsplit(TAIL_START, 1)[1] if TAIL_START in answer else None
-    if tail is not None:
-        tail = tail.split(TAIL_END, 1)[0]
-    cited = resolve_citations(tail, sources_from_chunks(chunks), [])
+    # 꼬리 분리는 운영 배관 그대로 (#61) — 완성된 문자열을 한 청크로 흘려 넣는다.
+    # feed/finish의 계약상 부분 스트리밍과 결과가 같다: 보류(_hold)는 finish가 비워내고,
+    # 오탐 복구 판정은 누적 버퍼 기준이라 청크 경계와 무관하다.
+    splitter = TailSplitter()
+    splitter.feed(answer)
+    splitter.finish()
+    cited = resolve_citations(splitter.tail_raw, sources_from_chunks(chunks), [])
     # 기대 stem과 같은 규칙으로 확장자 제거 — '공지.txt' vs '공지'는 4자 미만이라 포함 매칭도 못 탄다
     cores = [re.sub(r"\.(pdf|docx|xlsx|txt|md)$", "", c.filename) for c in cited]
     # 원소가 리스트면 대체 출처 그룹 — 같은 정보가 여러 문서에 있을 때 하나만 인용해도 인정

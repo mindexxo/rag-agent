@@ -184,7 +184,6 @@ class Message(Base):
     latency_ms: Mapped[int | None]       # assistant 메시지: 생성 소요(ms). 캐시/즉시 경로 포함
     cache_kind: Mapped[str | None]       # assistant 메시지: 'semantic'=캐시 재생 답변, NULL=신규 생성
     cited_docs: Mapped[Any | None] = mapped_column(JSONB)  # assistant: 실인용 파일명 배열 — 저장 시 확정 (지표는 이 컬럼만 집계)
-    is_refusal: Mapped[bool | None]      # assistant(status=done만): 거절 답변 여부 — 저장 시 확정 (거절율·미답변)
     intent: Mapped[str | None]           # assistant: 라우팅 결과 'KNOWLEDGE'|'OTHER' — 답변률 분모는 KNOWLEDGE만 (NULL=차단 턴·도입 전 행). DB 반영 완료로 원복 (#13)
     question_message_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("messages.id", ondelete="SET NULL"))  # assistant: 답한 user 메시지 (짝을 데이터로)

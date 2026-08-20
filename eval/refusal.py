@@ -5,8 +5,15 @@
 게이트만 보는 옛 eval/gate.py로는 부족 — prepare()+generate() 전체를 태워
 '최종 거절 여부'를 본다. 프롬프트에 민감하니 즉석 실행(항상 현재 프롬프트 기준).
 
+**측정 대상이 #61에서 넓어졌다 — 이전 결과와 비교할 때 유의.** 판정이 거절 문구
+부분일치에서 "실인용 0건"으로 바뀌면서, 위 두 경로 말고 **제3의 경우까지 여기 들어온다**:
+"근거를 못 댔는데 거절 문구도 없이 답한" 답변(부재를 단정하거나 근거 없이 확신하는 유형).
+그래서 이 축의 이름은 '거절'이지만 실제로 재는 것은 '근거를 못 댄 비율'이다 —
+SHOULD_REFUSE/SHOULD_ANSWER·_refused의 '거절'도 그 뜻으로 읽을 것.
+규약의 정의점은 rag/citation_tail.py 모듈 docstring.
+
 대상 (gold_set_v2, 모두 단일턴):
-- no_evidence(60): 근거 없음 → **거절해야** 정답. 답하면 미거부(환각 위험).
+- no_evidence(60): 근거 없음 → **거절(=근거없음)해야** 정답. 답하면 미거부(환각 위험).
 - trap(48): has_evidence=True(근거 있는 유도질문) → **답해야** 정답. 거절하면 오거부.
   (trap이 '낚여서 틀리게 답했나'는 생성축 faithfulness 몫 — 여기선 거절 여부만.)
 
@@ -21,8 +28,8 @@ from pathlib import Path
 
 from database import AsyncSessionLocal
 from eval.generation import row_tenant
-from rag.service import RagService
-from rag.answer_check import is_refusal
+from rag.citation_tail import TailSplitter, resolve_citations
+from rag.service import PreparedRag, RagService
 
 GOLD = Path(__file__).resolve().parent / "gold_set_v2.jsonl"
 CONCURRENCY = 4
@@ -30,13 +37,35 @@ SHOULD_REFUSE = {"no_evidence"}          # 거절이 정답
 SHOULD_ANSWER = {"trap"}                 # 답변이 정답 (근거 있는 유도)
 
 
+def _citations(prepared: PreparedRag, answer: str) -> list:
+    """답변의 실인용 — 운영 두 경로와 같은 방식으로 구한다 (#61).
+
+    옛 판정은 `is_refusal(answer)`(거절 문구 부분일치) 한 줄이었다. 폐기 사유·실측은
+    rag/citation_tail.py 모듈 docstring(단일 정의점) — 여기서는 그 규약을 적용만 한다.
+
+    경로가 둘인 이유는 운영과 같다. 즉시 경로(캐시 히트·근거없음·차단)와 OTHER는 출처
+    꼬리 메커니즘 자체가 없어 prepared.sources가 그대로 답이다 —
+    rag/streaming.immediate_stream과 같은 근거다. knowledge 실생성만 꼬리를 걷어낸다.
+
+    완성된 문자열을 한 번에 feed하는 것은 eval/generation.citation_accuracy(v4)와 같은
+    배관이다 — 여기서 직접 rsplit하면 운영의 오탐 복구를 잃는다.
+    """
+    if prepared.resolved_answer is not None or prepared.route != "knowledge":
+        return list(prepared.sources)
+    splitter = TailSplitter()
+    splitter.feed(answer)
+    splitter.finish()
+    return resolve_citations(splitter.tail_raw, prepared.sources,
+                             [a['filename'] for a in (prepared.attachments or [])])
+
+
 async def _refused(tenant: str, query: str) -> bool:
-    """query를 파이프라인에 태워 최종 답변이 거절인지 반환 (단일턴, 히스토리 없음)."""
+    """query를 파이프라인에 태워 최종 답변이 근거없음(=거절)인지 반환 (단일턴, 히스토리 없음)."""
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant, session=session)
         prepared = await svc.prepare(query)          # 게이트·인텐트·검색 반영
         answer = "".join([tok async for tok in svc.generate(prepared)])
-    return is_refusal(answer)
+    return not _citations(prepared, answer)
 
 
 async def compute() -> dict:

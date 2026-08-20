@@ -250,7 +250,6 @@ async def save_exchange(
         latency_ms: int | None = None,
         cache_kind: str | None = None,
         cited_docs: list[str] | None = None,
-        is_refusal: bool = False,
         intent: str | None = None,
         status: str = "done",
         block_reason: str | None = None,
@@ -276,7 +275,6 @@ async def save_exchange(
         latency_ms=latency_ms,
         cache_kind=cache_kind,
         cited_docs=cited_docs,
-        is_refusal=is_refusal,
         intent=intent,   # 라우팅 결과 — 답변률 분모(KNOWLEDGE) 집계용. DB 반영 완료로 원복 (#13)
         question_message_id=user_message.id,   # 짝을 데이터로 (미답변 목록이 휴리스틱 없이 JOIN)
         status=status,             # 입력 차단이면 'blocked' — SQL 집계·이력 격리의 유일한 식별자 (#22)
@@ -348,7 +346,6 @@ async def finalize_turn(
         status: str = "done",
         latency_ms: int | None = None,
         cited_docs: list[str] | None = None,
-        is_refusal: bool = False,
         intent: str | None = None,
 ) -> None:
     """생성 대기 assistant 자리표시를 최종 결과로 채운다 (id로 재조회 후 UPDATE).
@@ -374,7 +371,6 @@ async def finalize_turn(
     msg.status = status
     msg.latency_ms = latency_ms
     msg.cited_docs = cited_docs
-    msg.is_refusal = is_refusal
     msg.intent = intent   # 라우팅 결과 — 답변률 분모(KNOWLEDGE) 집계용. DB 반영 완료로 원복 (#13)
 
 

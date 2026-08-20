@@ -99,11 +99,13 @@ async def test_정상_답변은_캐시_저장(tenant_id, fake_embed):
 
 
 @pytest.mark.asyncio
-async def test_거절_답변은_캐시_제외(tenant_id, fake_embed):
+async def test_근거없는_답변은_캐시_제외(tenant_id, fake_embed):
     async with AsyncSessionLocal() as session:
         prepared = await _prepared_with_conversation(session, tenant_id)
         svc = RagService(tenant_id=tenant_id, session=session)
-        # 모델이 거절 문구 앞뒤에 덧붙이는 변형까지 — in 비교 계약
+        # 판정 기준은 citations=[] — 답변 문구가 아니다 (#61에서 문구 부분일치 폐기).
+        # 문구가 거절이든 아니든 인용이 없으면 제외된다: 여기 넘기는 답변 텍스트는
+        # 이제 판정에 관여하지 않고 캐시 저장 대상 본문으로만 쓰인다.
         await svc.maybe_cache(prepared, f'죄송합니다. {NO_EVIDENCE_ANSWER} 다른 질문을 주세요.', [])
         await session.commit()
 

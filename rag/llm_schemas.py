@@ -4,7 +4,8 @@
 condense 멀티)을 vLLM structured_outputs의 json 스키마 강제로 바꾼다. 모델 정의가 곧
 스키마(model_json_schema)이자 검증(model_validate_json) — 정의·검증이 한 곳이다.
 
-공개 표면: RouteDecision · CondenseResult · CondenseMultiResult · acomplete_validated.
+공개 표면: RouteDecision · CondenseResult · CondenseMultiResult · acomplete_validated ·
+is_schema_rejected(#61에서 승격 — eval 하네스도 같은 판정을 쓴다, 사유는 그 docstring).
 나머지는 내부 헬퍼(_).
 
 원칙 (rag/citation_tail.py #56과 동일): guided decoding은 확률을 낮추는 최적화지 신뢰의
@@ -73,12 +74,18 @@ def _schema_extra_body(model_cls: type[BaseModel]) -> dict:
     return {"structured_outputs": {"json": model_cls.model_json_schema()}}
 
 
-def _is_schema_rejected(exc: Exception) -> bool:
-    """서버가 스키마 파라미터 자체를 거부한 경우만 좁게 (400/422 — 구버전 vLLM).
+def is_schema_rejected(exc: Exception) -> bool:
+    """서버가 extra_body 파라미터 자체를 거부한 경우만 좁게 (400/422 — 구버전 vLLM).
 
     타임아웃·5xx는 재시도해도 같은 결과인데 블로킹 호출이라 대기만 배가 된다 —
     #56 astream(스트리밍, 첫 토큰 전 전부 재시도)과 의도적으로 다른 지점.
     status_code 덕 타이핑: openai.APIStatusError 계열이 이 속성을 갖고, 테스트 fake도 흉내낸다.
+
+    공개 심볼인 이유(#61): 소비처가 둘이다 — 여기(structured_outputs)와
+    eval/generation.py(출처 꼬리 문법). 둘 다 acomplete에 extra_body를 실어 보내고
+    같은 근거로 같은 폭을 쓴다. 규칙을 복제하면 위 rationale은 한 곳에만 남고
+    판정은 두 곳에서 갈릴 수 있다. 판정 자체는 스키마에 한정되지 않으므로 이름도
+    extra_body 기준으로 읽는다.
     """
     return getattr(exc, 'status_code', None) in (400, 422)
 
@@ -103,7 +110,7 @@ async def acomplete_validated(llm: LlmClient, messages: list[dict],
     try:
         raw = await llm.acomplete(messages, extra_body=_schema_extra_body(model_cls))
     except Exception as exc:
-        if not _is_schema_rejected(exc):
+        if not is_schema_rejected(exc):
             raise
         logger.warning('structured_outputs 미지원 서버 — 스키마 없이 재시도 (%s)', model_cls.__name__)
         if span is not None:

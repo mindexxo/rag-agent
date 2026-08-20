@@ -6,7 +6,7 @@
 
 이 파일은 **순수 문자열만** 담는다 — import이 없고 다른 모듈을 참조하지 않는다
 (같은 파일 안의 상수끼리는 참조한다 — 아래 f-string 주의사항 참조).
-조립은 rag/prompts.py가, 거절 판정은 rag/answer_check.py가, 출처 꼬리 해석은
+조립은 rag/prompts.py가, 출처 꼬리 해석(=근거 유무 판정)은
 rag/citation_tail.py가 담당한다 (#56 — 인라인 인용은 제거됨).
 
 주의: _SYSTEM_PROMPT_TEMPLATE은 f-string이라 NO_EVIDENCE_ANSWER를 본문에 박아 넣는다(규칙 3

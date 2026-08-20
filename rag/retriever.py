@@ -26,7 +26,7 @@ gate 전/후·threshold sweep 을 본다. 운영 /kms/query 는 retrieve() wrapp
 LLM 호출 없음. Stage D의 RagService가 이 결과를 받아 답변 생성 또는
 "확인 불가" 응답으로 분기.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -81,6 +81,16 @@ class RetrievedChunk:
     folder_name: str | None = None          # 소속 폴더 (미분류·FAQ는 None)
     folder_description: str | None = None   # 폴더 '참조 설명' — 리랭커 입력에만 사용 (임베딩엔 미포함)
 
+# 아래 두 자료형이 함께 실어 나르는 필드 — 검색 "결과"가 아니라 입력의 파생물이다 (#50).
+#
+# 원본 쿼리(queries[0])의 dense 벡터. 한 턴 안에서 같은 문자열을 검색·캐시 조회·캐시 저장이
+# 각자 임베딩해 TEI를 3번 때리고 있었고, TEI가 호출마다 비결정적(실측 1.4e-4)이라 세 벡터가
+# 서로 미세하게 달랐다 — "한 턴 = 하나의 쿼리 벡터"라는 불변식이 코드로 보장되지 않았다.
+# 여기 담아 rag/cache.py가 재사용하게 만든다. 재사용이 안전한 근거는 cache.get_semantic 참조.
+#
+# 확장 변형(index 1+)은 담지 않는다 — 검색·RRF 융합 전용이고 캐시 키와 무관하다.
+# repr=False: 1024차원 float가 예외 트레이스백·로그에 통째로 새는 것을 막는다.
+
 @dataclass
 class RetrievalResult:
     """검색 최종 결과. no_evidence=True면 LLM 호출 건너뜀."""
@@ -89,6 +99,8 @@ class RetrievalResult:
     reason: str | None              # 'no_results' (아예 빈 결과) |
                                     # 'low_similarity' (top-1 거리 임계값 초과) |
                                     # None (정상)
+    # 원본 쿼리 dense 벡터 — 판정과 무관한 pass-through (#50, 사유는 위 주석 블록)
+    query_embedding: list[float] | None = field(default=None, repr=False)
 
 @dataclass
 class RetrievalCandidates:
@@ -101,9 +113,12 @@ class RetrievalCandidates:
                           실사용처는 eval의 threshold sweep(eval/gate.py·retrieval.py)뿐이다.
                           리랭크·표 필터와 무관하게 산정되므로, 이 신호가 가리키는 청크가
                           최종 chunks에 없을 수도 있다 (sweep 해석 시 주의).
+    - query_embedding: 원본 쿼리 dense 벡터 (#50). retrieve()가 RetrievalResult로 그대로
+                       옮긴다 — 사유는 위 주석 블록 참조.
     """
     chunks: list[RetrievedChunk]
     top_dense_distance: float
+    query_embedding: list[float] | None = field(default=None, repr=False)
 
 
 # ===== RRF (Reciprocal Rank Fusion) =================================
@@ -273,6 +288,10 @@ async def retrieve_candidates(
     # (헬퍼로 감싸도 그 헬퍼가 retriever.py 밖이면 마찬가지) 패치가 안 먹고
     # 테스트가 실제 TEI 서버를 때린다. 옮기려면 conftest부터 함께 고칠 것.
     q_embs = await embed_texts(queries)   # TEI 호출 1회 — 배치 분할은 embed_texts가 담당
+    query_embedding = q_embs[0].dense     # 원본 쿼리 벡터 — 캐시가 재사용한다 (#50).
+                                          # Embedding 래퍼를 여기서 벗긴다: 도착지(cache.py·
+                                          # AnswerCacheRow.query_embedding)가 list[float]를 받으므로
+                                          # 하위 모듈이 rag.embeddings.Embedding을 알 필요가 없다.
 
     per_query_ids, dense_results = await _search_dense_per_query(
         session, tenant_id, q_embs, candidates_per_branch,
@@ -285,7 +304,8 @@ async def retrieve_candidates(
 
     # 빈 결과 → 빈 후보 반환 (no_results 판정은 apply_gate가)
     if not top_ids:
-        return RetrievalCandidates(chunks=[], top_dense_distance=999.0)
+        return RetrievalCandidates(chunks=[], top_dense_distance=999.0,
+                                   query_embedding=query_embedding)
 
     chunk_map = await _fetch_chunk_map(session, top_ids)
     result = [chunk_map[cid] for cid in top_ids]      # 순위 순서 그대로 재배열
@@ -317,7 +337,8 @@ async def retrieve_candidates(
 
     # 게이트 신호만 챙겨 반환 (판정은 apply_gate). 원본 쿼리의 top-1 거리다.
     top_dense_dist = dense_results[0][1] if dense_results else 999.0
-    return RetrievalCandidates(chunks=result, top_dense_distance=top_dense_dist)
+    return RetrievalCandidates(chunks=result, top_dense_distance=top_dense_dist,
+                               query_embedding=query_embedding)
 
 
 # ===== 근거 게이트 ==================================================
@@ -383,4 +404,7 @@ async def retrieve(
         chunks=candidates.chunks[:top_k],
         no_evidence=no_evidence,
         reason=reason,
+        # 게이트 판정과 무관하게 항상 옮긴다 — no_evidence면 유일한 소비처(service의
+        # cache.get_semantic 호출)가 애초에 안 불리므로 분기를 두는 게 군더더기다.
+        query_embedding=candidates.query_embedding,
     )

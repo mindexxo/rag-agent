@@ -109,13 +109,26 @@ def fake_embed(monkeypatch):
     호출부들이 `from rag.embeddings import ...`로 심볼을 바인딩해 가므로
     각 모듈의 이름을 개별 패치한다 (rag.embeddings만 패치하면 안 먹음).
     리랭커(외부 TEI)도 함께 끈다.
+
+    반환값의 `.embed_calls`는 누적 TEI 왕복 횟수다 (#50 — 턴당 1회 검증용).
+    값이 아니라 **횟수**를 세는 이유: fake_vector는 텍스트 결정적이라 같은 질의는 항상
+    같은 벡터고, "재사용했는지"와 "다시 계산했는지"를 값으로는 구별할 수 없다.
+    세는 단위는 embed_texts/embed_query 호출 1건 = 왕복 1회다 (배치 안의 텍스트 개수가
+    아니다 — 줄이려는 대상이 왕복이므로). FakeLlm.calls와 같은 관례.
+    기대 벡터를 손으로 만들 때는 fake_vector를 직접 import해 쓴다 — 그건 왕복이 아니다.
     """
+    from types import SimpleNamespace
+
     from rag.embeddings import Embedding
 
+    counting = SimpleNamespace(embed_calls=0)
+
     async def _texts(texts: list[str]) -> list[Embedding]:
+        counting.embed_calls += 1
         return [Embedding(dense=fake_vector(t)) for t in texts]
 
     async def _query(text: str) -> Embedding:
+        counting.embed_calls += 1
         return Embedding(dense=fake_vector(text))
 
     import rag.cache
@@ -129,7 +142,7 @@ def fake_embed(monkeypatch):
     monkeypatch.setattr(rag.retriever, 'embed_texts', _texts)   # 쿼리 확장(#5)으로 배치 임베딩 전환
     monkeypatch.setattr(rag.cache, 'embed_query', _query)
     monkeypatch.setattr(settings, 'rerank_enabled', False)
-    return fake_vector
+    return counting
 
 
 @pytest.fixture

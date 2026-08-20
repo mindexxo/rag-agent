@@ -245,9 +245,9 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
             # done은 finalize·commit '뒤'에 — 값이 전부 확정된 다음 최종 상태로 내보낸다 (#56)
             await queue.put((EVENT_DONE, _done_payload(result)))
 
-            # 캐시 적재는 done '뒤' (#56 재배치, 사용자 결정 8/18) — 임베딩 TEI 왕복이
-            # 크리티컬 패스에 있으면 각주 표시가 그만큼 늦고(실측 0.5~1초), 저장 실패가
-            # 완결된 턴을 failed로 오염시켰다. 실패는 로그만 — 턴은 이미 done.
+            # 캐시 적재는 done '뒤' (#56 재배치, 사용자 결정 8/18) — 저장이 크리티컬 패스에
+            # 있으면 각주 표시가 그만큼 늦고(실측 0.5~1초), 저장 실패가 완결된 턴을 failed로
+            # 오염시켰다. 실패는 로그만 — 턴은 이미 done. (경위는 maybe_cache docstring)
             # 취소 대상에서 먼저 빠진다(동기·멱등, finally의 unregister와 같은 근거) —
             # 아래 await 중 늦은 취소가 done 턴을 cancelled로 덮어쓰는 레이스 차단.
             cancellation.unregister(prepared.assistant_message_id)

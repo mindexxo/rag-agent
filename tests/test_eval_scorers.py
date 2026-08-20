@@ -7,13 +7,17 @@ import pytest
 
 import eval.generation as gen
 from eval.generation import _citation_match, _contains_point, citation_accuracy, expected_points_coverage
-from rag.citation_labels import TAIL_END, TAIL_START
+from rag.citation_labels import TAIL_END, TAIL_START, citation_tail
 from rag.retriever import RetrievedChunk
 
 
 def _tail(*nums: int) -> str:
-    """출처 꼬리(#56) 픽스처 — 답변 끝에 붙는 형태 그대로 (번호 목록)."""
-    return TAIL_START + ','.join(str(n) for n in nums) + TAIL_END
+    """출처 꼬리 픽스처 — 운영이 내는 형태 그대로.
+
+    형식을 손으로 조립하지 않고 citation_tail을 거친다 (#65) — 픽스처가 옛 형식으로
+    낡으면 채점기 테스트가 "현실적인 입력"을 안 보게 된다.
+    """
+    return citation_tail(nums)
 
 
 def _chunks(*filenames: str) -> list[RetrievedChunk]:

@@ -74,27 +74,50 @@ class TestAttachmentBlocks:
         assert build_attachment_blocks([]) == ''
 
 
-class TestCitationGrammar:
-    def _regex(self, sources_n: int, attachments: list[str]):
-        from rag.prompts import build_citation_grammar
-        sources = [object()] * sources_n           # 문법은 개수만 쓴다 — 내용 무관
-        return build_citation_grammar(sources, attachments)['structured_outputs']['regex']
+class TestCitationConstraint:
+    """꼬리 제약(#65: 정규식 → response_format/structural_tag).
 
-    def test_유효_번호만_허용(self):
-        import re
-        pat = re.compile(self._regex(2, ['첨부.pdf']))     # 후보 3
-        from rag.prompt_texts import TAIL_END, TAIL_START
-        assert pat.fullmatch(f'답변 본문 {TAIL_START}1,3{TAIL_END}')
-        assert pat.fullmatch(f'거절 {TAIL_START}{TAIL_END}')          # 빈 목록 허용
-        assert not pat.fullmatch(f'답변 {TAIL_START}4{TAIL_END}')     # 범위 밖
-        assert not pat.fullmatch('꼬리 없는 답변')                    # 꼬리는 필수
+    검증 대상이 바뀐 이유: 옛 테스트는 정규식을 꺼내 답변 문자열을 fullmatch로 통과/거부시켰다.
+    이제 판정 주체가 클라이언트 정규식이 아니라 **서버의 구조화 디코딩 엔진**이라 로컬에서
+    수용/거부를 재현할 수 없다 — 재현하려면 프로덕션 강제 로직을 테스트에 다시 구현하는 셈이다.
+    로컬에서 지킬 수 있는 계약은 "서버에 넘어갈 스키마가 올바른 후보 집합을 표현하는가"뿐이고,
+    실제 강제 여부는 라이브 실측으로 확인했다(build_citation_constraint docstring의 반증 테스트).
+    """
 
-    def test_후보_없으면_빈_꼬리만(self):
-        import re
+    def _rf(self, sources_n: int, attachments: list[str]) -> dict:
+        from rag.prompts import build_citation_constraint
+        sources = [object()] * sources_n           # 제약은 개수만 쓴다 — 내용 무관
+        return build_citation_constraint(sources, attachments)['response_format']
+
+    def test_structural_tag_봉투(self):
         from rag.prompt_texts import TAIL_END, TAIL_START
-        pat = re.compile(self._regex(0, []))
-        assert pat.fullmatch(f'답변 {TAIL_START}{TAIL_END}')
-        assert not pat.fullmatch(f'답변 {TAIL_START}1{TAIL_END}')
+        rf = self._rf(2, ['첨부.pdf'])
+        assert rf['type'] == 'structural_tag'
+        assert rf['triggers'] == [TAIL_START]      # 이 문자열이 나오면 제약이 시작된다
+        structure = rf['structures'][0]
+        assert structure['begin'] == TAIL_START and structure['end'] == TAIL_END
+
+    def test_유효_번호만_enum에_담긴다(self):
+        rf = self._rf(2, ['첨부.pdf'])              # 후보 3 = 검색 2 + 첨부 1
+        schema = rf['structures'][0]['schema']
+        assert schema['type'] == 'array'
+        assert schema['items']['enum'] == [1, 2, 3]   # 4가 없다 = 범위 밖 차단
+        # 첨부를 후보 수에서 빠뜨리면 안 되는 이유는 #41의 함정 (citation_labels docstring)
+        assert self._rf(2, [])['structures'][0]['schema']['items']['enum'] == [1, 2]
+
+    def test_후보_없으면_빈_배열만_강제(self):
+        schema = self._rf(0, [])['structures'][0]['schema']
+        assert schema.get('maxItems') == 0
+        assert 'items' not in schema     # enum이 아니라 길이로 강제 — enum:[] 컴파일은 미검증
+
+    def test_빈_목록도_합법이다(self):
+        """거절의 자유 — minItems를 걸지 않는다.
+
+        후보가 있어도 모델이 []를 낼 수 있어야 한다(프롬프트 규칙 7: 사용한 문서가 없으면
+        빈 목록). 라이브에서도 확인했다 — 답할 수 없는 질문에 후보 4개를 주면 2/2 [].
+        """
+        schema = self._rf(3, [])['structures'][0]['schema']
+        assert 'minItems' not in schema
 
 
 class TestUserMessage:
@@ -111,7 +134,7 @@ class TestUserMessage:
 
     def test_첨부는_문서블록_뒤_질문_앞에_배치_번호는_출처_다음(self):
         out = build_user_message('질문?', [_chunk()], attachments=[{'filename': 'r.pdf', 'text': '첨부내용'}])
-        # 검색 출처 1건([1]) 다음 번호 — 문법·파서의 후보 순서와 같은 규칙
+        # 검색 출처 1건([1]) 다음 번호 — 제약·파서의 후보 순서와 같은 규칙
         assert out.index('</문서>') < out.index('[2] 첨부: r.pdf') < out.index('질문: 질문?')
         assert '첨부내용' in out
 

@@ -23,8 +23,8 @@ from tests.conftest import register_faq, sse_events as _events, sse_answer, sse_
 async def test_KNOWLEDGE_생성_경로_SSE_전체흐름(client, tenant_id, fake_llm, pass_gate):
     faq_id = await register_faq(client)
     # 실제 후보(FAQ, 유일 후보 = 1번)를 출처 꼬리로 인용 — done.citations 검증이 실질이 되게 (#56)
-    from rag.citation_labels import TAIL_END, TAIL_START
-    fake_llm.answer = f'테스트 답변입니다. {TAIL_START}1{TAIL_END}'
+    from rag.citation_labels import TAIL_END, TAIL_START, citation_tail
+    fake_llm.answer = f'테스트 답변입니다. {citation_tail([1])}'
 
     res = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
     assert res.status_code == 200
@@ -56,13 +56,14 @@ async def test_KNOWLEDGE_생성_경로_SSE_전체흐름(client, tenant_id, fake_
         assert msg.tenant_id == tenant_id
         assert msg.cited_docs == ['FAQ']                     # done.citations와 같은 사실
 
-    # guided 문법이 생성 호출에 실렸는지 — 후보 1건이면 번호 1만 허용하는 정규식 (#56)
-    grammar_bodies = [b for b in fake_llm.extra_bodies if b and 'structured_outputs' in b]
-    assert grammar_bodies
-    import re as _re
-    grammar = _re.compile(grammar_bodies[-1]['structured_outputs']['regex'])
-    assert grammar.fullmatch(fake_llm.answer)                                 # 인용 답변 통과
-    assert not grammar.fullmatch(f'답변 {TAIL_START}2{TAIL_END}')             # 범위 밖 번호 차단
+    # 꼬리 제약이 생성 호출에 실렸는지 — 후보 1건(FAQ)이면 enum=[1]만 허용 (#56→#65)
+    # 실제 수용/거부는 서버의 구조화 디코딩이 판정하므로(로컬 재현 불가) 여기서는
+    # "올바른 후보 집합이 스키마로 넘어갔는지"만 고정한다 — 사유는 test_prompts.py 참조.
+    rf_bodies = [b for b in fake_llm.extra_bodies if b and 'response_format' in b]
+    assert rf_bodies
+    structure = rf_bodies[-1]['response_format']['structures'][0]
+    assert structure['begin'] == TAIL_START and structure['end'] == TAIL_END
+    assert structure['schema']['items']['enum'] == [1]                        # 범위 밖 번호 차단
 
 
 @pytest.mark.asyncio
@@ -150,7 +151,7 @@ async def test_domain_hint가_인텐트와_생성_프롬프트에_주입(client,
 
 
 @pytest.mark.asyncio
-async def test_guided_미지원_서버는_문법_없이_재시도한다(client, tenant_id, fake_llm, pass_gate):
+async def test_제약_미지원_서버는_제약_없이_재시도한다(client, tenant_id, fake_llm, pass_gate):
     """fail-open(#56) — structured_outputs를 모르는 vLLM(400)이어도 스트림은 살아야 한다.
     재시도는 첫 토큰 전 실패에만 걸리므로 토큰 유실·중복이 없다."""
     await register_faq(client)
@@ -163,7 +164,7 @@ async def test_guided_미지원_서버는_문법_없이_재시도한다(client, 
             yield t
 
     fake_llm.astream = rejects_grammar
-    # 문법 없는 자유 생성이 꼬리 형식을 안 지키는 최악 조합 — citations는 조용히 [] 여야 한다
+    # 제약 없는 자유 생성이 꼬리 형식을 안 지키는 최악 조합 — citations는 조용히 [] 여야 한다
     fake_llm.answer = '테스트 답변입니다. 출처는 환불규정 문서입니다.'
     res = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
     assert res.status_code == 200

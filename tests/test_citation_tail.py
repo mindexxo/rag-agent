@@ -1,9 +1,12 @@
-"""출처 꼬리 분리·해석 단위 테스트 (#56) — rag/citation_tail.
+r"""출처 꼬리 분리·해석 단위 테스트 (#56) — rag/citation_tail.
 
 TailSplitter는 vLLM 토큰 경계가 임의라는 전제에서 동작해야 한다 — 마커가 청크 경계에서
 쪼개져 도착하는 경우를 1글자 단위 feed로 재현한다. 핵심 불변식: **feed·finish 반환값의
 누적 == prose == 화면에 보인 것 == 저장되는 것**, 그리고 꼬리·잘린 버퍼는 그 어디에도 없다.
-꼬리 내용물은 번호 목록(««1,3»») — 번호↔문서 순서는 citation_labels가 단일 정의점.
+꼬리 내용물은 JSON 정수 배열(««[1,3]»», #65 — 그전엔 ««1,3»») — 번호↔문서 순서는
+citation_labels가 단일 정의점. 이 모듈은 마커 위치만 보므로 안쪽 형식과 무관하다:
+resolve_citations의 \d+ 추출이 대괄호·쉼표·여백을 무시해 두 형식을 같게 읽는다
+(fail-open으로 제약이 떨어진 경로에서 옛 형식이 나와도 흡수된다는 게 그 관용성의 값이다).
 """
 import pytest
 
@@ -119,7 +122,7 @@ class TestResolveCitations:
         assert cited == [SourceCitation(document_id=None, filename='첨부: 계약서.pdf', version=1)]
 
     def test_구분자는_관용(self):
-        # fail-open(문법 미적용) 경로의 자유 생성 대비 — 숫자 뭉치만 뽑는다
+        # fail-open(제약 미적용) 경로의 자유 생성 대비 — 숫자 뭉치만 뽑는다
         assert [c.filename for c in resolve_citations('1 2', SRC, [])] == ['환불규정.docx', 'FAQ']
 
     def test_숫자가_없으면_빈_목록(self):

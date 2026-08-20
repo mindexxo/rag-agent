@@ -3,10 +3,8 @@
 문구 자체는 rag/prompt_texts.py (#36 분리). 근거 유무 판정은 rag/citation_tail.py의
 실인용 개수가 담당한다 — 거절 문구 판정은 #61에서 폐기됐다.
 인용은 답변 끝 출처 꼬리(#56) — 번호 순서는 rag/citation_labels.py 단일 정의점,
-꼬리 강제 문법(build_citation_grammar)도 여기서 조립한다(런타임 값 → LLM 입력이라는 같은 성격).
+꼬리 강제 제약(build_citation_constraint)도 여기서 조립한다(런타임 값 → LLM 입력이라는 같은 성격).
 """
-import re
-
 from rag.citation_labels import (TAIL_END, TAIL_START, attachment_display,
                                  source_display, sources_from_chunks)
 from rag.prompt_texts import (
@@ -59,7 +57,7 @@ def build_chat_prompt(system_content: str, user_content: str) -> list[dict]:
 def build_context_blocks(chunks: list[RetrievedChunk]) -> str:
     """RetrievedChunk 리스트 -> <문서> 블록 안에 들어갈 텍스트 조립.
     각 블록 앞 [번호]가 출처 꼬리의 인용 번호다 — 번호 순서는 sources_from_chunks가
-    단일 정의점(citation_labels)이라, 문법·파서와 어긋날 수 없다. 같은 문서의 여러
+    단일 정의점(citation_labels)이라, 제약·파서와 어긋날 수 없다. 같은 문서의 여러
     청크는 같은 번호를 받는다(인용은 문서 단위). FAQ 청크는 retriever가 filename='FAQ'로
     강제하므로(F99) 'FAQ' 후보 하나로 접힌다.
     """
@@ -90,46 +88,56 @@ def build_attachment_blocks(attachments: list[dict], start: int = 1) -> str:
     return '<첨부 문서>\n' + '\n'.join(blocks) + '\n</첨부 문서>\n\n'
 
 
-def build_citation_grammar(sources, attachment_filenames: list[str]) -> dict:
-    """출처 꼬리를 강제하려는 guided decoding 정규식 — LlmClient extra_body용 (#56).
+def build_citation_constraint(sources, attachment_filenames: list[str]) -> dict:
+    """출처 꼬리 안쪽을 유효 후보 번호로 강제한다 — LlmClient extra_body용 (#56, #65 재구현).
 
-    ⚠ **현재 배포(vLLM + Qwen3-14B)에서 이 문법은 강제되지 않는다** — 2026-08-20 실측(#61).
-    파라미터는 받아들여지고 예외도 안 나는데 제약이 걸리지 않는다. 사다리 실측:
+    반환값은 vLLM의 `response_format` + `structural_tag`다. `triggers`에 든 문자열이 생성
+    도중 나타나면 그 지점부터 `end`까지 `schema`를 강제한다 — **본문은 자유, 꼬리만 제약**이
+    필요한 우리 경우에 정확히 맞는 기능이다. 그래서 꼬리 안쪽이 JSON 정수 배열이 된다
+    (형식 상수는 rag/prompt_texts.py의 TAIL_EXAMPLE_* — 프롬프트 예시와 같은 정의점).
+
+    ⚠ **정규식으로 되돌리지 말 것.** #56의 원래 구현은 `[\\s\\S]*««1|2»»` 형태의 정규식이었고
+    vLLM 0.24.0에서 **강제되지 않았다**(2026-08-20 실측, #61에서 발견 → #65). 파라미터는
+    받아들여지고 예외도 안 나는데 제약이 안 걸린다. 사다리 실측:
 
         ««(?:1)?»»              강제됨   ← 제약이 문자열 시작 위치
         ««(?:1)?»»[\\s\\S]*      강제됨   ← 제약이 앞, 수량자는 뒤
-        [\\s\\S]*««(?:1)?»»      무효    ← **이 함수가 만드는 형태**
+        [\\s\\S]*««(?:1)?»»      무효    ← 옛 구현의 형태
         [^«]*««(?:1)?»»         무효
         [\\s\\S]{0,200}««…»»     무효    ← 유계로 바꿔도 마찬가지
         + / .* / [^«»]*          무효
 
-    규칙: 앞에 "아무 문자" 구간이 오면 뒤쪽 제약이 무효다(유한·무한 무관). 후보 1개인데
-    ««7»»가 6/6 나왔다. structured_outputs의 **json** 형식은 정상 작동한다(#43은 멀쩡).
+    규칙: 앞에 "아무 문자" 구간이 오면 뒤쪽 제약이 무효다(유한·무한 무관). 이건 서버 버전
+    문제가 아니라 "꼬리가 답변 **끝**에 온다"는 구조와 정규식 가드 디코딩의 충돌이라 재현성이
+    있다 — 백엔드 3종(xgrammar·guidance·outlines)과 GBNF까지 전부 같은 결과였다.
 
-    그래도 호출을 남긴 이유: 정확성은 이 문법에 걸려 있지 않다 — rag/citation_tail.py의
-    원칙("문법은 확률을 낮추는 최적화지 신뢰의 근거가 아니다")대로 resolve_citations의
-    범위 검증이 잘못된 번호를 버린다. 잃는 것은 최적화뿐이고, 대가는 위반 답변의 인용이
-    통째로 날아가는 것이다(실측 1.1~1.6%, 꼬리가 범위 밖 번호 단독이면 각주 0개).
-    서버·형식이 고쳐지면 이 호출이 그대로 효과를 낸다. 근본 해결(꼬리를 답변 앞으로
-    옮기거나 json 스키마로 전환)은 #56 계약 변경이라 별건이다.
+    structural_tag가 강제된다는 근거(반증 테스트): 후보가 1개뿐인 문맥에 enum=[2]를 주면
+    모델이 3/3 `[2]`를 쓴다 — 문맥상 말이 안 되는 값을 강제로 쓴 것이다. 스트리밍
+    (astream, 운영 경로)에서도 강제된다. 옛 정규식은 같은 문항에서 5/5 위반했다.
 
-    아래 설계 의도는 문법이 걸리는 환경을 전제로 쓴 것이다 —
-    꼬리는 **필수**다: 선택(`(...)?`)으로 두면 본문만으로도 문법이 완성돼 EOS가 항상
-    허용되고, 강제력이 0이 된다(설계 검토에서 확인). 필수라서 모델은 꼬리를 쓰기 전엔
-    끝낼 수 없고, 꼬리 안에는 유효 범위의 번호 목록(또는 빈 목록)만 올 수 있다.
-    (같은 함정이 반대쪽에서 실현된 것이 위 실측이다 — 꼬리를 필수로 만들어 EOS 허용을
-    막았는데, `[\\s\\S]*` 접두가 같은 결과를 만들었다.)
-    거절 답변도 꼬리는 붙는다 — 빈 목록으로 (프롬프트 규칙 7이 같은 것을 지시).
+    후보 0개면 `maxItems: 0`으로 빈 배열만 허용한다 — 운영에선 도달 불가(후보 0 = no_evidence
+    = 즉시 경로라 LLM을 안 탄다)지만 eval oracle/retrieved 모드에서는 도달한다. `enum: []`을
+    쓰지 않은 이유: 선택지 0개 enum을 백엔드가 어떻게 컴파일하는지 미확인이라, 검증된 형태를 쓴다.
 
-    첨부를 빠뜨리면 첨부 인용이 문법에 막힌다(#41의 함정) — 후보 수에 반드시 포함.
-    vLLM v0.12+ structured_outputs 형식. 서버가 미지원(400)이면 호출부가 문법 없이
-    재시도한다(fail-open) — 파서의 번호 범위 검증은 문법 유무와 무관하게 동일.
+    거절 답변도 꼬리는 붙는다 — 빈 배열로(프롬프트 규칙 7이 같은 것을 지시). 후보가 있어도
+    모델이 빈 배열을 낼 수 있다(minItems 미지정) — 답할 수 없는 질문에 후보 4개를 주고 확인,
+    2/2 `[]`. 즉 강제는 "없는 번호를 못 쓰게" 할 뿐 거절의 자유를 빼앗지 않는다.
+
+    첨부를 빠뜨리면 안 되는 이유와 그 실패 방향(#41의 함정, #65에서 누락→오답으로 바뀜)은
+    rag/citation_labels.py 모듈 docstring — 후보 목록 파생은 PreparedRag.citation_candidates
+    한 곳이다.
+
+    서버가 structural_tag를 미지원하면 호출부가 제약 없이 재시도한다(fail-open) — 파서의 번호
+    범위 검증은 제약 유무와 무관하게 동일하다(rag/citation_tail.py의 원칙).
     """
     count = len(sources) + len(attachment_filenames)
-    nums = '|'.join(str(i) for i in range(1, count + 1))
-    inner = f'(?:(?:{nums})(?:,(?:{nums}))*)?' if count else ''
-    tail = f'{re.escape(TAIL_START)}{inner}{re.escape(TAIL_END)}'
-    return {"structured_outputs": {"regex": rf'[\s\S]*{tail}'}}
+    schema = ({"type": "array", "items": {"type": "integer", "enum": list(range(1, count + 1))}}
+              if count else {"type": "array", "maxItems": 0})
+    return {"response_format": {
+        "type": "structural_tag",
+        "triggers": [TAIL_START],
+        "structures": [{"begin": TAIL_START, "schema": schema, "end": TAIL_END}],
+    }}
 
 
 def build_user_message(
@@ -166,7 +174,7 @@ def build_user_message(
     return USER_TEMPLATE.format(
         prior_turns_block=prior_turns_block,
         context_blocks=build_context_blocks(chunks),
-        # 첨부 번호는 검색 출처 번호 다음부터 — 문법·파서의 후보 순서(sources + 첨부)와 동일
+        # 첨부 번호는 검색 출처 번호 다음부터 — 제약·파서의 후보 순서(sources + 첨부)와 동일
         attachment_blocks=build_attachment_blocks(attachments or [], start=len(sources_from_chunks(chunks)) + 1),
         query=query,
         standalone_line=standalone_line,

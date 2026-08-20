@@ -24,7 +24,7 @@ guided 경로에서 모델이 필드를 생략해도 합법이 된다 — 강제
 원래 없을 수 있는 값이라 옵셔널이 맞다.)
 
 배치가 schemas/가 아니라 rag/인 이유: schemas/는 FastAPI 요청·응답(API 경계) 계약이고,
-이건 LLM에 거는 생성 제약이라는 내부 계약이다 — build_citation_grammar(rag/prompts)와 같은 축.
+이건 LLM에 거는 생성 제약이라는 내부 계약이다 — build_citation_constraint(rag/prompts)와 같은 축.
 """
 import logging
 from functools import cache
@@ -70,7 +70,7 @@ class CondenseMultiResult(BaseModel):
 @cache
 def _schema_extra_body(model_cls: type[BaseModel]) -> dict:
     """vLLM v0.12+ structured_outputs 형식. 세 스키마 모두 런타임 값이 없는 정적이라 캐시 —
-    요청마다 조립하는 build_citation_grammar(후보 의존)와 다른 점."""
+    요청마다 조립하는 build_citation_constraint(후보 의존)와 다른 점."""
     return {"structured_outputs": {"json": model_cls.model_json_schema()}}
 
 
@@ -82,7 +82,7 @@ def is_schema_rejected(exc: Exception) -> bool:
     status_code 덕 타이핑: openai.APIStatusError 계열이 이 속성을 갖고, 테스트 fake도 흉내낸다.
 
     공개 심볼인 이유(#61): 소비처가 둘이다 — 여기(structured_outputs)와
-    eval/generation.py(출처 꼬리 문법). 둘 다 acomplete에 extra_body를 실어 보내고
+    eval/generation.py(출처 꼬리 제약). 둘 다 acomplete에 extra_body를 실어 보내고
     같은 근거로 같은 폭을 쓴다. 규칙을 복제하면 위 rationale은 한 곳에만 남고
     판정은 두 곳에서 갈릴 수 있다. 판정 자체는 스키마에 한정되지 않으므로 이름도
     extra_body 기준으로 읽는다.

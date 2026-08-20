@@ -22,14 +22,15 @@ from types import SimpleNamespace
 
 from sqlalchemy import select
 
+from config import settings
 from database import AsyncSessionLocal
 from rag.citation_labels import TAIL_END, TAIL_START, sources_from_chunks
 from rag.citation_tail import resolve_citations
-from rag.conversation import condense_query
+from rag.conversation import build_prior_turns, condense_query
 from rag.models import Chunk, Document
 from rag.retriever import retrieve_candidates, RetrievedChunk
 from rag.embeddings import embed_texts_sync
-from rag.prompts import SYSTEM_PROMPT, build_chat_prompt, build_user_message
+from rag.prompts import build_knowledge_generation_prompt
 from rag.llm import LlmClient
 from eval.retrieval import resolve_gold
 
@@ -46,6 +47,14 @@ def row_tenant(g: dict) -> str:
 RESULT_DIR = Path("eval/results")
 # 생성 평가 본체. multi_turn은 gold의 conversation을 운영 condense_query에 태워
 # 독립 질문으로 재작성한 뒤 동일 경로로 평가 (E.1 운영 경로 그대로 측정)
+#
+# multi_turn은 **이 날짜 이전 결과와 비교 불가** (#48, 2026-08-19): 두 가지가 바뀌었다.
+#   1) 이력 블록(prior_turns)을 넘기지 않던 버그 수정 — 운영은 넣는데 여기는 안 넣었고,
+#      그래서 "재작성 오염 때문에 오답"이라는 오진이 나왔다(같은 오염 재작성본으로 재측정하니
+#      이력 없음 1/10 · 이력 있음 8/10).
+#   2) "질문:" 슬롯이 재작성본 → 원 질문 + 재작성본 병기로 바뀜.
+# citation_accuracy v3(#56)와 같은 종류의 고지다 — 측정 정의가 바뀐 것이지 모델이 변한 게 아니다.
+# single_fact/paraphrase/rare_lexical/multi_doc은 이력이 없고 두 질의가 같아 렌더 무변경.
 GEN_TYPES = {"single_fact", "paraphrase", "rare_lexical", "multi_doc", "multi_turn"}
 TOP_K = 5
 USE_RERANK = False         # 추가 리랭크 여부. 주의: retrieve_candidates가 settings.rerank_enabled(현재 True)로
@@ -84,10 +93,16 @@ async def retrieved_context(session, tenant: str, query: str) -> list[RetrievedC
 
 # ===== 생성 ==========================================================
 
-async def generate(llm: LlmClient, query: str, chunks: list[RetrievedChunk]) -> str:
-    """RAG 프롬프트로 답변 1건 생성 (LLM 서버 필요)."""
-    messages = build_chat_prompt(SYSTEM_PROMPT, build_user_message(query, chunks))
-    return await llm.acomplete(messages)
+async def generate(llm: LlmClient, original_query: str, chunks: list[RetrievedChunk],
+                   standalone_query: str | None = None,
+                   prior_turns: list[dict] | None = None) -> str:
+    """RAG 프롬프트로 답변 1건 생성 (LLM 서버 필요).
+
+    운영(rag/service.py)과 같은 조립점을 쓴다 — 인자를 한쪽에서만 빼먹는 종류의 어긋남을
+    구조적으로 막기 위해서다(#48: 여기서 prior_turns가 빠져 있었고 아무 데도 안 걸렸다).
+    """
+    return await llm.acomplete(build_knowledge_generation_prompt(
+        original_query, chunks, standalone_query=standalone_query, prior_turns=prior_turns))
 
 
 # ===== 채점 — deterministic (서버 무관) ==============================
@@ -231,20 +246,23 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved):
 
     # ① condense 선병렬 (multi_turn만 — DB 무관).
     # multi_turn: 이전 대화를 운영 condense에 태워 독립 질문으로 재작성.
-    # 검색·생성 모두 재작성된 질의를 쓴다 — 운영 /kms/query 경로와 동일.
+    # **검색**은 재작성 질의를 쓰고, **생성**은 원 질문 + 재작성 참고 병기 — 운영 경로와 동일 (#48).
+    # 이력 블록(prior_turns)도 운영과 같은 함수·같은 예산으로 만들어 함께 싣는다.
     async def _standalone(g):
         if g["type"] != "multi_turn":
-            return g["id"], None
-        history = [SimpleNamespace(**m) for m in g.get("conversation", [])]
+            return g["id"], (None, [])
+        history = [SimpleNamespace(**m) for m in (g.get("conversation") or [])]
         async with sem:
-            return g["id"], await condense_query(llm, g["query"], history)
+            standalone = await condense_query(llm, g["query"], history)
+        return g["id"], (standalone, build_prior_turns(history, settings.history_budget_tokens))
 
-    standalone_map = dict(await asyncio.gather(*(_standalone(g) for g in gen_rows)))
+    # {문항 id: (재작성 질의 | None, 이력 턴)} — multi_turn만 값이 채워진다
+    turn_ctx = dict(await asyncio.gather(*(_standalone(g) for g in gen_rows)))
 
     # ② 컨텍스트 조회 — 세션 직렬. oracle에서 resolve 실패는 스킵(기존 동작)
     work: list[tuple[dict, list]] = []
     for g in gen_rows:
-        query = standalone_map[g["id"]] or g["query"]
+        query = turn_ctx[g["id"]][0] or g["query"]     # 검색은 재작성 질의로 (없으면 원문)
         if mode == "oracle":
             chunks = await oracle_context(session, resolved.chunk_ids.get(g["id"]) or [])
             if not chunks:                       # 정답 청크 resolve 실패 → oracle 스킵
@@ -255,15 +273,17 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved):
 
     # ③ 생성 병렬 — 가장 무거운 구간이라 병렬화 효과 최대
     async def _generate(g, chunks):
+        standalone, prior_turns = turn_ctx[g["id"]]
         async with sem:
-            return await generate(llm, standalone_map[g["id"]] or g["query"], chunks)
+            return await generate(llm, g["query"], chunks,
+                                  standalone_query=standalone, prior_turns=prior_turns)
 
     answers = await asyncio.gather(*(_generate(g, c) for g, c in work))
 
     # ④ 채점·행 구성 — 직렬 (EPCov의 embed_texts_sync 포함)
     rows = []
     for (g, chunks), answer in zip(work, answers):
-        standalone = standalone_map[g["id"]]
+        standalone = turn_ctx[g["id"]][0]
 
         rows.append({
             "id": g["id"], "type": g["type"], "mode": mode,

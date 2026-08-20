@@ -2,7 +2,7 @@
 
 라벨은 인용 형식을 견인한다(라벨=인용형식 설계) — 형식이 바뀌면 인용 전체가 회귀.
 """
-from rag.prompt_texts import DEFAULT_DOMAIN_HINT
+from rag.prompt_texts import DEFAULT_DOMAIN_HINT, PRIOR_TURNS_LABEL, STANDALONE_QUERY_LABEL
 from rag.prompts import (
     SYSTEM_PROMPT,
     build_attachment_blocks,
@@ -11,6 +11,7 @@ from rag.prompts import (
     build_condense_user_message,
     build_context_blocks,
     build_intent_guard_prompt,
+    build_knowledge_generation_prompt,
     build_other_system_prompt,
     build_other_user_message,
     build_system_prompt,
@@ -118,6 +119,77 @@ class TestUserMessage:
         out = build_user_message('질문?', [_chunk()])
         assert '<문서>' in out and '</문서>' in out
         assert out.rstrip().endswith('위 규칙을 지켜 한국어로 답하십시오.')
+
+
+class TestStandaloneQueryPairing:
+    """검색에 쓴 재작성 질의를 원 질문 아래 참고로 병기 (#48).
+
+    재작성본으로 "질문:"을 교체하면 인용 앵커가 사라져 Cite가 떨어지고 실오답이 난다 —
+    그래서 지우지 않고 병기한다. 같은 값이면 중복이라 붙이지 않는다.
+    """
+
+    def test_다르면_질문_바로_다음_줄에_병기(self):
+        out = build_user_message('그건 한 마리에 얼마예요?', [_chunk()],
+                                 standalone_query='냉장 생닭 한 마리 가격은?')
+        # 줄 순서·라벨·마무리 문구까지 한 번에 고정 — 순서가 밀리면 참고 줄이 질문과 분리된다
+        assert ('질문: 그건 한 마리에 얼마예요?\n'
+                '검색에 사용한 재작성 질문: 냉장 생닭 한 마리 가격은?\n\n'
+                '위 규칙을 지켜 한국어로 답하십시오.') in out
+
+    def test_같으면_생략(self):
+        # 단일턴 — condense가 원문을 그대로 돌려주므로 두 값이 같다
+        out = build_user_message('환불 기간은?', [_chunk()], standalone_query='환불 기간은?')
+        assert STANDALONE_QUERY_LABEL not in out
+        assert '질문: 환불 기간은?\n\n위 규칙' in out
+
+    def test_공백만_다르면_생략(self):
+        # 스키마가 앞뒤 공백을 벗기지 않으므로, 공백 차이로 같은 문장을 두 번 싣지 않는다
+        out = build_user_message('환불 기간은?', [_chunk()], standalone_query='  환불 기간은?  ')
+        assert STANDALONE_QUERY_LABEL not in out
+
+    def test_빈값이나_공백만이면_빈_참고줄이_실리지_않는다(self):
+        # 공백만인 값이 truthy라 라벨만 붙은 빈 줄이 실렸던 회귀 (리뷰 중 발견)
+        for empty in ('', '   ', '\n\t'):
+            out = build_user_message('질문?', [_chunk()], standalone_query=empty)
+            assert STANDALONE_QUERY_LABEL not in out
+            assert out == build_user_message('질문?', [_chunk()])
+
+    def test_병기값은_strip해서_싣는다(self):
+        out = build_user_message('원 질문', [_chunk()], standalone_query='  재작성 질문  ')
+        assert f'{STANDALONE_QUERY_LABEL} 재작성 질문\n' in out
+
+    def test_미전달이면_렌더가_도입_전과_동일(self):
+        # {standalone_line} 슬롯 신설이 기존 렌더를 바꾸지 않는다는 회귀 가드
+        with_arg = build_user_message('질문?', [_chunk()], standalone_query=None)
+        without = build_user_message('질문?', [_chunk()])
+        assert with_arg == without
+        assert STANDALONE_QUERY_LABEL not in without
+
+
+class TestKnowledgeGenerationPrompt:
+    """운영·eval이 공유하는 단일 조립점 (#48).
+
+    이전엔 rag/service.py와 eval/generation.py가 각자 조립해 eval 쪽 prior_turns 누락이
+    아무 데도 걸리지 않았다 — 그 재발을 막는 가드.
+    """
+
+    def test_시스템과_유저_두_메시지(self):
+        msgs = build_knowledge_generation_prompt('질문?', [_chunk()])
+        assert [m['role'] for m in msgs] == ['system', 'user']
+        assert msgs[0]['content'] == SYSTEM_PROMPT      # domain_hint 없으면 중립 렌더
+
+    def test_prior_turns가_유저_메시지에_실린다(self):
+        msgs = build_knowledge_generation_prompt(
+            '그럼 교환은?', [_chunk()], prior_turns=[{'q': '반품 기간?', 'a': '14일입니다'}])
+        assert PRIOR_TURNS_LABEL in msgs[1]['content']
+        assert '- Q: 반품 기간?' in msgs[1]['content'] and '- A: 14일입니다' in msgs[1]['content']
+
+    def test_재작성_질의와_domain_hint가_전달된다(self):
+        msgs = build_knowledge_generation_prompt(
+            '그건 얼마?', [_chunk()], standalone_query='생닭 가격은?',
+            domain_hint='식품 배송 상담')
+        assert '검색에 사용한 재작성 질문: 생닭 가격은?' in msgs[1]['content']
+        assert '식품 배송 상담' in msgs[0]['content']
 
 
 class TestCondenseUserMessage:

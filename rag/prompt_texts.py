@@ -23,6 +23,13 @@ SMALLTALK_ANSWER = '추가 질문 있으시면 말씀해 주세요!'
 # 입력 가드레일 차단(인젝션/PII/악의 유도) 시 반환 문구
 BLOCKED_INPUT_ANSWER = '해당 요청은 처리할 수 없습니다. 상담 관련 문의를 남겨 주세요.'
 
+# 이력 렌더용 취소 턴 표식 (#59) — DB 저장본(Message.content)에는 없다. 프롬프트 조립
+# 시점에만 rag/conversation.py의 _history_content가 붙인다(단일 정의점 — 소비처는
+# build_prior_turns·_condense_call 둘뿐). 취소 턴을 이력에 포함하면서 모델이 잘린 답을
+# 완결된 안내로 오인하지 않게 하는 맥락 정보이지, 지시문이 아니다.
+CANCELLED_TURN_SUFFIX = ' (안내 중단됨)'    # 부분 답변 뒤에 접미
+CANCELLED_TURN_EMPTY = '(답변 없음)'        # 첫 토큰 전 취소(content='') 대체
+
 # 테넌트 지식 범위 설명(domain_hint) — 인텐트 분류·KNOWLEDGE 생성·OTHER 생성 3곳에
 # 역할/범위 안내로만 주입한다. 답변의 근거가 아니다 (strict-grounded 유지).
 # [임시] ICCS 연동 전까지 요청 파라미터(KmsQueryRequest.domain_hint)로 받는다 (#1).

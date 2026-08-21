@@ -110,6 +110,62 @@ async def test_정상_턴은_이력에_남는다(tenant_id):
 
 
 @pytest.mark.asyncio
+async def test_취소_턴은_짝으로_이력에_남는다(tenant_id):
+    """#59 — 취소 턴을 빼면 화면(조회 API)과 모델 이력이 어긋나 '다시'의 지시대상이 밀린다."""
+    cid = await _seed_turn(tenant_id, '사이즈 가이드해줘', 'S(1): 평소 착용', 'cancelled')
+    async with AsyncSessionLocal() as s:
+        msgs = await load_recent_messages(s, tenant_id, cid)
+    assert [m.role for m in msgs] == ['user', 'assistant']
+    assert msgs[1].content == 'S(1): 평소 착용'              # DB 원본은 표식 없이 그대로
+
+
+@pytest.mark.asyncio
+async def test_취소_턴은_프롬프트_이력에서_중단_표식(tenant_id):
+    """부분 답변이 완결된 안내로 오인되지 않게 — 표식은 조립 시점에만(#59), 저장본 무변경."""
+    from rag.conversation import build_prior_turns
+    from rag.prompt_texts import CANCELLED_TURN_SUFFIX
+    cid = await _seed_turn(tenant_id, '사이즈 가이드해줘', 'S(1): 평소 착용', 'cancelled')
+    async with AsyncSessionLocal() as s:
+        msgs = await load_recent_messages(s, tenant_id, cid)
+    turns = build_prior_turns(msgs, budget_tokens=2000)
+    assert turns == [{'q': '사이즈 가이드해줘', 'a': 'S(1): 평소 착용' + CANCELLED_TURN_SUFFIX}]
+
+
+@pytest.mark.asyncio
+async def test_빈_취소_턴도_질문은_남고_답변은_표식(tenant_id):
+    """첫 토큰 전 취소(content='') — 질문까지 지우면 '다시'가 그 이전 턴을 가리킨다(#59 결정)."""
+    from rag.conversation import build_prior_turns
+    from rag.prompt_texts import CANCELLED_TURN_EMPTY
+    cid = await _seed_turn(tenant_id, '사이즈 가이드해줘', '', 'cancelled')
+    async with AsyncSessionLocal() as s:
+        msgs = await load_recent_messages(s, tenant_id, cid)
+    assert [m.role for m in msgs] == ['user', 'assistant']
+    turns = build_prior_turns(msgs, budget_tokens=2000)
+    assert turns == [{'q': '사이즈 가이드해줘', 'a': CANCELLED_TURN_EMPTY}]
+
+
+@pytest.mark.asyncio
+async def test_취소_표식은_condense_이력에도_동일(tenant_id, fake_llm):
+    """이력 재료의 단일 규칙(#59) — prior_turns와 condense가 다른 이력을 보면 안 된다."""
+    from rag.conversation import condense_query
+    from rag.prompt_texts import CANCELLED_TURN_SUFFIX
+    cid = await _seed_turn(tenant_id, '사이즈 가이드해줘', 'S(1): 평소 착용', 'cancelled')
+    async with AsyncSessionLocal() as s:
+        msgs = await load_recent_messages(s, tenant_id, cid)
+
+    captured = []                                  # condense가 받은 user 메시지(이력 포함) 캡처
+    orig = fake_llm.acomplete
+    async def spy(messages, extra_body=None):
+        captured.append(messages[-1]['content'])
+        return await orig(messages, extra_body)
+    fake_llm.acomplete = spy
+
+    await condense_query(fake_llm, '다시 얘기해줘', msgs)
+    assert any(CANCELLED_TURN_SUFFIX in c for c in captured), \
+        'condense 이력에 취소 표식이 없다 — 두 이력 규칙이 갈라졌다'
+
+
+@pytest.mark.asyncio
 async def test_차단_턴만_빠지고_정상_턴_짝짓기는_유지(tenant_id):
     """한쪽만 빼면 build_prior_turns의 user→assistant 짝짓기가 밀린다 — 그 회귀 방지."""
     async with AsyncSessionLocal() as s:

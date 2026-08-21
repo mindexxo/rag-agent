@@ -27,7 +27,8 @@ from rag.models import Conversation, Message
 
 logger = logging.getLogger(__name__)
 from rag.tokens import estimate_tokens
-from rag.prompt_texts import CONDENSE_MULTI_SYSTEM_PROMPT, CONDENSE_SYSTEM_PROMPT
+from rag.prompt_texts import (CANCELLED_TURN_EMPTY, CANCELLED_TURN_SUFFIX,
+                              CONDENSE_MULTI_SYSTEM_PROMPT, CONDENSE_SYSTEM_PROMPT)
 from rag.prompts import build_chat_prompt, build_condense_user_message
 
 
@@ -115,12 +116,28 @@ async def load_recent_messages(
     # blocked: 가드가 막은 입력이 다음 턴 프롬프트(condense·prior_turns·OTHER 이력)로
     #          재진입하면 차단 결정이 한 턴짜리로 휘발된다. 가드는 현재 질문만 검사한다.
     # failed/generating: content=''이라 빈 답변 턴이 맥락에 낀다.
+    # cancelled는 격리하지 않는다(#59) — 질문은 정상이고 부분 답변도 실재하는데 빼면
+    #          화면(조회 API는 노출)과 모델이 보는 이력이 어긋나 "다시"의 지시대상이 밀린다.
+    #          잘린 답변·빈 답변의 표시는 _history_content가 담당(조립 시점 표식).
     # user·assistant 짝을 함께 뺀다 — 한쪽만 빼면 build_prior_turns의 짝짓기가 밀린다.
     dropped_questions = {m.question_message_id for m in messages
-                         if m.role == 'assistant' and m.status != 'done'}
+                         if m.role == 'assistant' and m.status not in ('done', 'cancelled')}
     kept = [m for m in messages
-            if not (m.id in dropped_questions or (m.role == 'assistant' and m.status != 'done'))]
+            if not (m.id in dropped_questions
+                    or (m.role == 'assistant' and m.status not in ('done', 'cancelled')))]
     return kept[-limit:]   # 여유 조회분을 되돌려 원래 창 크기 유지
+
+
+def _history_content(message: Message) -> str:
+    """프롬프트 이력용 답변 텍스트 — 취소 턴 표식의 단일 정의점 (#59).
+
+    DB 저장본(Message.content)은 절대 바꾸지 않는다 — 표식은 조립 시점에만 붙는다.
+    소비처는 build_prior_turns(생성·OTHER 맥락)와 _condense_call(재작성 이력) 둘 —
+    양쪽이 각자 붙이면 모델이 보는 두 이력이 어긋난다(교차 기능 갭의 전형).
+    """
+    if message.role == 'assistant' and message.status == 'cancelled':
+        return message.content + CANCELLED_TURN_SUFFIX if message.content else CANCELLED_TURN_EMPTY
+    return message.content
 
 async def _condense_call(
         llm: LlmClient,
@@ -140,7 +157,7 @@ async def _condense_call(
     kms.expanded_queries를 남긴다 — 단일 경로 span엔 원래 이 속성이 없었다는 사실을 보존.
     """
     history = [
-        {'role': m.role, 'content': m.content}
+        {'role': m.role, 'content': _history_content(m)}
         for m in messages
     ]
 
@@ -448,7 +465,7 @@ def build_prior_turns(messages: list, budget_tokens: int) -> list[dict]:
         if message.role == "user":
             pending_question = message.content
         elif message.role == "assistant" and pending_question:
-            turns.append({"q": pending_question, "a": message.content})
+            turns.append({"q": pending_question, "a": _history_content(message)})
             pending_question = None
 
     # 최신 턴부터 역순으로 예산 소진까지 담고, 시간순으로 복원

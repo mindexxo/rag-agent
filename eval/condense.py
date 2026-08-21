@@ -54,7 +54,9 @@ async def compute(multi: bool = False) -> dict:
     sem = asyncio.Semaphore(CONCURRENCY)
 
     async def _one(case: dict, _i: int):
-        msgs = [SimpleNamespace(role=m["role"], content=m["content"]) for m in case["conversation"]]
+        # status 기본 done — 취소 턴 표식(#59, _history_content)이 assistant.status를 본다
+        msgs = [SimpleNamespace(role=m["role"], content=m["content"], status=m.get("status", "done"))
+                for m in case["conversation"]]
         async with sem:
             if multi:
                 out = (await condense_to_queries(llm, case["query"], msgs))[0]

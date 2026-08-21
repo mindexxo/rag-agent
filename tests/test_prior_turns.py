@@ -8,8 +8,9 @@ from rag.conversation import build_prior_turns
 from rag.tokens import estimate_tokens
 
 
-def _msg(role: str, content: str):
-    return SimpleNamespace(role=role, content=content)
+def _msg(role: str, content: str, status: str = 'done'):
+    # status 기본 done — 취소 턴 표식(#59, _history_content)이 assistant.status를 본다
+    return SimpleNamespace(role=role, content=content, status=status)
 
 
 def test_정상_쌍_페어링():

@@ -38,6 +38,12 @@ async def test_정상_스키마_경로():
     assert len(llm.calls) == 1 and 'structured_outputs' in llm.calls[0]   # 스키마가 실렸다
 
 
+def test_RETRY는_스키마_화이트리스트에_있다():
+    """#59 — 전이 인텐트 RETRY가 guided enum·검증 양쪽에서 유효해야 분류기가 낼 수 있다."""
+    assert RouteDecision(safe=True, intent='RETRY').intent == 'RETRY'
+    assert 'RETRY' in RouteDecision.model_json_schema()['properties']['intent']['enum']
+
+
 @pytest.mark.asyncio
 async def test_스키마_거부면_무스키마로_한_번_재시도():
     llm = _StubLlm(['{"safe": false, "intent": "OTHER", "reason": "x"}'], reject_schema=True)

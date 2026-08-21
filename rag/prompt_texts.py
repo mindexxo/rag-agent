@@ -23,6 +23,13 @@ SMALLTALK_ANSWER = '추가 질문 있으시면 말씀해 주세요!'
 # 입력 가드레일 차단(인젝션/PII/악의 유도) 시 반환 문구
 BLOCKED_INPUT_ANSWER = '해당 요청은 처리할 수 없습니다. 상담 관련 문의를 남겨 주세요.'
 
+# 이력 렌더용 취소 턴 표식 (#59) — DB 저장본(Message.content)에는 없다. 프롬프트 조립
+# 시점에만 rag/conversation.py의 _history_content가 붙인다(단일 정의점 — 소비처는
+# build_prior_turns·_condense_call 둘뿐). 취소 턴을 이력에 포함하면서 모델이 잘린 답을
+# 완결된 안내로 오인하지 않게 하는 맥락 정보이지, 지시문이 아니다.
+CANCELLED_TURN_SUFFIX = ' (안내 중단됨)'    # 부분 답변 뒤에 접미
+CANCELLED_TURN_EMPTY = '(답변 없음)'        # 첫 토큰 전 취소(content='') 대체
+
 # 테넌트 지식 범위 설명(domain_hint) — 인텐트 분류·KNOWLEDGE 생성·OTHER 생성 3곳에
 # 역할/범위 안내로만 주입한다. 답변의 근거가 아니다 (strict-grounded 유지).
 # [임시] ICCS 연동 전까지 요청 파라미터(KmsQueryRequest.domain_hint)로 받는다 (#1).
@@ -134,8 +141,13 @@ _INTENT_GUARD_SYSTEM_PROMPT_TEMPLATE = """당신은 한국어 콜센터 상담 �
   - 개인정보·민감정보를 만들어내거나 유출하라는 요구
   - 유해·악의적·불법 행위 유도
 
-[2] intent — 아래 둘 중 하나로 분류:
+[2] intent — 아래 셋 중 하나로 분류:
   - KNOWLEDGE : 상담 지식·정책·업무 내용에 관한 질문·요청 (지식 범위: __DOMAIN_HINT__)
+  - RETRY : 직전 요청을 다시 하거나 이어서 해달라는 짧은 재시도 요청 —
+      "다시", "다시 해줘", "이어서 해줘", "계속해줘"처럼 무엇을 다시 할지 구체 내용 없이
+      재실행 자체를 요구하는 발화입니다.
+      단, "그거"/"아까"/"방금"처럼 이전에 나온 내용을 가리켜 다시 말해달라는 회상 요청은 OTHER,
+      문장 안에 서비스 내용이 들어 있으면(예: "환불 신청 다시 하려면?") KNOWLEDGE입니다.
   - OTHER : 그 외 전부 —
       · 인사·감사·맞장구·감탄·푸념 (예: "안녕", "고마워", "수고하세요")
       · 이 대화 자체에 대한 요청 (예: "지금까지 요약해줘", "방금 뭐랬어", "내가 뭘 물어봤지")
@@ -187,6 +199,24 @@ _INTENT_GUARD_SYSTEM_PROMPT_TEMPLATE = """당신은 한국어 콜센터 상담 �
 상황: 첨부 문서 있음
 입력: 지금까지 내가 뭐 물어봤지?
 출력: {"safe": true, "intent": "OTHER"}
+
+입력: 다시
+출력: {"safe": true, "intent": "RETRY"}
+
+입력: 다시 얘기해줘야지
+출력: {"safe": true, "intent": "RETRY"}
+
+입력: 이어서 해줘
+출력: {"safe": true, "intent": "RETRY"}
+
+입력: 아까 그거 다시 말해줘
+출력: {"safe": true, "intent": "OTHER"}
+
+입력: 환불 신청 다시 하려면 어떻게 해요?
+출력: {"safe": true, "intent": "KNOWLEDGE"}
+
+입력: 배송지 변경 다시 요청드려요
+출력: {"safe": true, "intent": "KNOWLEDGE"}
 """
 
 # '그 외'(OTHER) 통합 경로 생성 프롬프트 — 인사·대화 요약·회상·자기소개는 자유롭게,

@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from rag.conversation import ensure_conversation, load_recent_messages, condense_query, condense_to_queries, build_prior_turns, trim_messages_for_condense, save_exchange, add_pending_turn, finalize_turn
+from rag.conversation import ensure_conversation, load_recent_messages, condense_query, condense_to_queries, build_prior_turns, trim_messages_for_condense, save_exchange, add_pending_turn, finalize_turn, last_cancelled_turn
 from rag.guardrail import classify_and_guard
 from rag.clients import shared_llm
 from rag.citation_labels import sources_from_chunks
@@ -66,6 +66,15 @@ class PreparedRag:
     # 죽은 값이 된다. 이 필드는 "저장에 쓸 벡터"라는 의미만 갖는다.
     # repr=False — 1024차원 float가 로그·트레이스백에 새는 것 차단.
     query_embedding: list[float] | None = field(default=None, repr=False)
+    # RETRY 재실행 턴(#59)에서만 채워진다 — 사용자가 실제 입력한 발화("다시").
+    # 저장·화면(recorded_query)은 이 값을 쓰고, 검색·프롬프트는 original_query
+    # (=직전 실질 질문)를 쓴다. 기록엔 사용자가 친 말만 남긴다는 원칙(화면=기록 진실성).
+    display_query: str | None = None
+
+    @property
+    def recorded_query(self) -> str:
+        """저장·화면에 남길 질문 — RETRY 재실행이면 사용자가 실제 친 발화, 아니면 원 질문 (#59)."""
+        return self.display_query or self.original_query
 
     def __post_init__(self) -> None:
         """검색 여부와 route를 짝지어 생성 시점에 강제한다 (#36).
@@ -187,6 +196,7 @@ class RagService:
         conversation, attachment_dicts, new_attachment_dicts = await self._resolve_conversation(
             conversation_id, attachments)
         messages = await load_recent_messages(self.session, self.tenant_id, conversation.id)
+        display_query: str | None = None   # RETRY 재실행에서만 채워짐 — _routed가 늦은 바인딩으로 읽는다
 
         def _routed(route: str, block_reason: str | None = None) -> PreparedRag:
             # 검색·인용 없이 라우팅 결과만 담는 PreparedRag (blocked/other 공용).
@@ -204,6 +214,7 @@ class RagService:
                 attachments=attachment_dicts,
                 new_attachments=new_attachment_dicts,
                 domain_hint=domain_hint,
+                display_query=display_query,
             )
 
         # 입력 가드레일 + 인텐트 분류 (통합 1회 호출) — 히스토리 유무와 무관하게 항상 실행
@@ -212,11 +223,30 @@ class RagService:
             logger.warning('입력 가드 차단 (tenant=%s, conversation=%s): %s',
                            self.tenant_id, conversation.id, decision.reason)
             return _routed("blocked", block_reason=decision.reason)
-        if decision.intent == "OTHER":
+
+        # RETRY 디스패치 (#59) — 분류기는 "재요청 발화"라는 표면 사실만 인식하고,
+        # 무엇을 다시 할지는 여기서 직전 턴 상태(팩트)로 결정론 해소한다 (Rasa repeat-intent 패턴).
+        # RETRY는 여기서 소멸하는 전이 인텐트 — 이후 파이프라인·저장 계층은 이 개념을 모른다.
+        precomputed_standalone: str | None = None
+        if decision.intent == "RETRY":
+            pair = last_cancelled_turn(messages)
+            if pair is None:
+                # 되돌릴 취소 턴 없음(직전이 done이거나 이력 없음) — 회상·재설명은 OTHER가 담당
+                return _routed("other")
+            prev_user, prev_assistant = pair     # prev_user = 체인 머리(실질 질문 — "다시" 연타여도)
+            display_query = query                # 저장·화면용 — 사용자가 친 "다시" 그대로
+            query = prev_user.content            # 검색·프롬프트용 — 중단된 실질 질문
+            if prev_assistant.intent == "OTHER":
+                return _routed("other")          # 원래 OTHER였던 턴(대화 요약 등)은 원래 경로로 재실행
+            # 재시도의 의미 = 원본 검색 재현 — 그 턴의 condense 결과를 재사용 (LLM 1콜 절감,
+            # 취소 턴이 낀 이력으로 재작성돼 다른 검색어가 나오는 변형 차단)
+            precomputed_standalone = prev_user.standalone_query or prev_user.content
+        elif decision.intent == "OTHER":
             return _routed("other")
 
         return await self._prepare_knowledge(
-            conversation.id, query, messages, attachment_dicts, new_attachment_dicts, domain_hint)
+            conversation.id, query, messages, attachment_dicts, new_attachment_dicts, domain_hint,
+            display_query=display_query, precomputed_standalone=precomputed_standalone)
 
     async def _resolve_conversation(
             self,
@@ -254,11 +284,14 @@ class RagService:
             attachment_dicts: list[dict],
             new_attachment_dicts: list[dict],
             domain_hint: str | None,
+            display_query: str | None = None,
+            precomputed_standalone: str | None = None,
     ) -> PreparedRag:
         """KNOWLEDGE 경로: 질의 재작성 → 검색 → 출처·FAQ 스냅샷 → semantic 캐시 조회.
 
         **부수효과**: 캐시가 히트하면 get_semantic이 hit_count·last_hit_at을 UPDATE한다
         (이름은 조회지만 쓰기가 있다).
+        display_query/precomputed_standalone은 RETRY 재실행(#59) 전용 — 일반 경로는 None.
         """
         # 질의 재작성 — 히스토리는 condense 전용 예산으로 (답변용 2000과 용도 분리).
         # 플래그 on(#5): 멀티턴이면 같은 자리 1콜로 멀티쿼리(재작성 1 + 어휘 변형 2). 첫 줄만
@@ -266,12 +299,17 @@ class RagService:
         # 단일턴은 플래그와 무관하게 현행 경로(LLM 스킵) — 단일턴 확장은 세 차례 측정(분리형·
         # 선언형·절차형)에서 일관되게 Hit@1 손실(변형의 RRF 희석)이라 멀티턴 전용으로 게이트(#5).
         expanded: list[str] = []
-        history_for_condense = trim_messages_for_condense(messages, settings.condense_history_budget_tokens)
-        if settings.condense_multi_query_enabled and messages:
-            queries = await condense_to_queries(self._llm, query, history_for_condense)
-            standalone_query, expanded = queries[0], queries[1:]
+        if precomputed_standalone is not None:
+            # RETRY 재실행(#59) — 재시도의 의미 = 원본 검색 재현. condense를 다시 태우면
+            # 취소 턴이 낀 이력으로 재작성돼 원래와 다른 검색어가 나올 수 있다.
+            standalone_query = precomputed_standalone
         else:
-            standalone_query = await condense_query(self._llm, query, history_for_condense)
+            history_for_condense = trim_messages_for_condense(messages, settings.condense_history_budget_tokens)
+            if settings.condense_multi_query_enabled and messages:
+                queries = await condense_to_queries(self._llm, query, history_for_condense)
+                standalone_query, expanded = queries[0], queries[1:]
+            else:
+                standalone_query = await condense_query(self._llm, query, history_for_condense)
 
         # 검색 (exact 캐시 제거 — semantic 캐시가 검색 후 doc집합 비교로 처리)
         retrieval = await retrieve(self.session, self.tenant_id, standalone_query, expanded_queries=expanded)
@@ -308,6 +346,7 @@ class RagService:
                     attachments=attachment_dicts,
                     new_attachments=new_attachment_dicts,
                     domain_hint=domain_hint,
+                    display_query=display_query,
                 )
 
         return PreparedRag(
@@ -323,6 +362,7 @@ class RagService:
             domain_hint=domain_hint,
             faq_versions=faq_versions,
             query_embedding=retrieval.query_embedding,   # maybe_cache가 save_answer로 넘긴다 (#50)
+            display_query=display_query,
         )
 
     async def _load_history_attachments(self, conversation_id: int, limit: int) -> list[dict]:
@@ -426,7 +466,7 @@ class RagService:
             self.session,
             self.tenant_id,
             prepared.conversation_id,
-            prepared.original_query,
+            prepared.recorded_query,
             prepared.standalone_query,
             answer,
             source_dicts,
@@ -459,7 +499,7 @@ class RagService:
             self.session,
             self.tenant_id,
             prepared.conversation_id,
-            prepared.original_query,
+            prepared.recorded_query,
             prepared.standalone_query,
             attachments=prepared.new_attachments or None,
             user_id=self.user_id,

@@ -27,7 +27,8 @@ from rag.models import Conversation, Message
 
 logger = logging.getLogger(__name__)
 from rag.tokens import estimate_tokens
-from rag.prompt_texts import CONDENSE_MULTI_SYSTEM_PROMPT, CONDENSE_SYSTEM_PROMPT
+from rag.prompt_texts import (CANCELLED_TURN_EMPTY, CANCELLED_TURN_SUFFIX,
+                              CONDENSE_MULTI_SYSTEM_PROMPT, CONDENSE_SYSTEM_PROMPT)
 from rag.prompts import build_chat_prompt, build_condense_user_message
 
 
@@ -115,12 +116,63 @@ async def load_recent_messages(
     # blocked: 가드가 막은 입력이 다음 턴 프롬프트(condense·prior_turns·OTHER 이력)로
     #          재진입하면 차단 결정이 한 턴짜리로 휘발된다. 가드는 현재 질문만 검사한다.
     # failed/generating: content=''이라 빈 답변 턴이 맥락에 낀다.
+    # cancelled는 격리하지 않는다(#59) — 질문은 정상이고 부분 답변도 실재하는데 빼면
+    #          화면(조회 API는 노출)과 모델이 보는 이력이 어긋나 "다시"의 지시대상이 밀린다.
+    #          잘린 답변·빈 답변의 표시는 _history_content가 담당(조립 시점 표식).
     # user·assistant 짝을 함께 뺀다 — 한쪽만 빼면 build_prior_turns의 짝짓기가 밀린다.
     dropped_questions = {m.question_message_id for m in messages
-                         if m.role == 'assistant' and m.status != 'done'}
+                         if m.role == 'assistant' and m.status not in ('done', 'cancelled')}
     kept = [m for m in messages
-            if not (m.id in dropped_questions or (m.role == 'assistant' and m.status != 'done'))]
+            if not (m.id in dropped_questions
+                    or (m.role == 'assistant' and m.status not in ('done', 'cancelled')))]
     return kept[-limit:]   # 여유 조회분을 되돌려 원래 창 크기 유지
+
+
+def last_cancelled_turn(messages: list[Message]) -> tuple[Message, Message] | None:
+    """직전 턴이 취소된 턴이면 (실질 질문 user, 직전 cancelled assistant)를 돌려준다 (#59).
+
+    RETRY 디스패치의 상태 근거 — "무엇을 다시 할지"는 분류기(표면 패턴)가 아니라
+    이 사실(직전 턴이 중단됐는가)이 결정한다. load_recent_messages가 걸러낸 리스트를
+    전제하므로 blocked/failed 뒤의 "다시"는 여기 안 걸리고 자연히 None(→OTHER 폴백)이다.
+    페어링 불변식(user 바로 다음 assistant)이 깨진 행이면 크래시 대신 None.
+
+    체인 되감기("다시" 연타): 재실행 턴이 다시 취소되면 그 user 행엔 원 발화("다시")만
+    남고 실질 질문은 물려받은 standalone_query로만 이어진다 — content를 그대로 쓰면
+    두 번째 "다시"부터 질문 슬롯이 "다시"로 퇴화한다(리뷰 발견, 확신 88). 같은
+    standalone으로 연결된 연속 취소 짝을 거슬러 올라가 체인 머리(실질 질문)의 user를
+    돌려준다. 서로 다른 질문이 연속 취소된 경우엔 standalone이 달라 자동으로 멈춘다.
+    """
+    if len(messages) < 2:
+        return None
+    last = messages[-1]
+    if last.role != 'assistant' or last.status != 'cancelled':
+        return None
+    i = len(messages) - 2
+    user = messages[i]
+    if user.role != 'user' or user.id != last.question_message_id:
+        return None
+    while i >= 2:
+        prev_a, prev_u = messages[i - 1], messages[i - 2]
+        if not (prev_a.role == 'assistant' and prev_a.status == 'cancelled'
+                and prev_u.role == 'user' and prev_u.id == prev_a.question_message_id
+                and user.standalone_query is not None
+                and prev_u.standalone_query == user.standalone_query):
+            break
+        user = prev_u
+        i -= 2
+    return user, last
+
+
+def _history_content(message: Message) -> str:
+    """프롬프트 이력용 답변 텍스트 — 취소 턴 표식의 단일 정의점 (#59).
+
+    DB 저장본(Message.content)은 절대 바꾸지 않는다 — 표식은 조립 시점에만 붙는다.
+    소비처는 build_prior_turns(생성·OTHER 맥락)와 _condense_call(재작성 이력) 둘 —
+    양쪽이 각자 붙이면 모델이 보는 두 이력이 어긋난다(교차 기능 갭의 전형).
+    """
+    if message.role == 'assistant' and message.status == 'cancelled':
+        return message.content + CANCELLED_TURN_SUFFIX if message.content else CANCELLED_TURN_EMPTY
+    return message.content
 
 async def _condense_call(
         llm: LlmClient,
@@ -140,7 +192,7 @@ async def _condense_call(
     kms.expanded_queries를 남긴다 — 단일 경로 span엔 원래 이 속성이 없었다는 사실을 보존.
     """
     history = [
-        {'role': m.role, 'content': m.content}
+        {'role': m.role, 'content': _history_content(m)}
         for m in messages
     ]
 
@@ -448,7 +500,7 @@ def build_prior_turns(messages: list, budget_tokens: int) -> list[dict]:
         if message.role == "user":
             pending_question = message.content
         elif message.role == "assistant" and pending_question:
-            turns.append({"q": pending_question, "a": message.content})
+            turns.append({"q": pending_question, "a": _history_content(message)})
             pending_question = None
 
     # 최신 턴부터 역순으로 예산 소진까지 담고, 시간순으로 복원

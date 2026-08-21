@@ -128,6 +128,25 @@ async def load_recent_messages(
     return kept[-limit:]   # 여유 조회분을 되돌려 원래 창 크기 유지
 
 
+def last_cancelled_turn(messages: list[Message]) -> tuple[Message, Message] | None:
+    """직전 턴이 취소된 턴이면 (user 질문, cancelled assistant) 짝을 돌려준다 (#59).
+
+    RETRY 디스패치의 상태 근거 — "무엇을 다시 할지"는 분류기(표면 패턴)가 아니라
+    이 사실(직전 턴이 중단됐는가)이 결정한다. load_recent_messages가 걸러낸 리스트를
+    전제하므로 blocked/failed 뒤의 "다시"는 여기 안 걸리고 자연히 None(→OTHER 폴백)이다.
+    페어링 불변식(user 바로 다음 assistant)이 깨진 행이면 크래시 대신 None.
+    """
+    if len(messages) < 2:
+        return None
+    last = messages[-1]
+    if last.role != 'assistant' or last.status != 'cancelled':
+        return None
+    prev = messages[-2]
+    if prev.role != 'user' or prev.id != last.question_message_id:
+        return None
+    return prev, last
+
+
 def _history_content(message: Message) -> str:
     """프롬프트 이력용 답변 텍스트 — 취소 턴 표식의 단일 정의점 (#59).
 

@@ -68,19 +68,9 @@ async def test_입력차단_턴은_blocked_status와_사유로_저장(client, te
 # ── ②-B 이력 격리 ─────────────────────────────────────────
 
 async def _seed_turn(tenant_id: str, question: str, answer: str, status: str) -> int:
-    """대화 1개 + user/assistant 한 턴 → conversation_id."""
-    async with AsyncSessionLocal() as s:
-        conv = Conversation(tenant_id=tenant_id, created_by='agent-a')
-        s.add(conv)
-        await s.flush()
-        u = Message(tenant_id=tenant_id, conversation_id=conv.id, role='user', content=question)
-        s.add(u)
-        await s.flush()
-        s.add(Message(tenant_id=tenant_id, conversation_id=conv.id, role='assistant',
-                      content=answer, status=status, question_message_id=u.id))
-        cid = conv.id
-        await s.commit()
-    return cid
+    """대화 1개 + user/assistant 한 턴 → conversation_id (conftest.seed_turn 위임 — #59 단일화)."""
+    from tests.conftest import seed_turn
+    return await seed_turn(tenant_id, question, answer, status=status)
 
 
 @pytest.mark.asyncio

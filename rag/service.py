@@ -67,9 +67,14 @@ class PreparedRag:
     # repr=False — 1024차원 float가 로그·트레이스백에 새는 것 차단.
     query_embedding: list[float] | None = field(default=None, repr=False)
     # RETRY 재실행 턴(#59)에서만 채워진다 — 사용자가 실제 입력한 발화("다시").
-    # 저장·화면(user 메시지 content)은 이 값을 쓰고, 검색·프롬프트는 original_query
+    # 저장·화면(recorded_query)은 이 값을 쓰고, 검색·프롬프트는 original_query
     # (=직전 실질 질문)를 쓴다. 기록엔 사용자가 친 말만 남긴다는 원칙(화면=기록 진실성).
     display_query: str | None = None
+
+    @property
+    def recorded_query(self) -> str:
+        """저장·화면에 남길 질문 — RETRY 재실행이면 사용자가 실제 친 발화, 아니면 원 질문 (#59)."""
+        return self.display_query or self.original_query
 
     def __post_init__(self) -> None:
         """검색 여부와 route를 짝지어 생성 시점에 강제한다 (#36).
@@ -228,14 +233,14 @@ class RagService:
             if pair is None:
                 # 되돌릴 취소 턴 없음(직전이 done이거나 이력 없음) — 회상·재설명은 OTHER가 담당
                 return _routed("other")
-            prev_user, prev_assistant = pair
+            prev_user, prev_assistant = pair     # prev_user = 체인 머리(실질 질문 — "다시" 연타여도)
             display_query = query                # 저장·화면용 — 사용자가 친 "다시" 그대로
             query = prev_user.content            # 검색·프롬프트용 — 중단된 실질 질문
+            if prev_assistant.intent == "OTHER":
+                return _routed("other")          # 원래 OTHER였던 턴(대화 요약 등)은 원래 경로로 재실행
             # 재시도의 의미 = 원본 검색 재현 — 그 턴의 condense 결과를 재사용 (LLM 1콜 절감,
             # 취소 턴이 낀 이력으로 재작성돼 다른 검색어가 나오는 변형 차단)
             precomputed_standalone = prev_user.standalone_query or prev_user.content
-            if prev_assistant.intent == "OTHER":
-                return _routed("other")          # 원래 OTHER였던 턴(대화 요약 등)은 원래 경로로 재실행
         elif decision.intent == "OTHER":
             return _routed("other")
 
@@ -461,8 +466,7 @@ class RagService:
             self.session,
             self.tenant_id,
             prepared.conversation_id,
-            # RETRY 재실행(#59)은 사용자가 실제 친 발화("다시")를 기록 — 검색·프롬프트만 실질 질문
-            prepared.display_query or prepared.original_query,
+            prepared.recorded_query,
             prepared.standalone_query,
             answer,
             source_dicts,
@@ -495,8 +499,7 @@ class RagService:
             self.session,
             self.tenant_id,
             prepared.conversation_id,
-            # RETRY 재실행(#59)은 사용자가 실제 친 발화("다시")를 기록 — 검색·프롬프트만 실질 질문
-            prepared.display_query or prepared.original_query,
+            prepared.recorded_query,
             prepared.standalone_query,
             attachments=prepared.new_attachments or None,
             user_id=self.user_id,

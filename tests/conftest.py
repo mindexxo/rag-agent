@@ -57,6 +57,30 @@ async def register_faq(client) -> int:
     return res.json()['id']
 
 
+async def seed_turn(tenant_id: str, question: str, answer: str, status: str = 'done',
+                    standalone: str | None = None, intent: str | None = None,
+                    conversation_id: int | None = None) -> int:
+    """user/assistant 한 턴 시딩 → conversation_id (register_faq와 같은 공용 승격 — #59에서
+    이력 격리·RETRY 테스트 2파일이 거의 같은 헬퍼를 복붙하던 것). conversation_id를 주면
+    기존 대화에 턴을 이어 붙인다(연속 취소 체인 시딩용)."""
+    from database import AsyncSessionLocal
+    from rag.models import Conversation, Message
+    async with AsyncSessionLocal() as s:
+        if conversation_id is None:
+            conv = Conversation(tenant_id=tenant_id, created_by='agent-a')
+            s.add(conv)
+            await s.flush()
+            conversation_id = conv.id
+        u = Message(tenant_id=tenant_id, conversation_id=conversation_id, role='user',
+                    content=question, standalone_query=standalone)
+        s.add(u)
+        await s.flush()
+        s.add(Message(tenant_id=tenant_id, conversation_id=conversation_id, role='assistant',
+                      content=answer, status=status, question_message_id=u.id, intent=intent))
+        await s.commit()
+    return conversation_id
+
+
 class _FakePool:
     def __init__(self, jobs: list):
         self._jobs = jobs

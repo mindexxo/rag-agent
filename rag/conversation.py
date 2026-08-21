@@ -129,22 +129,38 @@ async def load_recent_messages(
 
 
 def last_cancelled_turn(messages: list[Message]) -> tuple[Message, Message] | None:
-    """직전 턴이 취소된 턴이면 (user 질문, cancelled assistant) 짝을 돌려준다 (#59).
+    """직전 턴이 취소된 턴이면 (실질 질문 user, 직전 cancelled assistant)를 돌려준다 (#59).
 
     RETRY 디스패치의 상태 근거 — "무엇을 다시 할지"는 분류기(표면 패턴)가 아니라
     이 사실(직전 턴이 중단됐는가)이 결정한다. load_recent_messages가 걸러낸 리스트를
     전제하므로 blocked/failed 뒤의 "다시"는 여기 안 걸리고 자연히 None(→OTHER 폴백)이다.
     페어링 불변식(user 바로 다음 assistant)이 깨진 행이면 크래시 대신 None.
+
+    체인 되감기("다시" 연타): 재실행 턴이 다시 취소되면 그 user 행엔 원 발화("다시")만
+    남고 실질 질문은 물려받은 standalone_query로만 이어진다 — content를 그대로 쓰면
+    두 번째 "다시"부터 질문 슬롯이 "다시"로 퇴화한다(리뷰 발견, 확신 88). 같은
+    standalone으로 연결된 연속 취소 짝을 거슬러 올라가 체인 머리(실질 질문)의 user를
+    돌려준다. 서로 다른 질문이 연속 취소된 경우엔 standalone이 달라 자동으로 멈춘다.
     """
     if len(messages) < 2:
         return None
     last = messages[-1]
     if last.role != 'assistant' or last.status != 'cancelled':
         return None
-    prev = messages[-2]
-    if prev.role != 'user' or prev.id != last.question_message_id:
+    i = len(messages) - 2
+    user = messages[i]
+    if user.role != 'user' or user.id != last.question_message_id:
         return None
-    return prev, last
+    while i >= 2:
+        prev_a, prev_u = messages[i - 1], messages[i - 2]
+        if not (prev_a.role == 'assistant' and prev_a.status == 'cancelled'
+                and prev_u.role == 'user' and prev_u.id == prev_a.question_message_id
+                and user.standalone_query is not None
+                and prev_u.standalone_query == user.standalone_query):
+            break
+        user = prev_u
+        i -= 2
+    return user, last
 
 
 def _history_content(message: Message) -> str:

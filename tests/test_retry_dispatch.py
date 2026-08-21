@@ -15,7 +15,7 @@ from database import AsyncSessionLocal
 from rag.conversation import last_cancelled_turn
 from rag.models import Conversation, Message
 from rag.service import RagService
-from tests.conftest import register_faq
+from tests.conftest import register_faq, seed_turn
 
 RETRY_JSON = '{"safe": true, "intent": "RETRY"}'
 USER_A = {'X-User-Id': 'agent-a'}
@@ -46,25 +46,29 @@ class TestLastCancelledTurn:
         u, a = _m('user', mid=1), _m('assistant', status='cancelled', mid=3, qid=99)
         assert last_cancelled_turn([u, a]) is None
 
+    def test_같은_standalone_체인은_머리까지_되감는다(self):
+        u1 = _m('user', mid=1); u1.standalone_query = 'X'
+        a1 = _m('assistant', status='cancelled', mid=2, qid=1)
+        u2 = _m('user', mid=3); u2.standalone_query = 'X'      # 재실행 턴("다시" 저장, standalone 물림)
+        a2 = _m('assistant', status='cancelled', mid=4, qid=3)
+        assert last_cancelled_turn([u1, a1, u2, a2]) == (u1, a2)
+
+    def test_standalone이_다르면_되감기_정지(self):
+        u1 = _m('user', mid=1); u1.standalone_query = 'X'
+        a1 = _m('assistant', status='cancelled', mid=2, qid=1)
+        u2 = _m('user', mid=3); u2.standalone_query = 'Y'      # 다른 질문의 연속 취소
+        a2 = _m('assistant', status='cancelled', mid=4, qid=3)
+        assert last_cancelled_turn([u1, a1, u2, a2]) == (u2, a2)
+
 
 # ── 통합: 디스패처 ───────────────────────────────────────────
 
 async def _seed_cancelled(tenant_id: str, question: str, partial: str,
-                          standalone: str | None = None, intent: str = 'KNOWLEDGE') -> int:
-    """취소로 끝난 턴 1개를 가진 대화 → conversation_id."""
-    async with AsyncSessionLocal() as s:
-        conv = Conversation(tenant_id=tenant_id, created_by='agent-a')
-        s.add(conv)
-        await s.flush()
-        u = Message(tenant_id=tenant_id, conversation_id=conv.id, role='user',
-                    content=question, standalone_query=standalone)
-        s.add(u)
-        await s.flush()
-        s.add(Message(tenant_id=tenant_id, conversation_id=conv.id, role='assistant',
-                      content=partial, status='cancelled', question_message_id=u.id, intent=intent))
-        cid = conv.id
-        await s.commit()
-    return cid
+                          standalone: str | None = None, intent: str = 'KNOWLEDGE',
+                          conversation_id: int | None = None) -> int:
+    """취소로 끝난 턴 시딩 — conftest.seed_turn 위임 (헬퍼 단일화, 리뷰 반영)."""
+    return await seed_turn(tenant_id, question, partial, status='cancelled',
+                           standalone=standalone, intent=intent, conversation_id=conversation_id)
 
 
 @pytest.mark.asyncio
@@ -154,16 +158,37 @@ async def test_RETRY_원래_OTHER턴_취소는_OTHER로_재실행(client, tenant
 
 
 @pytest.mark.asyncio
-async def test_RETRY_체인은_standalone으로_원본_검색_유지(client, tenant_id, fake_llm, fake_embed, pass_gate):
-    """"다시" 연타 — 재실행 턴의 user에 standalone이 저장돼 있어 검색어가 퇴화하지 않는다."""
+async def test_RETRY_체인은_실질_질문과_검색어를_모두_복원(client, tenant_id, fake_llm, fake_embed, pass_gate):
+    """"다시" 연타 — 재실행 턴의 user 행엔 "다시"(display)만 남지만, 같은 standalone으로
+    연결된 연속 취소 짝을 되감아 실질 질문까지 복원한다 (리뷰 발견: 질문 슬롯 퇴화 방지)."""
     await register_faq(client)
-    # 1차 재실행 턴이 남긴 모양 그대로 시드: content="다시"(display), standalone=원 검색어, 또 취소
-    cid = await _seed_cancelled(tenant_id, '다시', 'S(1): 평소',
+    # Turn N: 실질 질문 취소 → Turn N+1: 재실행("다시" 저장, standalone 물림)도 취소
+    cid = await _seed_cancelled(tenant_id, '사이즈 가이드해줘', 'S(1): 평소',
                                 standalone='티셔츠 사이즈별 착용 가이드')
+    await _seed_cancelled(tenant_id, '다시', '',
+                          standalone='티셔츠 사이즈별 착용 가이드', conversation_id=cid)
     fake_llm.intent_json = RETRY_JSON
 
     async with AsyncSessionLocal() as s:
         svc = RagService(tenant_id=tenant_id, session=s, user_id='agent-a')
         prepared = await svc.prepare('다시', conversation_id=cid)
     assert prepared.route == 'knowledge'
-    assert prepared.standalone_query == '티셔츠 사이즈별 착용 가이드'   # 검색은 원본 그대로
+    assert prepared.original_query == '사이즈 가이드해줘'               # 질문 슬롯 퇴화 없음
+    assert prepared.standalone_query == '티셔츠 사이즈별 착용 가이드'   # 검색도 원본 그대로
+    assert prepared.display_query == '다시'
+
+
+@pytest.mark.asyncio
+async def test_RETRY_서로_다른_질문의_연속취소는_최신_질문만(client, tenant_id, fake_llm, fake_embed, pass_gate):
+    """X 취소 → Y 취소 → "다시"는 Y 재실행 — standalone이 달라 체인 되감기가 멈춰야 한다."""
+    await register_faq(client)
+    cid = await _seed_cancelled(tenant_id, '환불 기간 알려줘', '', standalone='환불 처리 기간')
+    await _seed_cancelled(tenant_id, '사이즈 가이드해줘', 'S(1)',
+                          standalone='티셔츠 사이즈별 착용 가이드', conversation_id=cid)
+    fake_llm.intent_json = RETRY_JSON
+
+    async with AsyncSessionLocal() as s:
+        svc = RagService(tenant_id=tenant_id, session=s, user_id='agent-a')
+        prepared = await svc.prepare('다시', conversation_id=cid)
+    assert prepared.original_query == '사이즈 가이드해줘'               # 최신 질문(Y)
+    assert prepared.standalone_query == '티셔츠 사이즈별 착용 가이드'

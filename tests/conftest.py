@@ -183,12 +183,12 @@ class FakeLlm:
         # 걸러내 citations=[]가 그대로 유지된다 — 그 경로의 기대값은 안 바뀐다.
         # 인용 검증 테스트는 여전히 answer를 직접 교체해서 쓴다.
         # 어절 3개 유지 주의: pause_after_tokens=2(셋째 토큰 정지)를 쓰는 취소 테스트들의 전제.
-        from rag.citation_labels import TAIL_END, TAIL_START
-        self.answer = answer if answer is not None else f'테스트 답변입니다. {TAIL_START}1{TAIL_END}'
+        from rag.citation_labels import citation_tail
+        self.answer = answer if answer is not None else f'테스트 답변입니다. {citation_tail([1])}'
         self.intent_json = '{"safe": true, "intent": "KNOWLEDGE"}'
         self.calls: list[str] = []          # 어떤 용도로 호출됐는지 기록 (검증용)
         self.system_prompts: list[tuple[str, str]] = []   # (용도, 시스템 프롬프트) — 주입 내용 검증용
-        self.extra_bodies: list[dict | None] = []   # astream별 extra_body — guided 문법 주입 검증용(#56)
+        self.extra_bodies: list[dict | None] = []   # astream별 extra_body — 꼬리 제약 주입 검증용(#56·#65)
         self.acomplete_extra_bodies: list[dict | None] = []   # acomplete별 — 스키마 주입·재시도 증거(#43)
         self.reject_schema = False   # True면 structured_outputs 실린 acomplete를 400으로 거부 — 구버전 서버 재현(#43)
         # 취소 테스트용 정지 지점 (#30). None이면 기존 동작 그대로.

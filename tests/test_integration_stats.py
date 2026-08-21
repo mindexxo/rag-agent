@@ -7,7 +7,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from rag.citation_labels import TAIL_END, TAIL_START
+from rag.citation_labels import TAIL_END, TAIL_START, citation_tail
 from rag.models import Message
 
 
@@ -44,7 +44,7 @@ async def test_씨앗_저장_user_id_latency_cache_kind(client, tenant_id, fake_
 @pytest.mark.asyncio
 async def test_stats_집계_정확성(client, tenant_id, fake_llm, pass_gate):
     await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})
-    fake_llm.answer = f'7일 이내 처리됩니다. {TAIL_START}1{TAIL_END}'   # 출처 꼬리 인용 (#56)
+    fake_llm.answer = f'7일 이내 처리됩니다. {citation_tail([1])}'   # 출처 꼬리 인용 (#56)
     await _ask(client, '환불 기간 알려줘', user='agent-kim')     # 답변 1 (생성)
     await _ask(client, '환불 기간 알려줘', user='agent-kim')     # 답변 2 (캐시)
     # 거절 유도: pass_gate를 우회할 수 없는 다른 질의? — 게이트가 항상 통과라 거절은
@@ -80,7 +80,7 @@ async def test_레거시_intent_NULL_거절은_답변률을_왜곡하지_않는�
     근거미확인율>1 → 답변률이 음수가 된다 (셀프 검증에서 발견된 실버그).
     """
     await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})
-    fake_llm.answer = f'7일 이내 처리됩니다. {TAIL_START}1{TAIL_END}'
+    fake_llm.answer = f'7일 이내 처리됩니다. {citation_tail([1])}'
     await _ask(client, '환불 기간 알려줘', user='agent-kim')     # 신규 정상 답변 1
 
     async with AsyncSessionLocal() as session:                   # 레거시 거절 행 주입 (intent NULL)
@@ -144,7 +144,7 @@ async def test_비표준_거절문구도_ungrounded로_집계된다(client, tena
     → 인용 0건이므로 새 판정은 True. 이 전환의 실질 이득이 정확히 이것이다.
     """
     await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})
-    fake_llm.answer = f'해외 배송은 제공되지 않습니다. {TAIL_START}{TAIL_END}'
+    fake_llm.answer = f'해외 배송은 제공되지 않습니다. {citation_tail([])}'
     await _ask(client, '해외 배송 되나요?', user='agent-kim')
 
     body = (await client.get('/kms/stats?days=1')).json()
@@ -198,7 +198,7 @@ async def test_문구가_거절이어도_인용이_있으면_ungrounded가_아�
     회귀로 오인하지 않게 고정한다.
     """
     await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})
-    fake_llm.answer = f'해당 내용은 제공된 문서에서 확인할 수 없습니다. {TAIL_START}1{TAIL_END}'
+    fake_llm.answer = f'해당 내용은 제공된 문서에서 확인할 수 없습니다. {citation_tail([1])}'
     await _ask(client, '환불 기간 알려줘', user='agent-kim')
 
     body = (await client.get('/kms/stats?days=1')).json()

@@ -31,7 +31,7 @@ from rag.models import Chunk, Document
 from rag.retriever import retrieve_candidates, RetrievedChunk
 from rag.embeddings import embed_texts_sync
 from rag.llm_schemas import is_schema_rejected
-from rag.prompts import build_citation_grammar, build_knowledge_generation_prompt
+from rag.prompts import build_citation_constraint, build_knowledge_generation_prompt
 from rag.llm import LlmClient
 from eval.retrieval import resolve_gold
 
@@ -102,30 +102,32 @@ async def generate(llm: LlmClient, original_query: str, chunks: list[RetrievedCh
     운영(rag/service.py)과 같은 조립점을 쓴다 — 인자를 한쪽에서만 빼먹는 종류의 어긋남을
     구조적으로 막기 위해서다(#48: 여기서 prior_turns가 빠져 있었고 아무 데도 안 걸렸다).
 
-    출처 꼬리 문법도 운영과 같이 붙인다 (#61) — 이전엔 하네스만 문법 없이 생성했다.
+    출처 꼬리 제약도 운영과 같이 붙인다 (#61) — 이전엔 하네스만 제약 없이 생성했다.
     첨부는 []다 — gold set에 첨부 문항이 0건이다.
 
-    ⚠ **다만 이 문법은 현재 배포에서 강제되지 않는다** — 붙이기 전후 문법 위반율이
-    같다(oracle 1.1%·retrieved 1.6%). 원인·사다리 실측은 rag/prompts.py의
-    build_citation_grammar docstring 참조. 그러니 이 인자는 지금 **측정값을 바꾸지 않고**,
-    운영과 코드 조건을 맞추는 의미만 있다(서버·형식이 고쳐지면 자동으로 효과가 생긴다).
-    "문법을 붙였으니 하네스 Cite가 운영에 가까워졌다"고 읽지 말 것 — 원래 같았다.
+    #65부터 이 제약이 **실제로 강제된다**(#56 도입 이후 처음). 그전 구현(정규식)은 vLLM에서
+    무효였고, 그래서 붙이기 전후 위반율이 같았다(oracle 1.1%·retrieved 1.6%) — 경위와 사다리
+    실측은 rag/prompts.build_citation_constraint docstring. 이 하네스가 그 강제 효과를 재는
+    1차 지표다: 위반율이 0으로 떨어지는지가 검증 대상이다.
 
-    fail-open: 서버가 문법을 거부하면(400/422) 문법 없이 1회 재시도한다.
+    fail-open: 서버가 제약을 거부하면(400/422) 제약 없이 1회 재시도한다.
     400/422로 좁힌 것은 rag/llm_schemas.py의 선례를 따른 것이다 — 운영 답변 생성 경로
     (rag/service.py의 astream)는 except Exception으로 넓게 잡지만, 그쪽은 첫 토큰을 당기는
     시점이라 재시도 비용이 0에 가깝다. acomplete는 블로킹이라 넓게 잡으면 타임아웃 대기가
     배가된다. 호출 형태가 같은 쪽(acomplete_validated)의 판단을 따른다.
+    주의: response_format을 모르는 구버전 서버가 어떤 상태코드로 거부할지는 **미검증**이다
+    (그런 서버가 없다). 400/422 밖이면 이 필터를 통과하지 못해 예외가 그대로 전파된다 —
+    조용히 삼키는 것보다 시끄럽게 실패하는 쪽이 안전한 기본값이라 넓히지 않았다.
     """
     prompt = build_knowledge_generation_prompt(
         original_query, chunks, standalone_query=standalone_query, prior_turns=prior_turns)
-    grammar = build_citation_grammar(sources_from_chunks(chunks), [])
+    constraint = build_citation_constraint(sources_from_chunks(chunks), [])
     try:
-        return await llm.acomplete(prompt, extra_body=grammar)
+        return await llm.acomplete(prompt, extra_body=constraint)
     except Exception as exc:
         if not is_schema_rejected(exc):
             raise
-        print('  [warn] 꼬리 문법 거부 — 문법 없이 재시도 (fail-open, #61)')
+        print('  [warn] 꼬리 제약 거부 — 제약 없이 재시도 (fail-open, #61·#65)')
         return await llm.acomplete(prompt)
 
 
@@ -208,7 +210,16 @@ def _citation_match(core: str, stem: str) -> bool:
 
 
 def citation_accuracy(answer: str, expected_docs: list[str], chunks: list[RetrievedChunk]) -> float:
-    """기대 문서 중 답변이 실제로 인용한 비율 (0..1).
+    r"""기대 문서 중 답변이 실제로 인용한 비율 (0..1).
+
+    v5 (#65, **v4 이전 결과와 비교 불가**): 꼬리 제약이 **처음으로 실제 강제된다**
+    (정규식 → structural_tag, #56 도입 이후 최초). 채점 코드는 무변경 — 여전히 운영 배관
+    (TailSplitter → resolve_citations)을 그대로 쓰고, resolve_citations의 `\d+` 추출이
+    대괄호·쉼표·여백을 무시하므로 꼬리 형식이 `««1,3»»`에서 `««[1,3]»»`로 바뀐 것도
+    파싱에 영향이 없다. 바뀌는 것은 **입력 분포**다: 유효 범위 밖 번호가 원천 차단되므로
+    "꼬리가 범위 밖 번호뿐이라 인용 0건이 되던" 위반(v4 시점 oracle 1.1%·retrieved 1.6%)이
+    사라진다. 수치가 오르면 그 강제 효과이고, 무변동이면 대다수가 이미 준수했다는 뜻이다 —
+    어느 쪽도 채점 정의 변경이 아니다.
 
     v4 (#61, **v3 이전 결과와 비교 불가**): 두 가지가 운영과 일치하게 바뀌었다.
       1) 꼬리 분리를 운영 배관(TailSplitter)으로 교체 — 이전엔 rsplit/split으로 직접
@@ -217,7 +228,7 @@ def citation_accuracy(answer: str, expected_docs: list[str], chunks: list[Retrie
          `««1,2 그리고 3개 항목이…`(END 없음) → 옛 파싱이 **본문에서 숫자를 뽑는다** / 운영 None.
          실데이터 450문항 전수 대조에서는 불일치 0이었지만(모델이 얌전했다는 뜻),
          채점 정의가 운영과 달랐다는 사실은 그대로다.
-      2) generate()가 운영과 같은 꼬리 문법을 붙인다 — 생성 조건 변경(위 generate 참조).
+      2) generate()가 운영과 같은 꼬리 제약을 붙인다 — 생성 조건 변경(위 generate 참조).
     채점 정의가 바뀐 것이지 모델이 좋아지거나 나빠진 게 아니다.
 
     v3 (#56, **v2 이전 결과와 비교 불가**): 인용이 본문 인라인에서 답변 끝 출처 꼬리

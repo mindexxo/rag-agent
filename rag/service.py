@@ -24,7 +24,7 @@ from rag.clients import shared_llm
 from rag.citation_labels import sources_from_chunks
 from rag.models import Conversation, Message
 from rag.prompt_texts import BLOCKED_INPUT_ANSWER, NO_EVIDENCE_ANSWER, SMALLTALK_ANSWER
-from rag.prompts import (build_chat_prompt, build_citation_grammar,
+from rag.prompts import (build_chat_prompt, build_citation_constraint,
                          build_knowledge_generation_prompt, build_other_system_prompt,
                          build_other_user_message)
 from rag.retriever import RetrievalResult, retrieve, RetrievedChunk
@@ -116,6 +116,19 @@ class PreparedRag:
         """저장용 인텐트 라벨 — 답변률 분모(KNOWLEDGE) 판별에 쓴다.
         blocked는 인텐트 판정 자체가 무의미(unsafe 입력)라 NULL."""
         return {"knowledge": "KNOWLEDGE", "other": "OTHER"}.get(self.route)
+
+    @property
+    def citation_candidates(self) -> tuple[list[SourceCitation], list[str]]:
+        """인용 후보 (검색 출처, 첨부 파일명) — 꼬리 제약과 파서가 공유하는 단일 파생점 (#65).
+
+        이전엔 rag/service.py(제약 생성)와 rag/streaming.py(파서 호출)가 같은 컴프리헨션을
+        각자 써서 "우연히 같은" 상태였다. 제약이 무효였을 때는 어긋나도 무해했지만(각주 누락),
+        #65에서 강제가 실제로 걸리면 어긋남이 **에러 없는 오귀속**이 된다 — 축소된 범위 안의
+        다른 문서가 강제로 인용되고 파서의 범위 검증은 통과한다. 파생을 한 곳으로 모아
+        한쪽만 고치는 미래의 수정이 구조적으로 불가능하게 만든다.
+        순서 계약(출처 다음 첨부)은 rag/citation_labels.py가 정의점이다.
+        """
+        return self.sources, [a['filename'] for a in (self.attachments or [])]
 
     @property
     def no_evidence(self) -> bool:
@@ -264,7 +277,7 @@ class RagService:
         retrieval = await retrieve(self.session, self.tenant_id, standalone_query, expanded_queries=expanded)
 
         # 인용 후보 (문서 단위) — 순서가 곧 인용 번호(citation_labels 불변식):
-        # 프롬프트 [번호]·guided 문법·꼬리 파서가 전부 이 리스트 순서를 공유한다.
+        # 프롬프트 [번호]·꼬리 제약·꼬리 파서가 전부 이 리스트 순서를 공유한다.
         sources = [] if retrieval.no_evidence else sources_from_chunks(retrieval.chunks)
 
         source_doc_ids = _source_doc_ids(retrieval.chunks)
@@ -377,16 +390,16 @@ class RagService:
             domain_hint=prepared.domain_hint,
         )
 
-        # 출처 꼬리 강제 문법 (#56) — 유효 범위의 후보 번호(검색 출처+첨부)만 꼬리에 올 수 있다.
-        # 서버가 미지원(400 등, 첫 토큰 전에 터진다)이면 문법 없이 재시도(fail-open) —
+        # 출처 꼬리 강제 (#56 도입 → #65에서 정규식→structural_tag 재구현. 정규식이 왜 무효였는지는
+        # build_citation_constraint docstring — 되돌리지 말 것). 유효 범위의 후보 번호만 꼬리에 온다.
+        # 서버가 미지원(400 등, 첫 토큰 전에 터진다)이면 제약 없이 재시도(fail-open) —
         # 이때도 꼬리 파서의 번호 범위 검증은 동일하므로 조용한 오답 확정은 없다.
-        grammar = build_citation_grammar(
-            prepared.sources, [a['filename'] for a in (prepared.attachments or [])])
-        stream = self._llm.astream(prompt, extra_body=grammar)
+        constraint = build_citation_constraint(*prepared.citation_candidates)
+        stream = self._llm.astream(prompt, extra_body=constraint)
         try:
             first = await anext(stream, None)
         except Exception:
-            logger.warning('guided decoding 요청 실패 — 문법 없이 재시도 (fail-open, #56)')
+            logger.warning('꼬리 제약 요청 실패 — 제약 없이 재시도 (fail-open, #56·#65)')
             stream = self._llm.astream(prompt)
             first = await anext(stream, None)
         if first is not None:

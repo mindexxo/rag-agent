@@ -55,8 +55,9 @@ def _citations(prepared: PreparedRag, answer: str) -> list:
     splitter = TailSplitter()
     splitter.feed(answer)
     splitter.finish()
-    return resolve_citations(splitter.tail_raw, prepared.sources,
-                             [a['filename'] for a in (prepared.attachments or [])])
+    # 후보 파생은 PreparedRag.citation_candidates 한 곳 (#65) — 운영 두 호출부와 같은 통로다.
+    # 여기서 직접 조립하면 이 PR이 없애려던 '우연히 같은' 상태가 eval에만 남는다.
+    return resolve_citations(splitter.tail_raw, *prepared.citation_candidates)
 
 
 async def _refused(tenant: str, query: str) -> bool:

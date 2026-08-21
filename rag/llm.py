@@ -23,7 +23,7 @@ class LlmClient:
     def _base_kwargs(self, extra_body: dict | None = None) -> dict:
         """공통 호출 인자. temperature는 설정됐을 때만 전달 (None = 서버 기본값).
 
-        extra_body: 요청별 vLLM 확장 인자(#56 — guided decoding 등). 공통
+        extra_body: 요청별 vLLM 확장 인자(#56 — 구조화 출력·꼬리 제약 등). 공통
         chat_template_kwargs와 병합한다 — 덮어쓰면 enable_thinking이 유실된다.
         """
         kwargs = {

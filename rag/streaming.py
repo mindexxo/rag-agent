@@ -234,10 +234,9 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
             # 덮어쓰지 않는다. 옛 `refusal or` 절은 "본문은 거절인데 꼬리에 번호가 남는"
             # 모델 모순을 []로 덮는 안전장치였는데, 비대칭이었다 — 반대 방향(확신에 찬
             # 답변인데 꼬리가 빈 경우)은 원래 못 잡았다. 그 절을 지우면 후자가 처음으로
-            # 드러난다. 범위 검증은 resolve_citations가 문법 유무와 무관하게 수행한다.
+            # 드러난다. 범위 검증은 resolve_citations가 제약 유무와 무관하게 수행한다.
             citations = [] if splitter is None else resolve_citations(
-                splitter.tail_raw, prepared.sources,
-                [a['filename'] for a in (prepared.attachments or [])])
+                splitter.tail_raw, *prepared.citation_candidates)   # 제약과 같은 파생점 (#65)
             latency_ms = _elapsed_ms(t_request)   # 저장·스팬·done이 같은 값을 쓰도록 한 번만 계산 (#54)
             await svc.finalize(prepared, answer, citations, status="done", latency_ms=latency_ms)
             await session.commit()

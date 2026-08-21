@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from rag.citation_labels import TAIL_END, TAIL_START
+from rag.citation_labels import TAIL_END, TAIL_START, citation_tail
 from rag.documents import index_pending_document
 from rag.models import Document, Message
 from tests.conftest import sse_meta
@@ -65,7 +65,7 @@ async def test_NFD로_올린_문서의_인용은_NFC_파일명으로_잡힌다(
     await index_pending_document(body['document_id'])
 
     # 유일 문서 = 후보 1번 인용
-    fake_llm.answer = f'단순변심 반품은 14일 이내입니다. {TAIL_START}1{TAIL_END}'
+    fake_llm.answer = f'단순변심 반품은 14일 이내입니다. {citation_tail([1])}'
 
     res = await client.post('/kms/query', json={'query': '반품 기간 알려줘'})
     assert res.status_code == 200

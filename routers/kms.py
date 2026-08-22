@@ -27,7 +27,7 @@ from schemas.kms import KmsQueryRequest
 
 router = APIRouter(prefix='/kms')
 
-_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+_SSE_HEADERS = streaming.SSE_HEADERS   # 정의점은 rag/streaming.py (재접속 라우터와 공유)
 
 
 def get_tenant_id(x_tenant_id: str = Header(...)) -> str:

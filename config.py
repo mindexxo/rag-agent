@@ -43,6 +43,16 @@ class Settings(BaseSettings):
     user_concurrency_default: int = 10    # 사용자(X-User-Id)별 동시 in-flight 기본
     inflight_max_seconds: int = 120       # in-flight 유령 판정 — 넘으면 카운트서 제거(강제종료 아님)
     sse_ping_interval_seconds: int = 15   # SSE 유휴 ping 주기 — 프록시 idle 종료 대비 (#56, 생성 경로만)
+    # 재접속용 Redis Stream (#75). TTL은 종료 후 재접속 유예 — 레이스(이력 조회와 구독 사이에
+    # 생성이 끝나는 창)를 매끄럽게 흡수한다. 스트림 하나가 답변 하나 크기(수 KB)라 넉넉해도 무해.
+    stream_resume_ttl_seconds: int = 300
+    # 배치 창 — 토큰마다 XADD하면 원격 Redis 왕복이 토큰 루프에 얹혀 latency를 오염시킨다.
+    # 첫 배치는 이 창을 안 기다린다(첫 토큰 체감 보호). FE가 자체 타자기로 그려 청크 크기는 렌더에 무관.
+    stream_resume_flush_seconds: float = 0.05
+    # flush 한 번의 상한. shared_redis에 소켓 타임아웃이 없어, 원격 Redis가 에러 없이 멈추면
+    # (블랙홀 라우팅 등) 무한 대기한다 — 그 대기가 _run_generation의 finally에 있어 리미터
+    # 반납까지 막는다. 미러링 실패가 생성을 막으면 안 된다는 원칙은 예외뿐 아니라 hang에도 적용돼야 한다.
+    stream_resume_flush_timeout_seconds: float = 5.0
 
     # CORS — FE가 다른 origin에서 서빙될 때(배포·프록시 없는 로컬) 허용 목록.
     # 쉼표 구분 (.env 예: CORS_ALLOW_ORIGINS=http://localhost:5173,https://iccs.example.com)

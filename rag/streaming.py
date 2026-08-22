@@ -38,7 +38,7 @@ from typing import Literal
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import cancellation, limiter, otel
+from rag import cancellation, limiter, otel, stream_resume
 from rag.limiter import Lease
 from rag.citation_tail import TailSplitter, resolve_citations
 from rag.service import PreparedRag, RagService
@@ -53,6 +53,10 @@ EVENT_PING = 'ping'
 EVENT_ERROR = 'error'
 EVENT_DONE = 'done'
 
+# SSE 응답 헤더 — /kms/query와 재접속(#75) 두 엔드포인트가 공유한다.
+# 값이 갈리면 한쪽만 프록시 버퍼링에 걸려 '어떤 스트림은 안 흐른다'가 된다.
+SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
 # 태스크 참조 유지(GC 방지)와 취소 대상 색인은 rag/cancellation.py의 레지스트리가 겸한다 —
 # 같은 목적의 자료구조를 둘로 두지 않는다. 취소 규약(pop-then-cancel)은 그쪽 docstring 참조.
 
@@ -64,14 +68,20 @@ def sse_event(event: str, data) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _meta_event(prepared: PreparedRag) -> str:
-    return sse_event(EVENT_META, {
+def _meta_payload(prepared: PreparedRag) -> dict:
+    """meta 페이로드 — 로컬 리더(_meta_event)와 재접속 스트림 기록이 공유한다 (#75).
+    두 경로가 각자 조립하면 재접속 화면의 meta만 조용히 달라진다."""
+    return {
         "conversation_id": prepared.conversation_id,
         "assistant_message_id": prepared.assistant_message_id,   # FE 재접속·상태조회용
         "cached": prepared.is_cache_hit,
         "cache_kind": prepared.cache_kind,
         "reason": "no_evidence" if prepared.no_evidence else "ok",
-    })
+    }
+
+
+def _meta_event(prepared: PreparedRag) -> str:
+    return sse_event(EVENT_META, _meta_payload(prepared))
 
 
 @dataclass
@@ -209,6 +219,25 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
     # 출처 꼬리 분리(#56) — knowledge만 꼬리를 만든다(OTHER·즉시 경로는 인용 없음).
     # 꼬리는 delta로 나가지 않고, parts(=화면=저장)에는 splitter가 방출한 본문만 쌓인다.
     splitter = TailSplitter() if prepared.route == "knowledge" else None
+
+    # 재접속용 미러링 (#75) — 인메모리 큐와 **같은 이벤트**를 Redis Stream에도 남긴다.
+    # writer의 생성·정리 주체는 이 태스크다 (lease·root_span·취소 레지스트리와 같은 수명 원칙:
+    # 요청이 아니라 태스크가 소유한다 — 연결이 끊겨도 생성은 완주하므로).
+    writer = stream_resume.StreamWriter(lease.tenant_id, prepared.assistant_message_id)
+    # meta는 로컬 리더가 prepared로 직접 합성하므로(큐를 안 거친다) emit 대상이 아니다 —
+    # 재접속 리더에겐 prepared가 없으니 스트림에만 심는다. 비대칭이지만 근거가 있다.
+    writer.add(EVENT_META, _meta_payload(prepared))
+
+    async def emit(event: str, data: dict) -> None:
+        """생성 경로 이벤트 방출의 **단일 지점** (#75).
+
+        큐 put과 스트림 기록을 한 함수가 함께 한다 — 방출 자리가 6곳(delta 2·done 3·error 1)이라
+        호출부마다 두 줄을 쓰면 언젠가 한쪽을 빠뜨린다. 그러면 재접속 화면만 조용히 달라진다.
+        이 저장소가 반복해서 경계하는 '우연히 같은' 상태를 구조적으로 막는다.
+        """
+        await queue.put((event, data))
+        writer.add(event, data)
+
     try:
         async with AsyncSessionLocal() as session:
             svc = RagService(tenant_id=lease.tenant_id, session=session)
@@ -217,10 +246,10 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
                     text = splitter.feed(chunk) if splitter else chunk
                     if text:
                         parts.append(text)
-                        await queue.put((EVENT_DELTA, {"text": text}))
+                        await emit(EVENT_DELTA, {"text": text})
                 if splitter and (tail_flush := splitter.finish()):
                     parts.append(tail_flush)             # 마커 접두인 줄 알았던 본문 끝자락
-                    await queue.put((EVENT_DELTA, {"text": tail_flush}))
+                    await emit(EVENT_DELTA, {"text": tail_flush})
                 answer = "".join(parts)
                 if sp.is_recording():   # 가드가 먼저 — no-op이면 clip 비용도 없어야 한다 (otel.py 규약, #54 시정)
                     otel.set_attrs(sp, {otel.LLM_MODEL: settings.vllm_model, otel.OUTPUT_VALUE: otel.clip(answer)})
@@ -247,7 +276,7 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
                                 finish_reason="done", latency_ms=latency_ms)
             _record_turn_result(root_span, result)
             # done은 finalize·commit '뒤'에 — 값이 전부 확정된 다음 최종 상태로 내보낸다 (#56)
-            await queue.put((EVENT_DONE, _done_payload(result)))
+            await emit(EVENT_DONE, _done_payload(result))
 
             # 캐시 적재는 done '뒤' (#56 재배치, 사용자 결정 8/18) — 저장이 크리티컬 패스에
             # 있으면 각주 표시가 그만큼 늦고(실측 0.5~1초), 저장 실패가 완결된 턴을 failed로
@@ -273,7 +302,7 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
         result = TurnResult(answer=answer, citations=[], finish_reason="cancelled",
                             latency_ms=latency_ms)
         _record_turn_result(root_span, result)
-        await queue.put((EVENT_DONE, _done_payload(result)))
+        await emit(EVENT_DONE, _done_payload(result))
         raise                                    # 태스크가 '취소됨'으로 끝나도록 재전파
     except Exception:
         logger.exception("답변 생성 실패 (tenant=%s, conversation=%s)", lease.tenant_id, prepared.conversation_id)
@@ -281,9 +310,9 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
         result = TurnResult(answer="", citations=[], finish_reason="failed", latency_ms=None)
         _record_turn_result(root_span, result)
         # 예외 원문은 서버 로그로만 — str(exc)에 내부 경로·설정이 섞일 수 있어 클라이언트에 노출 금지
-        await queue.put((EVENT_ERROR, {"code": "generation_failed",
-                                       "message": "답변 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."}))
-        await queue.put((EVENT_DONE, _done_payload(result)))   # 계약: error 뒤에도 done으로 닫는다
+        await emit(EVENT_ERROR, {"code": "generation_failed",
+                                 "message": "답변 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."})
+        await emit(EVENT_DONE, _done_payload(result))   # 계약: error 뒤에도 done으로 닫는다
     finally:
         # 취소 대상에서 먼저 빠진다 (#30) — 반드시 아래 await들보다 앞, 그리고 동기 문장으로.
         # 답변이 done으로 커밋된 뒤 리미터를 반납하는 찰나에 취소가 도착하면 이 finally가
@@ -291,6 +320,10 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
         # 못 찾아 cancel()을 호출하지 않고, 상태(done)를 근거로 404를 받는다.
         cancellation.unregister(prepared.assistant_message_id)
         await queue.put(None)                    # 리더 종료 sentinel — finalize·commit '뒤'에 넣는다
+        # 스트림 쪽 종료 마커 — 위 sentinel과 **같은 사실**의 다른 인코딩이다 (#75).
+        # 두 줄이 나란히 있어야 하는 이유: Redis Stream은 nil 엔트리를 표현할 수 없어
+        # sentinel을 그대로 미러링할 수 없다. 한쪽만 남기면 재접속 리더가 종료를 못 알아본다.
+        await writer.aclose()
         await limiter.release(lease)              # 리미터는 태스크 수명 끝에 (실제 GPU 점유 구간)
         root_span.end()                           # 핸드오프된 턴 루트 스팬 — duration=턴 전체 (#7)
 

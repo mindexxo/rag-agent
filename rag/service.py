@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from rag.conversation import ensure_conversation, load_recent_messages, condense_query, condense_to_queries, build_prior_turns, trim_messages_for_condense, add_pending_turn, finalize_turn, last_cancelled_turn
+from rag.conversation import ensure_conversation, load_recent_messages, condense_query, condense_to_queries, build_prior_turns, trim_messages_for_condense, add_pending_turn, finalize_turn, last_unanswered_turn
 from rag.guardrail import classify_and_guard
 from rag.clients import shared_llm
 from rag.citation_labels import sources_from_chunks
@@ -217,15 +217,18 @@ class RagService:
             conversation_id, attachments)
         assistant_message_id = await self._open_turn(conversation.id, query, new_attachment_dicts)
 
+        # RETRY(#59)가 질의를 치환하면 실패 마감이 그 '치환된' 질문을 남겨야 한다 — 사유는
+        # _fail_turn docstring. 요청당 인스턴스라(클래스 docstring) 이 자리에 둬도 안전하다.
+        self._resolved_query = query
         try:
             return await self._route(
                 conversation, assistant_message_id, query,
                 attachment_dicts, new_attachment_dicts, domain_hint)
         except Exception:
             # 자리표시를 즉시 failed로 닫는다. 없으면 sweep_stale_generating(임계 500초 +
-            # cron 5분)이 회수할 때까지 최대 ~800초간 generating으로 남는다 — 폴백을 걷어낸
+            # cron 1분)이 회수할 때까지 최대 ~560초간 generating으로 남는다 — 폴백을 걷어낸
             # 뒤로 이 경로가 잦아졌으므로 지연을 방치하지 않는다. 원 예외는 그대로 올린다.
-            await self._fail_turn(assistant_message_id)
+            await self._fail_turn(assistant_message_id, self._resolved_query)
             raise
 
     async def _route(
@@ -272,13 +275,14 @@ class RagService:
         # RETRY는 여기서 소멸하는 전이 인텐트 — 이후 파이프라인·저장 계층은 이 개념을 모른다.
         precomputed_standalone: str | None = None
         if decision.intent == "RETRY":
-            pair = last_cancelled_turn(messages)
+            pair = last_unanswered_turn(messages)
             if pair is None:
-                # 되돌릴 취소 턴 없음(직전이 done이거나 이력 없음) — 회상·재설명은 OTHER가 담당
+                # 되돌릴 턴 없음(직전이 done이거나 이력 없음) — 회상·재설명은 OTHER가 담당
                 return _routed("other")
             prev_user, prev_assistant = pair     # prev_user = 체인 머리(실질 질문 — "다시" 연타여도)
             display_query = query                # 저장·화면용 — 사용자가 친 "다시" 그대로
-            query = prev_user.content            # 검색·프롬프트용 — 중단된 실질 질문
+            query = prev_user.content            # 검색·프롬프트용 — 답을 못 받은 실질 질문
+            self._resolved_query = query         # 이 턴도 실패하면 이 값이 백필돼야 체인이 이어진다
             if prev_assistant.intent == "OTHER":
                 return _routed("other")          # 원래 OTHER였던 턴(대화 요약 등)은 원래 경로로 재실행
             # 재시도의 의미 = 원본 검색 재현 — 그 턴의 condense 결과를 재사용 (LLM 1콜 절감,
@@ -311,12 +315,18 @@ class RagService:
         await self.session.commit()  # 여기서부터 질문은 durable
         return assistant.id
 
-    async def _fail_turn(self, assistant_message_id: int) -> None:
+    async def _fail_turn(self, assistant_message_id: int, resolved_query: str) -> None:
         """prepare() 실패 시 자리표시를 failed로 닫는다 (#72). 정리 자체의 실패는 삼킨다 —
-        원 예외를 가리면 진짜 원인이 사라진다. 삼켜도 스테일 스윕이 결국 회수한다."""
+        원 예외를 가리면 진짜 원인이 사라진다. 삼켜도 스테일 스윕이 결국 회수한다.
+
+        resolved_query를 짝 user 행의 standalone_query에 백필한다. 실패 턴도 RETRY 대상이라
+        (last_unanswered_turn) "다시" 연타의 체인 되감기가 이 값의 동일성으로 이어지는데,
+        비워두면 두 번째 "다시"부터 질문 슬롯이 "다시"로 퇴화한다 — #59가 취소 턴에서 막아둔
+        바로 그 함정이다. RETRY 재실행 턴이면 치환된 실질 질문이 들어와야 체인이 성립한다.
+        """
         try:
             await finalize_turn(self.session, self.tenant_id, assistant_message_id,
-                                '', [], status='failed')
+                                '', [], status='failed', standalone_query=resolved_query)
             await self.session.commit()
         except Exception:
             logger.exception('자리표시 failed 마감 실패 (message_id=%s)', assistant_message_id)

@@ -31,7 +31,7 @@ from rag.models import Conversation, Message
 
 logger = logging.getLogger(__name__)
 from rag.tokens import estimate_tokens
-from rag.prompt_texts import (CANCELLED_TURN_EMPTY, CANCELLED_TURN_SUFFIX,
+from rag.prompt_texts import (CANCELLED_TURN_EMPTY, CANCELLED_TURN_SUFFIX, FAILED_TURN_EMPTY,
                               CONDENSE_MULTI_SYSTEM_PROMPT, CONDENSE_SYSTEM_PROMPT)
 from rag.prompts import build_chat_prompt, build_condense_user_message
 
@@ -119,25 +119,36 @@ async def load_recent_messages(
     # 비정상 턴 격리 (#22) — 프롬프트 재료에서만 제외한다 (대화 조회 API는 그대로 노출).
     # blocked: 가드가 막은 입력이 다음 턴 프롬프트(condense·prior_turns·OTHER 이력)로
     #          재진입하면 차단 결정이 한 턴짜리로 휘발된다. 가드는 현재 질문만 검사한다.
-    # failed/generating: content=''이라 빈 답변 턴이 맥락에 낀다.
-    # cancelled는 격리하지 않는다(#59) — 질문은 정상이고 부분 답변도 실재하는데 빼면
-    #          화면(조회 API는 노출)과 모델이 보는 이력이 어긋나 "다시"의 지시대상이 밀린다.
-    #          잘린 답변·빈 답변의 표시는 _history_content가 담당(조립 시점 표식).
+    # generating: 이번 턴의 자리표시다(#72). 턴 시작에 커밋되므로 빼지 않으면 방금 넣은
+    #          질문이 자기 자신의 '이전 대화'로 되먹임된다.
+    # cancelled/failed는 격리하지 않는다(#59·#72) — 질문은 정상이고, 빼면 화면(조회 API는
+    #          노출)과 모델이 보는 이력이 어긋나 "다시"의 지시대상이 밀린다. 실제로 실패 턴
+    #          뒤의 "다시"가 그 전 턴 답을 반복하는 버그가 이것 때문이었다.
+    #          빈 답변·잘린 답변의 표시는 _history_content가 담당(조립 시점 표식).
     # user·assistant 짝을 함께 뺀다 — 한쪽만 빼면 build_prior_turns의 짝짓기가 밀린다.
+    _ISOLATED = ('blocked', 'generating')
     dropped_questions = {m.question_message_id for m in messages
-                         if m.role == 'assistant' and m.status not in ('done', 'cancelled')}
+                         if m.role == 'assistant' and m.status in _ISOLATED}
     kept = [m for m in messages
             if not (m.id in dropped_questions
-                    or (m.role == 'assistant' and m.status not in ('done', 'cancelled')))]
+                    or (m.role == 'assistant' and m.status in _ISOLATED))]
     return kept[-limit:]   # 여유 조회분을 되돌려 원래 창 크기 유지
 
 
-def last_cancelled_turn(messages: list[Message]) -> tuple[Message, Message] | None:
-    """직전 턴이 취소된 턴이면 (실질 질문 user, 직전 cancelled assistant)를 돌려준다 (#59).
+UNANSWERED = ('cancelled', 'failed')   # 답을 못 받은 턴 — RETRY의 대상 (#59·#72)
+
+
+def last_unanswered_turn(messages: list[Message]) -> tuple[Message, Message] | None:
+    """직전 턴이 답을 못 받은 턴이면 (실질 질문 user, 그 assistant)를 돌려준다 (#59·#72).
 
     RETRY 디스패치의 상태 근거 — "무엇을 다시 할지"는 분류기(표면 패턴)가 아니라
-    이 사실(직전 턴이 중단됐는가)이 결정한다. load_recent_messages가 걸러낸 리스트를
-    전제하므로 blocked/failed 뒤의 "다시"는 여기 안 걸리고 자연히 None(→OTHER 폴백)이다.
+    이 사실(직전 턴이 답을 못 냈는가)이 결정한다.
+
+    **취소와 실패를 함께 본다**(#72). 사용자에겐 "내가 멈췄든 오류가 났든 답을 못 받았다"가
+    같은 사건이다. 예전엔 cancelled만 봐서, 실패 턴 뒤의 "다시"가 그 **전전** 턴 답을
+    반복하는 버그가 있었다(실측: adererror 대화 16820). 폴백 제거(#72)로 failed가 잦아져
+    노출 빈도도 올라갔다. blocked는 제외 — 차단 결정을 "다시"로 뒤집게 하면 안 된다
+    (애초에 load_recent_messages가 이력에서 격리한다).
     페어링 불변식(user 바로 다음 assistant)이 깨진 행이면 크래시 대신 None.
 
     체인 되감기("다시" 연타): 재실행 턴이 다시 취소되면 그 user 행엔 원 발화("다시")만
@@ -149,7 +160,7 @@ def last_cancelled_turn(messages: list[Message]) -> tuple[Message, Message] | No
     if len(messages) < 2:
         return None
     last = messages[-1]
-    if last.role != 'assistant' or last.status != 'cancelled':
+    if last.role != 'assistant' or last.status not in UNANSWERED:
         return None
     i = len(messages) - 2
     user = messages[i]
@@ -157,7 +168,7 @@ def last_cancelled_turn(messages: list[Message]) -> tuple[Message, Message] | No
         return None
     while i >= 2:
         prev_a, prev_u = messages[i - 1], messages[i - 2]
-        if not (prev_a.role == 'assistant' and prev_a.status == 'cancelled'
+        if not (prev_a.role == 'assistant' and prev_a.status in UNANSWERED
                 and prev_u.role == 'user' and prev_u.id == prev_a.question_message_id
                 and user.standalone_query is not None
                 and prev_u.standalone_query == user.standalone_query):
@@ -168,7 +179,7 @@ def last_cancelled_turn(messages: list[Message]) -> tuple[Message, Message] | No
 
 
 def _history_content(message: Message) -> str:
-    """프롬프트 이력용 답변 텍스트 — 취소 턴 표식의 단일 정의점 (#59).
+    """프롬프트 이력용 답변 텍스트 — 답 못 받은 턴(취소·실패) 표식의 단일 정의점 (#59·#72).
 
     DB 저장본(Message.content)은 절대 바꾸지 않는다 — 표식은 조립 시점에만 붙는다.
     소비처는 build_prior_turns(생성·OTHER 맥락)와 _condense_call(재작성 이력) 둘 —
@@ -176,6 +187,8 @@ def _history_content(message: Message) -> str:
     """
     if message.role == 'assistant' and message.status == 'cancelled':
         return message.content + CANCELLED_TURN_SUFFIX if message.content else CANCELLED_TURN_EMPTY
+    if message.role == 'assistant' and message.status == 'failed':
+        return FAILED_TURN_EMPTY   # 실패는 항상 content='' (finalize가 빈 답변으로 마감)
     return message.content
 
 async def _condense_call(
@@ -423,12 +436,12 @@ async def sweep_stale_generating(session: AsyncSession) -> int:
 
     생성 태스크는 arq가 아니라 웹 앱의 asyncio 태스크다 — 웹 프로세스가 죽으면 코루틴이
     증발해 자리표시(status='generating')만 DB에 남고, _finalize_out_of_band의 DB 기록
-    실패도 같은 상태를 남긴다. 그 회수를 arq cron(rag/worker.py, 5분 주기)이 맡는다(#46).
+    실패도 같은 상태를 남긴다. 그 회수를 arq cron(rag/worker.py, 1분 주기)이 맡는다(#46·#72).
 
     이전엔 GET /conversations/{id}/messages가 그 대화에 한해 조회 시점에 정리했다(lazy).
     cron으로 옮긴 이유: lazy는 **열어본 대화만** 치유해서, 재방문 없는 대화의 고착 행이
     영원히 generating으로 남아 운영 리포트 집계에 유령 상태로 끼고 cancel이 "진행 중"으로
-    오판했다. 대가는 회복 지연 — 최대 500초(조회 즉시)에서 최대 ~800초(500초+주기 5분)로.
+    오판했다. 대가는 회복 지연 — 최대 500초(조회 즉시)에서 최대 ~560초(500초+주기 1분)로.
 
     전 테넌트 일괄이다(sweep_stale_cache와 같은 위생 성격) — 상태만 바꾸고 아무것도
     반환·노출하지 않으므로 격리 위반이 아니다. 시간 비교는 서버측(func.now()) —

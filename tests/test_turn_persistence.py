@@ -184,3 +184,31 @@ async def test_타_테넌트_자리표시는_마감되지_않는다(client, tena
     msgs = await _messages(tenant_id, prepared.conversation_id)
     assert msgs[1].status == 'generating'          # 남의 테넌트는 못 건드린다
     assert msgs[0].standalone_query is None        # 백필도 막혀야 한다
+
+
+@pytest.mark.asyncio
+async def test_실패_마감이_standalone을_백필한다(client, tenant_id, fake_llm, monkeypatch):
+    """실패 턴도 RETRY 대상(#72)이라 "다시" 연타의 체인이 이 값으로 이어진다.
+
+    비워두면 두 번째 "다시"부터 질문 슬롯이 "다시"로 퇴화한다 —
+    #59가 취소 턴에서 막아둔 함정의 실패판. 검증은 test_retry_dispatch가 맡고,
+    여기서는 그 재료(백필)가 실제로 DB에 들어가는지만 고정한다.
+    """
+    await register_faq(client)
+
+    async def boom(*a, **kw):
+        raise RuntimeError('TEI 장애 재현')
+    monkeypatch.setattr(service_mod, 'retrieve', boom)
+
+    async with AsyncSessionLocal() as session:
+        svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
+        with pytest.raises(RuntimeError):
+            await svc.prepare('환불 기간 알려줘')
+
+    async with AsyncSessionLocal() as s:
+        conv = (await s.execute(
+            select(Conversation).where(Conversation.tenant_id == tenant_id)
+        )).scalars().one()
+    msgs = await _messages(tenant_id, conv.id)
+    assert msgs[0].standalone_query == '환불 기간 알려줘'
+    assert msgs[1].status == 'failed'

@@ -124,5 +124,8 @@ def test_cron에_등록돼_있다():
     names = [c.name for c in WorkerSettings.cron_jobs]
     assert 'cron:sweep_stale_generating' in names   # arq가 'cron:' 접두사를 붙인다
     job = next(c for c in WorkerSettings.cron_jobs if c.name == 'cron:sweep_stale_generating')
-    assert job.minute == set(range(0, 60, 5))           # 5분 주기
+    # 1분 주기 (#72에서 5분→1분). 임계(GENERATION_STALE_SECONDS=500)는 살아 있는 요청을
+    # 보호하는 값이라 LLM 타임아웃 300초 위에 있어야 해서 못 내린다 — 대신 순수 지연인
+    # 주기만 줄여 회복 최악을 ~800초에서 ~560초로 당겼다.
+    assert job.minute == set(range(0, 60, 1))
     assert job.unique                                    # 워커 다중화 시 1회 실행 보장

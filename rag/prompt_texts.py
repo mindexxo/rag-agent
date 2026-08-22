@@ -45,6 +45,9 @@ BLOCKED_INPUT_ANSWER = '해당 요청은 처리할 수 없습니다. 상담 관�
 # 완결된 안내로 오인하지 않게 하는 맥락 정보이지, 지시문이 아니다.
 CANCELLED_TURN_SUFFIX = ' (안내 중단됨)'    # 부분 답변 뒤에 접미
 CANCELLED_TURN_EMPTY = '(답변 없음)'        # 첫 토큰 전 취소(content='') 대체
+# 실패 턴(#72) — 취소와 구분한다. 사용자가 멈춘 것과 시스템이 못 답한 것은 다음 턴의
+# 응대가 달라야 한다("중단하신" vs "오류가 났던"). 실패는 항상 content=''이라 접미형은 없다.
+FAILED_TURN_EMPTY = '(오류로 답변하지 못함)'
 
 # 테넌트 지식 범위 설명(domain_hint) — 인텐트 분류·KNOWLEDGE 생성·OTHER 생성 3곳에
 # 역할/범위 안내로만 주입한다. 답변의 근거가 아니다 (strict-grounded 유지).

@@ -16,7 +16,7 @@ from tests.conftest import sse_events
 
 
 def _prepared(**kw) -> PreparedRag:
-    base = dict(conversation_id=1, original_query='q', standalone_query='q',
+    base = dict(conversation_id=1, assistant_message_id=1, original_query='q', standalone_query='q',
                 prior_turns=[], retrieval=RetrievalResult(chunks=[], no_evidence=False, reason=None),
                 sources=[], source_doc_ids=[])
     return PreparedRag(**{**base, **kw})

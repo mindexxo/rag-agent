@@ -10,6 +10,7 @@ import json
 import pytest
 
 from rag.conversation import condense_to_queries
+from rag.llm_schemas import LlmJudgmentFailed
 from rag.retriever import _rrf_fuse
 
 
@@ -77,21 +78,26 @@ async def test_빈_standalone이면_원본_폴백():
 
 
 @pytest.mark.asyncio
-async def test_비JSON_응답이면_원본_폴백():
-    # 스키마 미지원 서버의 자유 생성이 형식을 안 지킨 경우 — 그럴듯한 복구 없이 폴백 (#43)
+async def test_비JSON_응답이면_판단실패():
+    # 스키마 미지원 서버의 자유 생성이 형식을 안 지킨 경우 — 그럴듯한 복구도, 폴백도 없다.
+    # #72로 "원본 단독 검색" 폴백을 걷어냈다: 재작성을 판단하지 못한 상태에서 원문으로
+    # 검색을 밀어붙이는 건 근거 없는 추측이고, LLM이 그 지경이면 생성도 실패한다.
     llm = _FakeLlm(result='재작성\n변형1\n변형2')   # 구 3줄 형식 — 이제 유효하지 않다
-    assert await condense_to_queries(llm, '원본', []) == ['원본']
+    with pytest.raises(LlmJudgmentFailed):
+        await condense_to_queries(llm, '원본', [])
 
 
 @pytest.mark.asyncio
-async def test_LLM_None이면_원본_폴백():
-    assert await condense_to_queries(_FakeLlm(result=None), '원본', []) == ['원본']
+async def test_LLM_None이면_판단실패():
+    with pytest.raises(LlmJudgmentFailed):
+        await condense_to_queries(_FakeLlm(result=None), '원본', [])
 
 
 @pytest.mark.asyncio
-async def test_LLM_예외면_원본_폴백():
-    # 폴백 = 재작성·변형 없이 원본 단독 검색 (기능 자동 off, condense_query 폴백 패턴과 동일)
-    assert await condense_to_queries(_FakeLlm(error=RuntimeError('down')), '원본', []) == ['원본']
+async def test_LLM_예외는_그대로_전파():
+    # 호출 자체 실패(타임아웃·서버 다운)는 감싸지 않고 원 예외 그대로 — 원인을 가리지 않는다
+    with pytest.raises(RuntimeError):
+        await condense_to_queries(_FakeLlm(error=RuntimeError('down')), '원본', [])
 
 
 # ===== condense_query (단일) ========================================

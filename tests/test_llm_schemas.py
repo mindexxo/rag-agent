@@ -7,7 +7,7 @@
 """
 import pytest
 
-from rag.llm_schemas import CondenseMultiResult, RouteDecision, acomplete_validated
+from rag.llm_schemas import CondenseMultiResult, LlmJudgmentFailed, RouteDecision, acomplete_validated
 
 
 class _StubLlm:
@@ -62,19 +62,24 @@ async def test_재시도_응답의_펜스와_부연은_방어된다():
 
 
 @pytest.mark.asyncio
-async def test_비JSON_응답은_None():
+async def test_비JSON_응답은_판단실패():
     llm = _StubLlm(['중괄호가 전혀 없는 자유 서술'], reject_schema=True)
-    assert await acomplete_validated(llm, [], RouteDecision) is None
+    with pytest.raises(LlmJudgmentFailed):
+        await acomplete_validated(llm, [], RouteDecision)
 
 
 @pytest.mark.asyncio
-async def test_스키마_위반은_None_부분복구_없음():
-    # enum 밖 intent — 소문자 이탈은 폴백으로 (Literal 검증이 곧 화이트리스트)
+async def test_스키마_위반은_판단실패_부분복구_없음():
+    # #72로 None 반환이 예외가 됐다 — 판단하지 못한 상태에서 호출부가 기본값을 추측하던
+    # 폴백을 없앴기 때문. 부분·퍼지 복구를 하지 않는다는 계약 자체는 그대로다.
+    # enum 밖 intent — 소문자 이탈 (Literal 검증이 곧 화이트리스트)
     llm = _StubLlm(['{"safe": true, "intent": "knowledge"}'])
-    assert await acomplete_validated(llm, [], RouteDecision) is None
+    with pytest.raises(LlmJudgmentFailed):
+        await acomplete_validated(llm, [], RouteDecision)
     # 필수 필드 누락 — 기본값을 안 준 이유(required 유지 = guided 강제력)의 계약 고정
     llm = _StubLlm(['{"intent": "KNOWLEDGE"}'])
-    assert await acomplete_validated(llm, [], RouteDecision) is None
+    with pytest.raises(LlmJudgmentFailed):
+        await acomplete_validated(llm, [], RouteDecision)
 
 
 @pytest.mark.asyncio

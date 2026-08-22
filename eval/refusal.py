@@ -27,7 +27,9 @@ from collections import defaultdict
 from pathlib import Path
 
 from database import AsyncSessionLocal
+from eval._turn_cleanup import discard_turn
 from eval.generation import row_tenant
+from rag.conversation import ensure_conversation
 from rag.citation_tail import TailSplitter, resolve_citations
 from rag.service import PreparedRag, RagService
 
@@ -64,8 +66,16 @@ async def _refused(tenant: str, query: str) -> bool:
     """query를 파이프라인에 태워 최종 답변이 근거없음(=거절)인지 반환 (단일턴, 히스토리 없음)."""
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant, session=session)
-        prepared = await svc.prepare(query)          # 게이트·인텐트·검색 반영
-        answer = "".join([tok async for tok in svc.generate(prepared)])
+        # 대화를 **미리** 만들고 그 id를 넘긴다 (#72). prepare()에 맡기면 그 안에서 실패했을 때
+        # (판단 실패·검색 오류 — 폴백을 걷어낸 뒤로 잦다) 방금 커밋된 대화의 id를 알 길이 없어
+        # 정리가 통째로 새고, 이 헬퍼가 막으려던 고아 누적이 그대로 재현된다.
+        conversation = await ensure_conversation(session, tenant, None)
+        await session.commit()
+        try:
+            prepared = await svc.prepare(query, conversation_id=conversation.id)
+            answer = "".join([tok async for tok in svc.generate(prepared)])
+        finally:
+            await discard_turn(session, tenant, conversation.id)
     return not _citations(prepared, answer)
 
 

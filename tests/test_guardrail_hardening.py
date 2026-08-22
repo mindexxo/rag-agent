@@ -83,12 +83,18 @@ async def test_차단_턴은_이력에서_짝째로_제외(tenant_id):
 
 
 @pytest.mark.asyncio
-async def test_실패_턴도_짝째로_제외(tenant_id):
-    """content=''인 빈 답변이 맥락에 끼는 것도 함께 해소."""
+async def test_실패_턴은_이력에_남는다(tenant_id):
+    """#72에서 뒤집힌 계약 — 예전엔 "content=''인 빈 답변이 맥락에 낀다"는 이유로 짝째 뺐다.
+
+    빼면 화면(조회 API는 노출)과 모델 이력이 어긋나 "다시"의 지시대상이 밀린다 —
+    실패 턴 뒤의 "다시"가 그 **전전** 턴 답을 반복하는 버그가 실제로 있었다.
+    빈 답변 표시는 격리가 아니라 _history_content의 조립 시점 표식이 담당한다(#59와 같은 방식).
+    """
     cid = await _seed_turn(tenant_id, '반품 기간?', '', 'failed')
     async with AsyncSessionLocal() as s:
         msgs = await load_recent_messages(s, tenant_id, cid)
-    assert msgs == []
+    assert [m.role for m in msgs] == ['user', 'assistant']
+    assert msgs[0].content == '반품 기간?'      # 질문이 살아 있어야 "다시"가 걸린다
 
 
 @pytest.mark.asyncio

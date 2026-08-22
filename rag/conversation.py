@@ -3,10 +3,14 @@
 후속 질문('그럼 5일은?') 을 검색 가능한 독립 질문으로 변환한다.
 
   질의 흐름:
-      ensure_conversation(owned_filter로 소유 검증) -> load_recent_messages
-      -> condense_query/condense_to_queries -> retrieve는 standalone_query로 수행
-      -> 답변 완료 후 user/assistant 메시지 저장 (save_exchange 또는
-         add_pending_turn -> finalize_turn)
+      ensure_conversation(owned_filter로 소유 검증)
+      -> add_pending_turn(**턴 시작 시점** — user + assistant 자리표시를 커밋, #72)
+      -> load_recent_messages -> condense_query/condense_to_queries
+      -> retrieve는 standalone_query로 수행
+      -> finalize_turn (모든 경로 공용 종료 지점 — 차단·캐시히트·근거없음·생성 전부)
+
+  저장을 라우팅보다 앞에 두는 이유: 그 뒤 어디서 실패해도 사용자의 질문은 남아야 한다.
+  예전엔 즉시 경로가 save_exchange로 원샷 저장해 prepare() 실패 시 질문이 통째로 유실됐다.
 
   질의 흐름 밖: sweep_stale_generating — 고착 턴 회수, 워커 cron 전용(#46).
 
@@ -27,7 +31,7 @@ from rag.models import Conversation, Message
 
 logger = logging.getLogger(__name__)
 from rag.tokens import estimate_tokens
-from rag.prompt_texts import (CANCELLED_TURN_EMPTY, CANCELLED_TURN_SUFFIX,
+from rag.prompt_texts import (CANCELLED_TURN_EMPTY, CANCELLED_TURN_SUFFIX, FAILED_TURN_EMPTY,
                               CONDENSE_MULTI_SYSTEM_PROMPT, CONDENSE_SYSTEM_PROMPT)
 from rag.prompts import build_chat_prompt, build_condense_user_message
 
@@ -115,25 +119,36 @@ async def load_recent_messages(
     # 비정상 턴 격리 (#22) — 프롬프트 재료에서만 제외한다 (대화 조회 API는 그대로 노출).
     # blocked: 가드가 막은 입력이 다음 턴 프롬프트(condense·prior_turns·OTHER 이력)로
     #          재진입하면 차단 결정이 한 턴짜리로 휘발된다. 가드는 현재 질문만 검사한다.
-    # failed/generating: content=''이라 빈 답변 턴이 맥락에 낀다.
-    # cancelled는 격리하지 않는다(#59) — 질문은 정상이고 부분 답변도 실재하는데 빼면
-    #          화면(조회 API는 노출)과 모델이 보는 이력이 어긋나 "다시"의 지시대상이 밀린다.
-    #          잘린 답변·빈 답변의 표시는 _history_content가 담당(조립 시점 표식).
+    # generating: 이번 턴의 자리표시다(#72). 턴 시작에 커밋되므로 빼지 않으면 방금 넣은
+    #          질문이 자기 자신의 '이전 대화'로 되먹임된다.
+    # cancelled/failed는 격리하지 않는다(#59·#72) — 질문은 정상이고, 빼면 화면(조회 API는
+    #          노출)과 모델이 보는 이력이 어긋나 "다시"의 지시대상이 밀린다. 실제로 실패 턴
+    #          뒤의 "다시"가 그 전 턴 답을 반복하는 버그가 이것 때문이었다.
+    #          빈 답변·잘린 답변의 표시는 _history_content가 담당(조립 시점 표식).
     # user·assistant 짝을 함께 뺀다 — 한쪽만 빼면 build_prior_turns의 짝짓기가 밀린다.
+    _ISOLATED = ('blocked', 'generating')
     dropped_questions = {m.question_message_id for m in messages
-                         if m.role == 'assistant' and m.status not in ('done', 'cancelled')}
+                         if m.role == 'assistant' and m.status in _ISOLATED}
     kept = [m for m in messages
             if not (m.id in dropped_questions
-                    or (m.role == 'assistant' and m.status not in ('done', 'cancelled')))]
+                    or (m.role == 'assistant' and m.status in _ISOLATED))]
     return kept[-limit:]   # 여유 조회분을 되돌려 원래 창 크기 유지
 
 
-def last_cancelled_turn(messages: list[Message]) -> tuple[Message, Message] | None:
-    """직전 턴이 취소된 턴이면 (실질 질문 user, 직전 cancelled assistant)를 돌려준다 (#59).
+UNANSWERED = ('cancelled', 'failed')   # 답을 못 받은 턴 — RETRY의 대상 (#59·#72)
+
+
+def last_unanswered_turn(messages: list[Message]) -> tuple[Message, Message] | None:
+    """직전 턴이 답을 못 받은 턴이면 (실질 질문 user, 그 assistant)를 돌려준다 (#59·#72).
 
     RETRY 디스패치의 상태 근거 — "무엇을 다시 할지"는 분류기(표면 패턴)가 아니라
-    이 사실(직전 턴이 중단됐는가)이 결정한다. load_recent_messages가 걸러낸 리스트를
-    전제하므로 blocked/failed 뒤의 "다시"는 여기 안 걸리고 자연히 None(→OTHER 폴백)이다.
+    이 사실(직전 턴이 답을 못 냈는가)이 결정한다.
+
+    **취소와 실패를 함께 본다**(#72). 사용자에겐 "내가 멈췄든 오류가 났든 답을 못 받았다"가
+    같은 사건이다. 예전엔 cancelled만 봐서, 실패 턴 뒤의 "다시"가 그 **전전** 턴 답을
+    반복하는 버그가 있었다(실측: adererror 대화 16820). 폴백 제거(#72)로 failed가 잦아져
+    노출 빈도도 올라갔다. blocked는 제외 — 차단 결정을 "다시"로 뒤집게 하면 안 된다
+    (애초에 load_recent_messages가 이력에서 격리한다).
     페어링 불변식(user 바로 다음 assistant)이 깨진 행이면 크래시 대신 None.
 
     체인 되감기("다시" 연타): 재실행 턴이 다시 취소되면 그 user 행엔 원 발화("다시")만
@@ -145,7 +160,7 @@ def last_cancelled_turn(messages: list[Message]) -> tuple[Message, Message] | No
     if len(messages) < 2:
         return None
     last = messages[-1]
-    if last.role != 'assistant' or last.status != 'cancelled':
+    if last.role != 'assistant' or last.status not in UNANSWERED:
         return None
     i = len(messages) - 2
     user = messages[i]
@@ -153,7 +168,7 @@ def last_cancelled_turn(messages: list[Message]) -> tuple[Message, Message] | No
         return None
     while i >= 2:
         prev_a, prev_u = messages[i - 1], messages[i - 2]
-        if not (prev_a.role == 'assistant' and prev_a.status == 'cancelled'
+        if not (prev_a.role == 'assistant' and prev_a.status in UNANSWERED
                 and prev_u.role == 'user' and prev_u.id == prev_a.question_message_id
                 and user.standalone_query is not None
                 and prev_u.standalone_query == user.standalone_query):
@@ -164,7 +179,7 @@ def last_cancelled_turn(messages: list[Message]) -> tuple[Message, Message] | No
 
 
 def _history_content(message: Message) -> str:
-    """프롬프트 이력용 답변 텍스트 — 취소 턴 표식의 단일 정의점 (#59).
+    """프롬프트 이력용 답변 텍스트 — 답 못 받은 턴(취소·실패) 표식의 단일 정의점 (#59·#72).
 
     DB 저장본(Message.content)은 절대 바꾸지 않는다 — 표식은 조립 시점에만 붙는다.
     소비처는 build_prior_turns(생성·OTHER 맥락)와 _condense_call(재작성 이력) 둘 —
@@ -172,6 +187,8 @@ def _history_content(message: Message) -> str:
     """
     if message.role == 'assistant' and message.status == 'cancelled':
         return message.content + CANCELLED_TURN_SUFFIX if message.content else CANCELLED_TURN_EMPTY
+    if message.role == 'assistant' and message.status == 'failed':
+        return FAILED_TURN_EMPTY   # 실패는 항상 content='' (finalize가 빈 답변으로 마감)
     return message.content
 
 async def _condense_call(
@@ -197,23 +214,17 @@ async def _condense_call(
     ]
 
     with otel.span('condense', 'LLM') as sp:
-        try:
-            llm_messages = build_chat_prompt(
-                CONDENSE_MULTI_SYSTEM_PROMPT if multi else CONDENSE_SYSTEM_PROMPT,
-                build_condense_user_message(query, history),
-            )
-            parsed = await acomplete_validated(
-                llm, llm_messages, CondenseMultiResult if multi else CondenseResult, span=sp)
-        except Exception:
-            logger.exception('LLM error(%s)',
-                             'condense_to_queries' if multi else 'condense_query')
-            parsed = None
-        if parsed is None:
-            # 재작성 없이 원본 단독 검색 (기능 자동 off) — 폴백을 정상과 구분되게 관측 (#43)
-            otel.set_attrs(sp, {'kms.schema_fallback': True})
-            queries = [query]
-        else:
-            queries = _postprocess_queries(parsed, query)
+        # 폴백 없음 (#72). 재작성을 판단하지 못한 상태에서 "원문 그대로 검색"으로 넘어가면
+        # 근거 없는 추측으로 턴을 진행하는 것이고, 애초에 LLM이 죽었다면 생성도 실패한다 —
+        # 폴백은 턴을 살리는 게 아니라 에러를 검색까지 다 수행한 뒤로 미룰 뿐이었다.
+        # 예외는 그대로 전파해 호출자가 실패로 끝낸다. 질문 자체는 이미 저장돼 있다(#72 자리표시).
+        llm_messages = build_chat_prompt(
+            CONDENSE_MULTI_SYSTEM_PROMPT if multi else CONDENSE_SYSTEM_PROMPT,
+            build_condense_user_message(query, history),
+        )
+        parsed = await acomplete_validated(
+            llm, llm_messages, CondenseMultiResult if multi else CondenseResult, span=sp)
+        queries = _postprocess_queries(parsed, query)
         attrs = {otel.INPUT_VALUE: query, otel.OUTPUT_VALUE: queries[0],
                  'kms.history_messages': len(history)}
         if multi:
@@ -275,67 +286,26 @@ def _postprocess_queries(parsed: CondenseResult | CondenseMultiResult, query: st
 
 
 def _new_user_message(tenant_id: str, conversation_id: int, user_query: str,
-                      standalone_query: str, attachments: list[dict] | None,
-                      user_id: str | None) -> Message:
-    """user Message 생성 — save_exchange/add_pending_turn 공용 (필드 10줄이 sha 동일했다)."""
+                      attachments: list[dict] | None, user_id: str | None) -> Message:
+    """user Message 생성.
+
+    standalone_query는 받지 않는다 — 이 행은 턴 **시작** 시점(라우팅·condense 전)에 만들어지므로
+    그 값을 아직 모른다. finalize_turn이 종료 시점에 백필한다 (#72). intent 컬럼이 이미 같은 리듬이다.
+    """
     return Message(
         tenant_id=tenant_id,
         conversation_id=conversation_id,
         role="user",
         content=user_query,
-        standalone_query=standalone_query,
         attachments=attachments,
         user_id=user_id,
     )
 
 
-async def save_exchange(
-        session: AsyncSession,
-        tenant_id: str,
-        conversation_id: int,
-        user_query: str,
-        standalone_query: str,
-        answer: str,
-        sources: list[dict],
-        attachments: list[dict] | None = None,
-        user_id: str | None = None,
-        latency_ms: int | None = None,
-        cache_kind: str | None = None,
-        cited_docs: list[str] | None = None,
-        intent: str | None = None,
-        status: str = "done",
-        block_reason: str | None = None,
-) -> Message:
-    """사용자 질문과 assistant 답변을 세션에 등록한다.
-
-    user 메시지에는 standalone_query와 (이번 턴에 첨부했다면) 첨부 추출 텍스트를,
-    assistant 메시지에는 sources JSON을 저장한다.
-    commit은 호출자가 담당한다. 반환: assistant Message (id는 flush로 확정 —
-    즉시 경로 meta의 assistant_message_id·피드백 PATCH 대상, #8).
-    """
-    user_message = _new_user_message(tenant_id, conversation_id, user_query,
-                                     standalone_query, attachments, user_id)
-    session.add(user_message)
-    await session.flush()   # user id 확보 — assistant의 question_message_id FK용
-
-    assistant_message = Message(
-        tenant_id=tenant_id,
-        conversation_id=conversation_id,
-        role="assistant",
-        content=answer,
-        sources=sources,
-        latency_ms=latency_ms,
-        cache_kind=cache_kind,
-        cited_docs=cited_docs,
-        intent=intent,   # 라우팅 결과 — 답변률 분모(KNOWLEDGE) 집계용. DB 반영 완료로 원복 (#13)
-        question_message_id=user_message.id,   # 짝을 데이터로 (미답변 목록이 휴리스틱 없이 JOIN)
-        status=status,             # 입력 차단이면 'blocked' — SQL 집계·이력 격리의 유일한 식별자 (#22)
-        block_reason=block_reason,
-    )
-    session.add(assistant_message)
-    await session.flush()   # assistant id 확정 (#8)
-    await _touch_conversation(session, tenant_id, conversation_id, first_query=user_query)
-    return assistant_message
+# save_exchange는 #72에서 삭제됐다. 즉시 경로(차단·캐시히트·근거없음)가 user+assistant를 한 번에
+# INSERT하던 "원샷 저장"이었는데, 그 형태는 라우팅이 끝난 뒤에만 가능했다 — 그래서 prepare()가
+# 실패하면 질문이 통째로 유실됐다. 이제 모든 경로가 begin_turn(턴 시작) → finalize_turn(종료)
+# 한 수명주기를 따르고, 즉시 경로는 자리표시를 곧바로 finalize한다.
 
 
 async def _touch_conversation(session: AsyncSession, tenant_id: str, conversation_id: int,
@@ -362,18 +332,21 @@ async def add_pending_turn(
         tenant_id: str,
         conversation_id: int,
         user_query: str,
-        standalone_query: str,
         attachments: list[dict] | None = None,
         user_id: str | None = None,
 ) -> Message:
     """user 메시지 + 생성 대기 상태의 assistant 자리표시를 세션에 등록한다.
 
-    생성 시작 전에 호출해 conversation_id·자리표시를 durable하게 만든다(persist-before-stream).
+    **턴 시작 시점**에 호출한다 — 라우팅·condense·검색보다 앞이다 (#72). 그 뒤 어디서 실패해도
+    질문이 남게 하는 것이 목적이라, 이보다 늦으면 의미가 없다. 모든 경로(차단·other·knowledge)가
+    이 함수 하나로 턴을 연다.
     assistant는 content='', status='generating'으로 시작하고, 완료 시 finalize_turn이 채운다.
     commit은 호출자가 담당한다. 반환: assistant 자리표시 Message (id는 flush 후 확정).
+
+    user_query는 **사용자가 실제 친 원문**이다 — RETRY 재실행(#59)의 질의 치환은 이 시점보다
+    뒤에 일어나므로, 여기 저장되는 값이 곧 화면·기록에 남아야 할 발화다.
     """
-    user_message = _new_user_message(tenant_id, conversation_id, user_query,
-                                     standalone_query, attachments, user_id)
+    user_message = _new_user_message(tenant_id, conversation_id, user_query, attachments, user_id)
     session.add(user_message)
     await session.flush()   # user id 확보 — 자리표시에 짝 FK를 처음부터 박는다
     assistant_message = Message(
@@ -399,15 +372,23 @@ async def finalize_turn(
         latency_ms: int | None = None,
         cited_docs: list[str] | None = None,
         intent: str | None = None,
+        standalone_query: str | None = None,
+        cache_kind: str | None = None,
+        block_reason: str | None = None,
 ) -> None:
-    """생성 대기 assistant 자리표시를 최종 결과로 채운다 (id로 재조회 후 UPDATE).
+    """자리표시를 최종 결과로 채운다 (id로 재조회 후 UPDATE) — **모든 경로의 유일한 종료 지점**.
 
     백그라운드 태스크가 '자기 세션'으로 호출하므로 객체 참조가 아닌 id로 재조회한다.
     tenant 소유를 확인(격리)하고, 없거나 남의 것이면 무시. commit은 호출자가 담당한다.
     실패면 status='failed', answer=''로 호출.
 
-    block_reason은 다루지 않는다 — 차단 턴은 입력 가드 전용이고 그 경로는 save_exchange를
-    쓴다(자리표시 없는 즉시 경로). 자리표시는 항상 block_reason=NULL로 생성되므로 그대로 둔다.
+    #72로 즉시 경로(차단·캐시히트·근거없음)도 이 함수를 쓴다 — 그래서 예전엔 save_exchange만
+    다루던 block_reason·cache_kind가 여기로 합류했다. 해당 없는 경로에선 항상 None이라 무해하다.
+
+    standalone_query는 **짝 user 행**에 백필한다. 그 값은 턴 시작(자리표시 INSERT) 시점엔 아직
+    없고 condense 이후에야 확정되기 때문이다. 백필 시점이 종료인 이유: load_recent_messages의
+    격리 필터가 non-done 턴을 이력에서 빼므로, 이 턴이 남의 이력에 보이기 시작하는 순간이
+    곧 finalize 시점이다 — 그보다 먼저 채워둘 이유가 없다.
     """
     msg = await session.get(Message, assistant_message_id)
     if msg is None or msg.tenant_id != tenant_id:
@@ -424,6 +405,18 @@ async def finalize_turn(
     msg.latency_ms = latency_ms
     msg.cited_docs = cited_docs
     msg.intent = intent   # 라우팅 결과 — 답변률 분모(KNOWLEDGE) 집계용. DB 반영 완료로 원복 (#13)
+    msg.cache_kind = cache_kind      # 'semantic'=캐시 재생 답변 (기간별 히트율 집계용)
+    msg.block_reason = block_reason  # 입력 가드 차단 사유 — 차단 턴만 값이 있다 (#22)
+
+    # 짝 user 행에 standalone_query 백필. tenant WHERE는 격리 원칙상 필수 —
+    # question_message_id만으로도 유일하지만, 쓰기 경로는 예외 없이 테넌트를 명시한다.
+    if msg.question_message_id is not None:
+        await session.execute(
+            update(Message)
+            .where(Message.id == msg.question_message_id)
+            .where(Message.tenant_id == tenant_id)
+            .values(standalone_query=standalone_query)
+        )
 
 
 # generating이 이 시간 넘게 지속되면 백그라운드 태스크/웹 프로세스 사망으로 고착 → failed 간주.
@@ -443,12 +436,12 @@ async def sweep_stale_generating(session: AsyncSession) -> int:
 
     생성 태스크는 arq가 아니라 웹 앱의 asyncio 태스크다 — 웹 프로세스가 죽으면 코루틴이
     증발해 자리표시(status='generating')만 DB에 남고, _finalize_out_of_band의 DB 기록
-    실패도 같은 상태를 남긴다. 그 회수를 arq cron(rag/worker.py, 5분 주기)이 맡는다(#46).
+    실패도 같은 상태를 남긴다. 그 회수를 arq cron(rag/worker.py, 1분 주기)이 맡는다(#46·#72).
 
     이전엔 GET /conversations/{id}/messages가 그 대화에 한해 조회 시점에 정리했다(lazy).
     cron으로 옮긴 이유: lazy는 **열어본 대화만** 치유해서, 재방문 없는 대화의 고착 행이
     영원히 generating으로 남아 운영 리포트 집계에 유령 상태로 끼고 cancel이 "진행 중"으로
-    오판했다. 대가는 회복 지연 — 최대 500초(조회 즉시)에서 최대 ~800초(500초+주기 5분)로.
+    오판했다. 대가는 회복 지연 — 최대 500초(조회 즉시)에서 최대 ~560초(500초+주기 1분)로.
 
     전 테넌트 일괄이다(sweep_stale_cache와 같은 위생 성격) — 상태만 바꾸고 아무것도
     반환·노출하지 않으므로 격리 위반이 아니다. 시간 비교는 서버측(func.now()) —

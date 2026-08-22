@@ -11,11 +11,13 @@ is_schema_rejected(#61에서 승격 — eval 하네스도 같은 판정을 쓴�
 원칙 (rag/citation_tail.py #56과 동일): guided decoding은 확률을 낮추는 최적화지 신뢰의
 근거가 아니다 — 스키마가 걸렸든(정상) 무스키마 재시도로 떨어졌든(fail-open) 검증은 항상 돈다.
 
-경계: 이 모듈은 "구조를 신뢰할 수 있는가"까지만 책임진다. 실패 시 무엇으로 대체할지는
-호출부마다 달라(가드=fail-open RouteDecision, condense=[query]) 여기서 정하지 않는다 —
-호출부가 None(구조 신뢰 불가)이나 예외(호출 자체 실패)를 받아 자기 폴백으로 채우고,
-그 대입 지점에서 kms.schema_fallback을 기록한다(폴백이 정상 판정과 트레이스에서 구분되게 —
-이 관측이 이 이슈의 원래 문제의식이다).
+경계: 이 모듈은 "구조를 신뢰할 수 있는가"까지만 책임진다. 계약은 **2갈래**다 (#72) —
+검증을 통과한 모델 인스턴스이거나, 예외다. 예전엔 "구조 신뢰 불가"를 None으로 돌려주고
+호출부가 각자 폴백(가드=safe·KNOWLEDGE, condense=[query])으로 채웠는데, 그 폴백들은
+**판단하지 못한 상태에서 기본값을 추측**하는 것이었다. 가드 쪽은 입력 검사가 꺼진 채
+통과시키는 것이라 특히 안전 측이 아니었고, 어느 쪽이든 LLM이 죽었다면 생성도 실패하므로
+폴백이 턴을 살리지도 못했다 — 에러를 검색까지 다 수행한 뒤로 미룰 뿐이었다.
+관측은 kms.schema_invalid(검증 실패)·kms.schema_retry(무스키마 재시도)로 남는다.
 
 스키마 필드에 기본값을 주지 말 것: 기본값이 있으면 json 스키마에서 required가 빠져
 guided 경로에서 모델이 필드를 생략해도 합법이 된다 — 강제력이 조용히 약화된다.
@@ -36,6 +38,16 @@ from rag import otel
 from rag.llm import LlmClient
 
 logger = logging.getLogger(__name__)
+
+
+class LlmJudgmentFailed(RuntimeError):
+    """LLM이 판단을 내리지 못했다 — 구조화 출력 검증 실패 (#72).
+
+    호출 자체가 실패한 것(타임아웃·서버 다운)과 구분하기 위해 따로 둔다. 둘 다 턴을 실패로
+    끝내는 건 같지만, 이쪽은 "서버는 응답했는데 형식을 신뢰할 수 없다"라 원인 분리가 필요하다.
+    routers/kms.py가 이 타입을 503으로 매핑한다 — 재시도하면 될 수 있는 일시적 실패이므로
+    500(서버 버그)이 아니다.
+    """
 
 
 class RouteDecision(BaseModel):
@@ -102,14 +114,18 @@ def _extract_json_slice(raw: str) -> str:
 
 
 async def acomplete_validated(llm: LlmClient, messages: list[dict],
-                              model_cls: type[BaseModel], *, span=None) -> BaseModel | None:
-    """스키마 강제 acomplete + 검증. 반환 3갈래:
+                              model_cls: type[BaseModel], *, span=None) -> BaseModel:
+    """스키마 강제 acomplete + 검증. 계약은 2갈래 (#72):
 
-      모델 인스턴스  정상 (스키마 경로든 재시도 경로든 검증 통과)
-      None          응답은 받았으나 구조를 신뢰할 수 없음 → 호출부 폴백 (kms.schema_invalid 기록됨)
-      예외 전파      호출 자체 실패(타임아웃·서버 다운) → 호출부의 기존 except가 폴백
+      모델 인스턴스        정상 (스키마 경로든 무스키마 재시도 경로든 검증 통과)
+      LlmJudgmentFailed   구조를 신뢰할 수 없음 (kms.schema_invalid 기록됨)
+      그 외 예외 전파      호출 자체 실패(타임아웃·서버 다운)
 
-    호출부는 None과 예외를 같은 폴백으로 합류시키고 그 지점에서 kms.schema_fallback을 기록할 것.
+    호출부는 아무것도 잡지 않는다 — 판단하지 못했으면 그 턴은 실패다. 예전엔 None을 돌려주고
+    호출부가 각자 기본값을 추측했는데, 그건 판단 없이 진행하는 것이었다(사유는 모듈 docstring).
+
+    400/422(구버전 vLLM의 structured_outputs 미지원) 재시도는 유지한다 — 판단을 포기하는 게
+    아니라 같은 판단을 형식만 바꿔 **다시 시도**하는 것이라 성격이 다르다.
     """
     try:
         raw = await llm.acomplete(messages, extra_body=_schema_extra_body(model_cls))
@@ -123,10 +139,11 @@ async def acomplete_validated(llm: LlmClient, messages: list[dict],
 
     try:
         return model_cls.model_validate_json(_extract_json_slice(raw or ''))
-    except (ValidationError, ValueError):
+    except (ValidationError, ValueError) as exc:
         # ValidationError는 ValueError의 서브클래스지만 의도를 드러내려 병기.
         # 부분·퍼지 복구는 하지 않는다 — 그럴듯한 복구는 실패를 지표에서 숨긴다(#56 원칙).
         logger.warning('구조화 출력 검증 실패 (%s) raw=%r', model_cls.__name__, (raw or '')[:200])
         if span is not None:
             otel.set_attrs(span, {'kms.schema_invalid': True})
-        return None
+        raise LlmJudgmentFailed(
+            f'{model_cls.__name__} 구조화 출력 검증 실패') from exc

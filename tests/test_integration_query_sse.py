@@ -210,16 +210,24 @@ async def test_스키마_거부_서버에서도_가드와_condense가_동작한�
 
 
 @pytest.mark.asyncio
-async def test_인텐트_응답이_깨져도_fail_open으로_검색_경로(client, tenant_id, fake_llm, pass_gate):
-    """#43 — 스키마 미지원 폴백 응답이 형식을 안 지켜도 가드는 fail-open(KNOWLEDGE)으로
-    검색 경로를 태운다(안전 측). 구 _extract_json 시절과 같은 최종 동작, 이제는 관측됨."""
+async def test_인텐트_판단_실패는_503이고_질문은_남는다(client, tenant_id, fake_llm, pass_gate):
+    """#72 — 가드가 판단을 못 내리면 fail-open(KNOWLEDGE 추측)이 아니라 실패로 끝낸다.
+
+    옛 폴백은 안전 측이 아니었다: 입력 가드가 꺼진 채 통과시키고, 모든 OTHER 질의를 검색
+    경로로 보냈다. 대신 **질문은 남아야 한다** — 자리표시를 턴 시작에 커밋해 두기 때문이다.
+    """
     await register_faq(client)
     fake_llm.intent_json = '형식을 지키지 않은 자유 서술 응답'
 
     res = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
-    assert res.status_code == 200
-    assert sse_done(res)['finish_reason'] == 'done'          # blocked가 아니라 정상 완주
-    assert '테스트 답변입니다.' in sse_answer(res)           # KNOWLEDGE 경로로 생성까지 감
+    assert res.status_code == 503                            # 500(서버 버그)이 아닌 일시적 불가
+
+    async with AsyncSessionLocal() as s:
+        msgs = list((await s.execute(
+            select(Message).where(Message.tenant_id == tenant_id).order_by(Message.id)
+        )).scalars().all())
+    assert [m.content for m in msgs if m.role == 'user'] == ['환불 기간 알려줘']
+    assert [m.status for m in msgs if m.role == 'assistant'] == ['failed']   # 안전망이 즉시 닫는다
 
 
 @pytest.mark.asyncio

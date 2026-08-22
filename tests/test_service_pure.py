@@ -16,9 +16,9 @@ def _chunk(document_id=None, faq_id=None) -> RetrievedChunk:
 
 
 def _prepared(**kw) -> PreparedRag:
-    base = dict(conversation_id=1, original_query='q', standalone_query='q',
+    base = dict(conversation_id=1, assistant_message_id=1, original_query='q', standalone_query='q',
                 prior_turns=[], retrieval=RetrievalResult(chunks=[], no_evidence=False, reason=None),
-                sources=[], source_doc_ids=[])
+                sources=[], source_doc_ids=[])   # assistant_message_id는 __post_init__ 불변식 (#72)
     return PreparedRag(**{**base, **kw})
 
 

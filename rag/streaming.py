@@ -146,8 +146,11 @@ async def immediate_stream(service: RagService, prepared: PreparedRag, session,
         # 저장 실패가 이미 확정된 답변의 '전달'까지 막으면 안 된다 (fail-open — 리뷰 반영).
         # StreamingResponse는 첫 yield 전에 200 헤더가 이미 나가므로, 여기서 예외가 새면
         # 사용자는 빈 스트림을 받는다. 실패는 로그만 남기고 전달은 계속한다.
+        # 여기서 실패해도 질문 자체는 남는다 — 자리표시가 턴 시작에 이미 커밋됐다(#72).
+        # 그 경우 자리표시는 generating으로 남고 스테일 스윕이 failed로 회수한다.
         try:
-            await service.save(prepared, answer, result.citations, latency_ms=latency_ms)
+            await service.finalize(prepared, answer, result.citations,
+                                   status=prepared.terminal_status, latency_ms=latency_ms)
             await session.commit()
         except Exception:
             logger.exception("즉시 경로 저장 실패 — 답변 전달은 계속 (conversation=%s)",
@@ -184,7 +187,7 @@ async def _finalize_out_of_band(lease: Lease, prepared: PreparedRag, answer: str
     """비정상 종료(취소·실패)의 상태 기록 — 새 세션으로, 실패는 삼킨다.
 
     본 흐름의 세션은 이미 롤백/닫힘 상태일 수 있어 자기 세션을 새로 연다.
-    기록이 실패하면 그 턴은 generating으로 남고 스테일 스윕(rag.conversation.GENERATION_STALE_SECONDS, cron 5분 주기)이 failed로 정리한다 — 의도(취소 vs
+    기록이 실패하면 그 턴은 generating으로 남고 스테일 스윕(rag.conversation.GENERATION_STALE_SECONDS, cron 1분 주기)이 failed로 정리한다 — 의도(취소 vs
     실패)는 잃지만 고착은 남지 않는다. 상태 기록 실패가 정리(finally)를 막아선 안 되므로 삼킨다.
     """
     try:
@@ -298,7 +301,7 @@ async def queue_reader(prepared: PreparedRag, queue: asyncio.Queue) -> AsyncIter
     그 무영향이 성립하는 근거가 **큐가 unbounded**라는 것이다. 소비가 멈춰도 생산자의
     `await queue.put(...)`이 블록되지 않아 태스크가 완주하고 finalize·리미터 반납이 보장된다.
     여기에 maxsize를 걸면 읽지 않는 큐가 차는 순간 태스크가 put에서 영구 대기하고 finally가
-    실행되지 않는다 — generating 고착(스테일 스윕, cron 5분 주기)·리미터 슬롯(120초 prune)은 회수 장치가
+    실행되지 않는다 — generating 고착(스테일 스윕, cron 1분 주기)·리미터 슬롯(120초 prune)은 회수 장치가
     있지만 **태스크 세션의 DB 커넥션은 회수 장치가 없어 풀이 영구히 잠식된다.**
     쌓이는 양은 max_tokens 상한이 걸린 텍스트라 생성 1건당 수 KB에 불과하다.
     """

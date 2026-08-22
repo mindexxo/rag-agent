@@ -10,7 +10,7 @@ import pytest_asyncio
 from sqlalchemy import delete, select
 
 from database import AsyncSessionLocal
-from rag.conversation import add_pending_turn, save_exchange
+from rag.conversation import add_pending_turn
 from rag.models import Conversation, Message
 
 
@@ -55,20 +55,13 @@ async def _ordered_ids(tenant_id: str) -> list[int]:
 
 
 @pytest.mark.asyncio
-async def test_즉시경로_저장시_목록_첫번째로_부상(tenant_id):
+async def test_턴_시작_저장시_목록_첫번째로_부상(tenant_id):
+    # #72로 모든 경로(차단·캐시히트·근거없음·생성)가 add_pending_turn으로 턴을 연다 —
+    # 예전엔 즉시 경로만 save_exchange로 부상시켰고 그 경로를 따로 검증했다.
     c1_id, c2_id = await _create_two_conversations(tenant_id)
     # PG now()는 트랜잭션 시각 고정 — 별도 세션(트랜잭션)이라 시간차가 생긴다
     async with AsyncSessionLocal() as session:
-        await save_exchange(session, tenant_id, c1_id, 'q', 'q', 'a', [])
-        await session.commit()
-    assert (await _ordered_ids(tenant_id))[0] == c1_id
-
-
-@pytest.mark.asyncio
-async def test_생성경로_자리표시_저장시에도_부상(tenant_id):
-    c1_id, c2_id = await _create_two_conversations(tenant_id)
-    async with AsyncSessionLocal() as session:
-        await add_pending_turn(session, tenant_id, c1_id, 'q', 'q')
+        await add_pending_turn(session, tenant_id, c1_id, 'q')
         await session.commit()
     assert (await _ordered_ids(tenant_id))[0] == c1_id
 
@@ -85,7 +78,7 @@ async def test_타_테넌트_대화는_건드리지_않음(tenant_id):
             )).scalar_one()
             # 다른 tenant_id로 같은 conversation_id에 저장 시도 — 메시지는 남의 대화에 붙지만
             # (ensure_conversation을 우회한 직접 호출), last_used_at은 갱신되면 안 된다
-            await save_exchange(session, other, c1_id, 'q', 'q', 'a', [])
+            await add_pending_turn(session, other, c1_id, 'q')
             await session.commit()
         async with AsyncSessionLocal() as session:
             after = (await session.execute(

@@ -37,8 +37,7 @@ async def test_소비자가_없어도_태스크는_완주해_finalize한다(clie
     # prepare까지는 정상 경로로 만들고(자리표시 확보), 그 다음을 소비자 없이 돌린다
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
-        prepared = await svc.prepare('환불 기간 알려줘')
-        await svc.begin_turn(prepared)
+        prepared = await svc.prepare('환불 기간 알려줘')   # 자리표시는 prepare가 커밋한다 (#72)
         assistant_id = prepared.assistant_message_id
     assert assistant_id is not None
 
@@ -84,8 +83,7 @@ async def test_캐시_저장이_실패해도_턴은_done이다(client, tenant_id
 
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
-        prepared = await svc.prepare('환불 기간 알려줘')
-        await svc.begin_turn(prepared)
+        prepared = await svc.prepare('환불 기간 알려줘')   # 자리표시는 prepare가 커밋한다 (#72)
         assistant_id = prepared.assistant_message_id
 
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
@@ -119,8 +117,7 @@ async def test_생성_실패도_failed로_남고_정리가_끝난다(client, ten
 
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
-        prepared = await svc.prepare('환불 기간 알려줘')
-        await svc.begin_turn(prepared)
+        prepared = await svc.prepare('환불 기간 알려줘')   # 자리표시는 prepare가 커밋한다 (#72)
         assistant_id = prepared.assistant_message_id
 
     async def _boom(self, prepared):

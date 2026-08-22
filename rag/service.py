@@ -1,11 +1,16 @@
 """RAG 서비스 — 한 턴의 수명을 조율한다.
 
-    prepare()   라우팅·검색어·근거·캐시히트를 확정 (부수효과 있음: 대화 commit, 캐시 hit_count)
+    prepare()   턴 시작 저장(commit) → 라우팅·검색어·근거·캐시히트 확정
     generate()  확정 답변이 있으면 그대로, 없으면 LLM 스트리밍
-    save()      즉시 경로의 INSERT   /   begin_turn()+finalize()  생성 경로의 자리표시→UPDATE
+    finalize()  턴 종료 — 자리표시를 최종 결과로 UPDATE (**모든 경로 공용**)
+
+턴은 항상 "자리표시 생성 → finalize" 한 수명주기를 따른다 (#72). 예전엔 즉시 경로만
+save_exchange로 원샷 INSERT하는 두 번째 저장 형태가 있었는데, 그건 라우팅이 끝난 뒤에만
+가능해 prepare() 실패 시 사용자의 질문이 통째로 유실됐다.
 
 즉시 경로와 생성 경로를 가르는 기준은 **답이 이미 확정됐느냐**다 —
 그 판정은 PreparedRag.resolved_answer 한 곳에 있고 generate()·needs_generation이 함께 본다.
+저장 형태가 아니라 "백그라운드 태스크가 필요하냐"만 가르는 축이다.
 
 전역 싱글톤 금지 — 요청마다 tenant_id가 다르므로 생성자 인자로 받는다.
 """
@@ -18,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from rag.conversation import ensure_conversation, load_recent_messages, condense_query, condense_to_queries, build_prior_turns, trim_messages_for_condense, save_exchange, add_pending_turn, finalize_turn, last_cancelled_turn
+from rag.conversation import ensure_conversation, load_recent_messages, condense_query, condense_to_queries, build_prior_turns, trim_messages_for_condense, add_pending_turn, finalize_turn, last_cancelled_turn
 from rag.guardrail import classify_and_guard
 from rag.clients import shared_llm
 from rag.citation_labels import sources_from_chunks
@@ -55,7 +60,8 @@ class PreparedRag:
     # 라우팅 결과. knowledge=RAG, other=대화/메타/역할밖 제약 생성, blocked=입력 차단
     route: Literal["knowledge", "other", "blocked"] = "knowledge"
     attachments: list[dict] = field(default_factory=list)      # 컨텍스트 주입용 — 히스토리 저장분 + 이번 턴 신규 합본
-    new_attachments: list[dict] = field(default_factory=list)  # 이번 턴에 새로 동봉된 것 — save 시 user 메시지에 저장
+    # 이번 턴 신규 첨부(new_attachments) 필드는 #72에서 삭제됐다 — 저장이 턴 시작으로 옮겨가
+    # _open_turn이 new_attachment_dicts를 직접 user 메시지에 넣는다. PreparedRag까지 들고 갈 이유가 없다.
     domain_hint: str | None = None   # [임시] 테넌트 지식 범위 설명 — 생성 프롬프트 주입용, 저장 안 함 (#1)
     assistant_message_id: int | None = None   # 생성 경로: 자리표시 assistant 메시지 id (백그라운드 태스크가 UPDATE할 대상)
     block_reason: str | None = None   # route='blocked'일 때 가드 판정 사유 — 저장·집계용 (#22)
@@ -67,14 +73,11 @@ class PreparedRag:
     # repr=False — 1024차원 float가 로그·트레이스백에 새는 것 차단.
     query_embedding: list[float] | None = field(default=None, repr=False)
     # RETRY 재실행 턴(#59)에서만 채워진다 — 사용자가 실제 입력한 발화("다시").
-    # 저장·화면(recorded_query)은 이 값을 쓰고, 검색·프롬프트는 original_query
-    # (=직전 실질 질문)를 쓴다. 기록엔 사용자가 친 말만 남긴다는 원칙(화면=기록 진실성).
+    # 검색·프롬프트는 original_query(=직전 실질 질문)를 쓴다.
+    # 예전엔 recorded_query 프로퍼티가 이 값으로 "저장할 질문"을 늦게 계산했는데, #72에서
+    # 저장이 턴 시작으로 옮겨가며 불필요해졌다 — _open_turn이 사용자가 친 원문을 그대로 넣고
+    # RETRY의 질의 치환은 그보다 뒤에 일어난다. 필드는 라우팅 판정 신호로 남는다.
     display_query: str | None = None
-
-    @property
-    def recorded_query(self) -> str:
-        """저장·화면에 남길 질문 — RETRY 재실행이면 사용자가 실제 친 발화, 아니면 원 질문 (#59)."""
-        return self.display_query or self.original_query
 
     def __post_init__(self) -> None:
         """검색 여부와 route를 짝지어 생성 시점에 강제한다 (#36).
@@ -90,6 +93,15 @@ class PreparedRag:
                 f"PreparedRag 불변식 위반 — route={self.route!r}인데 retrieval이 "
                 f"{'있다' if self.retrieval is not None else '없다'}. "
                 "knowledge는 검색을 거치고(캐시 히트 포함), blocked/other는 거치지 않는다."
+            )
+        if self.assistant_message_id is None:
+            # 같은 이유로 여기서 막는다 (#72). 이 값이 비면 finalize_turn의
+            # session.get(Message, None)이 조용히 None을 받아 **아무것도 UPDATE하지 않고**
+            # 정상 반환한다 — 턴이 영영 generating으로 남고 에러도 안 난다.
+            # 턴 시작 저장(_open_turn)이 항상 선행하므로 정상 경로에선 비는 일이 없다.
+            raise ValueError(
+                "PreparedRag 불변식 위반 — assistant_message_id가 없다. "
+                "모든 턴은 _open_turn이 만든 자리표시 id를 들고 다녀야 finalize가 동작한다."
             )
 
     @property
@@ -183,18 +195,49 @@ class RagService:
     ) -> PreparedRag:
         """한 턴을 처리할 컨텍스트를 확정한다 — 라우팅·검색어·근거·캐시히트가 여기서 결정된다.
 
-        **부수효과가 있다** — 새 대화면 INSERT + commit(되돌릴 수 없음), 캐시 히트면 hit_count가
-        오른다. 재호출하면 대화가 중복 생성되므로 한 요청에 한 번만 부를 것.
+        **쓰기부터 시작한다** (#72) — 대화(신규면)와 이번 턴(user + assistant 자리표시)을 먼저
+        INSERT·commit하고 라우팅에 들어간다. 되돌릴 수 없다. 재호출하면 턴이 중복 생성되므로
+        한 요청에 한 번만 부를 것. 캐시 히트면 hit_count도 오른다.
         LLM도 2회 부른다(인텐트 분류·질의 재작성). 이름이 가벼워 보이지만 요청 지연의
         상당 부분이 여기서 나온다 — 캐시 히트 턴에서는 사실상 전부다.
 
-        성격이 다른 셋을 단계로 나눠 뒀다 (#36):
-          _resolve_conversation  대화 확보(쓰기) + 첨부 합본
+        **왜 쓰기가 먼저인가**: 이 함수 안에서 실패하면(분류·재작성 판단 실패, 검색·캐시 오류,
+        연결 끊김) 예전엔 사용자의 질문이 통째로 사라졌다 — 신규 대화는 빈 껍데기만 남고,
+        기존 대화는 흔적조차 없었다. 저장을 라우팅보다 앞에 두면 어디서 죽든 질문은 남는다.
+        자리표시는 status='generating'이라 load_recent_messages의 격리 필터(#22)가 자기 자신을
+        이력에서 자동으로 빼준다 — 방금 넣은 질문이 '이전 대화'로 되먹임되지 않는다.
+
+        성격이 다른 넷을 단계로 나눠 뒀다 (#36):
+          _resolve_conversation  대화 확보 + 첨부 합본
+          _open_turn             턴 시작 저장 (쓰기·commit)
           (본문)                 라우팅 판정 → blocked/other면 여기서 끝
           _prepare_knowledge     질의 재작성 → 검색 → 출처·FAQ스냅샷 → 캐시 조회(쓰기)
         """
         conversation, attachment_dicts, new_attachment_dicts = await self._resolve_conversation(
             conversation_id, attachments)
+        assistant_message_id = await self._open_turn(conversation.id, query, new_attachment_dicts)
+
+        try:
+            return await self._route(
+                conversation, assistant_message_id, query,
+                attachment_dicts, new_attachment_dicts, domain_hint)
+        except Exception:
+            # 자리표시를 즉시 failed로 닫는다. 없으면 sweep_stale_generating(임계 500초 +
+            # cron 5분)이 회수할 때까지 최대 ~800초간 generating으로 남는다 — 폴백을 걷어낸
+            # 뒤로 이 경로가 잦아졌으므로 지연을 방치하지 않는다. 원 예외는 그대로 올린다.
+            await self._fail_turn(assistant_message_id)
+            raise
+
+    async def _route(
+            self,
+            conversation: Conversation,
+            assistant_message_id: int,
+            query: str,
+            attachment_dicts: list[dict],
+            new_attachment_dicts: list[dict],
+            domain_hint: str | None,
+    ) -> PreparedRag:
+        """라우팅 판정 본문 — prepare()가 실패 안전망으로 감싸는 구간이다 (#72)."""
         messages = await load_recent_messages(self.session, self.tenant_id, conversation.id)
         display_query: str | None = None   # RETRY 재실행에서만 채워짐 — _routed가 늦은 바인딩으로 읽는다
 
@@ -204,6 +247,7 @@ class RagService:
             return PreparedRag(
                 block_reason=block_reason,
                 conversation_id=conversation.id,
+                assistant_message_id=assistant_message_id,
                 original_query=query,
                 standalone_query=query,
                 prior_turns=build_prior_turns(messages, settings.history_budget_tokens),
@@ -212,7 +256,6 @@ class RagService:
                 source_doc_ids=[],
                 route=route,
                 attachments=attachment_dicts,
-                new_attachments=new_attachment_dicts,
                 domain_hint=domain_hint,
                 display_query=display_query,
             )
@@ -245,8 +288,38 @@ class RagService:
             return _routed("other")
 
         return await self._prepare_knowledge(
-            conversation.id, query, messages, attachment_dicts, new_attachment_dicts, domain_hint,
+            conversation.id, assistant_message_id, query, messages,
+            attachment_dicts, new_attachment_dicts, domain_hint,
             display_query=display_query, precomputed_standalone=precomputed_standalone)
+
+    async def _open_turn(self, conversation_id: int, query: str,
+                         new_attachment_dicts: list[dict]) -> int:
+        """턴 시작 저장 — user 메시지 + assistant 자리표시를 커밋하고 자리표시 id를 반환한다 (#72).
+
+        query는 사용자가 실제 친 원문이다. RETRY(#59)의 질의 치환은 이 시점보다 뒤에 일어나므로,
+        여기 저장되는 값이 곧 화면·기록에 남아야 할 발화다 (recorded_query가 늦게 계산하던 값과 동치).
+        standalone_query는 아직 모른다 — finalize_turn이 종료 시점에 백필한다.
+
+        이 commit은 신규 대화의 INSERT까지 함께 확정한다. 대화만 따로 커밋하던 예전 구조는
+        대화와 첫 턴 사이에 실패 창을 남겨 빈 대화를 만들었다 — 한 트랜잭션으로 묶어 없앤다.
+        """
+        assistant = await add_pending_turn(
+            self.session, self.tenant_id, conversation_id, query,
+            attachments=new_attachment_dicts or None, user_id=self.user_id,
+        )
+        await self.session.flush()   # 자리표시 id 확보 — 이후 전 경로가 이 id로 UPDATE한다
+        await self.session.commit()  # 여기서부터 질문은 durable
+        return assistant.id
+
+    async def _fail_turn(self, assistant_message_id: int) -> None:
+        """prepare() 실패 시 자리표시를 failed로 닫는다 (#72). 정리 자체의 실패는 삼킨다 —
+        원 예외를 가리면 진짜 원인이 사라진다. 삼켜도 스테일 스윕이 결국 회수한다."""
+        try:
+            await finalize_turn(self.session, self.tenant_id, assistant_message_id,
+                                '', [], status='failed')
+            await self.session.commit()
+        except Exception:
+            logger.exception('자리표시 failed 마감 실패 (message_id=%s)', assistant_message_id)
 
     async def _resolve_conversation(
             self,
@@ -255,17 +328,17 @@ class RagService:
     ) -> tuple[Conversation, list[dict], list[dict]]:
         """대화를 확보하고 컨텍스트에 실을 첨부를 합본한다.
 
-        **부수효과**: conversation_id가 None이면 INSERT 후 즉시 commit한다 — 되돌릴 수 없다.
-        persist-before-stream: meta 이벤트로 id를 FE에 노출하기 전에 durable해야, disconnect·
-        blocked·error로 스트림이 끊겨도 FE가 받은 id가 유효하다 (REVIEW findings ②).
+        **커밋하지 않는다** (#72). 신규 대화 INSERT는 세션에만 올리고, 곧바로 이어지는
+        _open_turn의 commit이 대화와 첫 턴을 **한 트랜잭션으로** 확정한다. 예전엔 여기서
+        따로 commit해 persist-before-stream(REVIEW findings ②)을 보장했는데, 그러면 대화만
+        커밋된 뒤 턴 저장 전에 실패하는 창이 남아 빈 대화가 생겼다. 뒤 commit이 meta 전송보다
+        한참 앞이라 그 보장은 그대로 유지된다.
 
-        반환은 (대화, 주입용 첨부, 이번 턴 신규 첨부) — 신규분은 save()가 user 메시지에 저장하고,
-        주입용은 프롬프트 <첨부 문서> 블록에 들어간다. **둘은 별개다**: max_attachments가 주입만
-        제한하므로 주입용이 비어도 신규분은 있을 수 있다 (그 어긋남이 #36의 캐시 유실 버그였다).
+        반환은 (대화, 주입용 첨부, 이번 턴 신규 첨부) — 신규분은 _open_turn이 user 메시지에
+        저장하고, 주입용은 프롬프트 <첨부 문서> 블록에 들어간다. **둘은 별개다**: max_attachments가
+        주입만 제한하므로 주입용이 비어도 신규분은 있을 수 있다 (그 어긋남이 #36의 캐시 유실 버그였다).
         """
         conversation = await ensure_conversation(self.session, self.tenant_id, conversation_id, user_id=self.user_id)
-        if conversation_id is None:
-            await self.session.commit()
 
         new_attachment_dicts = [{'filename': a.filename, 'text': a.text} for a in (attachments or [])]
         # 누적 첨부 중 최신 max_attachments개만 컨텍스트에 주입 (오래된 것 제외 — 30K 예산 관리).
@@ -279,6 +352,7 @@ class RagService:
     async def _prepare_knowledge(
             self,
             conversation_id: int,
+            assistant_message_id: int,
             query: str,
             messages: list[Message],
             attachment_dicts: list[dict],
@@ -335,6 +409,7 @@ class RagService:
             if semantic_hit is not None:
                 return PreparedRag(
                     conversation_id=conversation_id,
+                    assistant_message_id=assistant_message_id,
                     original_query=query,
                     standalone_query=standalone_query,
                     prior_turns=prior_turns,
@@ -344,13 +419,13 @@ class RagService:
                     source_doc_ids=semantic_hit.source_doc_ids,
                     sources=semantic_hit.sources,
                     attachments=attachment_dicts,
-                    new_attachments=new_attachment_dicts,
                     domain_hint=domain_hint,
                     display_query=display_query,
                 )
 
         return PreparedRag(
             conversation_id=conversation_id,
+            assistant_message_id=assistant_message_id,
             original_query=query,
             standalone_query=standalone_query,
             prior_turns=prior_turns,
@@ -358,7 +433,6 @@ class RagService:
             sources=sources,
             source_doc_ids=source_doc_ids,
             attachments=attachment_dicts,
-            new_attachments=new_attachment_dicts,
             domain_hint=domain_hint,
             faq_versions=faq_versions,
             query_embedding=retrieval.query_embedding,   # maybe_cache가 save_answer로 넘긴다 (#50)
@@ -447,72 +521,17 @@ class RagService:
             async for token in stream:
                 yield token
 
-    async def save(self, prepared: PreparedRag, answer: str, citations: list[SourceCitation],
-                   latency_ms: int | None = None) -> None:
-        """완성된 답변을 대화 메시지로 등록한다.
-        이 함수는 session에 메시지를 add만 하고 commit은 호출자가 담당한다.
-
-        citations: 실제 인용된 출처만 (#56) — 호출자(스트림 조립부)가 확정해 넘긴다.
-        sources 컬럼도 인용만 저장한다(저장=응답=스트림 정합, #56 확정).
-
-        옛 규약("거절이면 빈 목록이어야 한다 — 확인 불가 + 인용 모순 방지")은 #61에서
-        폐기됐다. 인용 개수가 곧 근거 유무의 정의가 됐으므로, 답변 문구를 보고 인용을
-        비우는 보정을 더 하지 않는다 — 그 보정은 비대칭이었고(거절 문구+번호만 잡고,
-        확신에 찬 답변+빈 꼬리는 못 잡았다) 후자를 드러내는 것이 이번 변경의 목적이다.
-        """
-        source_dicts = [c.model_dump() for c in citations]
-
-        assistant = await save_exchange(
-            self.session,
-            self.tenant_id,
-            prepared.conversation_id,
-            prepared.recorded_query,
-            prepared.standalone_query,
-            answer,
-            source_dicts,
-            attachments=prepared.new_attachments or None,
-            user_id=self.user_id,
-            latency_ms=latency_ms,
-            cache_kind=prepared.cache_kind,   # 'semantic'=캐시 재생 답변 (기간별 히트율 집계용)
-            # 저장 순간에 사실 확정 — 조회는 순수 SQL. cited_docs는 citations의 파일명 파생
-            cited_docs=[c.filename for c in citations],
-            intent=prepared.intent_label,
-            # 입력 차단 턴은 status로 식별 가능해야 한다 — 이력 격리(load_recent_messages)와
-            # 차단 집계가 모두 이 값에 의존 (#22). 출력 차단은 finalize_turn 쪽이 담당.
-            # 판정은 terminal_status 한 곳 — 루트 스팬 기록(streaming)이 같은 값을 쓴다 (#54).
-            status=prepared.terminal_status,
-            block_reason=prepared.block_reason,
-        )
-        # 즉시 경로는 begin_turn을 안 거쳐 meta의 assistant_message_id가 비어 있었음 —
-        # #16의 persist-before-stream 덕에 meta 전송 전에 id 확정 가능 → 피드백 대상 노출 (#8)
-        prepared.assistant_message_id = assistant.id
-        # 캐시 저장은 여기서 하지 않는다 — 즉시 경로 3종(차단·캐시히트·근거없음)은 전부
-        # should_cache=False라 이 자리의 호출이 실은 죽은 코드였고(#56 재배치 때 확인),
-        # 캐시 적재는 생성 경로가 done 전송 뒤 maybe_cache로 수행한다.
-
-    async def begin_turn(self, prepared: PreparedRag) -> None:
-        """생성 경로에서 스트림 시작 전에 user 메시지 + assistant 자리표시(generating)를
-        등록·commit하고 prepared.assistant_message_id를 세팅한다 (persist-before-stream).
-        요청 세션(self.session)으로 실행 — 이 시점엔 요청이 살아있다.
-        """
-        assistant = await add_pending_turn(
-            self.session,
-            self.tenant_id,
-            prepared.conversation_id,
-            prepared.recorded_query,
-            prepared.standalone_query,
-            attachments=prepared.new_attachments or None,
-            user_id=self.user_id,
-        )
-        await self.session.flush()
-        prepared.assistant_message_id = assistant.id
-        await self.session.commit()   # generating 행 durable → 이후 태스크 spawn
-
     async def finalize(self, prepared: PreparedRag, answer: str, citations: list[SourceCitation],
                        status: str = "done", latency_ms: int | None = None) -> None:
-        """생성 완료/실패 시 assistant 자리표시를 UPDATE한다.
-        백그라운드 태스크가 '자기 세션으로 만든 RagService'에서 호출한다 (self.session=태스크 세션).
-        commit은 호출자(태스크)가 담당. 실패면 status='failed', answer=''로 호출.
+        """턴을 종료한다 — 자리표시를 최종 결과로 UPDATE한다. **모든 경로 공용** (#72).
+
+        즉시 경로(차단·캐시히트·근거없음)는 요청 세션에서, 생성 경로는 백그라운드 태스크가
+        '자기 세션으로 만든 RagService'에서 부른다 (self.session=태스크 세션).
+        commit은 호출자가 담당. 실패면 status='failed', answer=''로 호출.
+
+        예전엔 즉시 경로만 save_exchange로 user+assistant를 원샷 INSERT했는데, 그 형태는
+        라우팅이 끝난 뒤에만 가능해 prepare() 실패 시 질문이 유실됐다 — #72에서 턴 시작
+        저장으로 옮기면서 종료 지점도 이 함수 하나로 합쳐졌다.
 
         캐시 적재는 여기서 하지 않는다(#56 재배치) — done 전송보다 앞(크리티컬 패스)에 있으면
         임베딩 TEI 왕복만큼 각주 표시가 늦고, 저장 실패가 완결된 턴을 failed로 오염시켰다.
@@ -520,6 +539,7 @@ class RagService:
 
         citations: 실제 인용된 출처만 (#56) — 호출자(스트림 조립부)가 확정해 넘긴다.
         정상 완료(done)에만 의미 — 취소/실패는 status 가드가 어차피 비운다.
+        sources 컬럼도 인용만 저장한다(저장=응답=스트림 정합, #56 확정).
         """
         source_dicts = [] if status != "done" else [c.model_dump() for c in citations]
         await finalize_turn(
@@ -528,6 +548,12 @@ class RagService:
             # 인용 확정은 정상 완료(done)에만 의미 — blocked/failed/cancelled는 항상 []/False
             cited_docs=[c.filename for c in citations] if status == "done" else [],
             intent=prepared.intent_label,
+            # 턴 시작 시점엔 몰랐던 값들 — 짝 user 행의 standalone_query까지 여기서 확정한다
+            standalone_query=prepared.standalone_query,
+            cache_kind=prepared.cache_kind,   # 'semantic'=캐시 재생 답변 (기간별 히트율 집계용)
+            # 입력 차단 턴은 status·block_reason으로 식별 가능해야 한다 — 이력 격리
+            # (load_recent_messages)와 차단 집계가 이 값에 의존 (#22)
+            block_reason=prepared.block_reason,
         )
 
 

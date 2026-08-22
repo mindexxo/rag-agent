@@ -58,8 +58,14 @@ ex)
 # fixture: 테스트가 의존하는 리소스를 만들어주는 함수.
 #          파라미터 이름(session)이 fixture 이름이랑 매칭되면 pytest가 자동 주입.
 @pytest_asyncio.fixture
-async def session():
-    """요청당 세션 1개. 테스트 종료 시 자동 닫힘."""
+async def session(_loop_hygiene):
+    """요청당 세션 1개. 테스트 종료 시 자동 닫힘.
+
+    _loop_hygiene 의존은 필수다 — 이 파일은 conftest의 tenant_id fixture를 쓰지 않아
+    루프 위생 정리에서 빠져 있었고, 그래서 커넥션 풀에 **이전 루프에 묶인 커넥션**을
+    남겼다. 다음 테스트가 그걸 받으면 "attached to a different loop"으로 죽는다
+    (수집 순서상 test_turn_persistence가 바로 다음이라 그때 드러났다).
+    """
     # async with: 컨텍스트 매니저의 async 버전.
     #             AsyncSessionLocal()이 enter/exit를 await로 처리.
     async with AsyncSessionLocal() as session:

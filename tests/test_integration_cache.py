@@ -74,6 +74,7 @@ async def _prepared_with_conversation(session, tenant_id: str) -> PreparedRag:
     await session.flush()
     return PreparedRag(
         conversation_id=conv.id,
+        assistant_message_id=1,   # __post_init__ 불변식 (#72)
         original_query='배송비 얼마예요',
         standalone_query='배송비 얼마예요',
         prior_turns=[],
@@ -348,8 +349,11 @@ async def test_주입상한0이어도_신규첨부가_있으면_캐시를_우회
     """#36 버그 수정 — 캐시 가드는 주입용·신규분 첨부를 **둘 다** 봐야 한다.
 
     max_attachments<=0이면 주입용(attachment_dicts)이 강제로 비므로, 신규분을 함께 보지 않으면
-    첨부가 있는 턴이 캐시 가드를 통과한다. 그러면 캐시 답변이 재생되고 캐시-히트 PreparedRag가
-    new_attachments를 안 채워, save()에서 **이번 턴 첨부가 조용히 유실**된다.
+    첨부가 있는 턴이 캐시 가드를 통과해 캐시 답변이 재생된다.
+
+    #72로 저장 구조가 바뀌어 유실 메커니즘 자체는 사라졌다 — 첨부는 이제 턴 시작(_open_turn)에
+    user 메시지로 곧장 들어가지, 저장 시점에 PreparedRag에서 읽어오지 않는다. 그래도 이 가드는
+    유효하다: 첨부가 있는 턴은 그 문서에 종속된 답을 내야 하므로 공용 캐시 답변을 재생하면 안 된다.
     """
     from config import settings
     from rag.models import Message

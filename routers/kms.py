@@ -20,6 +20,7 @@ from config import settings
 from database import get_session
 from rag import limiter, otel, streaming
 from rag.limiter import Lease
+from rag.llm_schemas import LlmJudgmentFailed
 from rag.models import TenantQuota
 from rag.service import RagService
 from schemas.kms import KmsQueryRequest
@@ -88,6 +89,18 @@ async def query(
         try:
             prepared = await service.prepare(request.query, request.conversation_id, request.attachments,
                                              domain_hint=request.domain_hint)
+        except LlmJudgmentFailed as exc:
+            # LLM이 분류·재작성 판단을 못 냈다 (#72) — 폴백으로 추측하지 않고 실패로 끝낸다.
+            # 500(서버 버그)이 아니라 503: 재시도하면 될 수 있는 일시적 실패다.
+            # 이 시점엔 사용자의 질문이 이미 저장돼 있고(턴 시작 자리표시), prepare()의
+            # 안전망이 그 자리표시를 failed로 닫아둔 상태다.
+            #
+            # **스팬은 ERROR로 남긴다.** 404(존재하지 않는 대화)와 달리 이건 클라이언트 잘못이
+            # 아니라 시스템 건강 신호다 — 폴백을 걷어내면서 새로 생긴 실패 계열이라, 여기서
+            # 마킹하지 않으면 에러율 대시보드에 아예 안 잡힌다. 아래 `except HTTPException`이
+            # 마킹 없이 통과시키므로 이 자리에서 직접 남겨야 한다.
+            otel.mark_error(root_span, exc)
+            raise HTTPException(status_code=503, detail='일시적으로 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.')
         except ValueError:
             # 존재하지 않거나 다른 테넌트 소유의 conversation_id — 500 아닌 404 (REVIEW findings ③)
             # 정상 클라이언트 오류 — 스팬을 ERROR로 남기지 않는다 (에러율 오염 방지, 리뷰 반영)
@@ -115,7 +128,8 @@ async def query(
             return response
 
         # ── 생성 경로 (LLM → 백그라운드 태스크 + 큐 리더) ──
-        await service.begin_turn(prepared)          # placeholder(generating) commit → assistant_message_id
+        # 자리표시는 prepare()가 턴 시작에 이미 커밋했다(#72) — prepared.assistant_message_id가
+        # 채워져 있으므로 여기서 따로 열 것이 없다. 태스크가 다른 세션에서 그 id로 UPDATE한다.
         queue: asyncio.Queue = asyncio.Queue()      # unbounded 필수 — 근거는 streaming.queue_reader docstring
         streaming.spawn_generation(prepared, queue, lease, t_request, root_span)
         # 소유권 이전 표시는 spawn '뒤'에 — spawn이 실패하면 플래그가 서지 않아 요청 쪽이

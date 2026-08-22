@@ -99,8 +99,7 @@ async def test_RETRY_재실행_턴의_user_메시지는_원_발화로_저장(cli
 
     async with AsyncSessionLocal() as s:
         svc = RagService(tenant_id=tenant_id, session=s, user_id='agent-a')
-        prepared = await svc.prepare('다시', conversation_id=cid)
-        await svc.begin_turn(prepared)
+        prepared = await svc.prepare('다시', conversation_id=cid)   # 자리표시는 prepare가 커밋 (#72)
 
     async with AsyncSessionLocal() as s:
         users = (await s.execute(

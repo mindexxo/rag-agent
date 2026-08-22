@@ -68,8 +68,7 @@ async def _prepare_turn(tenant_id: str):
     """정상 경로로 prepare + 자리표시(generating)까지 만들고 그 뒤를 테스트가 조작한다."""
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
-        prepared = await svc.prepare('환불 기간 알려줘')
-        await svc.begin_turn(prepared)
+        prepared = await svc.prepare('환불 기간 알려줘')   # 자리표시는 prepare가 커밋한다 (#72)
         return prepared
 
 

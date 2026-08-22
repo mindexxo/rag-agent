@@ -146,8 +146,11 @@ async def immediate_stream(service: RagService, prepared: PreparedRag, session,
         # 저장 실패가 이미 확정된 답변의 '전달'까지 막으면 안 된다 (fail-open — 리뷰 반영).
         # StreamingResponse는 첫 yield 전에 200 헤더가 이미 나가므로, 여기서 예외가 새면
         # 사용자는 빈 스트림을 받는다. 실패는 로그만 남기고 전달은 계속한다.
+        # 여기서 실패해도 질문 자체는 남는다 — 자리표시가 턴 시작에 이미 커밋됐다(#72).
+        # 그 경우 자리표시는 generating으로 남고 스테일 스윕이 failed로 회수한다.
         try:
-            await service.save(prepared, answer, result.citations, latency_ms=latency_ms)
+            await service.finalize(prepared, answer, result.citations,
+                                   status=prepared.terminal_status, latency_ms=latency_ms)
             await session.commit()
         except Exception:
             logger.exception("즉시 경로 저장 실패 — 답변 전달은 계속 (conversation=%s)",

@@ -2,6 +2,8 @@
 
 라벨은 인용 형식을 견인한다(라벨=인용형식 설계) — 형식이 바뀌면 인용 전체가 회귀.
 """
+import re
+
 from rag.prompt_texts import DEFAULT_DOMAIN_HINT, PRIOR_TURNS_LABEL, STANDALONE_QUERY_LABEL
 from rag.prompts import (
     SYSTEM_PROMPT,
@@ -113,7 +115,7 @@ class TestCitationConstraint:
     def test_빈_목록도_합법이다(self):
         """거절의 자유 — minItems를 걸지 않는다.
 
-        후보가 있어도 모델이 []를 낼 수 있어야 한다(프롬프트 규칙 7: 사용한 문서가 없으면
+        후보가 있어도 모델이 []를 낼 수 있어야 한다(프롬프트의 인용 표시 규칙: 사용한 문서가 없으면
         빈 목록). 라이브에서도 확인했다 — 답할 수 없는 질문에 후보 4개를 주면 2/2 [].
         """
         schema = self._rf(3, [])['structures'][0]['schema']
@@ -213,6 +215,52 @@ class TestKnowledgeGenerationPrompt:
             domain_hint='식품 배송 상담')
         assert '검색에 사용한 재작성 질문: 생닭 가격은?' in msgs[1]['content']
         assert '식품 배송 상담' in msgs[0]['content']
+
+
+class TestSystemPromptStructure:
+    """규칙 목록의 구조 가드 (#62).
+
+    #62에서 규칙 4(조건 되묻기)를 지우고 5~9를 4~8로 당겼더니 규칙 3의 "규칙 7의 마지막 줄"이
+    낡아 엉뚱한 규칙(민감정보)을 짚게 됐다. 사람이 읽는 주석이 낡는 것과 달리 이건 모델에게
+    그대로 전달된다. 아래로 막는다.
+    """
+
+    def _rule_numbers(self):
+        return [int(m.group(1)) for m in re.finditer(r'^(\d+)\. ', SYSTEM_PROMPT, re.M)]
+
+    def test_규칙_번호는_1부터_빈틈없이_이어진다(self):
+        nums = self._rule_numbers()
+        assert nums == list(range(1, len(nums) + 1)), f'번호 구멍/중복: {nums}'
+
+    def test_번호_자기참조를_늘리지_않는다(self):
+        """래칫 — 현재 1곳(규칙 3의 "규칙 2에 따른")만 허용하고 새 참조를 막는다.
+
+        그 1곳을 지우지 않은 이유는 rag/prompt_texts.py 모듈 docstring: 문구 수정 자체가
+        재측정 대상이고, 규칙 2는 위쪽이라 번호가 밀릴 여지가 작다.
+        새 의존이 생기면 번호가 아니라 내용으로 가리켜라("인용 표시 규칙"처럼).
+        """
+        refs = re.findall(r'규칙\s*\d', SYSTEM_PROMPT)
+        assert refs == ['규칙 2'], f'번호 참조가 늘었다: {refs}'
+
+    def test_근거_부재_규칙은_부재를_확인불가로_읽으라고_지시한다(self):
+        """부재 ≠ 미제공. 이 원리가 빠지면 모델이 문서에 없는 것을 "제공되지 않는다"로 단정한다."""
+        assert '"확인할 수 없다"는 뜻입니다' in SYSTEM_PROMPT
+
+    def test_표현_불일치로_거절하지_말라는_줄을_지우지_말_것(self):
+        """#62에서 이 줄만 지웠더니 trap 1문항이 3/3 거절로 뒤집혔다.
+
+        homeplus_tr008 — "당일 픽업도 새벽배송처럼 전날 23시까지 주문하면 되죠?"
+        문서에 근거(당일 11시)가 있는데도 정문 거절했다. 원문은
+        eval/results/prompt_ablation_62/9_거절축_A_H11_원문.md.
+        """
+        assert '특정 표현이 문서에 없다는 이유만으로 거절하지 마십시오' in SYSTEM_PROMPT
+
+    def test_답변_서식_규칙에_첫_문장_불릿이_없다(self):
+        """규칙 3과 짝이라 함께 빠졌다 — 되살리면 첫 문장이 자기모순을 낸다.
+
+        사유는 _SYSTEM_PROMPT_TEMPLATE 위의 ⚠ 주석. 한쪽만 되돌리려면 재측정이 전제다.
+        """
+        assert '첫 문장은 질문에 대한 핵심 답' not in SYSTEM_PROMPT
 
 
 class TestCondenseUserMessage:

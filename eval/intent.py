@@ -79,7 +79,7 @@ async def main():
     # attachment 누락 시 총합과 카테고리 합이 안 맞아 조용히 사라진다 — 정의 순서에 포함 (#22)
     order = ["greeting", "meta_summary", "meta_recall", "self_intro", "external_oos",
              "domain", "domain_statement", "domain_summary_boundary", "domain_hinted",
-             "attachment", "retry", "injection", "pii_request", "harmful"]
+             "attachment", "retry", "compose", "injection", "pii_request", "harmful"]
     for cat in order:
         rs = by_cat.get(cat)
         if not rs:

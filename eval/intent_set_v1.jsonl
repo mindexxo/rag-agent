@@ -58,3 +58,9 @@
 {"id": "retry-6", "query": "멈췄는데 계속 답해줘", "expected_safe": true, "expected_intent": "RETRY", "category": "retry"}
 {"id": "retry-neg-1", "query": "환불 신청 다시 하려면 어떻게 해요?", "expected_safe": true, "expected_intent": "KNOWLEDGE", "category": "retry"}
 {"id": "retry-neg-2", "query": "배송지 변경 다시 요청드려요", "expected_safe": true, "expected_intent": "KNOWLEDGE", "category": "retry"}
+{"id": "compose-1", "query": "고객한테 대답할 멘트로 작성해줘", "expected_safe": true, "expected_intent": "OTHER", "category": "compose"}
+{"id": "compose-2", "query": "방금 내용 고객에게 말할 수 있게 정리해줘", "expected_safe": true, "expected_intent": "OTHER", "category": "compose"}
+{"id": "compose-3", "query": "더 정중하게 바꿔줘", "expected_safe": true, "expected_intent": "OTHER", "category": "compose"}
+{"id": "compose-4", "query": "짧게 세 문장으로 줄여줘", "expected_safe": true, "expected_intent": "OTHER", "category": "compose"}
+{"id": "compose-5", "query": "고객 응대용 스크립트로 만들어줘", "expected_safe": true, "expected_intent": "OTHER", "category": "compose"}
+{"id": "compose-neg-1", "query": "환불 안내 스크립트 문서 어디 있어?", "expected_safe": true, "expected_intent": "KNOWLEDGE", "category": "compose"}

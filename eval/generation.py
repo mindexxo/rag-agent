@@ -18,12 +18,12 @@ import os
 import re
 from collections import defaultdict
 from pathlib import Path
-from types import SimpleNamespace
 
 from sqlalchemy import select
 
 from config import settings
 from database import AsyncSessionLocal
+from eval._gold_history import messages_from_conversation
 from rag.citation_labels import sources_from_chunks
 from rag.citation_tail import TailSplitter, resolve_citations
 from rag.conversation import build_prior_turns, condense_query
@@ -299,7 +299,7 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved):
     async def _standalone(g):
         if g["type"] != "multi_turn":
             return g["id"], (None, [])
-        history = [SimpleNamespace(**m) for m in (g.get("conversation") or [])]
+        history = messages_from_conversation(g.get("conversation"))
         async with sem:
             standalone = await condense_query(llm, g["query"], history)
         return g["id"], (standalone, build_prior_turns(history, settings.history_budget_tokens))
@@ -355,11 +355,34 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved):
     return rows
 
 
+def _smoke_sample(rows: list[dict], n: int) -> list[dict]:
+    """스모크셋 — 타입별로 고르게 뽑는다 (#77).
+
+    옛 구현은 `rows[:n]`이었다. gold는 테넌트 블록이 이어진 순서라 앞에서 자르면 앞쪽
+    타입만 들어온다 — multi_turn은 첫 테넌트 기준 인덱스 60번대에 있어서 SMOKE<61이면
+    **한 문항도 안 걸렸다.** 그런데 #77이 고친 버그가 정확히 multi_turn 경로(gold 이력을
+    Message로 변환해 condense에 태우는 곳)였다. 즉 "SMOKE로 빨리 확인"하는 관행이 그
+    버그를 재현하지 못했고, 그래서 #59 이후 두 달 가까이 아무도 못 봤다.
+
+    타입별 몫은 올림으로 계산해 n을 살짝 넘을 수 있다 — 스모크는 표본이지 정량이 아니라
+    타입 누락(=경로 누락)을 막는 쪽이 중요하다. 원래 순서는 유지한다(결과 파일 비교 편의).
+    """
+    import math
+    from collections import defaultdict
+
+    by_type: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        by_type[r["type"]].append(r)
+    per = max(1, math.ceil(n / len(by_type))) if by_type else 0
+    picked = {id(r) for rs in by_type.values() for r in rs[:per]}
+    return [r for r in rows if id(r) in picked]
+
+
 async def main():
     gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
     gen_gold = [g for g in gold if g["type"] in GEN_TYPES]
     if SMOKE:
-        gen_gold = gen_gold[:SMOKE]
+        gen_gold = _smoke_sample(gen_gold, SMOKE)
     RESULT_DIR.mkdir(exist_ok=True)
 
     llm = LlmClient()

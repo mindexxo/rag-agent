@@ -16,9 +16,9 @@ import argparse
 import asyncio
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 from database import AsyncSessionLocal
+from eval._gold_history import messages_from_conversation
 from eval.generation import row_tenant
 from eval.retrieval import resolve_gold, score_one
 from eval.retrieval_v2 import GOLD, METRICS
@@ -49,9 +49,7 @@ async def compute(multi: bool = False) -> dict:
     sem = asyncio.Semaphore(CONCURRENCY)
 
     async def _condense(g: dict) -> tuple[str, list[str]]:
-        # gold의 conversation을 condense가 받는 Message 형태로 (eval.condense와 동일 방식)
-        msgs = [SimpleNamespace(role=m['role'], content=m['content'])
-                for m in (g.get('conversation') or [])]
+        msgs = messages_from_conversation(g.get('conversation'))
         async with sem:
             if multi:
                 return g['id'], await condense_to_queries(llm, g['query'], msgs)

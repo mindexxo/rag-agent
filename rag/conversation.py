@@ -127,6 +127,7 @@ async def load_recent_messages(
     #          빈 답변·잘린 답변의 표시는 _history_content가 담당(조립 시점 표식).
     # user·assistant 짝을 함께 뺀다 — 한쪽만 빼면 build_prior_turns의 짝짓기가 밀린다.
     _ISOLATED = ('blocked', 'generating')
+    # 이 목록을 바꾸면 eval/_gold_history.py의 계약 docstring도 확인할 것 (#77)
     dropped_questions = {m.question_message_id for m in messages
                          if m.role == 'assistant' and m.status in _ISOLATED}
     kept = [m for m in messages
@@ -136,6 +137,7 @@ async def load_recent_messages(
 
 
 UNANSWERED = ('cancelled', 'failed')   # 답을 못 받은 턴 — RETRY의 대상 (#59·#72)
+# 상태를 추가하면 eval/_gold_history.py의 계약 docstring도 확인할 것 (#77)
 
 
 def last_unanswered_turn(messages: list[Message]) -> tuple[Message, Message] | None:
@@ -180,6 +182,9 @@ def last_unanswered_turn(messages: list[Message]) -> tuple[Message, Message] | N
 
 def _history_content(message: Message) -> str:
     """프롬프트 이력용 답변 텍스트 — 답 못 받은 턴(취소·실패) 표식의 단일 정의점 (#59·#72).
+
+    여기서 message의 새 속성을 읽기 시작하면 eval/_gold_history.py의 계약 docstring도
+    확인할 것 (#77 — eval이 그 속성을 안 채우면 조용히 다른 분기를 탄다).
 
     DB 저장본(Message.content)은 절대 바꾸지 않는다 — 표식은 조립 시점에만 붙는다.
     소비처는 build_prior_turns(생성·OTHER 맥락)와 _condense_call(재작성 이력) 둘 —

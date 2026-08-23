@@ -123,6 +123,31 @@ async def test_unanswered_지식갭_목록(client, tenant_id, fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_첨부전용_턴은_KB_지표에서_제외(client, tenant_id, fake_llm):
+    """#63 — ATTACHMENT 턴이 intent='KNOWLEDGE'로 남으면 첨부 요약 질문이 근거미확인율
+    분모·지식 갭 리포트에 섞인다(첨부는 KB와 무관 — 리뷰 발견). 각주 누락(최악 조합:
+    인용 0건)이어도 두 지표 모두에 안 잡혀야 한다."""
+    fake_llm.intent_json = '{"safe": true, "intent": "ATTACHMENT"}'
+    fake_llm.answer = '문서 요약입니다.'                    # 꼬리 없음 → citations=[] (각주 누락 재현)
+    await client.post('/kms/query', json={
+        'query': '이 문서 요약해줘',
+        'attachments': [{'filename': '세탁케어.pdf', 'text': '울 소재 드라이클리닝'}],
+    })
+
+    async with AsyncSessionLocal() as s:                     # 전제 확인 — 라벨이 분리 저장됐다
+        intent = (await s.execute(
+            select(Message.intent).where(Message.tenant_id == tenant_id)
+            .where(Message.role == 'assistant')
+        )).scalar_one()
+    assert intent == 'ATTACHMENT'
+
+    body = (await client.get('/kms/stats?days=1')).json()
+    assert body['knowledge_done'] == 0                       # KB 답변률 분모 제외
+    assert body['ungrounded'] == 0                           # 인용 0건이어도 분자에 안 섞임
+    assert (await client.get('/kms/stats/unanswered?days=1')).json() == []   # 지식 갭 미혼입
+
+
+@pytest.mark.asyncio
 async def test_stats_테넌트_격리(client, tenant_id, other_tenant_id, fake_llm):
     await _ask(client, '질문 하나')                              # tenant A에 거절 데이터
     async with AsyncClient(transport=ASGITransport(app=__import__('main').app),

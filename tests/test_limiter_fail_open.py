@@ -20,7 +20,9 @@ class _BrokenRedis:
         self.calls = 0
 
     def __getattr__(self, _name):
-        async def _boom(*_a, **_kw):
+        def _boom(*_a, **_kw):
+            # 동기로 던진다 — 커넥션 확보 자체가 실패하는 상황이라 await에 닿기 전이다.
+            # 코루틴을 돌려주면 pipeline() 같은 비-await 호출부에서 모양이 달라진다.
             self.calls += 1
             raise ConnectionError('Error 61 connecting to redis. Connection refused.')
         return _boom
@@ -90,3 +92,23 @@ async def test_정상_Redis에서는_상한이_그대로_동작한다(tenant_id)
     third = await limiter.try_acquire(tenant_id, tenant_limit=1)
     assert third is not None, '반납 후에는 다시 통과'
     await limiter.release(third)
+
+
+@pytest.mark.asyncio
+async def test_Redis가_죽어도_질문은_받아진다(client, tenant_id, fake_llm, pass_gate, monkeypatch):
+    """이 결정의 실제 목적 — 상담이 멈추지 않는 것. 단위 테스트가 아니라 요청 전체로 고정한다.
+
+    예전엔 concurrency_guard가 ConnectionError를 그대로 전파해 **500 Internal Server Error**가
+    나갔다(실기동 재현). 같은 원인에 /events·/cancel은 503을 주고 있어 표면도 갈렸다.
+    미러링(#75)이 함께 실패하지만 그건 삼켜지므로 답변은 끝까지 나와야 한다.
+    """
+    from rag import clients
+    from tests.conftest import register_faq, sse_done
+
+    await register_faq(client)
+    monkeypatch.setattr(clients, 'shared_redis', _BrokenRedis())
+
+    res = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
+
+    assert res.status_code == 200, 'Redis 장애가 새 질문을 막으면 안 된다 (fail-open)'
+    assert sse_done(res)['finish_reason'] == 'done', '미러링 실패는 삼켜지고 생성은 완주한다'

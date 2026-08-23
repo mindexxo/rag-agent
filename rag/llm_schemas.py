@@ -58,8 +58,10 @@ class RouteDecision(BaseModel):
 
     RETRY(#59)·ATTACHMENT(#63)는 표면 패턴 인식용 **전이 인텐트**다 — RETRY는 재요청
     발화("다시"/"이어서"), ATTACHMENT는 첨부 문서 자체를 대상으로 하는 요청("이 문서
-    요약해줘"). prepare()의 디스패처가 상태(직전 턴/첨부 유무)를 보고 즉시 해소하며,
-    PreparedRag.route·messages.intent·stats 등 저장 계층에는 절대 도달하지 않는다.
+    요약해줘"). prepare()의 디스패처가 상태(직전 턴/첨부 유무)를 보고 즉시 해소한다.
+    RETRY는 저장 계층에 절대 도달하지 않고, ATTACHMENT는 라우팅에선 소멸하되
+    저장 라벨(messages.intent='ATTACHMENT')로는 남는다 — 첨부만 근거인 턴이
+    KNOWLEDGE로 집계되면 stats의 KB 커버리지 지표가 오염되기 때문(#63 리뷰).
     """
     safe: bool
     intent: Literal['KNOWLEDGE', 'OTHER', 'RETRY', 'ATTACHMENT']

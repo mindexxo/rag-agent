@@ -8,27 +8,16 @@ import pytest
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from rag.models import Conversation, Message
+from rag.models import Message
 from rag.service import RagService
+from tests.conftest import seed_turn
 
 
 async def _seed_attach_turn(tenant_id: str, question: str, status: str,
                             attachments: list[dict], conversation_id: int | None = None) -> int:
-    """첨부 달린 user + status 지정 assistant 한 턴 → conversation_id."""
-    async with AsyncSessionLocal() as s:
-        if conversation_id is None:
-            conv = Conversation(tenant_id=tenant_id, created_by='agent-a')
-            s.add(conv)
-            await s.flush()
-            conversation_id = conv.id
-        u = Message(tenant_id=tenant_id, conversation_id=conversation_id, role='user',
-                    content=question, attachments=attachments)
-        s.add(u)
-        await s.flush()
-        s.add(Message(tenant_id=tenant_id, conversation_id=conversation_id, role='assistant',
-                      content='', status=status, question_message_id=u.id))
-        await s.commit()
-    return conversation_id
+    """첨부 달린 턴 시딩 — conftest.seed_turn 위임 (헬퍼 단일화, #63 리뷰 반영)."""
+    return await seed_turn(tenant_id, question, '', status=status,
+                           attachments=attachments, conversation_id=conversation_id)
 
 
 async def _injected(tenant_id: str, cid: int) -> list[str]:

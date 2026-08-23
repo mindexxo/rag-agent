@@ -79,6 +79,8 @@ class PreparedRag:
     # 저장이 턴 시작으로 옮겨가며 불필요해졌다 — _open_turn이 사용자가 친 원문을 그대로 넣고
     # RETRY의 질의 치환은 그보다 뒤에 일어난다. 필드는 라우팅 판정 신호로 남는다.
     display_query: str | None = None
+    # ATTACHMENT 검색 스킵 턴(#63) — intent_label이 'ATTACHMENT'로 저장하는 근거.
+    attachment_grounded: bool = False
 
     def __post_init__(self) -> None:
         """검색 여부와 route를 짝지어 생성 시점에 강제한다 (#36).
@@ -136,7 +138,14 @@ class PreparedRag:
     @property
     def intent_label(self) -> str | None:
         """저장용 인텐트 라벨 — 답변률 분모(KNOWLEDGE) 판별에 쓴다.
-        blocked는 인텐트 판정 자체가 무의미(unsafe 입력)라 NULL."""
+        blocked는 인텐트 판정 자체가 무의미(unsafe 입력)라 NULL.
+
+        ATTACHMENT(#63)는 route=knowledge지만 별도 라벨로 저장한다 — 첨부만 근거인
+        턴이 KNOWLEDGE로 남으면 stats의 KB 커버리지 지표(근거미확인율·지식 갭)가
+        오염되고, 이월 첨부 케이스는 사후 필터도 불가능하다(리뷰 발견). 전이 인텐트
+        원칙의 의도적 예외: 라우팅에선 소멸하지만 "근거 유형이 다르다"는 사실은 남긴다."""
+        if self.attachment_grounded:
+            return "ATTACHMENT"
         return {"knowledge": "KNOWLEDGE", "other": "OTHER"}.get(self.route)
 
     @property
@@ -211,7 +220,7 @@ class RagService:
         성격이 다른 넷을 단계로 나눠 뒀다 (#36):
           _resolve_conversation  대화 확보 + 첨부 합본
           _open_turn             턴 시작 저장 (쓰기·commit)
-          (본문)                 라우팅 판정 → blocked/other면 여기서 끝
+          (본문)                 라우팅 판정 → blocked/other/첨부전용(ATTACHMENT)이면 여기서 끝
           _prepare_knowledge     질의 재작성 → 검색 → 출처·FAQ스냅샷 → 캐시 조회(쓰기)
         """
         conversation, attachment_dicts, new_attachment_dicts = await self._resolve_conversation(
@@ -337,6 +346,7 @@ class RagService:
             source_doc_ids=[],
             attachments=attachment_dicts,
             domain_hint=domain_hint,
+            attachment_grounded=True,   # 저장 라벨 'ATTACHMENT' — stats KB 지표에서 제외 (#63)
         )
 
     async def _open_turn(self, conversation_id: int, query: str,

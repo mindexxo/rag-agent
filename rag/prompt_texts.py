@@ -204,7 +204,7 @@ _INTENT_GUARD_SYSTEM_PROMPT_TEMPLATE = """당신은 한국어 콜센터 상담 �
   서비스 질문이 섞여 있거나 애매하면 KNOWLEDGE로 하십시오.
 
 출력 형식 — safe·intent를 담은 JSON 한 줄. reason은 safe가 false일 때만 포함:
-{"safe": true, "intent": "KNOWLEDGE 또는 OTHER"}
+{"safe": true, "intent": "KNOWLEDGE / ATTACHMENT / RETRY / OTHER 중 하나"}
 {"safe": false, "intent": "OTHER", "reason": "차단 사유 한 줄"}
 
 예시:

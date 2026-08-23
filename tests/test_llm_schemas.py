@@ -44,6 +44,12 @@ def test_RETRY는_스키마_화이트리스트에_있다():
     assert 'RETRY' in RouteDecision.model_json_schema()['properties']['intent']['enum']
 
 
+def test_ATTACHMENT는_스키마_화이트리스트에_있다():
+    """#63 — RETRY와 같은 전이 인텐트 확장 패턴."""
+    assert RouteDecision(safe=True, intent='ATTACHMENT').intent == 'ATTACHMENT'
+    assert 'ATTACHMENT' in RouteDecision.model_json_schema()['properties']['intent']['enum']
+
+
 @pytest.mark.asyncio
 async def test_스키마_거부면_무스키마로_한_번_재시도():
     llm = _StubLlm(['{"safe": false, "intent": "OTHER", "reason": "x"}'], reject_schema=True)

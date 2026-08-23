@@ -21,6 +21,7 @@ from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from config import settings
 from rag.conversation import ensure_conversation, load_recent_messages, condense_query, condense_to_queries, build_prior_turns, trim_messages_for_condense, add_pending_turn, finalize_turn, last_unanswered_turn
@@ -78,6 +79,8 @@ class PreparedRag:
     # 저장이 턴 시작으로 옮겨가며 불필요해졌다 — _open_turn이 사용자가 친 원문을 그대로 넣고
     # RETRY의 질의 치환은 그보다 뒤에 일어난다. 필드는 라우팅 판정 신호로 남는다.
     display_query: str | None = None
+    # ATTACHMENT 검색 스킵 턴(#63) — intent_label이 'ATTACHMENT'로 저장하는 근거.
+    attachment_grounded: bool = False
 
     def __post_init__(self) -> None:
         """검색 여부와 route를 짝지어 생성 시점에 강제한다 (#36).
@@ -135,7 +138,14 @@ class PreparedRag:
     @property
     def intent_label(self) -> str | None:
         """저장용 인텐트 라벨 — 답변률 분모(KNOWLEDGE) 판별에 쓴다.
-        blocked는 인텐트 판정 자체가 무의미(unsafe 입력)라 NULL."""
+        blocked는 인텐트 판정 자체가 무의미(unsafe 입력)라 NULL.
+
+        ATTACHMENT(#63)는 route=knowledge지만 별도 라벨로 저장한다 — 첨부만 근거인
+        턴이 KNOWLEDGE로 남으면 stats의 KB 커버리지 지표(근거미확인율·지식 갭)가
+        오염되고, 이월 첨부 케이스는 사후 필터도 불가능하다(리뷰 발견). 전이 인텐트
+        원칙의 의도적 예외: 라우팅에선 소멸하지만 "근거 유형이 다르다"는 사실은 남긴다."""
+        if self.attachment_grounded:
+            return "ATTACHMENT"
         return {"knowledge": "KNOWLEDGE", "other": "OTHER"}.get(self.route)
 
     @property
@@ -210,7 +220,7 @@ class RagService:
         성격이 다른 넷을 단계로 나눠 뒀다 (#36):
           _resolve_conversation  대화 확보 + 첨부 합본
           _open_turn             턴 시작 저장 (쓰기·commit)
-          (본문)                 라우팅 판정 → blocked/other면 여기서 끝
+          (본문)                 라우팅 판정 → blocked/other/첨부전용(ATTACHMENT)이면 여기서 끝
           _prepare_knowledge     질의 재작성 → 검색 → 출처·FAQ스냅샷 → 캐시 조회(쓰기)
         """
         conversation, attachment_dicts, new_attachment_dicts = await self._resolve_conversation(
@@ -287,7 +297,18 @@ class RagService:
                 return _routed("other")          # 원래 OTHER였던 턴(대화 요약 등)은 원래 경로로 재실행
             # 재시도의 의미 = 원본 검색 재현 — 그 턴의 condense 결과를 재사용 (LLM 1콜 절감,
             # 취소 턴이 낀 이력으로 재작성돼 다른 검색어가 나오는 변형 차단)
+            # 주의: 원 턴이 ATTACHMENT(검색 스킵)였다는 사실은 저장에 안 남아(전이 인텐트),
+            # 재실행은 일반 knowledge로 검색이 돈다 — 의도된 수용(#63 결정: 빈도 극저,
+            # 규칙 1의 지시 정의가 오도 완화. 복원하려면 재분류 1콜이 필요해 과설계로 기각).
             precomputed_standalone = prev_user.standalone_query or prev_user.content
+        elif decision.intent == "ATTACHMENT":
+            # ATTACHMENT 디스패치 (#63) — 분류기는 "첨부 자체를 대상으로 한 요청"이라는 표면
+            # 사실만 인식하고, 여기서 첨부 유무(팩트)로 해소한다. RETRY와 같은 전이 인텐트.
+            if not attachment_dicts:
+                return _routed("other")          # 가리킬 첨부가 없다 — OTHER가 되묻기 유도
+            return self._prepare_attachment_only(
+                conversation.id, assistant_message_id, query, messages,
+                attachment_dicts, domain_hint)
         elif decision.intent == "OTHER":
             return _routed("other")
 
@@ -295,6 +316,38 @@ class RagService:
             conversation.id, assistant_message_id, query, messages,
             attachment_dicts, new_attachment_dicts, domain_hint,
             display_query=display_query, precomputed_standalone=precomputed_standalone)
+
+    def _prepare_attachment_only(
+            self,
+            conversation_id: int,
+            assistant_message_id: int,
+            query: str,
+            messages: list[Message],
+            attachment_dicts: list[dict],
+            domain_hint: str | None,
+    ) -> PreparedRag:
+        """ATTACHMENT 경로(#63): 검색·재작성을 통째로 생략하고 첨부만 근거로 생성한다.
+
+        _prepare_knowledge에 스킵 플래그를 꽂지 않고 분리한 이유 — 그쪽 단계(condense→
+        retrieve→FAQ 스냅샷→캐시 조회)를 전부 안 타므로, 플래그면 한 함수가 사실상 두
+        함수가 된다. retrieval은 None이 아니라 빈 결과다: "검색을 안 했다"는 상태 표현이자
+        route=knowledge ⟺ retrieval 존재 불변식(__post_init__)의 요구.
+        no_evidence=False — 근거(첨부)가 실재하므로 의미상으로도 맞다.
+        캐시는 무접점: should_cache가 첨부 있음으로 항상 False (기존 게이트).
+        """
+        return PreparedRag(
+            conversation_id=conversation_id,
+            assistant_message_id=assistant_message_id,
+            original_query=query,
+            standalone_query=query,   # condense 생략 — 검색을 안 하므로 재작성이 무의미
+            prior_turns=build_prior_turns(messages, settings.history_budget_tokens),
+            retrieval=RetrievalResult(chunks=[], no_evidence=False, reason=None),
+            sources=[],
+            source_doc_ids=[],
+            attachments=attachment_dicts,
+            domain_hint=domain_hint,
+            attachment_grounded=True,   # 저장 라벨 'ATTACHMENT' — stats KB 지표에서 제외 (#63)
+        )
 
     async def _open_turn(self, conversation_id: int, query: str,
                          new_attachment_dicts: list[dict]) -> int:
@@ -458,14 +511,29 @@ class RagService:
 
         주입은 어차피 최신 limit개만 쓰므로(max_attachments 슬라이스) 조회도 최신
         limit행으로 제한 — 행당 첨부가 1개 이상이라 limit행이면 첨부 limit개 이상 확보.
+
+        차단 턴의 첨부는 제외한다(#63) — 가드가 질문을 막아도 그 턴의 첨부가 이후 턴
+        프롬프트로 재진입하면 차단이 반쪽이 된다(첨부 텍스트에 실린 인젝션이 통과).
+        이력 격리(#22)와 같은 원칙: 저장·조회 API는 그대로, 프롬프트 주입만 막는다.
+        user 행은 항상 status='done'이라 그 턴의 assistant(blocked) 존재로 판별한다.
+        failed/cancelled 턴의 첨부는 유지 — 질문·첨부 모두 정상인 턴이다(사용자 결정).
         """
         if limit <= 0:   # 주입 안 함 — 조회 자체 생략
             return []
+        assistant = aliased(Message)
+        blocked_turn = (
+            select(assistant.id)
+            .where(assistant.tenant_id == self.tenant_id)   # 격리 — 서브쿼리에도 명시
+            .where(assistant.question_message_id == Message.id)
+            .where(assistant.status == 'blocked')
+            .exists()
+        )
         rows = (await self.session.execute(
             select(Message.attachments)
             .where(Message.tenant_id == self.tenant_id)   # 격리 — WHERE 절 명시
             .where(Message.conversation_id == conversation_id)
             .where(Message.attachments.is_not(None))
+            .where(~blocked_turn)
             .order_by(Message.id.desc())
             .limit(limit)
         )).scalars().all()[::-1]   # 최신 limit행 → 시간순 복원

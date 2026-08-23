@@ -288,7 +288,18 @@ class RagService:
                 return _routed("other")          # 원래 OTHER였던 턴(대화 요약 등)은 원래 경로로 재실행
             # 재시도의 의미 = 원본 검색 재현 — 그 턴의 condense 결과를 재사용 (LLM 1콜 절감,
             # 취소 턴이 낀 이력으로 재작성돼 다른 검색어가 나오는 변형 차단)
+            # 주의: 원 턴이 ATTACHMENT(검색 스킵)였다는 사실은 저장에 안 남아(전이 인텐트),
+            # 재실행은 일반 knowledge로 검색이 돈다 — 의도된 수용(#63 결정: 빈도 극저,
+            # 규칙 1의 지시 정의가 오도 완화. 복원하려면 재분류 1콜이 필요해 과설계로 기각).
             precomputed_standalone = prev_user.standalone_query or prev_user.content
+        elif decision.intent == "ATTACHMENT":
+            # ATTACHMENT 디스패치 (#63) — 분류기는 "첨부 자체를 대상으로 한 요청"이라는 표면
+            # 사실만 인식하고, 여기서 첨부 유무(팩트)로 해소한다. RETRY와 같은 전이 인텐트.
+            if not attachment_dicts:
+                return _routed("other")          # 가리킬 첨부가 없다 — OTHER가 되묻기 유도
+            return self._prepare_attachment_only(
+                conversation.id, assistant_message_id, query, messages,
+                attachment_dicts, domain_hint)
         elif decision.intent == "OTHER":
             return _routed("other")
 
@@ -296,6 +307,37 @@ class RagService:
             conversation.id, assistant_message_id, query, messages,
             attachment_dicts, new_attachment_dicts, domain_hint,
             display_query=display_query, precomputed_standalone=precomputed_standalone)
+
+    def _prepare_attachment_only(
+            self,
+            conversation_id: int,
+            assistant_message_id: int,
+            query: str,
+            messages: list[Message],
+            attachment_dicts: list[dict],
+            domain_hint: str | None,
+    ) -> PreparedRag:
+        """ATTACHMENT 경로(#63): 검색·재작성을 통째로 생략하고 첨부만 근거로 생성한다.
+
+        _prepare_knowledge에 스킵 플래그를 꽂지 않고 분리한 이유 — 그쪽 단계(condense→
+        retrieve→FAQ 스냅샷→캐시 조회)를 전부 안 타므로, 플래그면 한 함수가 사실상 두
+        함수가 된다. retrieval은 None이 아니라 빈 결과다: "검색을 안 했다"는 상태 표현이자
+        route=knowledge ⟺ retrieval 존재 불변식(__post_init__)의 요구.
+        no_evidence=False — 근거(첨부)가 실재하므로 의미상으로도 맞다.
+        캐시는 무접점: should_cache가 첨부 있음으로 항상 False (기존 게이트).
+        """
+        return PreparedRag(
+            conversation_id=conversation_id,
+            assistant_message_id=assistant_message_id,
+            original_query=query,
+            standalone_query=query,   # condense 생략 — 검색을 안 하므로 재작성이 무의미
+            prior_turns=build_prior_turns(messages, settings.history_budget_tokens),
+            retrieval=RetrievalResult(chunks=[], no_evidence=False, reason=None),
+            sources=[],
+            source_doc_ids=[],
+            attachments=attachment_dicts,
+            domain_hint=domain_hint,
+        )
 
     async def _open_turn(self, conversation_id: int, query: str,
                          new_attachment_dicts: list[dict]) -> int:

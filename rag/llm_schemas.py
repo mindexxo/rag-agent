@@ -56,12 +56,13 @@ class RouteDecision(BaseModel):
     intent의 Literal 검증이 곧 화이트리스트다 — 무스키마 폴백 경로에서 'knowledge'(소문자)
     같은 이탈은 검증 실패 → 호출부 fail-open으로 떨어지고 kms.schema_invalid로 관측된다.
 
-    RETRY(#59)는 표면 패턴("다시"/"이어서" 등 재요청 발화) 인식용 **전이 인텐트**다 —
-    prepare()의 디스패처가 직전 턴 상태를 보고 knowledge/other로 즉시 해소하며,
+    RETRY(#59)·ATTACHMENT(#63)는 표면 패턴 인식용 **전이 인텐트**다 — RETRY는 재요청
+    발화("다시"/"이어서"), ATTACHMENT는 첨부 문서 자체를 대상으로 하는 요청("이 문서
+    요약해줘"). prepare()의 디스패처가 상태(직전 턴/첨부 유무)를 보고 즉시 해소하며,
     PreparedRag.route·messages.intent·stats 등 저장 계층에는 절대 도달하지 않는다.
     """
     safe: bool
-    intent: Literal['KNOWLEDGE', 'OTHER', 'RETRY']
+    intent: Literal['KNOWLEDGE', 'OTHER', 'RETRY', 'ATTACHMENT']
     reason: str | None = None   # safe=false일 때 차단 사유 — 옵셔널은 의도(정상 턴엔 없음)
 
 

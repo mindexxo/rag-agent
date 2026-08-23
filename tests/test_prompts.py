@@ -112,6 +112,11 @@ class TestCitationConstraint:
         assert schema.get('maxItems') == 0
         assert 'items' not in schema     # enum이 아니라 길이로 강제 — enum:[] 컴파일은 미검증
 
+    def test_검색없이_첨부만_후보인_경우(self):
+        # ATTACHMENT 검색 스킵 경로(#63) — 후보 = 첨부뿐이어도 일반 케이스와 같은 코드로 동작
+        schema = self._rf(0, ['세탁케어가이드.pdf'])['structures'][0]['schema']
+        assert schema['items']['enum'] == [1]
+
     def test_빈_목록도_합법이다(self):
         """거절의 자유 — minItems를 걸지 않는다.
 
@@ -254,6 +259,11 @@ class TestSystemPromptStructure:
         eval/results/prompt_ablation_62/9_거절축_A_H11_원문.md.
         """
         assert '특정 표현이 문서에 없다는 이유만으로 거절하지 마십시오' in SYSTEM_PROMPT
+
+    def test_지시_표현_정의가_있다(self):
+        """#63 — "이 문서"가 첨부를 가리킨다는 정의. 이게 빠지면 혼합 질의에서 검색 문서가
+        "이 문서"의 내용으로 오도된다(개발계 실사고 — 첨부 요약에 환불정책이 섞여 나옴)."""
+        assert "지시 표현은 <첨부 문서> 블록이 있으면 그 블록을 가리킵니다" in SYSTEM_PROMPT
 
     def test_답변_서식_규칙에_첫_문장_불릿이_없다(self):
         """규칙 3과 짝이라 함께 빠졌다 — 되살리면 첫 문장이 자기모순을 낸다.

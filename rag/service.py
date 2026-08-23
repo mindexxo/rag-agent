@@ -21,6 +21,7 @@ from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from config import settings
 from rag.conversation import ensure_conversation, load_recent_messages, condense_query, condense_to_queries, build_prior_turns, trim_messages_for_condense, add_pending_turn, finalize_turn, last_unanswered_turn
@@ -458,14 +459,29 @@ class RagService:
 
         주입은 어차피 최신 limit개만 쓰므로(max_attachments 슬라이스) 조회도 최신
         limit행으로 제한 — 행당 첨부가 1개 이상이라 limit행이면 첨부 limit개 이상 확보.
+
+        차단 턴의 첨부는 제외한다(#63) — 가드가 질문을 막아도 그 턴의 첨부가 이후 턴
+        프롬프트로 재진입하면 차단이 반쪽이 된다(첨부 텍스트에 실린 인젝션이 통과).
+        이력 격리(#22)와 같은 원칙: 저장·조회 API는 그대로, 프롬프트 주입만 막는다.
+        user 행은 항상 status='done'이라 그 턴의 assistant(blocked) 존재로 판별한다.
+        failed/cancelled 턴의 첨부는 유지 — 질문·첨부 모두 정상인 턴이다(사용자 결정).
         """
         if limit <= 0:   # 주입 안 함 — 조회 자체 생략
             return []
+        assistant = aliased(Message)
+        blocked_turn = (
+            select(assistant.id)
+            .where(assistant.tenant_id == self.tenant_id)   # 격리 — 서브쿼리에도 명시
+            .where(assistant.question_message_id == Message.id)
+            .where(assistant.status == 'blocked')
+            .exists()
+        )
         rows = (await self.session.execute(
             select(Message.attachments)
             .where(Message.tenant_id == self.tenant_id)   # 격리 — WHERE 절 명시
             .where(Message.conversation_id == conversation_id)
             .where(Message.attachments.is_not(None))
+            .where(~blocked_turn)
             .order_by(Message.id.desc())
             .limit(limit)
         )).scalars().all()[::-1]   # 최신 limit행 → 시간순 복원

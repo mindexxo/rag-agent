@@ -39,6 +39,8 @@ import logging
 from collections.abc import AsyncIterator
 
 from config import settings
+from database import AsyncSessionLocal
+from rag.models import Message
 
 logger = logging.getLogger(__name__)
 
@@ -226,8 +228,6 @@ async def _turn_finished(tenant_id: str, message_id: int) -> bool:
     감수하는 쪽을 택한 이유: 조기 종료는 FE가 이력 재조회로 복구할 수 있는 반면, 매달림은
     TTL 내내 "끝나지 않는 답변"으로 남는다. 덜 나쁜 실패를 고른 것이지 안전한 판정이 아니다.
     """
-    from database import AsyncSessionLocal
-    from rag.models import Message
     try:
         async with AsyncSessionLocal() as session:
             msg = await session.get(Message, message_id)

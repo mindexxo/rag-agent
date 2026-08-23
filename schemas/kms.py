@@ -15,7 +15,7 @@ class SourceCitation(BaseModel):
 # 이전엔 extract에만 상한이 있어, 클라이언트가 그 헬퍼를 건너뛰고 /kms/query에 직접
 # attachments를 실으면 크기·개수 모두 무제한이었다 (컨텍스트 초과·DB 팽창 경로).
 ATTACHMENT_MAX_TEXT_CHARS = 6000   # 개당 추출 텍스트 (~3-4페이지, ≈4K토큰)
-ATTACHMENT_MAX_ITEMS = 2           # 요청당 첨부 개수 = 프롬프트 주입 개수(settings.max_attachments)와 동일.
+ATTACHMENT_MAX_ITEMS = 1           # 요청당 첨부 개수 = 프롬프트 주입 개수(settings.max_attachments)와 동일.
                                    # 주입되지 않을 첨부를 받아 저장만 하는 건 의미가 없다.
                                    # max_attachments를 바꾸면 이 값도 함께 고칠 것 (두 곳이 짝)
 ATTACHMENT_FILENAME_MAX = 255      # 프롬프트의 [첨부: 파일명] 라벨에 그대로 들어감

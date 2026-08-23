@@ -107,7 +107,10 @@ class Settings(BaseSettings):
     history_budget_tokens: int = 2000        # 이전 대화 참고 몫 (최신 턴부터 예산 소진까지) — 답변 생성용
     condense_history_budget_tokens: int = 600  # 질의 재작성(condense)용 히스토리 예산 — 참조 해소엔 최근 몇 턴이면 충분,
                                                # 길면 이전 답변의 수치가 질의에 주입됨 (실측: 1751tk 1/5 → 493tk 5/5, 2026-07-20)
-    max_attachments: int = 2                 # 컨텍스트 유지 첨부 개수 (넘으면 오래된 것 제외 — FE 고정 안내)
+    max_attachments: int = 1                 # 컨텍스트 유지 첨부 개수 (넘으면 오래된 것 제외 — FE 고정 안내)
+                                             # 2→1 (#63 운영 결정): 복수 첨부는 "이 문서" 단수 지시의
+                                             # 대상 모호·이월+신규 공존 등 엣지 표면만 넓혔다. 파일럿에서
+                                             # 두 문서 대조 실수요가 나오면 되돌린다 (ATTACHMENT_MAX_ITEMS와 짝)
 
     # cache (exact 캐시 제거됨 — semantic만)
     # 0.90→0.95 상향(#16): 검색용 임베딩은 부정("가능/불가능" 0.949)·수치("7일/14일" 0.918) 차이에

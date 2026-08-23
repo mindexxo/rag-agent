@@ -23,12 +23,31 @@ zset에 넣어 release 한 번에 정리. user_id=None(헤더 없음)이면 테�
 
 acquire는 Lua 스크립트로 prune+count+조건부 add를 서버측에서 원자적으로 1왕복 처리한다
 (왕복 수 절감 + 체크↔추가 race 제거).
+
+── Redis 장애 시: fail-open (2026-08-23 결정) ────────────────
+Redis에 못 붙으면 **상한 없이 통과**시킨다. 이전엔 예외를 그대로 전파해 500이 나갔다.
+
+  fail-closed  Redis 다운 = 새 질문 전면 거절. 피해는 갇히지만 상담이 멈춘다.
+  fail-open    상담은 계속된다. 대신 그 구간엔 GPU 상한이 사라져, 동시 요청이 몰리면
+               큐가 길어지고 응답이 느려진다(최악은 LLM 타임아웃 300초 초과로 동반 실패).
+
+상담 중단을 더 큰 손실로 본 판단이다. 리스크는 GPU 쪽으로 옮겨간 것이지 사라지지 않았다 —
+Redis 장애가 길어지면 동시성 폭주를 따로 봐야 한다. 필요해지면 프로세스 로컬 카운터
+폴백(상한 ÷ 인스턴스 수)이 무제한과 거절 사이의 중간 대안이다.
+
+degraded Lease는 zset에 등록된 적이 없으므로 release가 지울 것도 없다. 이 구간의 동시성은
+어디에도 기록되지 않아, 복구 후 카운트는 0부터 다시 센다.
+
+'진행 중인 턴이 안 끊기는 것'은 별개 문제다 — 그건 이중 쓰기가 담당한다(rag/stream_resume.py).
 """
+import logging
 import time
 import uuid
 from dataclasses import dataclass
 
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 _T_PREFIX = 'kms:inflight:t:'   # 테넌트별
 _U_PREFIX = 'kms:inflight:u:'   # 사용자별 (tenant:user)
@@ -68,6 +87,8 @@ class Lease:
     token: str
     user_id: str | None = None
     handed_off: bool = False
+    # Redis 장애로 상한 검사 없이 통과한 슬롯 (fail-open). zset에 없으므로 반납할 것도 없다.
+    degraded: bool = False
 
 
 def _redis():
@@ -92,6 +113,9 @@ async def try_acquire(
 
     user_limit이 0/None이면 config 기본값을 쓴다 — 사용자 제한을 끄는 경로는 없다
     (끄고 싶으면 user_id를 넘기지 않는다).
+
+    Redis에 못 붙으면 상한 없이 Lease를 준다(fail-open) — 사유는 모듈 docstring.
+    반환 3분기: Lease(정상) / Lease(degraded=True, 상한 미검사) / None(상한 초과).
     """
     now = time.time()
     token = uuid.uuid4().hex
@@ -100,15 +124,31 @@ async def try_acquire(
         keys.append(_U_PREFIX + f'{tenant_id}:{user_id}')
         user_limit = user_limit or settings.user_concurrency_default
     argv = [now, tenant_limit, user_limit or 0, settings.inflight_max_seconds, token]
-    ok = await _redis().eval(_ACQUIRE_LUA, len(keys), *keys, *argv)
+    try:
+        ok = await _redis().eval(_ACQUIRE_LUA, len(keys), *keys, *argv)
+    except Exception:
+        logger.warning('리미터 Redis 실패 — 상한 없이 통과 (tenant=%s, user=%s)', tenant_id, user_id)
+        return Lease(tenant_id=tenant_id, token=token, user_id=user_id, degraded=True)
     return Lease(tenant_id=tenant_id, token=token, user_id=user_id) if ok == 1 else None
 
 
 async def release(lease: Lease | None) -> None:
     """요청/태스크 종료(완료·중단·에러) 시 토큰을 두 zset에서 제거. lease 없으면 no-op.
-    zrem은 멱등이라 중복 호출도 안전하다."""
-    if lease is None:
-        return
-    await _redis().zrem(_T_PREFIX + lease.tenant_id, lease.token)
-    if lease.user_id:
-        await _redis().zrem(_U_PREFIX + f'{lease.tenant_id}:{lease.user_id}', lease.token)
+    zrem은 멱등이라 중복 호출도 안전하다.
+
+    **Redis 실패를 삼킨다.** 획득만 fail-open으로 두면 반쪽이다 — 획득 뒤에 Redis가 죽으면
+    이 함수가 예외를 던지고, 그게 concurrency_guard의 finally(정상 응답이 500으로 뒤집힘)와
+    _run_generation의 finally(root_span.end() 유실)에서 터진다. 답변을 다 만들어 놓고
+    뒷정리 실패로 요청을 깨뜨리는 셈이다.
+    삼켜도 상한이 영구 잠식되지 않는 근거가 ZSET을 고른 이유 그 자체다 — score(시작 시각)
+    기반 prune이 inflight_max_seconds 뒤 유출분만 회수한다.
+    """
+    if lease is None or lease.degraded:
+        return          # degraded는 zset에 등록된 적이 없다 — 지울 것이 없다
+    try:
+        await _redis().zrem(_T_PREFIX + lease.tenant_id, lease.token)
+        if lease.user_id:
+            await _redis().zrem(_U_PREFIX + f'{lease.tenant_id}:{lease.user_id}', lease.token)
+    except Exception:
+        logger.warning('리미터 반납 실패 — prune(%ds)에 맡긴다 (tenant=%s)',
+                       settings.inflight_max_seconds, lease.tenant_id)

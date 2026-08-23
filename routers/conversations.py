@@ -1,10 +1,11 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Response
+from starlette.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
 from database import get_session
-from rag import cancellation
+from rag import cancellation, clients, stream_resume, streaming
 from rag import conversation_search
 from rag.conversation import owned_filter
 from rag.models import Conversation, Message
@@ -228,6 +229,47 @@ async def cancel_generation(
         logger.exception('취소 신호 발행 실패 (message_id=%s)', message_id)
         raise HTTPException(status_code=503, detail='취소 요청을 전달할 수 없습니다. 잠시 후 다시 시도해 주세요.')
     return Response(status_code=202)
+
+
+@router.get('/messages/{message_id}/events')
+async def resume_events(
+        message_id: int,
+        tenant_id: str = Depends(get_tenant_id),
+        user_id: str | None = Depends(get_user_id),
+        session: AsyncSession = Depends(get_session),
+):
+    """진행 중인 생성에 재접속해 스트림을 이어받는다 (#75) — 새로고침 복구용.
+
+    쌓인 이벤트를 처음부터 재생하고, 아직 끝나지 않았으면 실시간으로 이어 붙인다.
+    최초 연결(/kms/query)은 인메모리 큐로 흐르고 이 경로만 Redis Stream을 읽는다 —
+    같은 인스턴스에 붙어도 큐를 재사용할 수 없다(1:1 소비라 원 리더와 토큰을 나눠 갖고,
+    지나간 분량이 큐에 없어 재생할 재료도 없다). 그래서 인스턴스 수와 무관하게 동작한다.
+
+    **소유 검증이 여기서 끝나야 한다** — messages.id는 전 테넌트 공용 시퀀스라, 빠뜨리면
+    id 추측만으로 남의 생성을 실시간으로 엿볼 수 있다 (취소 엔드포인트와 같은 함정).
+
+    status 필터를 걸지 않는 이유: 이력 조회와 구독 사이에 생성이 끝나는 레이스가 있다.
+    그 창에 걸려도 TTL 안이면 전체 재생 + done으로 매끄럽게 끝난다. 스트림이 없으면(TTL
+    만료·즉시 경로·Redis 쓰기 실패) 404 — FE는 이력 재조회(폴링)로 강등하면 된다.
+    """
+    msg = await _get_owned_assistant_message(session, message_id, tenant_id, user_id)
+    if msg is None:
+        raise HTTPException(status_code=404, detail='메시지를 찾을 수 없습니다.')
+
+    key = stream_resume.stream_key(tenant_id, message_id)
+    try:
+        exists = await clients.shared_redis.exists(key)   # 호출 시점 속성 읽기 (테스트가 교체한다)
+    except Exception:
+        # 쓰기와 달리 읽기 실패는 삼키지 않는다 — 여기가 실패하면 이 요청은 존재 이유를 잃는다.
+        logger.exception('재접속 스트림 조회 실패 (message_id=%s)', message_id)
+        raise HTTPException(status_code=503, detail='일시적으로 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.')
+    if not exists:
+        raise HTTPException(status_code=404, detail='재생할 스트림이 없습니다.')
+
+    return StreamingResponse(
+        stream_resume.reconnect_reader(tenant_id, message_id),
+        media_type='text/event-stream', headers=streaming.SSE_HEADERS,
+    )
 
 
 @router.patch('/conversations/{conversation_id}', response_model=ConversationSummary)

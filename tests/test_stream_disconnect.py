@@ -8,6 +8,7 @@
 ASGITransport의 중단 시맨틱이 실서버와 다를 수 있어 통합만으로는 계약을 못 박는다.
 """
 import asyncio
+import time
 
 import pytest
 from sqlalchemy import select
@@ -130,15 +131,19 @@ async def test_생성_실패도_failed로_남고_정리가_끝난다(client, ten
     queue: asyncio.Queue = asyncio.Queue()
     root_span, token = otel.start_turn()
     try:
-        await _run_generation(prepared, queue, lease, t_request=0.0, root_span=root_span)
+        # 실제 기준점을 넘긴다 — 실패도 소요시간을 남기게 됐으므로(#75 후속) 0.0을 넘기면
+        # 부팅 이후 경과가 통째로 latency로 들어간다.
+        await _run_generation(prepared, queue, lease, t_request=time.monotonic(), root_span=root_span)
     finally:
         otel.detach_turn(token)
 
-    # 실패 기록: _finalize_out_of_band가 새 세션으로 failed를 남긴다 (latency는 규칙상 NULL)
+    # 실패 기록: _finalize_out_of_band가 새 세션으로 failed를 남긴다.
+    # latency는 예전엔 규칙상 NULL이었는데 이제 남긴다 — '얼마 만에 실패했는지'가
+    # 장애 분석의 기본 값이라, 취소 분기와 같은 규칙으로 맞췄다.
     async with AsyncSessionLocal() as session:
         msg = await session.get(Message, assistant_id)
         assert msg.status == 'failed'
-        assert msg.latency_ms is None
+        assert msg.latency_ms is not None and 0 <= msg.latency_ms < 60_000
 
     assert await _inflight_count(tenant_id) == 0     # 슬롯 반납 (finally)
 

@@ -234,3 +234,37 @@ async def test_인텐트_판단_실패는_503이고_질문은_남는다(client, 
 async def test_없는_대화_id는_404(client, tenant_id, fake_llm):
     res = await client.post('/kms/query', json={'query': '환불?', 'conversation_id': 999999})
     assert res.status_code == 404                            # REVIEW ③ — 500 아닌 404
+
+
+@pytest.mark.asyncio
+async def test_생성_실패도_부분_답변과_소요시간을_남긴다(client, tenant_id, fake_llm, pass_gate):
+    """실패 턴의 저장 규칙 — 취소와 같아야 한다.
+
+    예전엔 ""로 지웠다. 그러면 **화면과 기록이 어긋난다**: 상담원 눈앞엔 흐르다 멈춘
+    답변이 남아 있는데, 새로고침하면 본문이 사라지고 '오류'만 남는다. 방금 읽은 내용을
+    자기도 다시 확인할 수 없다.
+    바로 위 취소 분기는 부분 텍스트를 저장하는데 실패만 지우고 있었다 — 이 저장소가
+    "멈췄든 오류가 났든 답을 못 받았다는 점은 같다"고 선언한 것(UNANSWERED)과도 어긋난다.
+    """
+    await register_faq(client)
+    fake_llm.raise_after_tokens = 2          # 두 토큰 흐른 뒤 LLM 스트림이 끊긴다
+
+    res = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
+    assert res.status_code == 200            # 스트림은 열렸고 error·done으로 닫힌다
+    kinds = [e for e, _ in _events(res)]
+    assert 'error' in kinds
+    assert sse_done(res)['finish_reason'] == 'failed'
+
+    streamed = sse_answer(res)
+    assert streamed.strip(), '화면엔 부분 답변이 흘렀다 — 이게 전제다'
+
+    async with AsyncSessionLocal() as s:
+        msgs = list((await s.execute(
+            select(Message).where(Message.tenant_id == tenant_id).order_by(Message.id)
+        )).scalars().all())
+    assistant = [m for m in msgs if m.role == 'assistant'][-1]
+    assert assistant.status == 'failed'
+    assert assistant.content == streamed, 'DB에 남은 본문 = 화면에 흐른 본문'
+    assert assistant.latency_ms is not None, '얼마 만에 실패했는지가 장애 분석의 기본 값'
+    # 이력 정책은 그대로 — 질문은 남아야 한다 (#59: _ISOLATED에 넣으면 질문까지 사라진다)
+    assert [m.content for m in msgs if m.role == 'user'] == ['환불 기간 알려줘']

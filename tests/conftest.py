@@ -221,6 +221,9 @@ class FakeLlm:
         # 시간(sleep) 대신 Event로 멈추는 이유: 테스트가 "정확히 N토큰 뒤"를 잡을 수 있어
         # CI에서 타이밍 플레이크가 나지 않는다.
         self.pause_after_tokens: int | None = None
+        # 생성 실패 테스트용 — N번째 토큰에서 스트림이 끊긴 상황(LLM·네트워크 장애) 주입.
+        # pause와 달리 재개가 없다: 실패 경로의 저장 규칙을 보려는 것이라 중단 자체가 목적.
+        self.raise_after_tokens: int | None = None
         self.paused = asyncio.Event()        # 테스트: 정지 지점 도달을 기다린다
         self.resume = asyncio.Event()        # 테스트: set()하면 스트림이 계속된다
 
@@ -265,6 +268,8 @@ class FakeLlm:
         self._record(kind, messages)
         self.extra_bodies.append(extra_body)
         for i, token in enumerate(self.answer.split(' ')):
+            if self.raise_after_tokens is not None and i == self.raise_after_tokens:
+                raise RuntimeError('LLM 스트림 중단 (테스트 주입)')
             if self.pause_after_tokens is not None and i == self.pause_after_tokens:
                 self.paused.set()
                 await self.resume.wait()      # 취소 테스트가 여기서 task.cancel()을 건다

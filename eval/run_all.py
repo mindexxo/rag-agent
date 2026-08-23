@@ -40,27 +40,47 @@ import argparse
 import asyncio
 import json
 from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
 
 HISTORY = Path(__file__).resolve().parent / "results" / "history"
 
-# (축, 지표키, 표시라벨) — 리포트 행 정의. 높을수록 좋은 지표라 하락이 회귀.
+@dataclass(frozen=True)
+class Row:
+    """리포트 행 정의. higher_better를 여기 두는 이유: 방향을 별 집합으로 빼면 행을 추가할 때
+    두 곳을 봐야 하고, 한쪽을 잊으면 **그 지표의 회귀가 조용히 감시에서 빠진다**.
+    기존 행은 전부 기본값(True)이라 이 필드 도입 전과 동작이 같다."""
+    axis: str
+    key: str
+    label: str
+    higher_better: bool = True
+    version_key: str | None = None   # 이 키가 직전과 다르면 비교하지 않는다 (기준이 바뀐 것)
+    eps: float | None = None         # 이 행만의 회귀 임계. None이면 REGRESSION_EPS
+
+
 ROWS = [
-    ("intent", "accuracy", "인텐트 정확도"),
-    ("intent", "safe_accuracy", "가드 차단 정확도"),   # 안전성 분리 축 (#22) — 합산에 묻히면 회귀를 못 잡는다
-    ("condense", "accuracy", "질의재작성 정확도"),
-    ("refusal", "accuracy", "거절 정확도"),
-    ("cache", "accuracy", "캐시히트 정확도"),
-    ("other", "accuracy", "OTHER 경계준수"),
-    ("retrieval", "recall_at_5", "검색  R@5"),
-    ("retrieval", "r5_easy", "검색  R@5(쉬움)"),
-    ("retrieval", "r5_medium", "검색  R@5(중간)"),
-    ("retrieval", "r5_hard", "검색  R@5(어려움)"),
-    ("retrieval", "recall_at_20", "검색  R@20"),
-    ("retrieval", "hit_at_1", "검색  Hit@1"),
-    ("retrieval", "mrr", "검색  MRR"),
-    ("ragas", "faithfulness", "생성  faithfulness"),
-    ("ragas", "answer_relevancy", "생성  relevancy"),
+    Row("intent", "accuracy", "인텐트 정확도"),
+    Row("intent", "safe_accuracy", "가드 차단 정확도"),   # 안전성 분리 축 (#22) — 합산에 묻히면 회귀를 못 잡는다
+    Row("condense", "accuracy", "질의재작성 정확도"),
+    Row("refusal", "accuracy", "거절 정확도"),
+    Row("cache", "accuracy", "캐시히트 정확도"),
+    Row("other", "accuracy", "OTHER 경계준수"),
+    Row("retrieval", "recall_at_5", "검색  R@5"),
+    Row("retrieval", "r5_easy", "검색  R@5(쉬움)"),
+    Row("retrieval", "r5_medium", "검색  R@5(중간)"),
+    Row("retrieval", "r5_hard", "검색  R@5(어려움)"),
+    Row("retrieval", "recall_at_20", "검색  R@20"),
+    Row("retrieval", "hit_at_1", "검색  Hit@1"),
+    Row("retrieval", "mrr", "검색  MRR"),
+    Row("ragas", "faithfulness", "생성  faithfulness"),
+    Row("ragas", "answer_relevancy", "생성  relevancy"),
+    # 낮을수록 좋은 유일한 행 (#76) — 부재단정률이 오르는 것이 회귀다.
+    # 임계를 전역(0.01)보다 크게 잡는 이유: 분모가 58 내외라 **1건이 1.7%**다. 게다가 같은
+    # 프롬프트에서 3회 반복 시 0~2건(0.0~3.5%)으로 흔들린다(#76 실측). 전역 임계를 쓰면
+    # 한 건 흔들림이 매번 회귀 경고가 되어 ⚠ 자체를 아무도 믿지 않게 된다.
+    # 0.04 = 2건 이상 차이일 때만 반응한다. 1건 차이는 감사 로그(문항별 판정)로 본다.
+    Row("refusal", "absence_rate", "거절  부재단정률", higher_better=False,
+        version_key="judge_prompt_version", eps=0.04),
 ]
 REGRESSION_EPS = 0.01   # 이보다 크게 떨어지면 회귀 경고
 
@@ -103,6 +123,7 @@ HIST_COLS = [
     ("intent", "safe_accuracy", "guard"),
     ("condense", "accuracy", "cond"),
     ("refusal", "accuracy", "refus"),
+    ("refusal", "absence_rate", "absAsrt"),
     ("cache", "accuracy", "cache"),
     ("other", "accuracy", "other"),
     ("retrieval", "recall_at_5", "R@5"),
@@ -149,7 +170,8 @@ def _report(cur: dict, prev: dict | None) -> None:
         print(f"라벨: {cur['label']}")
     print("─" * 52)
     warnings = []
-    for axis, key, label in ROWS:
+    for row in ROWS:
+        axis, key, label = row.axis, row.key, row.label
         axis_data = cur.get(axis)
         if axis_data is None:
             continue  # 축 자체를 안 돌림 → 행 생략
@@ -162,11 +184,21 @@ def _report(cur: dict, prev: dict | None) -> None:
             warnings.append(f"{label} 측정 실패")
             continue
         pv = _get(prev, axis, key)
+        # 판정 기준이 바뀌었으면 델타가 무의미하다 — eval/generation.py::citation_accuracy의
+        # "버전 올리면 이전 결과와 비교 불가" 규약을 주석이 아니라 코드로 지킨다.
+        # 이게 없으면 v2로 올린 첫 실행에서 기준 변경이 회귀 경고로 찍힌다.
+        if row.version_key and pv is not None:
+            cv, pvv = axis_data.get(row.version_key), _get(prev, axis, row.version_key)
+            if cv != pvv:
+                print(f"{label:<20}{v:>8.3f}   (기준 {pvv}→{cv} — 비교 불가)")
+                continue
         if pv is None:
             delta = "     ―   "
         else:
             d = v - pv
-            mark = " ⚠" if d < -REGRESSION_EPS else ""
+            eps = row.eps if row.eps is not None else REGRESSION_EPS
+            worse = d > eps if not row.higher_better else d < -eps
+            mark = " ⚠" if worse else ""
             delta = f"({d:+.3f}){mark}"
             if mark:
                 warnings.append(f"{label} {d:+.3f}")
@@ -207,7 +239,15 @@ async def _run_async(name: str):
         from eval.refusal import compute
         r = await compute()
         return {"accuracy": r["accuracy"],
-                "false_answer": r["false_answer"], "false_refusal": r["false_refusal"]}
+                "false_answer": r["false_answer"], "false_refusal": r["false_refusal"],
+                # 부재단정 축 (#76). 판정 버전을 같이 실어 "기준이 바뀐 것"과 "실제 회귀"를 가른다.
+                "absence_rate": r["absence_rate"],
+                # 분모·분자·흔들림을 같이 싣는다 — 비율만 보면 1건 차이(≈1.7%)를 추세로 오독한다.
+                "absence_judged_n": r["absence_judged_n"],
+                "absence_assertion_n": r["absence_assertion_n"],
+                "absence_judge_errors": r["absence_judge_errors"],
+                "absence_flaky": r["absence_flaky"],
+                "judge_prompt_version": r["judge_prompt_version"]}
     if name == "cache":
         from eval.cache_eval import compute
         r = await compute()

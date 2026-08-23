@@ -19,6 +19,13 @@ SHOULD_REFUSE/SHOULD_ANSWER·_refused의 '거절'도 그 뜻으로 읽을 것.
 
 지점3은 거절/답변 판정만 채점한다. 답변 내용 품질은 보지 않는다.
 
+**부재단정 축이 따라 붙는다 (#76).** 위 판정이 본문을 안 보기 때문에 "제공되지 않습니다
+««[]»»"가 정상 거절과 같은 점수를 받는다 — no_evidence에서 둘 다 인용 0건이라 "거절 성공"이다.
+그 사각지대를 메우려고, **인용 0건인 답변만** LLM judge에 넘겨 부재를 사실로 단정했는지
+따로 센다. 판정 정의·기각한 대안(정규식·RAGAS faithfulness)·self-judge 편향의 한계는
+eval/absence_judge.py 모듈 docstring이 정의점이다 — 여기서는 "인용 0건이면 판정을
+호출한다"만 안다. absence_rate는 accuracy와 독립이며 **회귀 감시 전용**이다.
+
 실행: python -m eval.refusal
 """
 import asyncio
@@ -30,6 +37,8 @@ from database import AsyncSessionLocal
 from eval._turn_cleanup import discard_turn
 from eval.generation import row_tenant
 from rag.conversation import ensure_conversation
+from eval.absence_judge import (JUDGE_PROMPT_VERSION, judge_absence, judge_llm,
+                                save_audit)
 from rag.citation_tail import TailSplitter, resolve_citations
 from rag.service import PreparedRag, RagService
 
@@ -62,8 +71,18 @@ def _citations(prepared: PreparedRag, answer: str) -> list:
     return resolve_citations(splitter.tail_raw, *prepared.citation_candidates)
 
 
-async def _refused(tenant: str, query: str) -> bool:
-    """query를 파이프라인에 태워 최종 답변이 근거없음(=거절)인지 반환 (단일턴, 히스토리 없음)."""
+async def _refused(tenant: str, query: str) -> tuple[bool, str, str]:
+    """query를 파이프라인에 태워 (근거없음 여부, 답변 전문, route)를 반환 (단일턴, 히스토리 없음).
+
+    answer를 함께 돌려주는 이유: 인용 0건인 답변은 부재단정 판정(2단)의 입력이 된다.
+    여기서 버리면 호출부가 파이프라인을 한 번 더 태워야 한다.
+
+    route를 함께 돌려주는 이유: 부재단정 판정은 KNOWLEDGE 경로에만 유효하다. OTHER로
+    라우팅된 문항은 시스템 프롬프트 규칙 3을 아예 안 타고 _OTHER_SYSTEM_PROMPT_TEMPLATE로
+    생성되므로, 그 화법("역할 밖 요청이라 안내가 어렵다")을 규칙 3 기준으로 재면 오염이다.
+    게다가 OTHER는 prepared.sources가 항상 빈 목록(rag/service.py)이라 **무조건 근거없음으로
+    집계**된다 — 판정 대상에서 빼지 않으면 분모가 라우팅 확률에 좌우된다.
+    """
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant, session=session)
         # 대화를 **미리** 만들고 그 id를 넘긴다 (#72). prepare()에 맡기면 그 안에서 실패했을 때
@@ -76,7 +95,7 @@ async def _refused(tenant: str, query: str) -> bool:
             answer = "".join([tok async for tok in svc.generate(prepared)])
         finally:
             await discard_turn(session, tenant, conversation.id)
-    return not _citations(prepared, answer)
+    return not _citations(prepared, answer), answer, prepared.route
 
 
 async def compute() -> dict:
@@ -84,13 +103,28 @@ async def compute() -> dict:
     gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
     target = [g for g in gold if g["type"] in (SHOULD_REFUSE | SHOULD_ANSWER)]
     sem = asyncio.Semaphore(CONCURRENCY)
+    # judge 호출은 기존 세마포어 슬롯 안에서 이어붙인다 — GPU 부하를 새 채널로 늘리지 않는다.
+    llm = judge_llm()
 
     async def _one(g: dict):
         async with sem:
-            refused = await _refused(row_tenant(g), g["query"])
+            refused, answer, route = await _refused(row_tenant(g), g["query"])
+            # 판정 게이트 2조건(route=='knowledge' · 인용 0건) — 사유는
+            # eval/absence_judge.py 모듈 docstring이 정의점이다.
+            absence, absence_reason, absence_error = None, None, None
+            if refused and route == "knowledge":
+                try:
+                    v = await judge_absence(llm, g["query"], answer)
+                    absence = v.label == "absence_assertion"
+                    absence_reason = v.reason
+                except Exception as exc:
+                    # 판정 불가를 refusal_ok로 추측하지 않는다 — 지표가 실패를 숨긴다.
+                    absence_error = f"{type(exc).__name__}: {exc}"
         should_refuse = g["type"] in SHOULD_REFUSE
-        return {"id": g["id"], "type": g["type"], "query": g["query"],
-                "refused": refused, "ok": refused == should_refuse}
+        return {"id": g["id"], "type": g["type"], "query": g["query"], "answer": answer,
+                "route": route, "refused": refused, "ok": refused == should_refuse,
+                "absence": absence, "absence_reason": absence_reason,
+                "absence_error": absence_error}
 
     rows = await asyncio.gather(*(_one(g) for g in target))
 
@@ -105,6 +139,35 @@ async def compute() -> dict:
     false_answer = sum(1 for r in ne if not r["refused"])     # 거절해야 하는데 답함
     false_refusal = sum(1 for r in tr if r["refused"])        # 답해야 하는데 거절함
 
+    # 부재단정 (#76) — 인용 0건 답변 중 부재를 사실로 단정한 비율.
+    # 이 축의 accuracy와 독립이다: 부재단정은 no_evidence에서 "거절 성공"으로 집계되므로
+    # accuracy를 아무리 봐도 안 보인다. 그 사각지대가 이 지표의 존재 이유다.
+    judged = [r for r in rows if r["absence"] is not None]
+    errors = sum(1 for r in rows if r["absence_error"] is not None)
+    assertions = [r for r in judged if r["absence"]]
+
+    # 흔들림 관측 (#76 리뷰) — 판정이 항목당 1콜이라 비결정성이 조용히 지나간다.
+    # eval/other_eval.py는 전 케이스를 RUNS=3으로 돌려 flaky를 지표로 내는데, 여기서 그걸
+    # 그대로 하면 judge 호출이 3배가 된다. 대신 **부재단정으로 판정된 행만** 1회 재판정한다 —
+    # 이 축에서 값을 움직이는 것은 분자뿐이고, 그 행이 재판정에서 뒤집히면 그 회차의 수치를
+    # 믿을 수 없다는 뜻이다. 실측 근거: 같은 스위트에서 1건 → 0건으로 뒤집힌 회차가 있었다.
+    flaky = []
+    for r in assertions:
+        try:
+            again = await judge_absence(llm, r["query"], r["answer"])
+            if again.label != "absence_assertion":
+                flaky.append(r["id"])
+        except Exception:
+            flaky.append(r["id"])       # 재판정 실패도 신뢰할 수 없다는 신호다
+
+    audit = save_audit([
+        {"id": r["id"], "type": r["type"], "route": r["route"], "query": r["query"],
+         "answer": r["answer"], "absence": r["absence"], "reason": r["absence_reason"],
+         "error": r["absence_error"], "flaky": r["id"] in flaky,
+         "judge_prompt_version": JUDGE_PROMPT_VERSION}
+        for r in rows if r["absence"] is not None or r["absence_error"] is not None
+    ])
+
     return {
         "accuracy": sum(r["ok"] for r in rows) / len(rows) if rows else 0.0,
         "n": len(rows),
@@ -112,6 +175,16 @@ async def compute() -> dict:
         "false_refusal": false_refusal, "false_refusal_n": len(tr),
         "by_type": {k: v for k, v in by_type.items()},
         "misses": [r for r in rows if not r["ok"]],
+        "absence_rate": len(assertions) / len(judged) if judged else None,
+        "absence_judged_n": len(judged),
+        "absence_assertion_n": len(assertions),
+        "absence_judge_errors": errors,
+        "absence_flaky": len(flaky),
+        "judge_prompt_version": JUDGE_PROMPT_VERSION,   # 감사 로그와 같은 키 이름 — 조인 가능하게
+        "absence_audit": str(audit),
+        "absence_misses": [{"id": r["id"], "type": r["type"], "query": r["query"],
+                            "reason": r["absence_reason"], "flaky": r["id"] in flaky}
+                           for r in assertions],
     }
 
 
@@ -124,6 +197,23 @@ async def main() -> None:
     print(f"\n전체 정확도: {r['accuracy']:.0%}")
     print(f"  미거부(근거X인데 답함) : {r['false_answer']}/{r['false_answer_n']}  ← 환각 위험")
     print(f"  오거부(근거O인데 거절) : {r['false_refusal']}/{r['false_refusal_n']}  ← 유용성 손해")
+
+    rate, n = r["absence_rate"], r["absence_judged_n"]
+    print(f"\n[부재단정 {r['judge_prompt_version']}]  KNOWLEDGE·인용 0건 {n}건 중 "
+          f"{r['absence_assertion_n']}건 = {'―' if rate is None else f'{rate:.1%}'}"
+          f"  ← 위 정확도에는 안 잡히는 축")
+    # 분모를 같이 찍는 이유: n이 작아 1건이 곧 1.7%다(회귀 임계 0.01보다 크다).
+    # 비율만 보면 한 건 흔들림을 추세로 오독한다.
+    if n:
+        print(f"  1건 = {1 / n:.1%}  (회귀 임계 {'0.010'})")
+    if r["absence_judge_errors"]:
+        print(f"  판정 불가 {r['absence_judge_errors']}건 (분모 제외)")
+    if r["absence_flaky"]:
+        print(f"  재판정에서 뒤집힘 {r['absence_flaky']}건 ← 이 회차 수치를 믿지 말 것")
+    for m in r["absence_misses"][:20]:
+        flag = " [flaky]" if m["flaky"] else ""
+        print(f"  [{m['type']}]{flag} {m['query'][:44]!r} — {(m['reason'] or '')[:60]}")
+    print(f"  감사 로그: {r['absence_audit']}")
 
     if r["misses"]:
         print("\n[오판정]")

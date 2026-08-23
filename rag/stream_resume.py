@@ -190,7 +190,7 @@ async def reconnect_reader(tenant_id: str, message_id: int) -> AsyncIterator[str
 
     key = stream_key(tenant_id, message_id)
     last_id = '0'
-    block_ms = int(settings.sse_ping_interval_seconds * 1000)
+    block_ms = int(settings.stream_resume_block_seconds * 1000)
 
     while True:
         entries = await _redis().xread({key: last_id}, count=100, block=block_ms)
@@ -201,6 +201,8 @@ async def reconnect_reader(tenant_id: str, message_id: int) -> AsyncIterator[str
                 return
             # ping은 스트림에 저장하지 않는다 — 유휴마다 XADD하면 무한 누적된다.
             # 리더가 자기 유휴 시점에 합성하는 것은 queue_reader와 같다.
+            # 생성 경로(queue_reader)보다 촘촘하지만 무해하다 — 이 창은 종료 판정 주기를
+            # 겸하고 있어 ping 주기와 따로 잡았다(config.stream_resume_block_seconds).
             yield sse_event(EVENT_PING, {})
             continue
 

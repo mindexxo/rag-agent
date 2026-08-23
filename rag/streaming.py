@@ -306,8 +306,18 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
         raise                                    # 태스크가 '취소됨'으로 끝나도록 재전파
     except Exception:
         logger.exception("답변 생성 실패 (tenant=%s, conversation=%s)", lease.tenant_id, prepared.conversation_id)
-        await _finalize_out_of_band(lease, prepared, "", "failed", None)
-        result = TurnResult(answer="", citations=[], finish_reason="failed", latency_ms=None)
+        # 부분 텍스트를 **취소와 같게** 저장한다. 예전엔 ""로 지웠는데, 그러면 화면엔 흐르던
+        # 답변이 남아 있는데 DB는 비어 있어 새로고침하면 본문이 사라진다(실기동 실측 — 상담원이
+        # 방금 읽은 내용을 자기도 다시 확인 못 한다). 위 취소 분기와 바로 붙어 있으면서 한쪽만
+        # 지우고 있었고, "멈췄든 오류가 났든 답을 못 받았다는 점은 같다"는 이 저장소의 판단
+        # (rag/conversation.py UNANSWERED)과도 어긋났다.
+        # latency_ms도 함께 남긴다 — '얼마 만에 실패했는지'는 장애 분석의 기본 값인데 None이었다.
+        # 이력 정책은 건드리지 않는다: failed를 _ISOLATED에 넣으면 질문까지 사라져 #59가
+        # 고친 버그가 재발한다.
+        answer, latency_ms = "".join(parts), _elapsed_ms(t_request)
+        await _finalize_out_of_band(lease, prepared, answer, "failed", latency_ms)
+        result = TurnResult(answer=answer, citations=[], finish_reason="failed",
+                            latency_ms=latency_ms)
         _record_turn_result(root_span, result)
         # 예외 원문은 서버 로그로만 — str(exc)에 내부 경로·설정이 섞일 수 있어 클라이언트에 노출 금지
         await emit(EVENT_ERROR, {"code": "generation_failed",

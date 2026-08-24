@@ -17,12 +17,14 @@ import asyncio
 import json
 from pathlib import Path
 
+from config import settings
 from database import AsyncSessionLocal
 from eval._gold_history import messages_from_conversation
 from eval.generation import row_tenant
 from eval.retrieval import resolve_gold, score_one
 from eval.retrieval_v2 import GOLD, METRICS
-from rag.conversation import condense_query, condense_to_queries
+from rag.conversation import (condense_query, condense_to_queries,
+                              trim_messages_for_condense)
 from rag.llm import LlmClient
 from rag.retriever import retrieve_candidates
 
@@ -49,7 +51,11 @@ async def compute(multi: bool = False) -> dict:
     sem = asyncio.Semaphore(CONCURRENCY)
 
     async def _condense(g: dict) -> tuple[str, list[str]]:
-        msgs = messages_from_conversation(g.get('conversation'))
+        # 운영과 같은 예산으로 자른다 — #81. 이 축의 multi_turn_long 8문항 중 5문항이 실제로
+        # 걸린다(600 예산, 원래 12~16메시지 → 8~12). 그 5문항이 이 축의 존재 이유(긴 이력)라
+        # 트리밍을 안 하면 docstring이 말하는 "히스토리 예산 트리밍"을 한 번도 안 태우게 된다.
+        msgs = trim_messages_for_condense(messages_from_conversation(g.get('conversation')),
+                                          settings.condense_history_budget_tokens)
         async with sem:
             if multi:
                 return g['id'], await condense_to_queries(llm, g['query'], msgs)

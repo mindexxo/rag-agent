@@ -20,9 +20,11 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
+from config import settings
 from rag.llm import LlmClient
 from eval._gold_history import messages_from_conversation
-from rag.conversation import condense_query, condense_to_queries
+from rag.conversation import (condense_query, condense_to_queries,
+                              trim_messages_for_condense)
 
 GOLD = Path(__file__).resolve().parent / "condense_set_v1.jsonl"
 RUNS = 3            # 케이스당 반복 (일관성 측정)
@@ -54,7 +56,11 @@ async def compute(multi: bool = False) -> dict:
     sem = asyncio.Semaphore(CONCURRENCY)
 
     async def _one(case: dict, _i: int):
-        msgs = messages_from_conversation(case["conversation"])
+        # 운영과 같은 예산으로 자른다 (rag/service.py의 condense 경로와 같은 모양) — #81.
+        # 이 데이터셋은 최대 85토큰이라 실제로 잘리는 케이스는 없지만, 예산 지식이 세 축에
+        # 흩어지지 않게 형태를 맞춘다. 데이터가 길어지면 자동으로 운영과 같이 동작한다.
+        msgs = trim_messages_for_condense(messages_from_conversation(case["conversation"]),
+                                          settings.condense_history_budget_tokens)
         async with sem:
             if multi:
                 out = (await condense_to_queries(llm, case["query"], msgs))[0]

@@ -26,7 +26,8 @@ from database import AsyncSessionLocal
 from eval._gold_history import messages_from_conversation
 from rag.citation_labels import sources_from_chunks
 from rag.citation_tail import TailSplitter, resolve_citations
-from rag.conversation import build_prior_turns, condense_query
+from rag.conversation import (build_prior_turns, condense_query,
+                              trim_messages_for_condense)
 from rag.models import Chunk, Document
 from rag.retriever import retrieve_candidates, RetrievedChunk
 from rag.embeddings import embed_texts_sync
@@ -301,7 +302,12 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved):
             return g["id"], (None, [])
         history = messages_from_conversation(g.get("conversation"))
         async with sem:
-            standalone = await condense_query(llm, g["query"], history)
+            # 예산이 둘로 갈리는 것까지 운영과 같게 맞춘다 (#81) — condense는 600으로 자른
+            # 이력을, 생성 맥락은 자르지 않은 원본을 받는다(build_prior_turns가 2000으로 자체
+            # 트리밍한다). rag/service.py가 같은 messages에서 두 경로를 독립으로 뽑는 구조다.
+            standalone = await condense_query(
+                llm, g["query"],
+                trim_messages_for_condense(history, settings.condense_history_budget_tokens))
         return g["id"], (standalone, build_prior_turns(history, settings.history_budget_tokens))
 
     # {문항 id: (재작성 질의 | None, 이력 턴)} — multi_turn만 값이 채워진다

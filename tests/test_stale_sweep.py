@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import func, select, update
 
 from database import AsyncSessionLocal
-from rag.conversation import GENERATION_STALE_SECONDS, sweep_stale_generating
+from rag.turn_state import GENERATION_STALE_SECONDS, sweep_stale_generating
 from rag.models import Conversation, Message
 
 USER_A = {'X-User-Id': 'agent-a'}

@@ -24,7 +24,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from config import settings
-from rag.conversation import ensure_conversation, load_recent_messages, condense_query, condense_to_queries, build_prior_turns, trim_messages_for_condense, add_pending_turn, finalize_turn, last_unanswered_turn
+from rag.conversation import (build_prior_turns, condense_query, condense_to_queries,
+                              ensure_conversation, load_recent_messages,
+                              trim_messages_for_condense)
+from rag.turn_state import add_pending_turn, finalize_turn, last_unanswered_turn
 from rag.guardrail import classify_and_guard
 from rag.clients import shared_llm
 from rag.citation_labels import sources_from_chunks

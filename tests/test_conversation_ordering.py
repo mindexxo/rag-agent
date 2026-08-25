@@ -10,7 +10,7 @@ import pytest_asyncio
 from sqlalchemy import delete, select
 
 from database import AsyncSessionLocal
-from rag.conversation import add_pending_turn
+from rag.turn_state import add_pending_turn
 from rag.models import Conversation, Message
 
 

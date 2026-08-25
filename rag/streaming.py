@@ -198,7 +198,7 @@ async def _finalize_out_of_band(lease: Lease, prepared: PreparedRag, answer: str
     """비정상 종료(취소·실패)의 상태 기록 — 새 세션으로, 실패는 삼킨다.
 
     본 흐름의 세션은 이미 롤백/닫힘 상태일 수 있어 자기 세션을 새로 연다.
-    기록이 실패하면 그 턴은 generating으로 남고 스테일 스윕(rag.conversation.GENERATION_STALE_SECONDS, cron 1분 주기)이 failed로 정리한다 — 의도(취소 vs
+    기록이 실패하면 그 턴은 generating으로 남고 스테일 스윕(rag.turn_state.GENERATION_STALE_SECONDS, cron 1분 주기)이 failed로 정리한다 — 의도(취소 vs
     실패)는 잃지만 고착은 남지 않는다. 상태 기록 실패가 정리(finally)를 막아선 안 되므로 삼킨다.
     """
     try:

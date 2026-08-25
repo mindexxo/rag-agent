@@ -1,4 +1,4 @@
-"""고착 generating 스윕 통합 테스트 — rag.conversation.sweep_stale_generating (#46).
+"""고착 generating 스윕 통합 테스트 — rag.turn_state.sweep_stale_generating (#46).
 
 lazy 스윕(GET 조회 시 정리)을 cron 단독으로 옮긴 변경의 회귀 그물이다.
 옮기기 전엔 스윕 자체를 고정하는 테스트가 0건이었다.

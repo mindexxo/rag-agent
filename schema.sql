@@ -206,7 +206,7 @@ CREATE TABLE IF NOT EXISTS messages (
 --   운영 배포 전이라(NCP↔사내GPU 사설연동 미비) 실사용 추이가 아직 없어 비용이 0인 시점이다.
 CREATE INDEX IF NOT EXISTS idx_msg_conv_created
     ON messages (conversation_id, created_at);
--- 고착 generating 회수용 (#46) — 워커 cron이 5분마다 전역 스윕하는데, status 인덱스가 없으면
+-- 고착 generating 회수용 (#46) — 워커 cron이 1분마다 전역 스윕하는데, status 인덱스가 없으면
 -- messages 전체를 매번 순차 스캔한다. generating 행만 담는 부분 인덱스라 크기가 사실상 0.
 CREATE INDEX IF NOT EXISTS idx_msg_generating
     ON messages (created_at) WHERE status = 'generating';

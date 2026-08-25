@@ -208,7 +208,7 @@ async def cancel_generation(
         raise HTTPException(status_code=404, detail='메시지를 찾을 수 없습니다.')
 
     # 소유가 확인됐으므로 이제 레지스트리를 봐도 안전하다. 상태보다 먼저 보는 이유: 스테일
-    # 스윕(rag.conversation.GENERATION_STALE_SECONDS, cron 5분 주기)이 '정말 진행 중인'
+    # 스윕(rag.turn_state.GENERATION_STALE_SECONDS, cron 1분 주기)이 '정말 진행 중인'
     # 생성을 failed로 바꿔놓을 수 있는데(느린 GPU·동시성 포화 — LLM 타임아웃 300초보다
     # 임계가 크지만 초과 대기는 가능하다), 상태만 믿으면 살아 있는 태스크를 멈출 방법이
     # 사라진다. 태스크가 손에 있으면 DB가 뭐라 하든 멈추는 게 사용자 의사에 맞다.

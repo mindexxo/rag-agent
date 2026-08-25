@@ -34,13 +34,14 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Literal
+
 
 from config import settings
 from database import AsyncSessionLocal
 from rag import cancellation, limiter, otel, stream_resume
 from rag.limiter import Lease
 from rag.citation_tail import TailSplitter, resolve_citations
+from rag.models import TurnStatus
 from rag.service import PreparedRag, RagService
 from schemas.kms import SourceCitation
 
@@ -94,7 +95,7 @@ class TurnResult:
     """
     answer: str
     citations: list[SourceCitation]
-    finish_reason: Literal["done", "cancelled", "failed", "blocked"]
+    finish_reason: TurnStatus   # 어휘 = turn_state.TERMINAL (전체 − generating). 와이어 값은 #56 그대로
     latency_ms: int | None          # failed는 None (DB 규칙과 동일)
 
 
@@ -193,7 +194,7 @@ def spawn_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Lease,
 
 
 async def _finalize_out_of_band(lease: Lease, prepared: PreparedRag, answer: str,
-                                status: str, latency_ms: int | None) -> None:
+                                status: TurnStatus, latency_ms: int | None) -> None:
     """비정상 종료(취소·실패)의 상태 기록 — 새 세션으로, 실패는 삼킨다.
 
     본 흐름의 세션은 이미 롤백/닫힘 상태일 수 있어 자기 세션을 새로 연다.
@@ -270,10 +271,10 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
             citations = [] if splitter is None else resolve_citations(
                 splitter.tail_raw, *prepared.citation_candidates)   # 제약과 같은 파생점 (#65)
             latency_ms = _elapsed_ms(t_request)   # 저장·스팬·done이 같은 값을 쓰도록 한 번만 계산 (#54)
-            await svc.finalize(prepared, answer, citations, status="done", latency_ms=latency_ms)
+            await svc.finalize(prepared, answer, citations, status=TurnStatus.DONE, latency_ms=latency_ms)
             await session.commit()
             result = TurnResult(answer=answer, citations=citations,
-                                finish_reason="done", latency_ms=latency_ms)
+                                finish_reason=TurnStatus.DONE, latency_ms=latency_ms)
             _record_turn_result(root_span, result)
             # done은 finalize·commit '뒤'에 — 값이 전부 확정된 다음 최종 상태로 내보낸다 (#56)
             await emit(EVENT_DONE, _done_payload(result))
@@ -299,7 +300,7 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
         await _finalize_out_of_band(lease, prepared, answer, "cancelled", latency_ms)
         # 저장 규칙(finalize: status≠done → refusal=False·citations=[])과 동일 값 — 부분 텍스트는 저장값 그대로.
         # 구 계약의 "인용 [] 정정 이벤트"는 불필요해졌다 — 인용은 done에서만 확정되므로 (#56)
-        result = TurnResult(answer=answer, citations=[], finish_reason="cancelled",
+        result = TurnResult(answer=answer, citations=[], finish_reason=TurnStatus.CANCELLED,
                             latency_ms=latency_ms)
         _record_turn_result(root_span, result)
         await emit(EVENT_DONE, _done_payload(result))
@@ -316,7 +317,7 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
         # 고친 버그가 재발한다.
         answer, latency_ms = "".join(parts), _elapsed_ms(t_request)
         await _finalize_out_of_band(lease, prepared, answer, "failed", latency_ms)
-        result = TurnResult(answer=answer, citations=[], finish_reason="failed",
+        result = TurnResult(answer=answer, citations=[], finish_reason=TurnStatus.FAILED,
                             latency_ms=latency_ms)
         _record_turn_result(root_span, result)
         # 예외 원문은 서버 로그로만 — str(exc)에 내부 경로·설정이 섞일 수 있어 클라이언트에 노출 금지

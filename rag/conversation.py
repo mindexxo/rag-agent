@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from rag import otel
 from rag.llm import LlmClient
 from rag.llm_schemas import CondenseMultiResult, CondenseResult, acomplete_validated
-from rag.models import Conversation, Message
+from rag.models import Conversation, Message, TurnStatus
 from rag.turn_state import HISTORY_ISOLATED
 from rag.tokens import estimate_tokens
 from rag.prompt_texts import (CANCELLED_TURN_EMPTY, CANCELLED_TURN_SUFFIX, FAILED_TURN_EMPTY,
@@ -140,9 +140,9 @@ def _history_content(message: Message) -> str:
     소비처는 build_prior_turns(생성·OTHER 맥락)와 _condense_call(재작성 이력) 둘 —
     양쪽이 각자 붙이면 모델이 보는 두 이력이 어긋난다(교차 기능 갭의 전형).
     """
-    if message.role == 'assistant' and message.status == 'cancelled':
+    if message.role == 'assistant' and message.status == TurnStatus.CANCELLED:
         return message.content + CANCELLED_TURN_SUFFIX if message.content else CANCELLED_TURN_EMPTY
-    if message.role == 'assistant' and message.status == 'failed':
+    if message.role == 'assistant' and message.status == TurnStatus.FAILED:
         return FAILED_TURN_EMPTY   # 실패는 항상 content='' (finalize가 빈 답변으로 마감)
     return message.content
 

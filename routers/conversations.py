@@ -8,7 +8,7 @@ from database import get_session
 from rag import cancellation, clients, stream_resume, streaming
 from rag import conversation_search
 from rag.conversation import owned_filter
-from rag.models import Conversation, Message
+from rag.models import Conversation, Message, TurnStatus
 from routers.kms import get_tenant_id, get_user_id
 from schemas.conversations import (
     ConversationListResponse,
@@ -165,7 +165,8 @@ async def set_message_feedback(
     _get_owned_conversation과 같은 원칙). 👍/취소 시 태그·텍스트는 강제 NULL (👎 전용 축).
     """
     # status='done' — 실패/차단/생성중 턴엔 평가할 답변이 없음 (집계 오염 방지)
-    msg = await _get_owned_assistant_message(session, message_id, tenant_id, user_id, status='done')
+    msg = await _get_owned_assistant_message(session, message_id, tenant_id, user_id,
+                                             status=TurnStatus.DONE)
     if msg is None:
         raise HTTPException(status_code=404, detail='메시지를 찾을 수 없습니다.')
 
@@ -213,9 +214,9 @@ async def cancel_generation(
     # 사라진다. 태스크가 손에 있으면 DB가 뭐라 하든 멈추는 게 사용자 의사에 맞다.
     if cancellation.cancel_local(message_id):
         return Response(status_code=204)           # 이 프로세스가 들고 있었다
-    if msg.status == 'cancelled':
+    if msg.status == TurnStatus.CANCELLED:
         return Response(status_code=204)           # 따닥 두 번째 — 결과가 같으니 성공으로 (멱등)
-    if msg.status != 'generating':
+    if msg.status != TurnStatus.GENERATING:
         # done·blocked — 멈출 게 없다. 즉시 경로(캐시히트 등)도 여기로 온다(태스크가 없음).
         raise HTTPException(status_code=404, detail='진행 중인 생성이 아닙니다.')
 

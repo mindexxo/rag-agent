@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
+from rag.models import TurnStatus
 from pydantic import BaseModel, Field, model_validator
 
 from schemas.kms import SourceCitation
@@ -35,7 +36,7 @@ class ConversationMessage(BaseModel):
     message_id: int               # 피드백 PATCH 대상 식별 (#8) — assistant 메시지 id를 FE가 알아야 버튼이 동작
     role: str
     content: str
-    status: str = "done"          # generating|done|failed|blocked|cancelled (FE 재접속 시 진행상태 판별)
+    status: TurnStatus = TurnStatus.DONE   # 값 어휘는 rag/models.TurnStatus (FE 재접속 시 진행상태 판별)
     # 실제 인용된 출처 객체만 (#56) — SSE done.citations와 같은 이름·의미 (매핑 두 벌 금지).
     # 구 계약의 sources(검색 후보 전체)+cited_docs(파일명)는 FE가 필터를 들고 있어야 했다 — 서버가 확정해 보낸다.
     citations: list[SourceCitation] | None = None

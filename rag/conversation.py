@@ -23,6 +23,7 @@ from rag import otel
 from rag.llm import LlmClient
 from rag.llm_schemas import CondenseMultiResult, CondenseResult, acomplete_validated
 from rag.models import Conversation, Message
+from rag.turn_state import HISTORY_ISOLATED
 from rag.tokens import estimate_tokens
 from rag.prompt_texts import (CANCELLED_TURN_EMPTY, CANCELLED_TURN_SUFFIX, FAILED_TURN_EMPTY,
                               CONDENSE_MULTI_SYSTEM_PROMPT, CONDENSE_SYSTEM_PROMPT)
@@ -119,13 +120,12 @@ async def load_recent_messages(
     #          뒤의 "다시"가 그 전 턴 답을 반복하는 버그가 이것 때문이었다.
     #          빈 답변·잘린 답변의 표시는 _history_content가 담당(조립 시점 표식).
     # user·assistant 짝을 함께 뺀다 — 한쪽만 빼면 build_prior_turns의 짝짓기가 밀린다.
-    _ISOLATED = ('blocked', 'generating')
-    # 이 목록을 바꾸면 eval/_gold_history.py의 계약 docstring도 확인할 것 (#77)
+    # 격리 집합의 정의·사유는 rag/turn_state.py(HISTORY_ISOLATED). 바꾸면 eval/_gold_history.py도 확인 (#77).
     dropped_questions = {m.question_message_id for m in messages
-                         if m.role == 'assistant' and m.status in _ISOLATED}
+                         if m.role == 'assistant' and m.status in HISTORY_ISOLATED}
     kept = [m for m in messages
             if not (m.id in dropped_questions
-                    or (m.role == 'assistant' and m.status in _ISOLATED))]
+                    or (m.role == 'assistant' and m.status in HISTORY_ISOLATED))]
     return kept[-limit:]   # 여유 조회분을 되돌려 원래 창 크기 유지
 
 

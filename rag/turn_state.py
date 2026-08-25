@@ -1,7 +1,7 @@
 """턴 상태 기계 — 시작(add_pending_turn)·종료(finalize_turn)·회수(sweep_stale_generating)의
 단일 정의점 (#85, rag/conversation.py에서 분리).
 
-  상태 전이 (값 어휘는 rag/models.py의 Message.status 주석 — 캐노니컬 승격은 #85 후속 커밋):
+  상태 전이 (값 어휘의 단일 정의점은 rag/models.py의 TurnStatus):
       (user)      → done                                          (항상)
       (assistant) generating → {done, cancelled, failed, blocked}  (모두 종결)
 
@@ -23,13 +23,30 @@ from datetime import timedelta
 from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from rag.models import Conversation, Message
+from rag.models import Conversation, Message, TurnStatus
 
 logger = logging.getLogger(__name__)
 
+# ── TurnStatus의 파생 집합 — 교집합 없음, 뭉치면 안 된다 ─────────────────────────
+# 두 집합은 소비처가 완전히 다르다(이력 조립 vs RETRY 판정). 하나의 "비정상" 집합으로
+# 합치면 이 두 축이 독립이라는 사실이 사라진다 — blocked는 이력에서 빼지만 RETRY 대상이
+# 아니고, cancelled·failed는 RETRY 대상이지만 이력에는 남는다(질문 자체는 정상이라
+# 빼면 화면과 모델 이력이 어긋난다).
 
-UNANSWERED = ('cancelled', 'failed')   # 답을 못 받은 턴 — RETRY의 대상 (#59·#72)
+# 프롬프트 이력에서 격리 — 소비: conversation.load_recent_messages.
+# blocked: 차단 결정이 다음 턴 프롬프트로 재진입해 재해석되면 안 된다 (조회 API엔 그대로 노출).
+# generating: 이번 턴 자신의 자리표시 — 자기 자신으로 되먹임되면 안 된다.
+HISTORY_ISOLATED = (TurnStatus.BLOCKED, TurnStatus.GENERATING)
+
+# SSE done 이벤트의 finish_reason 어휘 = 전체 − {generating} — 소비: streaming.TurnResult.
+# 계산형으로 둔다: 상태가 추가되면 자동으로 따라와 나열이 다시 흩어지지 않는다.
+TERMINAL = tuple(s for s in TurnStatus if s is not TurnStatus.GENERATING)
+
+
+
+# 답을 못 받은 턴 — RETRY의 대상 (#59·#72). 사용자에겐 '멈췄든 오류가 났든' 같은 사건이다.
 # 상태를 추가하면 eval/_gold_history.py의 계약 docstring도 확인할 것 (#77)
+UNANSWERED = (TurnStatus.CANCELLED, TurnStatus.FAILED)
 
 
 def last_unanswered_turn(messages: list[Message]) -> tuple[Message, Message] | None:
@@ -141,7 +158,7 @@ async def add_pending_turn(
         conversation_id=conversation_id,
         role="assistant",
         content="",
-        status="generating",
+        status=TurnStatus.GENERATING,
         question_message_id=user_message.id,
     )
     session.add(assistant_message)
@@ -177,10 +194,11 @@ async def finalize_turn(
     격리 필터가 non-done 턴을 이력에서 빼므로, 이 턴이 남의 이력에 보이기 시작하는 순간이
     곧 finalize 시점이다 — 그보다 먼저 채워둘 이유가 없다.
     """
+    status = TurnStatus(status)   # 5종 밖 값이 조용히 저장되던 것을 즉시 ValueError로 (#85)
     msg = await session.get(Message, assistant_message_id)
     if msg is None or msg.tenant_id != tenant_id:
         return
-    if msg.status != 'generating':
+    if msg.status != TurnStatus.GENERATING:
         # 자리표시가 아닌 상태를 덮어쓰는 중. 대표 경우: 스테일 스윕이 먼저 failed로 바꿔놨는데
         # 태스크가 살아서 완주했다(좀비 플립). 덮어쓰는 건 맞다 — 완성된 답변을 버릴 수 없다.
         # 다만 조용히 넘기면 "실패로 봤던 턴이 왜 done이 됐나"를 나중에 추적할 수 없어 경고를 남긴다.
@@ -241,8 +259,8 @@ async def sweep_stale_generating(session: AsyncSession) -> int:
     """
     result = await session.execute(
         update(Message)
-        .where(Message.status == 'generating')
+        .where(Message.status == TurnStatus.GENERATING)
         .where(Message.created_at < func.now() - timedelta(seconds=GENERATION_STALE_SECONDS))
-        .values(status='failed')
+        .values(status=TurnStatus.FAILED.value)
     )
     return result.rowcount

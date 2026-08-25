@@ -26,6 +26,7 @@
    tests/test_integration_isolation.py(검색 후보·대화·폴더). 표면이 늘면 여기에 케이스를 추가한다.
 """
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
@@ -165,6 +166,26 @@ class Conversation(Base):
     deleted_at: Mapped[datetime | None]    # 소프트 삭제 시각 (#10) — NULL=활성. 감사 목적 이력 보존, 전 조회 경로가 IS NULL 필터
 
 
+class TurnStatus(StrEnum):
+    """messages.status의 값 어휘 — 다섯 파일에 흩어져 있던 나열의 단일 정의점 (#85).
+
+    str 서브클래스라 기존 문자열 비교·직렬화·DB 저장과 전부 호환된다. 여기는 **어휘만** 둔다 —
+    파생 의미론(이력 격리·미응답·종결 집합)은 rag/turn_state.py 소유. 이 파일의 소관은
+    ORM 매핑이라(모듈 docstring), "왜 이 상태들이 묶이나"는 상태 기계 쪽 지식이다.
+
+    컬럼 타입을 SQLAlchemy Enum으로 바꾸지 않은 이유(#85 설계 검토): 기본 동작이 멤버
+    이름('GENERATING')을 저장해 기존 소문자 데이터와 어긋나고(values_callable 필요),
+    validate_strings 기본 False라 문자열 오타는 어차피 통과한다 — 함정 둘을 정확히 맞춰야
+    겨우 제한적 보호인 반면, 쓰기 지점의 명시 검증(turn_state.finalize_turn) 한 줄이
+    같은 보호를 더 명확한 스택으로 준다.
+    """
+    GENERATING = 'generating'   # assistant 자리표시 — 생성 진행 중 (유일한 비종결 상태)
+    DONE = 'done'               # 정상 종료. user 메시지는 항상 이 값
+    CANCELLED = 'cancelled'     # 사용자 취소 (#59)
+    FAILED = 'failed'           # 생성 실패 또는 고착 회수 (#72)
+    BLOCKED = 'blocked'         # 입력 가드 차단 (#22)
+
+
 class Message(Base):
     """대화 내 한 턴. role로 user/assistant 구분."""
     __tablename__ = "messages"
@@ -177,7 +198,7 @@ class Message(Base):
     standalone_query: Mapped[str | None]                                     # user 메시지의 condense 결과 (assistant는 NULL)
     sources: Mapped[Any | None] = mapped_column(JSONB)                       # assistant 메시지의 인용 메타 (user는 NULL)
     attachments: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))  # 첨부한 턴의 user 메시지에 저장되는 추출 텍스트 [{filename, text}]. none_as_null: 파이썬 None을 JSON null이 아닌 SQL NULL로 (IS NOT NULL 필터가 정확히 동작하게)
-    status: Mapped[str] = mapped_column(default="done", server_default="done")  # assistant 생성 상태: generating|done|failed|blocked|cancelled (user는 'done')
+    status: Mapped[str] = mapped_column(default="done", server_default="done")  # 값 어휘는 TurnStatus (user는 항상 'done')
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())  # 생성 시각
     # ── 운영 지표 씨앗 (2026-07-18): 화면 반영 전이라도 기록은 지금부터 (지표는 소급 불가) ──
     user_id: Mapped[str | None]          # user 메시지: 질문한 상담원 (X-User-Id — 인증 전엔 'test-user')

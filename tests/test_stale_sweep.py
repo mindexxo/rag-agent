@@ -129,3 +129,53 @@ def test_cron에_등록돼_있다():
     # 주기만 줄여 회복 최악을 ~800초에서 ~560초로 당겼다.
     assert job.minute == set(range(0, 60, 1))
     assert job.unique                                    # 워커 다중화 시 1회 실행 보장
+
+
+@pytest.mark.asyncio
+async def test_스윕이_만든_failed는_RETRY_대상이_된다(tenant_id):
+    """스윕(#46)과 RETRY 디스패치(#59)의 교차 지점 — #85 E2E에서 손으로 재현한 체인의 고정.
+
+    시나리오: 웹 프로세스가 죽어 generating이 고착 → cron 스윕이 failed로 회수 →
+    사용자가 "다시" → 그 고착됐던 질문이 재실행돼야 한다. 두 기능은 각자 테스트돼
+    있었지만(이 파일·test_retry_dispatch.py) **서로 물리는 지점은 어디에도 없었다** —
+    스윕이 만드는 상태(failed)가 UNANSWERED에 속하는 건 상수 정의의 우연이 아니라
+    이 체인이 성립하기 위한 계약이다. failed가 UNANSWERED에서 빠지면 죽은 프로세스의
+    턴은 "다시"로 되살릴 수 없게 된다 — 그 회귀를 여기서 잡는다.
+    """
+    from rag.turn_state import last_unanswered_turn
+    from rag.conversation import load_recent_messages
+
+    # 질문 user + 고착 generating assistant 쌍을 심는다 (실제 턴 모양 그대로)
+    async with AsyncSessionLocal() as s:
+        conv = Conversation(tenant_id=tenant_id, created_by='agent-a')
+        s.add(conv)
+        await s.flush()
+        user = Message(tenant_id=tenant_id, conversation_id=conv.id, role='user',
+                       content='리셀 수선 비용은 누가 내나요?')
+        s.add(user)
+        await s.flush()
+        assistant = Message(tenant_id=tenant_id, conversation_id=conv.id, role='assistant',
+                            content='', status='generating', question_message_id=user.id)
+        s.add(assistant)
+        await s.flush()
+        conv_id, assistant_id = conv.id, assistant.id
+        await s.execute(
+            update(Message).where(Message.id.in_([user.id, assistant.id]))
+            .values(created_at=func.now() - timedelta(seconds=GENERATION_STALE_SECONDS + 60))
+        )
+        await s.commit()
+
+    # cron이 하는 그대로 — 스윕 + commit (rag/worker.py 래퍼와 동일)
+    async with AsyncSessionLocal() as s:
+        await sweep_stale_generating(s)
+        await s.commit()
+    assert await _status_of(assistant_id) == 'failed'
+
+    # RETRY 디스패치가 보는 그대로 — 이력을 읽어 "직전 턴이 답을 못 받았나" 판정
+    async with AsyncSessionLocal() as s:
+        messages = await load_recent_messages(s, tenant_id, conv_id)
+        turn = last_unanswered_turn(messages)
+    assert turn is not None, '스윕이 만든 failed 턴을 RETRY가 못 문다 — 체인 단절'
+    retry_user, retry_assistant = turn
+    assert retry_user.content == '리셀 수선 비용은 누가 내나요?'   # 재실행할 실질 질문
+    assert retry_assistant.id == assistant_id

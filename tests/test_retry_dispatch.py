@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from rag.conversation import last_unanswered_turn
+from rag.turn_state import last_unanswered_turn
 from rag.models import Conversation, Message
 from rag.service import RagService
 from tests.conftest import register_faq, seed_turn

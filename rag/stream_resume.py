@@ -223,7 +223,7 @@ async def _turn_finished(tenant_id: str, message_id: int) -> bool:
     것처럼 보인다. 그래서 status를 대신 본다.
 
     **알려진 한계**: status != 'generating'이 "정말 끝났다"와 항상 같지는 않다. 스테일 스윕
-    (GENERATION_STALE_SECONDS=500, rag/conversation.py)이 **살아 있는 생성**을 failed로 바꿔놓을
+    (GENERATION_STALE_SECONDS=500, rag/turn_state.py)이 **살아 있는 생성**을 failed로 바꿔놓을
     수 있고 — GPU 포화로 생성이 500초를 넘으면 실제로 그렇다 — 그때 토큰 간격이 block 주기보다
     벌어지면 이 폴백이 아직 도는 턴의 스트림을 조기에 닫는다. 취소 엔드포인트는 같은 경합을
     "태스크가 손에 있으면 DB가 뭐라 하든" 규칙으로 피하지만(routers/conversations.py), 재접속은

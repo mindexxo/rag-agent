@@ -1,6 +1,9 @@
 """입력 가드레일 + 인텐트 분류.
 
-사용자 질의를 LLM에 한 번 분류시켜 ① 안전한 입력인가 ② KNOWLEDGE인가 OTHER인가를 판단한다.
+사용자 질의를 LLM에 한 번 분류시켜 ① 안전한 입력인가 ② 인텐트가 무엇인가
+(KNOWLEDGE·OTHER·RETRY·ATTACHMENT — rag/llm_schemas.RouteDecision)를 판단한다.
+RETRY·ATTACHMENT는 표면 패턴 인식용 전이 인텐트라 여기서 라우팅이 끝나지 않는다 —
+prepare()의 디스패처가 상태(직전 턴 미답변 여부·첨부 유무)를 보고 즉시 해소한다.
 판단 실패(호출 실패·구조 신뢰 불가)는 **그대로 전파**해 턴을 실패로 끝낸다 (#72).
 
 예전엔 fail-open으로 `safe=True, intent=KNOWLEDGE`를 만들어 넣었다. 그건 안전 측이 아니었다 —

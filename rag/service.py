@@ -24,7 +24,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from config import settings
-from rag.conversation import ensure_conversation, load_recent_messages, condense_query, condense_to_queries, build_prior_turns, trim_messages_for_condense, add_pending_turn, finalize_turn, last_unanswered_turn
+from rag.conversation import (build_prior_turns, condense_query, condense_to_queries,
+                              ensure_conversation, load_recent_messages,
+                              trim_messages_for_condense)
+from rag.models import TurnStatus
+from rag.turn_state import add_pending_turn, finalize_turn, last_unanswered_turn
 from rag.guardrail import classify_and_guard
 from rag.clients import shared_llm
 from rag.citation_labels import sources_from_chunks
@@ -130,10 +134,10 @@ class PreparedRag:
         return None
 
     @property
-    def terminal_status(self) -> str:
-        """즉시 경로 저장 status — 입력 차단 턴만 'blocked', 나머지는 'done' (단일 정의점 #54).
+    def terminal_status(self) -> TurnStatus:
+        """즉시 경로 저장 status — 입력 차단 턴만 BLOCKED, 나머지는 DONE (단일 정의점 #54).
         생성 경로의 status(done/cancelled/failed)는 실행 결과값이라 여기서 정할 수 없다."""
-        return "blocked" if self.route == "blocked" else "done"
+        return TurnStatus.BLOCKED if self.route == "blocked" else TurnStatus.DONE
 
     @property
     def intent_label(self) -> str | None:
@@ -379,7 +383,7 @@ class RagService:
         """
         try:
             await finalize_turn(self.session, self.tenant_id, assistant_message_id,
-                                '', [], status='failed', standalone_query=resolved_query)
+                                '', [], status=TurnStatus.FAILED, standalone_query=resolved_query)
             await self.session.commit()
         except Exception:
             logger.exception('자리표시 failed 마감 실패 (message_id=%s)', assistant_message_id)
@@ -600,7 +604,7 @@ class RagService:
                 yield token
 
     async def finalize(self, prepared: PreparedRag, answer: str, citations: list[SourceCitation],
-                       status: str = "done", latency_ms: int | None = None) -> None:
+                       status: TurnStatus = TurnStatus.DONE, latency_ms: int | None = None) -> None:
         """턴을 종료한다 — 자리표시를 최종 결과로 UPDATE한다. **모든 경로 공용** (#72).
 
         즉시 경로(차단·캐시히트·근거없음)는 요청 세션에서, 생성 경로는 백그라운드 태스크가
@@ -619,12 +623,12 @@ class RagService:
         정상 완료(done)에만 의미 — 취소/실패는 status 가드가 어차피 비운다.
         sources 컬럼도 인용만 저장한다(저장=응답=스트림 정합, #56 확정).
         """
-        source_dicts = [] if status != "done" else [c.model_dump() for c in citations]
+        source_dicts = [] if status != TurnStatus.DONE else [c.model_dump() for c in citations]
         await finalize_turn(
             self.session, self.tenant_id, prepared.assistant_message_id, answer, source_dicts,
             status=status, latency_ms=latency_ms,
             # 인용 확정은 정상 완료(done)에만 의미 — blocked/failed/cancelled는 항상 []/False
-            cited_docs=[c.filename for c in citations] if status == "done" else [],
+            cited_docs=[c.filename for c in citations] if status == TurnStatus.DONE else [],
             intent=prepared.intent_label,
             # 턴 시작 시점엔 몰랐던 값들 — 짝 user 행의 standalone_query까지 여기서 확정한다
             standalone_query=prepared.standalone_query,

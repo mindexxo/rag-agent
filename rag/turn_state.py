@@ -45,7 +45,7 @@ TERMINAL = tuple(s for s in TurnStatus if s is not TurnStatus.GENERATING)
 
 
 # 답을 못 받은 턴 — RETRY의 대상 (#59·#72). 사용자에겐 '멈췄든 오류가 났든' 같은 사건이다.
-# 상태를 추가하면 eval/_gold_history.py의 계약 docstring도 확인할 것 (#77)
+# 상태 추가 시 확인할 곳은 계약 테스트가 안내한다(test_turn_status_contract.test_다섯_값이_전부다).
 UNANSWERED = (TurnStatus.CANCELLED, TurnStatus.FAILED)
 
 

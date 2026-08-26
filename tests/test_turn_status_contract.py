@@ -39,13 +39,14 @@ class TestDerivedSets:
         assert set(HISTORY_ISOLATED) & set(UNANSWERED) == set()
 
     def test_TERMINAL은_전체에서_generating만_뺀_것이다(self):
-        """finish_reason 어휘의 근거 — 계산형이라 상태 추가 시 자동으로 따라온다."""
-        assert set(TERMINAL) == set(TurnStatus) - {TurnStatus.GENERATING}
+        """finish_reason 어휘의 근거 — 계산형이라 상태 추가 시 자동으로 따라온다.
 
-    def test_TERMINAL은_구_Literal_네_값과_같다(self):
-        """streaming.TurnResult.finish_reason이 Literal이던 시절의 값 목록(#56).
-        Literal은 TERMINAL 파생으로 대체돼 사라졌으므로, '이 4개가 맞다'는 사실은
-        여기 남는다 — 와이어(FE) 계약이 이 네 값을 전제한다."""
+        구체 값으로도 고정한다: streaming.TurnResult.finish_reason이 Literal이던 시절의
+        네 값(#56). Literal은 TERMINAL 파생으로 대체돼 사라졌으므로 '이 4개가 맞다'는
+        사실은 여기 남는다 — 와이어(FE) 계약이 이 네 값을 전제한다.
+        (5값 완전성 테스트가 있는 한 두 단언은 동치지만, 실패 메시지가 다른 이야기를 한다.)
+        """
+        assert set(TERMINAL) == set(TurnStatus) - {TurnStatus.GENERATING}
         assert set(TERMINAL) == {TurnStatus.DONE, TurnStatus.CANCELLED,
                                  TurnStatus.FAILED, TurnStatus.BLOCKED}
 

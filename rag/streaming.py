@@ -297,7 +297,7 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
         # failed로 만든다(사용자는 취소했는데 화면엔 실패).
         # 취소 예외는 한 번만 전달되므로 여기서 잡은 뒤의 await(세션·commit)는 정상 완료된다 — 실측 확인.
         answer, latency_ms = "".join(parts), _elapsed_ms(t_request)
-        await _finalize_out_of_band(lease, prepared, answer, "cancelled", latency_ms)
+        await _finalize_out_of_band(lease, prepared, answer, TurnStatus.CANCELLED, latency_ms)
         # 저장 규칙(finalize: status≠done → refusal=False·citations=[])과 동일 값 — 부분 텍스트는 저장값 그대로.
         # 구 계약의 "인용 [] 정정 이벤트"는 불필요해졌다 — 인용은 done에서만 확정되므로 (#56)
         result = TurnResult(answer=answer, citations=[], finish_reason=TurnStatus.CANCELLED,
@@ -311,12 +311,12 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
         # 답변이 남아 있는데 DB는 비어 있어 새로고침하면 본문이 사라진다(실기동 실측 — 상담원이
         # 방금 읽은 내용을 자기도 다시 확인 못 한다). 위 취소 분기와 바로 붙어 있으면서 한쪽만
         # 지우고 있었고, "멈췄든 오류가 났든 답을 못 받았다는 점은 같다"는 이 저장소의 판단
-        # (rag/conversation.py UNANSWERED)과도 어긋났다.
+        # (rag/turn_state.py UNANSWERED)과도 어긋났다.
         # latency_ms도 함께 남긴다 — '얼마 만에 실패했는지'는 장애 분석의 기본 값인데 None이었다.
         # 이력 정책은 건드리지 않는다: failed를 _ISOLATED에 넣으면 질문까지 사라져 #59가
         # 고친 버그가 재발한다.
         answer, latency_ms = "".join(parts), _elapsed_ms(t_request)
-        await _finalize_out_of_band(lease, prepared, answer, "failed", latency_ms)
+        await _finalize_out_of_band(lease, prepared, answer, TurnStatus.FAILED, latency_ms)
         result = TurnResult(answer=answer, citations=[], finish_reason=TurnStatus.FAILED,
                             latency_ms=latency_ms)
         _record_turn_result(root_span, result)

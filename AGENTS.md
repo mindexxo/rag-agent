@@ -15,32 +15,36 @@
 - **0층(leaf, 다른 `rag/` 모듈을 안 씀)**: `config.py`, `rag/models.py`, `rag/tokens.py`,
   `rag/prompt_texts.py`, `rag/llm.py`, `rag/embeddings.py`, `rag/chunking.py`,
   `rag/index_text.py`, `rag/limiter.py`, `rag/otel.py`
-- **1~3층(조합)**: `rag/citation_labels.py`, `rag/clients.py`, `rag/llm_schemas.py`,
+- **중간층(조합)**: `rag/citation_labels.py`, `rag/clients.py`, `rag/llm_schemas.py`,
   `rag/turn_state.py`, `rag/cache.py`, `rag/reranker.py`, `rag/retriever.py`,
   `rag/stream_resume.py`, `rag/cancellation.py`, `rag/citation_tail.py`, `rag/documents.py`,
-  `rag/prompts.py`, `rag/conversation.py`, `rag/guardrail.py`, `rag/worker.py`
-- **4층 조립점**: `rag/service.py` — 한 턴의 수명(prepare → generate → finalize)을 조율한다.
-- **5층 진입점**: `rag/streaming.py`(SSE). 그 밖의 진입점은 `routers/*.py`(HTTP),
-  `rag/worker.py`(arq 백그라운드), `main.py`(FastAPI 부트스트랩 전용).
+  `rag/prompts.py`, `rag/conversation.py`, `rag/guardrail.py`
+- **조립점**: `rag/service.py` — 한 턴의 수명(prepare → generate → finalize)을 조율한다.
+- **진입점**(아무도 이들을 import하지 않는다): `rag/streaming.py`(SSE),
+  `rag/worker.py`(arq 백그라운드), `routers/*.py`(HTTP), `main.py`(FastAPI 부트스트랩 전용).
 
 절대 규칙 둘:
 - `rag/`는 `routers/`·`eval/`을 import하지 않는다(역방향 금지).
 - `config.py`는 아무것도 import하지 않는다.
 
-함수 안 지연 import은 순환 회피용이며 의도된 것이다 — 톱레벨로 끌어올리지 마라.
-현재 6곳: `chunking→xlsx_chunking`, `embeddings/limiter/reranker/stream_resume→clients`,
-`retriever→reranker`, `stream_resume→streaming`.
+**함수 안 지연 import은 순환 회피용이며 의도된 것이다 — 톱레벨로 끌어올리지 마라.**
+이걸 하는 모듈: `chunking`(→xlsx_chunking), `embeddings`·`limiter`(→clients),
+`reranker`(→clients, embeddings), `retriever`(→reranker), `stream_resume`(→clients, streaming).
+개수는 적지 않는다 — 정확한 목록은 `grep -rn "^\s\+from rag" rag/`로 뽑는다(톱레벨 import는
+줄 시작이 들여쓰기 없음이라 이렇게 구분된다).
 
 ## 실행
 
 - 서버: `uvicorn main:app --reload --port 8000`
 - 워커(문서 업로드·정리 작업 시 필요): `arq rag.worker.WorkerSettings`
-- 테스트: `pytest` — 전체 528건 3분 47초(DB·Redis 필수, LLM·임베딩은 fake로 대체).
-  순수 로직만 빠르게 돌리려면 `pytest tests/test_service_pure.py tests/test_prompts.py
-  tests/test_turn_status_contract.py tests/test_eval_condense_trim.py` — 80건 0.6초.
+- 테스트: `pytest` — 전체 약 4분(DB·Redis 필수, LLM·임베딩은 fake로 대체).
+  DB 없이 순수 로직만 몇 초 만에 돌리려면 `pytest tests/test_service_pure.py tests/test_prompts.py
+  tests/test_turn_status_contract.py tests/test_docs_freshness.py`.
+  (건수는 적지 않는다 — 테스트를 추가할 때마다 어긋나고, 린터가 잡아주지 못하는 종류다.)
 - eval: `python -m eval.run_all --intent --condense --refusal --cache --other --retrieval --ragas`
   축마다 의존이 다르다 — `--retrieval`은 DB+TEI, `--cache`는 임베딩+DB,
-  `--refusal`·`--other`는 DB+LLM, `--intent`·`--condense`는 LLM.
+  `--refusal`은 DB+LLM+TEI(`prepare()`가 검색을 태우므로 TEI가 필요하다 — 실수하기 쉽다),
+  `--other`는 DB+LLM(OTHER 라우팅은 검색을 건너뛴다), `--intent`·`--condense`는 LLM.
   `--ragas`는 **미리 생성된 답변만 채점**한다(생성은 `python -m eval.generation`, 무겁다).
 
 ## 환경변수
@@ -61,7 +65,10 @@ vLLM→인텐트·질의재작성·생성, TEI→인덱싱·검색·캐시.
 - **인용 5형제 — 전부 다른 것**: `Message.sources`(검색 후보 전체) /
   `Message.cited_docs`(실인용 파일명, 지표는 이 컬럼만 집계) / `PreparedRag.sources`(인메모리 후보)
   / `ConversationMessage.citations`(API 응답 필터 결과) / SSE `done.citations`(생성 시점 재계산).
-  정의점: `rag/citation_labels.py`.
+  다섯이 네 파일에 흩어져 있고(`rag/models.py`·`rag/service.py`·`schemas/conversations.py`·
+  `rag/streaming.py`) 이 구분 자체를 설명하는 문장은 코드에 없다 — 여기가 유일한 설명이다.
+  헷갈리면 각 정의 위치를 직접 열어 확인하라. (별개로 `rag/citation_labels.py`는 "인용 번호
+  순서"의 정의점이다 — 이름이 비슷하지만 다른 문제를 다룬다.)
 - `RetrievalResult.no_evidence`(원시 판정) ≠ `PreparedRag.no_evidence`(첨부 보정 후 실제 판정).
 - `Message.intent`(DB 저장값) ≠ `RouteDecision.intent`(LLM 출력, RETRY는 저장 전 소멸)
   ≠ `PreparedRag.intent_label`(파생).
@@ -87,8 +94,15 @@ vLLM→인텐트·질의재작성·생성, TEI→인덱싱·검색·캐시.
 
 ## 데이터·평가
 
-gold 원본은 `eval/gold_set_v2.jsonl`(no_evidence 58 / trap 50). 테넌트별 분할
-`eval/gold_v2/*.jsonl`은 수동 동기화라 어긋날 수 있다 — 검증은 `python -m eval.validate_gold_v2`.
+**모든 측정 축이 읽는 파일은 `eval/gold_set_v2.jsonl` 하나뿐이다**(no_evidence 58 / trap 50).
+테넌트별 분할 `eval/gold_v2/*.jsonl`은 구축용 초안이며 어느 측정 축도 읽지 않는다 —
+읽는 것은 `eval/validate_gold_v2.py` 하나다. 그래서 둘은 어긋날 수 있고 실제로 어긋나 있다
+(#88 실측 15건, 전부 `expected_docs`·`expected_chunks`). **gold를 고칠 때는 정본을 고쳐라.**
+
+`python -m eval.validate_gold_v2`의 검사 범위를 오해하지 마라 — 분할본의 snippet이 테넌트 원본
+문서에 실재하는지를 볼 뿐, 정본과 값이 같은지는 비교하지 않는다. 그래서 정본↔분할본 드리프트는
+이 검증기로 잡히지 않는다.
+
 측정 결과를 인용할 때는 **어느 커밋·어느 축인지 함께** 적는다.
 
 ## 규약

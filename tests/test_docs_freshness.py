@@ -61,11 +61,16 @@ _UNVERIFIABLE_PREFIXES = (
 
 # 이 저장소는 폐기된 것을 '구 X'·'옛 X'로 표기한다(실측 관용구, 여러 모듈에서 사용).
 # 그렇게 표시된 참조는 없어진 게 정상이므로 위반이 아니다.
+#
+# 마커가 참조 **바로 앞**에 붙은 경우만 인정한다("구 rag/foo.py"). 사이에 다른 단어가 끼면
+# ("옛 판정은 rag/foo.py") 통과하지 못하고 _PATH_WHITELIST 등록이 필요하다 — 의도한 것이다.
+# 문장 전체에서 '구'·'옛'을 찾으면 무관한 서술이 진짜 위반을 덮어버린다.
 _PAST_TENSE_RE = re.compile(r'(?:구|옛)\s*$')
 
 
 def _is_past_tense(text: str, start: int) -> bool:
-    return bool(_PAST_TENSE_RE.search(text[max(0, start - 8):start]))
+    """참조 직전에 폐기 마커가 붙어 있는가."""
+    return bool(_PAST_TENSE_RE.search(text[max(0, start - 4):start]))
 
 
 # 위 두 규칙으로도 걸러지지 않는 과거형 서술만 등록한다. 등록 시 사유를 반드시 적는다.
@@ -109,7 +114,8 @@ class TestPathReferences:
 
 # 이 저장소 관용구: "config.py의 condense_history_budget_tokens" 처럼 '<파일>의 <심볼>'로 쓴다.
 # 심볼 부분은 ASCII만 받는다 — \w는 한글도 매칭해서 조사가 이름에 붙어버린다("REQUIRED_KEYS를").
-_SYMBOL_RE = re.compile(r'([\w/]+\.py)의\s+([A-Za-z_][A-Za-z0-9_.]*)')
+# 끝의 `*`는 계열 표기다("TAIL_EXAMPLE_*") — 접두어가 일치하는 정의가 하나라도 있으면 통과.
+_SYMBOL_RE = re.compile(r'([\w/]+\.py)의\s+([A-Za-z_][A-Za-z0-9_.]*)(\*?)')
 
 
 def _defined_names(path: Path) -> set[str]:
@@ -131,7 +137,7 @@ class TestSymbolReferences:
     '<파일>의 <말>' 관용구는 산문에도 흔히 쓰여서("worker.py의 arq cron", "streaming.py의 FE
     대응") 정의 유무만으로 판정하면 오탐이 쏟아진다. 오탐이 쌓이면 린터는 무시당하고, 무시당하는
     린터는 없는 것보다 나쁘다 — 그래서 **정밀도를 택했다**: AST 정의 목록에도 없고 파일 본문에
-    아예 등장하지도 않는 이름만 위반으로 본다(= 그 파일에 그런 것이 존재하지 않는다는 뜻).
+    단어로도 등장하지 않는 이름만 위반으로 본다(= 그 파일에 그런 것이 존재하지 않는다는 뜻).
 
     정의 목록을 AST로 뽑는 이유는 따로 있다 — 문자열 검색만 쓰면 정의를 지워도 import 줄이나
     호출부에 이름이 남아 통과한다(tests/test_eval_condense_trim.py에서 실제로 겪은 함정).
@@ -143,7 +149,7 @@ class TestSymbolReferences:
             # 백틱은 마크다운 장식이므로 제거하고 문장만 본다.
             text = f.read_text(encoding='utf-8').replace('`', '')
             for m in _SYMBOL_RE.finditer(text):
-                ref_path, symbol = m.group(1), m.group(2)
+                ref_path, symbol, wildcard = m.group(1), m.group(2), m.group(3)
                 target = _ROOT / ref_path
                 if not target.exists():
                     continue          # 경로 자체 문제는 ①이 잡는다
@@ -153,8 +159,16 @@ class TestSymbolReferences:
                 leaf = symbol.rstrip('.').split('.')[-1]
                 if not leaf:
                     continue
-                target_text = target.read_text(encoding='utf-8')
-                if leaf in _defined_names(target) or leaf in target_text:
+                defined = _defined_names(target)
+                if wildcard:          # 'TAIL_EXAMPLE_*' — 계열이 하나라도 있으면 된다
+                    if not any(n.startswith(leaf) for n in defined):
+                        broken.append((_rel(f), ref_path, symbol + '*'))
+                    continue
+                if leaf in defined:
+                    continue
+                # 본문 등장은 단어 경계로 확인한다 — 부분 문자열로 보면 'HISTORY'가
+                # 'HISTORY_ISOLATED'에 걸려 통과해버린다(짧은 이름·접두어가 전부 구멍).
+                if re.search(rf'\b{re.escape(leaf)}\b', target.read_text(encoding='utf-8')):
                     continue
                 broken.append((_rel(f), ref_path, symbol))
 
@@ -214,10 +228,20 @@ _NUMBER_INVARIANTS = (
 
 def _config_default(field: str) -> int:
     tree = ast.parse((_ROOT / 'config.py').read_text(encoding='utf-8'))
-    cls = next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == 'Settings')
-    node = next(n for n in cls.body
-                if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)
-                and n.target.id == field)
+    cls = next((n for n in ast.walk(tree)
+                if isinstance(n, ast.ClassDef) and n.name == 'Settings'), None)
+    assert cls is not None, (
+        'config.py에서 Settings 클래스를 찾지 못했다. 클래스명이 바뀌었으면 '
+        'tests/test_docs_freshness.py의 _config_default도 같이 고쳐라.'
+    )
+    node = next((n for n in cls.body
+                 if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)
+                 and n.target.id == field), None)
+    assert node is not None, (
+        f"config.py의 Settings에 '{field}' 필드가 없다. 필드명이 바뀌었으면 "
+        f'tests/test_docs_freshness.py의 _NUMBER_INVARIANTS에서 이 항목의 이름을 갱신하고, '
+        f'설정이 삭제됐다면 대응하는 schema.sql 컬럼도 함께 정리했는지 확인해라.'
+    )
     return node.value.value
 
 

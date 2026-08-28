@@ -13,8 +13,8 @@ SHOULD_REFUSE/SHOULD_ANSWER·_refused의 '거절'도 그 뜻으로 읽을 것.
 규약의 정의점은 rag/citation_tail.py 모듈 docstring.
 
 대상 (gold_set_v2, 모두 단일턴):
-- no_evidence(60): 근거 없음 → **거절(=근거없음)해야** 정답. 답하면 미거부(환각 위험).
-- trap(48): has_evidence=True(근거 있는 유도질문) → **답해야** 정답. 거절하면 오거부.
+- no_evidence(58): 근거 없음 → **거절(=근거없음)해야** 정답. 답하면 미거부(환각 위험).
+- trap(50): has_evidence=True(근거 있는 유도질문) → **답해야** 정답. 거절하면 오거부.
   (trap이 '낚여서 틀리게 답했나'는 생성축 faithfulness 몫 — 여기선 거절 여부만.)
 
 지점3은 거절/답변 판정만 채점한다. 답변 내용 품질은 보지 않는다.

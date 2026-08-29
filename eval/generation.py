@@ -341,7 +341,9 @@ async def judge_faithfulness(answer: str, chunks: list[RetrievedChunk]) -> float
 
 # ===== 메인 ==========================================================
 
-CONCURRENCY = 6   # worker15 공유 장비 — RAGAS max_workers와 동일 안전선 (#18)
+# 동시성 실측(#101 코멘트, 2026-08-29): 32 여유(KV 58%)·60 포화(KV 97.6%, 선점으로
+# 처리량 반토막) → 기본 40. 파일럿 실트래픽과 경합하는 시간대엔 EVAL_CONCURRENCY로 낮출 것.
+CONCURRENCY = int(os.getenv("EVAL_CONCURRENCY", "40"))
 
 
 async def run_mode(session, llm, mode: str, gold_rows, resolved):

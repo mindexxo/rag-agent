@@ -37,9 +37,18 @@ def _pct(values: list[float], q: float) -> float:
 
 
 async def probe_turn(client: httpx.AsyncClient, base: str, tenant: str, query: str) -> dict:
-    """새 대화 1턴 SSE — 요청→첫 delta, 요청→done 시각과 done 페이로드를 수집."""
+    """새 대화 1턴 SSE — 요청→첫 delta, 요청→done + 스트리밍 품질 지표 3종 (#21 규칙 차용).
+
+    - answer_chars: 답변 길이 — 지연은 길이에 비례하므로 이것 없이는 p95를 해석할 수 없다
+      ("보고 공통 규칙: 답변 토큰 수 동시 기록"의 문자 단위 근사).
+    - gen_cps: 요청당 생성 속도(자/초) — 첫 delta→마지막 delta 구간. 스트리밍 체감 한 숫자.
+    - max_gap_ms: delta 간 최대 간격(ITL stall) — "중간에 멈칫하는가".
+    """
     t0 = time.monotonic()
     ttft_ms = None
+    last_delta_t = None
+    max_gap_ms = 0.0
+    answer_chars = 0
     done: dict = {}
     async with client.stream(
         "POST", f"{base}/kms/query",
@@ -52,11 +61,21 @@ async def probe_turn(client: httpx.AsyncClient, base: str, tenant: str, query: s
             if line.startswith("event:"):
                 event = line.split(":", 1)[1].strip()
             elif line.startswith("data:"):
-                if event == "delta" and ttft_ms is None:
-                    ttft_ms = (time.monotonic() - t0) * 1000
+                if event == "delta":
+                    now = time.monotonic()
+                    if ttft_ms is None:
+                        ttft_ms = (now - t0) * 1000
+                    else:
+                        max_gap_ms = max(max_gap_ms, (now - last_delta_t) * 1000)
+                    last_delta_t = now
+                    answer_chars += len(json.loads(line.split(":", 1)[1]).get("text", ""))
                 elif event == "done":
                     done = json.loads(line.split(":", 1)[1])
+    stream_s = (last_delta_t - t0) * 1000 / 1000 - (ttft_ms or 0) / 1000 if last_delta_t else 0
     return {"ttft_ms": ttft_ms, "total_ms": (time.monotonic() - t0) * 1000,
+            "answer_chars": answer_chars,
+            "gen_cps": answer_chars / stream_s if stream_s > 0.1 else None,   # 한 delta짜리 답은 속도 무의미
+            "max_gap_ms": max_gap_ms or None,
             "citations": done.get("citations", []), "finish": done.get("finish_reason")}
 
 
@@ -93,9 +112,15 @@ async def main() -> None:
     cold_ttft = [r["cold"]["ttft_ms"] for r in rows if r["cold"]["ttft_ms"] is not None]
     cold_total = [r["cold"]["total_ms"] for r in rows]
     warm_hit = [r["warm"]["total_ms"] for r in rows if r["cacheable"]]
+    chars = [r["cold"]["answer_chars"] for r in rows]
+    cps = [r["cold"]["gen_cps"] for r in rows if r["cold"]["gen_cps"]]
+    gaps = [r["cold"]["max_gap_ms"] for r in rows if r["cold"]["max_gap_ms"]]
     print(f"\n콜드 TTFT   p50 {_pct(cold_ttft, .5):,.0f}ms · p95 {_pct(cold_ttft, .95):,.0f}ms (n={len(cold_ttft)})")
     print(f"콜드 완료   p50 {_pct(cold_total, .5):,.0f}ms · p95 {_pct(cold_total, .95):,.0f}ms (n={len(cold_total)})")
     print(f"캐시 후보 웜 p50 {_pct(warm_hit, .5):,.0f}ms · p95 {_pct(warm_hit, .95):,.0f}ms (n={len(warm_hit)})")
+    print(f"답변 길이   p50 {_pct(chars, .5):,.0f}자 (지연 해석용 — 길이 비례)")
+    print(f"생성 속도   p50 {_pct(cps, .5):,.0f}자/초 · p5 {_pct(cps, .05):,.0f}자/초 (n={len(cps)})")
+    print(f"delta 최대 간격 p50 {_pct(gaps, .5):,.0f}ms · p95 {_pct(gaps, .95):,.0f}ms (stall 감시)")
     print(f"→ {OUT}")
 
 

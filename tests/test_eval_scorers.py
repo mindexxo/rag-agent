@@ -92,12 +92,15 @@ class TestCitationAccuracy:
 
 @pytest.fixture
 def fake_embed(monkeypatch):
-    """포인트 텍스트가 답변 조각에 그대로 들어 있으면 유사도 1, 아니면 0.
+    """임베딩 2단만 검증하는 픽스처 — 1단(부분문자열)은 차단한다.
 
-    임베딩 서버 없이 **판정 구조**(어떤 조각과 대조하는가)만 검증하려는 픽스처다.
-    의미 유사도를 흉내내지는 않는다 — 그건 실측(골드 450문항)이 맡는 몫이다.
+    가짜 코사인은 "포인트 텍스트가 답변 조각에 들어 있으면 1"이라, 1단을 살려두면
+    같은 조건에서 1단이 먼저 잡아 2단이 영영 실행되지 않는다. 의미 유사도를
+    흉내내지는 않는다 — 그건 실측(생성물 900행 눈검증)이 맡는 몫이고, 여기서는
+    **판정 구조**(어떤 조각과 대조하는가)만 본다.
     """
     from rag.embeddings import Embedding
+    monkeypatch.setattr(gen, '_contains_point', lambda *a: False)
     # 벡터 자리에 원문을 실어 보내고, 코사인 자리에서 포함 여부로 답한다.
     monkeypatch.setattr(gen, 'embed_texts_sync', lambda texts: [Embedding(dense=[t]) for t in texts])
     monkeypatch.setattr(gen, '_cosine', lambda p, s: 1.0 if p[0] in s[0] else 0.0)
@@ -117,16 +120,37 @@ class TestSplitSegments:
         assert '3,000원을 지급합니다' in ' '.join(gen._split_segments('보상으로 3,000원을 지급합니다.'))
 
 
+@pytest.fixture
+def no_embed_fallback(monkeypatch):
+    """임베딩 2단을 무력화 — 부분문자열 1단만 검증할 때."""
+    from rag.embeddings import Embedding
+    monkeypatch.setattr(gen, 'embed_texts_sync',
+                        lambda texts: [Embedding(dense=[0.0] * 8) for _ in texts])
+
+
 class TestExpectedPointsCoverage:
+    # ── 1단: 부분문자열 (서술문 포인트의 원문 인용을 임베딩 감쇠 없이 인정)
+    def test_숫자_경계_오탐_방지(self, no_embed_fallback):
+        # '30분'이 '130분'에 매칭되면 안 됨 (수정 전 오탐)
+        assert expected_points_coverage('처리에 130분 걸립니다', ['30분']) == 0.0
+
+    def test_콤마_표기_차이_흡수(self, no_embed_fallback):
+        # xlsx 숫자셀 gold('38000') vs 모델의 자연 표기('38,000원')
+        assert expected_points_coverage('정가는 38,000원입니다', ['38000']) == 1.0
+
+    def test_공백_변형_허용(self, no_embed_fallback):
+        assert expected_points_coverage('3 0분... 아니 30 분 이내', ['30분']) == 1.0
+
+    # ── 2단: 임베딩 (패러프레이즈)
     def test_절에_담긴_포인트를_잡는다(self, fake_embed):
         # 문장 단위로만 보면 못 잡던 것 — 비교 단위를 절까지 내린 이유
-        assert expected_points_coverage('A는 1이고, B는 2입니다.', ['B는 2입니다']) == 1.0
+        assert expected_points_coverage('A는 X고, B는 Y입니다.', ['B는 Y입니다']) == 1.0
 
     def test_없는_포인트는_감점(self, fake_embed):
-        assert expected_points_coverage('A는 1입니다.', ['B는 2입니다']) == 0.0
+        assert expected_points_coverage('A는 X입니다.', ['B는 Y입니다']) == 0.0
 
     def test_중복_포인트_각자_집계(self, fake_embed):
-        assert expected_points_coverage('서술 포인트입니다.', ['서술 포인트', '서술 포인트']) == 1.0
+        assert expected_points_coverage('서술문 포인트입니다.', ['서술문 포인트', '서술문 포인트']) == 1.0
 
     def test_포인트_없으면_None(self):
         assert expected_points_coverage('답변', []) is None

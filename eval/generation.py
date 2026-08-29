@@ -134,7 +134,10 @@ async def generate(llm: LlmClient, original_query: str, chunks: list[RetrievedCh
 
 # ===== 채점 — deterministic (서버 무관) ==============================
 
-EPCOV_SIM_THRESHOLD = 0.80   # 기대포인트 ↔ 답변조각 코사인 임계 (골드 450문항 실측으로 결정)
+# 기대포인트 ↔ 답변조각 코사인 임계. 실제 생성물 900행(450문항×2모드)의 0.70~0.80
+# 구간 186쌍을 전수 눈검증해 결정 — 0.75~0.80은 위음성(사실이 있는데 감점)이 압도적,
+# 0.70~0.75는 반반. 0.80으로 올리면 정답 답변을 체계적으로 깎는다.
+EPCOV_SIM_THRESHOLD = 0.75
 
 # 문장 경계. 숫자 사이 마침표는 경계가 아니다 — '78.4%'·'§11.2'가 쪼개져
 # 그 사실을 담은 포인트가 영영 못 맞던 버그가 있었다.
@@ -173,28 +176,52 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 
 def expected_points_coverage(answer: str, points: list[str]) -> float | None:
-    """기대 포인트가 답변에 담긴 비율. 임베딩 단일 판정.
+    """기대 포인트가 답변에 담긴 비율. 부분문자열 → 임베딩 2단 매칭.
 
-    예전에는 부분문자열 판정이 1단으로 앞에 있었다. 없앤 이유: 포인트가 '2년'
-    같은 맨값이던 시절의 보정책인데, 그 조합이 **주어가 어긋난 답변을 만점으로
-    통과시켰다**("패킹 보증기간은 2년" + 포인트 '2년' → 1.00). 포인트를 전부
-    "대상+값" 서술문으로 정규화(450문항)하면서 보정 자체가 필요 없어졌고,
-    남겨두면 표기만 겹쳐도 통과하는 구멍이 그대로 남는다.
+    부분문자열 단계는 한 번 제거했다가 실측으로 복원했다. 제거 사유는 포인트가
+    '2년' 같은 맨값이던 시절 주어가 어긋난 답변을 만점 통과시킨 구멍이었는데,
+    포인트를 전부 "대상+값" 서술문으로 정규화(450문항)한 지금은 부분문자열
+    일치가 곧 그 사실 전체의 인용이라 구멍이 성립하지 않는다. 반대로 없애면
+    포인트를 원문 그대로 담은 답변이 감점된다 — 짧은 포인트가 긴 문장 안에
+    있으면 코사인이 0.7대로 깎여서다(생성물 900행 실측, 확실한 위음성 6쌍).
 
-    임계 0.80은 그 정규화된 골드로 실측해 정했다 — 정답 쪽 중앙 0.986,
-    5백분위 0.852. 정답인데 탈락하는 쌍은 805개 중 13개(1.6%)다.
+    임베딩 단계는 패러프레이즈용. 임계 0.75의 근거는 EPCOV_SIM_THRESHOLD 주석.
     """
     if not points:
         return None
-    segments = _split_segments(answer)
-    if not segments:
-        return 0.0
-    embs = embed_texts_sync(list(points) + segments)
-    p_vecs = [e.dense for e in embs[:len(points)]]
-    s_vecs = [e.dense for e in embs[len(points):]]
-    hits = sum(1 for pv in p_vecs
-               if max(_cosine(pv, sv) for sv in s_vecs) >= EPCOV_SIM_THRESHOLD)
-    return hits / len(points)
+    norm_answer = re.sub(r"\s+", "", answer)
+    hits = [_contains_point(norm_answer, re.sub(r"\s+", "", p)) for p in points]
+
+    remaining_idx = [i for i, h in enumerate(hits) if not h]
+    if remaining_idx:
+        segments = _split_segments(answer)
+        if segments:
+            remaining = [points[i] for i in remaining_idx]
+            embs = embed_texts_sync(remaining + segments)
+            p_vecs = [e.dense for e in embs[:len(remaining)]]
+            s_vecs = [e.dense for e in embs[len(remaining):]]
+            for i, pv in zip(remaining_idx, p_vecs):     # index 직접 — 중복 포인트도 각자 갱신
+                if max(_cosine(pv, sv) for sv in s_vecs) >= EPCOV_SIM_THRESHOLD:
+                    hits[i] = True
+    return sum(hits) / len(points)
+
+
+def _contains_point(norm_answer: str, norm_point: str) -> bool:
+    """숫자 경계를 지키는 부분문자열 매칭 — '30분'이 '130분'/'305분'에 오탐되는 것 방지.
+    콤마는 양쪽에서 제거 — xlsx 숫자셀('38000')과 모델 표기('38,000원')의 표기 차이 흡수."""
+    norm_answer = norm_answer.replace(',', '')
+    norm_point = norm_point.replace(',', '')
+    if not norm_point:
+        return False
+    for m in re.finditer(re.escape(norm_point), norm_answer):
+        before = norm_answer[m.start() - 1] if m.start() > 0 else ''
+        after = norm_answer[m.end()] if m.end() < len(norm_answer) else ''
+        if norm_point[0].isdigit() and before.isdigit():
+            continue
+        if norm_point[-1].isdigit() and after.isdigit():
+            continue
+        return True
+    return False
 
 
 def _citation_match(core: str, stem: str) -> bool:

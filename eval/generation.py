@@ -57,7 +57,11 @@ RESULT_DIR = Path("eval/results")
 #   2) "질문:" 슬롯이 재작성본 → 원 질문 + 재작성본 병기로 바뀜.
 # citation_accuracy v3(#56)와 같은 종류의 고지다 — 측정 정의가 바뀐 것이지 모델이 변한 게 아니다.
 # single_fact/paraphrase/rare_lexical/multi_doc은 이력이 없고 두 질의가 같아 렌더 무변경.
-GEN_TYPES = {"single_fact", "paraphrase", "rare_lexical", "multi_doc", "multi_turn"}
+# 고난도 6종 (#95) — 전부 has_evidence=True 생성 챌린지라 GEN_TYPES에 합류한다.
+# 검색축 난이도 그룹은 기존 'hard'에 섞지 않고 'hard_new'로 분리한다(retrieval_v2.DIFFICULTY)
+# — 섞으면 run_all의 r5_hard 시계열 구성이 조용히 바뀌어 회귀인지 구성 변경인지 못 가른다.
+HARD_TYPES = {"multi_hop", "calc", "exception", "negation", "temporal", "conflict"}
+GEN_TYPES = {"single_fact", "paraphrase", "rare_lexical", "multi_doc", "multi_turn"} | HARD_TYPES
 TOP_K = 5
 USE_RERANK = False         # 추가 리랭크 여부. 주의: retrieve_candidates가 settings.rerank_enabled(현재 True)로
                            # 이미 내부 리랭크 1회 수행 → retrieved 모드는 이미 '리랭커 포함'(=시스템 전체).
@@ -224,6 +228,32 @@ def _contains_point(norm_answer: str, norm_point: str) -> bool:
     return False
 
 
+def must_not_contain_violations(answer: str, forbidden: list[str]) -> list[str] | None:
+    """금지 문구 중 답변에 실제로 등장한 것들 (#95 오정보 채점).
+
+    빈 리스트 = 위반 없음, forbidden 자체가 비면 None(해당 없음 — 분모에서 제외).
+    EPCov의 사각을 메운다: EPCov는 "있어야 할 것"만 재고, 상충 문서의 반대편 값이나
+    개정 전 구버전 값을 답에 실어도 감점하지 못한다.
+
+    condense.py도 같은 필드명 must_not_contain을 쓰지만 매칭이 다르다 — condense는
+    공백만 지우는 짧은 재작성문 비교(_norm)이고, 여기는 자유생성 긴 답변이라
+    expected_points와 같은 숫자 경계·콤마 정규화(_contains_point)를 재사용한다.
+    필드명은 같지만 정의점은 둘로 갈린다 — 헷갈리면 이 문단이 유일한 설명이다.
+
+    임베딩 폴백을 일부러 안 쓴다. EPCov는 위음성(사실이 있는데 놓침)이 위험해 폴백을
+    넣었지만, 여기는 반대다 — 오탐(정상 답변을 오답 판정)이 지표 신뢰를 깎는다.
+    같은 이유로 gold 작성 규약: 금지값이 정답 답변에 정당하게 등장할 수 있으면
+    (예: "9개월은 신 기준이고 고객님 건은 6개월" 같은 정정 문장) 맨값 대신
+    "보증기간은 9개월"처럼 단언문 형태로 쓴다. 반환이 bool이 아니라 목록인 것은
+    감사용 — 어떤 문구가 걸렸는지 결과 파일에 그대로 남긴다(absence_judge.reason과 같은 철학).
+    """
+    if not forbidden:
+        return None
+    norm_answer = re.sub(r"\s+", "", answer)
+    return [f for f in forbidden
+            if _contains_point(norm_answer, re.sub(r"\s+", "", f))]
+
+
 def _citation_match(core: str, stem: str) -> bool:
     """인용 토큰 코어 ↔ 기대 파일명 stem 매칭.
 
@@ -383,6 +413,7 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved):
             "scores": {
                 "expected_points_coverage": expected_points_coverage(answer, g.get("expected_points", [])),
                 "citation_accuracy": citation_accuracy(answer, g.get("expected_docs", []), chunks),
+                "must_not_contain_violations": must_not_contain_violations(answer, g.get("must_not_contain", [])),
                 "answer_relevancy": await judge_relevancy(g["query"], answer),
                 "faithfulness": await judge_faithfulness(answer, chunks),
             },
@@ -452,17 +483,32 @@ async def main():
 
 
 def summarize(rows):
-    """모드별 deterministic 평균 (judge는 채점 붙으면 추가)."""
+    """모드별 deterministic 평균 (judge는 채점 붙으면 추가).
+
+    Misinfo 열 = must_not_contain 위반율(위반 행 수 / 필드 보유 행 수) — 분모가 없으면 '-'.
+    마지막에 일반 vs 고난도(HARD_TYPES) 2줄 집계 — 발표의 "일반 vs 고난도" 비교가 이 출력이다 (#95).
+    """
     by_type = defaultdict(list)
     for r in rows:
         by_type[r["type"]].append(r["scores"])
-    print(f"{'type':<14}{'n':>4}{'EPCov':>8}{'Cite':>7}")
-    for t, ss in by_type.items():
+
+    def _line(label, ss):
         n = len(ss)
         cov = [s["expected_points_coverage"] for s in ss if s["expected_points_coverage"] is not None]
         cite = [s["citation_accuracy"] for s in ss]
+        mnc = [s.get("must_not_contain_violations") for s in ss]
+        mnc = [v for v in mnc if v is not None]
+        misinfo = f"{sum(1 for v in mnc if v)/len(mnc):.2f}" if mnc else "   -"
         cov_avg = sum(cov) / len(cov) if cov else 0.0
-        print(f"{t:<14}{n:>4}{cov_avg:>8.2f}{sum(cite)/n:>7.2f}")
+        print(f"{label:<14}{n:>4}{cov_avg:>8.2f}{sum(cite)/n:>7.2f}{misinfo:>9}")
+
+    print(f"{'type':<14}{'n':>4}{'EPCov':>8}{'Cite':>7}{'Misinfo':>9}")
+    for t, ss in by_type.items():
+        _line(t, ss)
+    for label, types in (("[일반]", GEN_TYPES - HARD_TYPES), ("[고난도]", HARD_TYPES)):
+        ss = [r["scores"] for r in rows if r["type"] in types]
+        if ss:
+            _line(label, ss)
 
 
 if __name__ == "__main__":

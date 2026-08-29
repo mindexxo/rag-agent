@@ -157,3 +157,42 @@ class TestExpectedPointsCoverage:
 
     def test_빈_답변은_0(self, fake_embed):
         assert expected_points_coverage('', ['어떤 포인트']) == 0.0
+
+
+class TestMustNotContainViolations:
+    """오정보 채점 (#95) — 금지값이 답변에 섞였는지. 매칭 정의점은 _contains_point 재사용."""
+
+    def test_필드_없으면_None(self):
+        # None = 해당 없음 — 위반율 분모에서 제외된다 (빈 리스트=위반 없음과 다른 값)
+        assert gen.must_not_contain_violations('아무 답변', []) is None
+
+    def test_위반_없으면_빈리스트(self):
+        assert gen.must_not_contain_violations('30일 이내 반품됩니다', ['14일지나면반품불가']) == []
+
+    def test_금지값_등장하면_그_값을_반환(self):
+        # 반환이 bool이 아닌 목록인 이유: 어떤 문구가 걸렸는지 결과 파일에 감사용으로 남긴다
+        v = gen.must_not_contain_violations('네, 보증기간은 9개월입니다.', ['보증기간은 9개월'])
+        assert v == ['보증기간은 9개월']
+
+    def test_숫자_경계_오탐_방지(self):
+        # '14일'이 '114일'에 걸리면 안 됨 — _contains_point의 숫자 경계 규칙 상속 검증
+        assert gen.must_not_contain_violations('처리에 114일 걸립니다', ['14일']) == []
+
+    def test_콤마_표기_차이_흡수(self):
+        # xlsx 숫자셀('32000')과 모델 표기('32,000원') — _contains_point의 콤마 규칙 상속
+        assert gen.must_not_contain_violations('정가는 32,000원입니다', ['32000']) == ['32000']
+
+    def test_공백_차이_흡수(self):
+        assert gen.must_not_contain_violations('등급 구간은 50만 원부터입니다', ['50만원']) == ['50만원']
+
+    def test_여러_금지값_중_걸린_것만(self):
+        v = gen.must_not_contain_violations(
+            '위약금은 50%이며 예약금은 30%입니다', ['위약금은 50%', '예약금은 10%', '무관한 값'])
+        assert v == ['위약금은 50%']
+
+    def test_정정_문장은_단언문_규약으로_통과(self):
+        # gold 규약 검증: 금지값이 정답에 정당하게 등장할 수 있으면 단언문으로 쓴다.
+        # 정정 답변("9개월은 신 기준, 고객님 건은 6개월")은 맨값 '9개월'을 담지만
+        # 단언문 '보증기간은 9개월'과는 매칭되지 않아야 한다.
+        answer = '2026-07-01 이후 구매는 9개월이지만, 고객님 구매 건의 보증기간은 6개월입니다.'
+        assert gen.must_not_contain_violations(answer, ['보증기간은 9개월']) == []

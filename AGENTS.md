@@ -97,7 +97,7 @@ vLLM→인텐트·질의재작성·생성, TEI→인덱싱·검색·캐시.
 **모든 측정 축이 읽는 파일은 `eval/gold_set_v2.jsonl` 하나뿐이다**(no_evidence 58 / trap 50).
 테넌트별 분할 `eval/gold_v2/*.jsonl`은 구축용 초안이며 어느 측정 축도 읽지 않는다 —
 읽는 것은 `eval/validate_gold_v2.py` 하나다. 그래서 둘은 어긋날 수 있고 실제로 어긋나 있다
-(#88 실측 15건, 전부 `expected_docs`·`expected_chunks`). **gold를 고칠 때는 정본을 고쳐라.**
+(#88 실측 15건, 전부 `expected_docs`·`expected_chunks`. 추가로 #95의 고난도 90행과 trap `must_not_contain` 백필은 **정본에만 있다** — 분할본에는 없는 것이 정상이다). **gold를 고칠 때는 정본을 고쳐라.**
 
 `python -m eval.validate_gold_v2`의 검사 범위를 오해하지 마라 — 분할본의 snippet이 테넌트 원본
 문서에 실재하는지를 볼 뿐, 정본과 값이 같은지는 비교하지 않는다. 그래서 정본↔분할본 드리프트는

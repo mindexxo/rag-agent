@@ -65,15 +65,21 @@ ROWS = [
     Row("refusal", "accuracy", "거절 정확도"),
     Row("cache", "accuracy", "캐시히트 정확도"),
     Row("other", "accuracy", "OTHER 경계준수"),
-    Row("retrieval", "recall_at_5", "검색  R@5"),
+    # 검색 전체 평균 4행: #95에서 고난도 90행이 TYPES에 편입돼 **구성이 바뀌었다** —
+    # version_key(gold_composition)가 구성 변경 첫 실행을 '비교 불가'로 처리한다
+    # (hard_new를 층화에서 분리한 것과 같은 원리를 전체 평균에도 적용, 리뷰 지적).
+    Row("retrieval", "recall_at_5", "검색  R@5", version_key="gold_composition"),
     Row("retrieval", "r5_easy", "검색  R@5(쉬움)"),
     Row("retrieval", "r5_medium", "검색  R@5(중간)"),
     Row("retrieval", "r5_hard", "검색  R@5(어려움)"),
     # 고난도 신설 6종 (#95) — 기존 'hard'에 안 섞는 이유는 retrieval_v2.DIFFICULTY 주석.
     Row("retrieval", "r5_hard_new", "검색  R@5(고난도-신규)"),
-    Row("retrieval", "recall_at_20", "검색  R@20"),
-    Row("retrieval", "hit_at_1", "검색  Hit@1"),
-    Row("retrieval", "mrr", "검색  MRR"),
+    Row("retrieval", "recall_at_20", "검색  R@20", version_key="gold_composition"),
+    Row("retrieval", "hit_at_1", "검색  Hit@1", version_key="gold_composition"),
+    Row("retrieval", "mrr", "검색  MRR", version_key="gold_composition"),
+    # RAGAS 2행도 같은 구성 변경의 영향권 — 채점 대상(generation_*.jsonl)에 고난도가
+    # 편입된다. 다만 값 산출이 별도 경로(ragas_eval)라 version_key 배관이 없어, #95 병합
+    # 직후 첫 --ragas 실행의 직전 대비는 **구성 변경으로 읽어라** (여기 주석이 그 고지다).
     Row("ragas", "faithfulness", "생성  faithfulness"),
     Row("ragas", "answer_relevancy", "생성  relevancy"),
     # 낮을수록 좋은 유일한 행 (#76) — 부재단정률이 오르는 것이 회귀다.
@@ -229,6 +235,7 @@ async def _run_async(name: str):
         # (None으로 넣으면 '측정 실패'로 오인돼 가짜 회귀가 뜸).
         d = r["by_difficulty"]
         out = dict(r["overall"])
+        out["gold_composition"] = r["gold_composition"]   # version_key 재료 (#95)
         for grp, key in (("easy", "r5_easy"), ("medium", "r5_medium"), ("hard", "r5_hard"),
                          ("hard_new", "r5_hard_new")):
             if grp in d:

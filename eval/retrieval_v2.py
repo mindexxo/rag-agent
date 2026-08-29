@@ -76,6 +76,10 @@ async def compute(expand: bool = False) -> dict:
     멀티쿼리를 만들어 첫 줄=주 쿼리, 나머지=변형으로 검색 (A/B). 변형은 rows에 기록.
 
     반환: {'rows': [...], 'skipped': int, 'overall': {recall_at_5, ...}, 'stale': {tenant: n}}
+
+    gold_composition: 채점 대상 구성의 버전 문자열 — run_all이 version_key로 써서 구성이
+    바뀐 첫 실행을 '회귀'가 아니라 '비교 불가'로 처리한다 (#95에서 고난도 90행이 전체
+    평균에 편입되며 필요해짐 — absence_rate의 judge_prompt_version과 같은 메커니즘).
     """
     gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
     target = [g for g in gold if g['type'] in TYPES]
@@ -123,7 +127,9 @@ async def compute(expand: bool = False) -> dict:
                 rows.append(row)
 
     return {'rows': rows, 'skipped': skipped, 'overall': _overall(rows),
-            'by_difficulty': _by_difficulty(rows), 'stale': stale}
+            'by_difficulty': _by_difficulty(rows), 'stale': stale,
+            # 구성 버전 (#95) — TYPES 구성이 바뀔 때마다 갱신할 것 (docstring 참조)
+            'gold_composition': 'v2+hard95'}
 
 
 async def main() -> None:

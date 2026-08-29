@@ -341,7 +341,9 @@ async def judge_faithfulness(answer: str, chunks: list[RetrievedChunk]) -> float
 
 # ===== 메인 ==========================================================
 
-CONCURRENCY = 6   # worker15 공유 장비 — RAGAS max_workers와 동일 안전선 (#18)
+# worker15 공유 장비 기본 안전선 6 (#18) — GPU를 전용으로 쓸 수 있는 시간대에는
+# EVAL_CONCURRENCY로 올린다 (vLLM 연속 배칭이 흡수, TEI 채점은 어차피 직렬).
+CONCURRENCY = int(os.getenv("EVAL_CONCURRENCY", "6"))
 
 
 async def run_mode(session, llm, mode: str, gold_rows, resolved):

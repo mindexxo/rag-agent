@@ -193,6 +193,16 @@ def expected_points_coverage(answer: str, points: list[str]) -> float | None:
     """
     if not points:
         return None
+    hits = expected_points_hits(answer, points)
+    return sum(hits) / len(points)
+
+
+def expected_points_hits(answer: str, points: list[str]) -> list[bool]:
+    """포인트별 히트 벡터 — 판정 로직의 정의점 (coverage는 이 비율일 뿐이다).
+
+    분리 이유(#97 ②): 생성 일관성 축(eval/consistency.py)은 "런마다 **같은 포인트**를
+    맞히는가"를 재야 해서 비율이 아니라 벡터가 필요하다. 채점 기준을 복제하면
+    두 축의 판정이 조용히 어긋나므로 여기서만 판정하고 양쪽이 나눠 쓴다."""
     norm_answer = re.sub(r"\s+", "", answer)
     hits = [_contains_point(norm_answer, re.sub(r"\s+", "", p)) for p in points]
 
@@ -207,7 +217,7 @@ def expected_points_coverage(answer: str, points: list[str]) -> float | None:
             for i, pv in zip(remaining_idx, p_vecs):     # index 직접 — 중복 포인트도 각자 갱신
                 if max(_cosine(pv, sv) for sv in s_vecs) >= EPCOV_SIM_THRESHOLD:
                     hits[i] = True
-    return sum(hits) / len(points)
+    return hits
 
 
 def _contains_point(norm_answer: str, norm_point: str) -> bool:

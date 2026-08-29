@@ -42,3 +42,6 @@ docs_internal/
 .idea/
 .vscode/
 *.swp
+
+# 골드셋 반영 단계별 백업 — 커밋 금지 (체인은 검수결과 문서에 기록)
+eval/*.jsonl.bak

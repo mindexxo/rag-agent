@@ -6,7 +6,7 @@
 import pytest
 
 import eval.generation as gen
-from eval.generation import _citation_match, _contains_point, citation_accuracy, expected_points_coverage
+from eval.generation import _citation_match, citation_accuracy, expected_points_coverage
 from rag.citation_labels import TAIL_END, TAIL_START, citation_tail
 from rag.retriever import RetrievedChunk
 
@@ -91,37 +91,69 @@ class TestCitationAccuracy:
 
 
 @pytest.fixture
+def fake_embed(monkeypatch):
+    """임베딩 2단만 검증하는 픽스처 — 1단(부분문자열)은 차단한다.
+
+    가짜 코사인은 "포인트 텍스트가 답변 조각에 들어 있으면 1"이라, 1단을 살려두면
+    같은 조건에서 1단이 먼저 잡아 2단이 영영 실행되지 않는다. 의미 유사도를
+    흉내내지는 않는다 — 그건 실측(생성물 900행 눈검증)이 맡는 몫이고, 여기서는
+    **판정 구조**(어떤 조각과 대조하는가)만 본다.
+    """
+    from rag.embeddings import Embedding
+    monkeypatch.setattr(gen, '_contains_point', lambda *a: False)
+    # 벡터 자리에 원문을 실어 보내고, 코사인 자리에서 포함 여부로 답한다.
+    monkeypatch.setattr(gen, 'embed_texts_sync', lambda texts: [Embedding(dense=[t]) for t in texts])
+    monkeypatch.setattr(gen, '_cosine', lambda p, s: 1.0 if p[0] in s[0] else 0.0)
+
+
+class TestSplitSegments:
+    def test_문장과_절을_모두_후보로(self):
+        segs = gen._split_segments('A는 1이고, B는 2입니다.')
+        assert 'A는 1이고, B는 2입니다' in segs      # 문장 통째
+        assert 'B는 2입니다' in segs                 # 절
+
+    def test_숫자_사이_마침표는_문장_경계가_아니다(self):
+        # '78.4%'가 '78'/'4%'로 쪼개지면 그 사실을 담은 포인트는 영영 못 맞는다
+        assert gen._split_sentences('집행률은 78.4%입니다.') == ['집행률은 78.4%입니다']
+
+    def test_숫자_사이_쉼표는_절_경계가_아니다(self):
+        assert '3,000원을 지급합니다' in ' '.join(gen._split_segments('보상으로 3,000원을 지급합니다.'))
+
+
+@pytest.fixture
 def no_embed_fallback(monkeypatch):
-    """임베딩 폴백을 무력화 — 부분문자열 단계만 검증할 때."""
+    """임베딩 2단을 무력화 — 부분문자열 1단만 검증할 때."""
     from rag.embeddings import Embedding
     monkeypatch.setattr(gen, 'embed_texts_sync',
                         lambda texts: [Embedding(dense=[0.0] * 8) for _ in texts])
 
 
 class TestExpectedPointsCoverage:
+    # ── 1단: 부분문자열 (서술문 포인트의 원문 인용을 임베딩 감쇠 없이 인정)
     def test_숫자_경계_오탐_방지(self, no_embed_fallback):
         # '30분'이 '130분'에 매칭되면 안 됨 (수정 전 오탐)
         assert expected_points_coverage('처리에 130분 걸립니다', ['30분']) == 0.0
 
-    def test_정상_수치_매칭(self, no_embed_fallback):
-        assert expected_points_coverage('30분 이내 처리됩니다', ['30분']) == 1.0
-        assert expected_points_coverage('기간은 12개월입니다', ['12개월']) == 1.0
+    def test_콤마_표기_차이_흡수(self, no_embed_fallback):
+        # xlsx 숫자셀 gold('38000') vs 모델의 자연 표기('38,000원')
+        assert expected_points_coverage('정가는 38,000원입니다', ['38000']) == 1.0
 
     def test_공백_변형_허용(self, no_embed_fallback):
         assert expected_points_coverage('3 0분... 아니 30 분 이내', ['30분']) == 1.0
 
-    def test_콤마_표기_차이_흡수(self, no_embed_fallback):
-        # xlsx 숫자셀 gold('38000') vs 모델의 자연 표기('38,000원') — 눈검증에서 잡은 오탐
-        assert expected_points_coverage('정가는 38,000원입니다', ['38000']) == 1.0
-        assert expected_points_coverage('연간 1,200,000원 이상', ['1200000']) == 1.0
+    # ── 2단: 임베딩 (패러프레이즈)
+    def test_절에_담긴_포인트를_잡는다(self, fake_embed):
+        # 문장 단위로만 보면 못 잡던 것 — 비교 단위를 절까지 내린 이유
+        assert expected_points_coverage('A는 X고, B는 Y입니다.', ['B는 Y입니다']) == 1.0
 
-    def test_중복_포인트_각자_집계(self, monkeypatch):
-        # 임베딩 단계에서 points.index()가 첫 항목만 갱신하던 버그 고정
-        from rag.embeddings import Embedding
-        monkeypatch.setattr(gen, 'embed_texts_sync',
-                            lambda texts: [Embedding(dense=[1.0, 0.0]) for _ in texts])  # 전부 동일 → 유사도 1
-        score = expected_points_coverage('서술형 답변 문장입니다.', ['서술 포인트', '서술 포인트'])
-        assert score == 1.0                                  # 수정 전엔 0.5
+    def test_없는_포인트는_감점(self, fake_embed):
+        assert expected_points_coverage('A는 X입니다.', ['B는 Y입니다']) == 0.0
+
+    def test_중복_포인트_각자_집계(self, fake_embed):
+        assert expected_points_coverage('서술문 포인트입니다.', ['서술문 포인트', '서술문 포인트']) == 1.0
 
     def test_포인트_없으면_None(self):
         assert expected_points_coverage('답변', []) is None
+
+    def test_빈_답변은_0(self, fake_embed):
+        assert expected_points_coverage('', ['어떤 포인트']) == 0.0

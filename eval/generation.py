@@ -341,9 +341,9 @@ async def judge_faithfulness(answer: str, chunks: list[RetrievedChunk]) -> float
 
 # ===== 메인 ==========================================================
 
-# worker15 공유 장비 기본 안전선 6 (#18) — GPU를 전용으로 쓸 수 있는 시간대에는
-# EVAL_CONCURRENCY로 올린다 (vLLM 연속 배칭이 흡수, TEI 채점은 어차피 직렬).
-CONCURRENCY = int(os.getenv("EVAL_CONCURRENCY", "6"))
+# 동시성 실측(#101 코멘트, 2026-08-29): 32 여유(KV 58%)·60 포화(KV 97.6%, 선점으로
+# 처리량 반토막) → 기본 40. 파일럿 실트래픽과 경합하는 시간대엔 EVAL_CONCURRENCY로 낮출 것.
+CONCURRENCY = int(os.getenv("EVAL_CONCURRENCY", "40"))
 
 
 async def run_mode(session, llm, mode: str, gold_rows, resolved):

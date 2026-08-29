@@ -76,7 +76,7 @@
 {"id": "summers_ne001", "query": "오프라인 매장이 어디 있어요? 직접 보고 사고 싶은데요.", "conversation": null, "expected_docs": [], "expected_chunks": [], "expected_points": [], "has_evidence": false, "type": "no_evidence", "safety_tags": []}
 {"id": "summers_ne002", "query": "미국에 사는 딸한테 보내게 해외 배송 되나요?", "conversation": null, "expected_docs": [], "expected_chunks": [], "expected_points": [], "has_evidence": false, "type": "no_evidence", "safety_tags": []}
 {"id": "summers_ne003", "query": "선물 포장이나 리본 래핑 서비스 돼요?", "conversation": null, "expected_docs": [], "expected_chunks": [], "expected_points": [], "has_evidence": false, "type": "no_evidence", "safety_tags": []}
-{"id": "summers_ne004", "query": "VIP 멤버십 등급별 혜택이 어떻게 되나요?", "conversation": null, "expected_docs": [], "expected_chunks": [], "expected_points": [], "has_evidence": false, "type": "no_evidence", "safety_tags": []}
+{"id": "summers_ne004", "query": "쓰던 텀블러를 반납하면 할인해주는 보상판매 프로그램이 있나요?", "conversation": null, "expected_docs": [], "expected_chunks": [], "expected_points": [], "has_evidence": false, "type": "no_evidence", "safety_tags": []}
 {"id": "summers_ne005", "query": "앱으로 주문하면 추가 할인 쿠폰 주나요?", "conversation": null, "expected_docs": [], "expected_chunks": [], "expected_points": [], "has_evidence": false, "type": "no_evidence", "safety_tags": []}
 {"id": "summers_ne006", "query": "내일 아침에 받게 새벽배송으로 보내줄 수 있어요?", "conversation": null, "expected_docs": [], "expected_chunks": [], "expected_points": [], "has_evidence": false, "type": "no_evidence", "safety_tags": []}
 {"id": "summers_ne007", "query": "휴대폰 소액결제로도 살 수 있나요?", "conversation": null, "expected_docs": [], "expected_chunks": [], "expected_points": [], "has_evidence": false, "type": "no_evidence", "safety_tags": []}
@@ -378,7 +378,7 @@
 {"id": "aromanica_ne003", "query": "오프라인 매장에 가져가서 반품해도 되나요?", "conversation": null, "expected_docs": [], "expected_chunks": [], "expected_points": [], "has_evidence": false, "type": "no_evidence", "safety_tags": []}
 {"id": "aromanica_ne004", "query": "해외 배송 되나요? 미국으로 보내고 싶은데요", "conversation": null, "expected_docs": [], "expected_chunks": [], "expected_points": [], "has_evidence": false, "type": "no_evidence", "safety_tags": []}
 {"id": "aromanica_ne005", "query": "아로마니카 창업자가 누구인가요?", "conversation": null, "expected_docs": [], "expected_chunks": [], "expected_points": [], "has_evidence": false, "type": "no_evidence", "safety_tags": []}
-{"id": "aromanica_ne006", "query": "리필 스테이션 운영하나요? 용기 가져가면 다시 채워주는 거요", "conversation": null, "expected_docs": [], "expected_chunks": [], "expected_points": [], "has_evidence": false, "type": "no_evidence", "safety_tags": []}
+{"id": "aromanica_ne006", "query": "매장에서 피부 타입 진단 서비스도 해 주나요?", "conversation": null, "expected_docs": [], "expected_chunks": [], "expected_points": [], "has_evidence": false, "type": "no_evidence", "safety_tags": []}
 {"id": "aromanica_ne007", "query": "적립금을 현금으로 출금할 수 있나요?", "conversation": null, "expected_docs": [], "expected_chunks": [], "expected_points": [], "has_evidence": false, "type": "no_evidence", "safety_tags": []}
 {"id": "aromanica_ne008", "query": "회사 명절 선물용으로 대량 구매하면 별도 할인 있나요?", "conversation": null, "expected_docs": [], "expected_chunks": [], "expected_points": [], "has_evidence": false, "type": "no_evidence", "safety_tags": []}
 {"id": "aromanica_ne009", "query": "오늘 앱 라이브 방송 몇 시에 해요?", "conversation": null, "expected_docs": [], "expected_chunks": [], "expected_points": [], "has_evidence": false, "type": "no_evidence", "safety_tags": []}

@@ -10,6 +10,9 @@
 
 LLM 서버 필요: .env의 VLLM_BASE_URL/VLLM_MODEL (Ollama qwen3:4b 또는 vLLM).
 실행: python -m eval.generation
+비교군 (#96a): GENERATOR=claude [CLAUDE_MODEL=sonnet] python -m eval.generation
+  — 생성 콜만 Claude CLI로 교체(condense·검색은 운영 그대로), 결과는 generation_{mode}_claude.jsonl.
+  롱컨텍스트 비교군(#96b, 파이프라인 전체 제거)은 eval/longcontext_claude.py — 별개 축이다.
 """
 import asyncio
 import json
@@ -356,12 +359,17 @@ async def judge_faithfulness(answer: str, chunks: list[RetrievedChunk]) -> float
 CONCURRENCY = int(os.getenv("EVAL_CONCURRENCY", "40"))
 
 
-async def run_mode(session, llm, mode: str, gold_rows, resolved):
+async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None):
     """oracle / retrieved 한 모드로 생성 + 채점 → row 리스트.
 
     LLM 콜(condense·generate)은 병렬(vLLM 연속 배칭, #18), 컨텍스트 조회·채점은 직렬 —
     AsyncSession은 동시 실행 불가라 gather에 태우지 않는다.
+
+    gen_llm: 생성 단계만 다른 클라이언트로 교체 (#96 비교군 (a)). condense는 항상 llm
+    (운영 vLLM)이다 — 비교의 공정성은 "파이프라인 고정, 생성기만 교체"에서 나오므로
+    재작성까지 바꾸면 무엇의 격차인지 알 수 없게 된다. None이면 llm 그대로(기존 동작).
     """
+    gen_llm = gen_llm or llm
     gen_rows = [g for g in gold_rows if g["type"] in GEN_TYPES]
     sem = asyncio.Semaphore(CONCURRENCY)
 
@@ -401,7 +409,7 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved):
     async def _generate(g, chunks):
         standalone, prior_turns = turn_ctx[g["id"]]
         async with sem:
-            return await generate(llm, g["query"], chunks,
+            return await generate(gen_llm, g["query"], chunks,
                                   standalone_query=standalone, prior_turns=prior_turns)
 
     answers = await asyncio.gather(*(_generate(g, c) for g, c in work))
@@ -465,6 +473,20 @@ async def main():
     RESULT_DIR.mkdir(exist_ok=True)
 
     llm = LlmClient()
+    # 생성기 선택 (#96 비교군 (a)): GENERATOR=claude 면 **생성 콜만** Claude CLI로 교체.
+    # condense·검색·채점은 운영 그대로 — 무엇이 격차를 만들었는지 한 변수로 좁히기 위해서다
+    # (run_mode의 gen_llm docstring). 모델은 CLAUDE_MODEL(기본 sonnet)로 바꾼다.
+    generator = os.getenv("GENERATOR", "vllm")
+    if generator == "claude":
+        from eval.claude_client import ClaudeCliClient
+        gen_llm = ClaudeCliClient(model=os.getenv("CLAUDE_MODEL", "sonnet"))
+        gen_label = f"claude:{gen_llm.model}"
+    elif generator == "vllm":
+        gen_llm = None
+        gen_label = f"vllm:{settings.vllm_model}"
+    else:
+        raise SystemExit(f"GENERATOR={generator} — vllm|claude 만 지원")
+
     async with AsyncSessionLocal() as session:
         # 테넌트별 resolve 후 병합 (chunk_ids는 문항 id 키라 충돌 없음)
         from eval.retrieval import Resolved
@@ -484,10 +506,14 @@ async def main():
         all_rows = {}
         for mode in ("oracle", "retrieved"):
             print(f"\n=== mode: {mode} ({len(gen_gold)}문항) ===")
-            rows = await run_mode(session, llm, mode, gen_gold, resolved)
+            rows = await run_mode(session, llm, mode, gen_gold, resolved, gen_llm=gen_llm)
             if not rows:   # 채점 0 = resolve 전멸 (빈/잘못된 DB) — 재료 파일 덮어쓰기 방지 (#18 실사고 가드)
                 raise SystemExit(f"{mode}: 생성 0행 — DATABASE_URL이 코퍼스 있는 DB인지 확인. 결과 파일 미변경.")
-            out = RESULT_DIR / f"generation_{mode}.jsonl"
+            for r in rows:
+                r["generator"] = gen_label   # 어느 생성기의 수치인지 행 단위 자기서술 (#96)
+            # vllm은 기존 파일명 유지(과거 결과와 diff 편의), 비교군은 접미로 분리 — 덮어쓰기 방지
+            suffix = "" if generator == "vllm" else f"_{generator}"
+            out = RESULT_DIR / f"generation_{mode}{suffix}.jsonl"
             out.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows))
             summarize(rows)
             print(f"→ {out} ({len(rows)} rows)")

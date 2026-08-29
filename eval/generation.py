@@ -134,11 +134,35 @@ async def generate(llm: LlmClient, original_query: str, chunks: list[RetrievedCh
 
 # ===== 채점 — deterministic (서버 무관) ==============================
 
-EPCOV_SIM_THRESHOLD = 0.55   # 기대포인트 ↔ 답변문장 코사인 임계 (oracle 상한 보정으로 결정)
+EPCOV_SIM_THRESHOLD = 0.80   # 기대포인트 ↔ 답변조각 코사인 임계 (골드 450문항 실측으로 결정)
+
+# 문장 경계. 숫자 사이 마침표는 경계가 아니다 — '78.4%'·'§11.2'가 쪼개져
+# 그 사실을 담은 포인트가 영영 못 맞던 버그가 있었다.
+_SENT_SPLIT = re.compile(r"\n+|(?<!\d)[.!?]+|[.!?]+(?!\d)")
+# 절 경계. 두 가지를 일부러 뺐다 — 숫자 사이 쉼표('3,000원')와 '·'(교육·보건·식수 같은 나열).
+_CLAUSE_SPLIT = re.compile(r"(?<!\d),(?!\d)|[;—]+")
+_MIN_CLAUSE = 6              # 이보다 짧은 조각은 의미를 못 실어 임베딩이 잡음이 된다
 
 
 def _split_sentences(text: str) -> list[str]:
-    return [p.strip() for p in re.split(r"[.!?\n]+", text) if p.strip()]
+    return [p.strip() for p in _SENT_SPLIT.split(text) if p.strip()]
+
+
+def _split_segments(text: str) -> list[str]:
+    """문장 + 절. 비교 단위를 포인트 쪽에 맞춘다.
+
+    포인트 하나는 사실 하나인데 답변은 여러 사실을 쉼표로 잇는다. 문장만 쓰면
+    "A는 X이고, B는 Y입니다"에 포인트 'B는 Y'를 대조하게 되어 코사인이 0.7대로
+    깎인다(골드 450문항 실측: 0.80 미만 63쌍 → 절 추가 후 13쌍). 문장 통째도
+    후보로 남겨서 긴 포인트가 손해 보지 않게 한다.
+    """
+    out: list[str] = []
+    for s in _split_sentences(text):
+        out.append(s)
+        parts = [p.strip() for p in _CLAUSE_SPLIT.split(s) if len(p.strip()) >= _MIN_CLAUSE]
+        if len(parts) > 1:
+            out.extend(parts)
+    return out
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -149,49 +173,28 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 
 def expected_points_coverage(answer: str, points: list[str]) -> float | None:
-    """기대 포인트가 답변에 담긴 비율. 부분문자열 → 임베딩 2단 매칭.
+    """기대 포인트가 답변에 담긴 비율. 임베딩 단일 판정.
 
-    - 부분문자열: "30분"·"12개월" 같은 짧은 수치 포인트용. 임베딩 코사인은
-      짧은 포인트 ↔ 긴 문장 대조에서 임계(0.55)를 못 넘어 과소평가한다
-      (답변 길이 제약 해제 후 실측 — 정답인데 EPCov=0인 아티팩트 다수).
-    - 임베딩: 서술형 포인트("본인 인증 후 재설정 링크")용. 부분문자열은 이걸 놓친다.
-    둘 중 하나라도 걸리면 커버 — 각 방식의 사각을 상호 보완.
+    예전에는 부분문자열 판정이 1단으로 앞에 있었다. 없앤 이유: 포인트가 '2년'
+    같은 맨값이던 시절의 보정책인데, 그 조합이 **주어가 어긋난 답변을 만점으로
+    통과시켰다**("패킹 보증기간은 2년" + 포인트 '2년' → 1.00). 포인트를 전부
+    "대상+값" 서술문으로 정규화(450문항)하면서 보정 자체가 필요 없어졌고,
+    남겨두면 표기만 겹쳐도 통과하는 구멍이 그대로 남는다.
+
+    임계 0.80은 그 정규화된 골드로 실측해 정했다 — 정답 쪽 중앙 0.986,
+    5백분위 0.852. 정답인데 탈락하는 쌍은 805개 중 13개(1.6%)다.
     """
     if not points:
         return None
-    norm_answer = re.sub(r"\s+", "", answer)
-    hits = [_contains_point(norm_answer, re.sub(r"\s+", "", p)) for p in points]
-
-    remaining_idx = [i for i, h in enumerate(hits) if not h]
-    if remaining_idx:
-        sents = _split_sentences(answer)
-        if sents:
-            remaining = [points[i] for i in remaining_idx]
-            embs = embed_texts_sync(remaining + sents)
-            p_vecs = [e.dense for e in embs[:len(remaining)]]
-            s_vecs = [e.dense for e in embs[len(remaining):]]
-            for i, pv in zip(remaining_idx, p_vecs):     # index 직접 — 중복 포인트도 각자 갱신
-                if max(_cosine(pv, sv) for sv in s_vecs) >= EPCOV_SIM_THRESHOLD:
-                    hits[i] = True
-    return sum(hits) / len(points)
-
-
-def _contains_point(norm_answer: str, norm_point: str) -> bool:
-    """숫자 경계를 지키는 부분문자열 매칭 — '30분'이 '130분'/'305분'에 오탐되는 것 방지.
-    콤마는 양쪽에서 제거 — xlsx 숫자셀('38000')과 모델 표기('38,000원')의 표기 차이 흡수."""
-    norm_answer = norm_answer.replace(',', '')
-    norm_point = norm_point.replace(',', '')
-    if not norm_point:
-        return False
-    for m in re.finditer(re.escape(norm_point), norm_answer):
-        before = norm_answer[m.start() - 1] if m.start() > 0 else ''
-        after = norm_answer[m.end()] if m.end() < len(norm_answer) else ''
-        if norm_point[0].isdigit() and before.isdigit():
-            continue
-        if norm_point[-1].isdigit() and after.isdigit():
-            continue
-        return True
-    return False
+    segments = _split_segments(answer)
+    if not segments:
+        return 0.0
+    embs = embed_texts_sync(list(points) + segments)
+    p_vecs = [e.dense for e in embs[:len(points)]]
+    s_vecs = [e.dense for e in embs[len(points):]]
+    hits = sum(1 for pv in p_vecs
+               if max(_cosine(pv, sv) for sv in s_vecs) >= EPCOV_SIM_THRESHOLD)
+    return hits / len(points)
 
 
 def _citation_match(core: str, stem: str) -> bool:

@@ -85,7 +85,9 @@ def compute(smoke: int | None = None) -> dict:
                  + ([LLMContextRecall(), answer_correctness] if WITH_REF else [])),
         llm=judge,
         embeddings=emb,
-        run_config=RunConfig(max_workers=6, max_retries=10),
+        # max_workers 6→32 (8/29): 6은 클라이언트 병목이었다 — 6동시로 돌 때 vLLM 대기 큐 0·
+        # KV 캐시 18%로 서버가 놀았다(n450 3축 2시간 6분). 32로 늘린 뒤 소요 시간·NaN율 관찰할 것.
+        run_config=RunConfig(max_workers=32, max_retries=10),
     )
 
     # 퇴근 후에도 남게 파일로 저장 (per-sample + 집계).

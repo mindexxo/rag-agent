@@ -14,12 +14,12 @@ from collections import defaultdict
 from pathlib import Path
 
 from database import AsyncSessionLocal
-from eval.generation import row_tenant
+from eval.generation import HARD_TYPES, row_tenant
 from eval.retrieval import resolve_gold, score_one
 from rag.retriever import retrieve_candidates
 
 GOLD = Path(__file__).resolve().parent / 'gold_set_v2.jsonl'
-TYPES = {'single_fact', 'paraphrase', 'rare_lexical', 'multi_doc'}
+TYPES = {'single_fact', 'paraphrase', 'rare_lexical', 'multi_doc'} | HARD_TYPES
 METRICS = ['recall_at_5', 'recall_at_20', 'hit_at_1', 'mrr']
 
 
@@ -47,10 +47,14 @@ def _overall(rows) -> dict:
 
 # 검색 난이도 층화 — type을 난이도 그룹으로 묶는다 (별도 태깅 없이 type 재활용).
 # 쉬움: 직접 사실·고유용어(매칭 쉬움) / 어려움: 다문서 종합·멀티턴 맥락 의존.
+# hard_new(#95 고난도 6종)를 기존 'hard'에 섞지 않는 이유: run_all의 r5_hard 시계열
+# 구성이 조용히 바뀌면 다음 실행의 하락이 회귀인지 구성 변경인지 못 가른다
+# (citation_accuracy가 판정 변경 때마다 겪은 문제와 같은 패턴).
 DIFFICULTY = {
     'single_fact': 'easy', 'rare_lexical': 'easy',
     'paraphrase': 'medium',
     'multi_doc': 'hard', 'multi_turn': 'hard',
+    **{t: 'hard_new' for t in HARD_TYPES},
 }
 
 
@@ -72,6 +76,10 @@ async def compute(expand: bool = False) -> dict:
     멀티쿼리를 만들어 첫 줄=주 쿼리, 나머지=변형으로 검색 (A/B). 변형은 rows에 기록.
 
     반환: {'rows': [...], 'skipped': int, 'overall': {recall_at_5, ...}, 'stale': {tenant: n}}
+
+    gold_composition: 채점 대상 구성의 버전 문자열 — run_all이 version_key로 써서 구성이
+    바뀐 첫 실행을 '회귀'가 아니라 '비교 불가'로 처리한다 (#95에서 고난도 90행이 전체
+    평균에 편입되며 필요해짐 — absence_rate의 judge_prompt_version과 같은 메커니즘).
     """
     gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
     target = [g for g in gold if g['type'] in TYPES]
@@ -119,7 +127,9 @@ async def compute(expand: bool = False) -> dict:
                 rows.append(row)
 
     return {'rows': rows, 'skipped': skipped, 'overall': _overall(rows),
-            'by_difficulty': _by_difficulty(rows), 'stale': stale}
+            'by_difficulty': _by_difficulty(rows), 'stale': stale,
+            # 구성 버전 (#95) — TYPES 구성이 바뀔 때마다 갱신할 것 (docstring 참조)
+            'gold_composition': 'v2+hard95'}
 
 
 async def main() -> None:

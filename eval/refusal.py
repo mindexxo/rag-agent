@@ -35,7 +35,7 @@ from pathlib import Path
 
 from database import AsyncSessionLocal
 from eval._turn_cleanup import discard_turn
-from eval.generation import row_tenant
+from eval.generation import must_not_contain_violations, row_tenant
 from rag.conversation import ensure_conversation
 from eval.absence_judge import (JUDGE_PROMPT_VERSION, judge_absence, judge_llm,
                                 save_audit)
@@ -121,8 +121,14 @@ async def compute() -> dict:
                     # 판정 불가를 refusal_ok로 추측하지 않는다 — 지표가 실패를 숨긴다.
                     absence_error = f"{type(exc).__name__}: {exc}"
         should_refuse = g["type"] in SHOULD_REFUSE
+        # 오답단정 (#95) — trap이 "답했는가"만 재던 공백을 메운다: 낚인 값(must_not_contain)이
+        # 답변에 실렸는지. route 게이트는 부재단정과 같은 이유(OTHER는 규칙 3 밖) —
+        # 그래서 라우팅 정확도가 이 지표의 분모를 조용히 줄일 수 있다(의도된 설계).
+        misinfo = (must_not_contain_violations(answer, g.get("must_not_contain", []))
+                   if route == "knowledge" else None)
         return {"id": g["id"], "type": g["type"], "query": g["query"], "answer": answer,
                 "route": route, "refused": refused, "ok": refused == should_refuse,
+                "misinfo": misinfo,
                 "absence": absence, "absence_reason": absence_reason,
                 "absence_error": absence_error}
 
@@ -168,9 +174,18 @@ async def compute() -> dict:
         for r in rows if r["absence"] is not None or r["absence_error"] is not None
     ])
 
+    # 오답단정 (#95) — misinfo가 None이 아닌 행(=must_not_contain 보유 + knowledge 라우팅)만 분모.
+    misinfo_target = [r for r in rows if r["misinfo"] is not None]
+    misinfo_violated = [r for r in misinfo_target if r["misinfo"]]
+
     return {
         "accuracy": sum(r["ok"] for r in rows) / len(rows) if rows else 0.0,
         "n": len(rows),
+        "misinfo_rate": len(misinfo_violated) / len(misinfo_target) if misinfo_target else None,
+        "misinfo_n": len(misinfo_target),
+        "misinfo_violated_n": len(misinfo_violated),
+        "misinfo_misses": [{"id": r["id"], "query": r["query"], "violated": r["misinfo"]}
+                           for r in misinfo_violated],
         "false_answer": false_answer, "false_answer_n": len(ne),
         "false_refusal": false_refusal, "false_refusal_n": len(tr),
         "by_type": {k: v for k, v in by_type.items()},
@@ -214,6 +229,12 @@ async def main() -> None:
         flag = " [flaky]" if m["flaky"] else ""
         print(f"  [{m['type']}]{flag} {m['query'][:44]!r} — {(m['reason'] or '')[:60]}")
     print(f"  감사 로그: {r['absence_audit']}")
+
+    if r["misinfo_n"]:
+        print(f"\n[오답단정 (#95)]  must_not_contain 보유·knowledge 라우팅 {r['misinfo_n']}건 중 "
+              f"{r['misinfo_violated_n']}건 = {r['misinfo_rate']:.1%}  ← 낚인 값이 답변에 실림")
+        for m in r["misinfo_misses"][:20]:
+            print(f"  {m['query'][:44]!r} — 검출: {m['violated']}")
 
     if r["misses"]:
         print("\n[오판정]")

@@ -69,6 +69,8 @@ ROWS = [
     Row("retrieval", "r5_easy", "검색  R@5(쉬움)"),
     Row("retrieval", "r5_medium", "검색  R@5(중간)"),
     Row("retrieval", "r5_hard", "검색  R@5(어려움)"),
+    # 고난도 신설 6종 (#95) — 기존 'hard'에 안 섞는 이유는 retrieval_v2.DIFFICULTY 주석.
+    Row("retrieval", "r5_hard_new", "검색  R@5(고난도-신규)"),
     Row("retrieval", "recall_at_20", "검색  R@20"),
     Row("retrieval", "hit_at_1", "검색  Hit@1"),
     Row("retrieval", "mrr", "검색  MRR"),
@@ -81,6 +83,11 @@ ROWS = [
     # 0.04 = 2건 이상 차이일 때만 반응한다. 1건 차이는 감사 로그(문항별 판정)로 본다.
     Row("refusal", "absence_rate", "거절  부재단정률", higher_better=False,
         version_key="judge_prompt_version", eps=0.04),
+    # 오답단정률 (#95) — trap에서 낚인 값(must_not_contain)이 답변에 실린 비율. 낮을수록 좋다.
+    # 순수 문자열 매칭이라 judge 버전 개념이 없다 — 매칭 규칙을 바꾸면 그 커밋에서
+    # citation_accuracy 전례대로 "vN 이전과 비교 불가" 주석을 여기 남길 것.
+    # eps=0.04: absence_rate와 같은 이유 — 분모 50 내외라 1건이 2%다.
+    Row("refusal", "misinfo_rate", "거절  오답단정률(trap)", higher_better=False, eps=0.04),
 ]
 REGRESSION_EPS = 0.01   # 이보다 크게 떨어지면 회귀 경고
 
@@ -222,7 +229,8 @@ async def _run_async(name: str):
         # (None으로 넣으면 '측정 실패'로 오인돼 가짜 회귀가 뜸).
         d = r["by_difficulty"]
         out = dict(r["overall"])
-        for grp, key in (("easy", "r5_easy"), ("medium", "r5_medium"), ("hard", "r5_hard")):
+        for grp, key in (("easy", "r5_easy"), ("medium", "r5_medium"), ("hard", "r5_hard"),
+                         ("hard_new", "r5_hard_new")):
             if grp in d:
                 out[key] = d[grp]
         return out
@@ -247,7 +255,11 @@ async def _run_async(name: str):
                 "absence_assertion_n": r["absence_assertion_n"],
                 "absence_judge_errors": r["absence_judge_errors"],
                 "absence_flaky": r["absence_flaky"],
-                "judge_prompt_version": r["judge_prompt_version"]}
+                "judge_prompt_version": r["judge_prompt_version"],
+                # 오답단정 축 (#95) — 분모·분자 동반 (absence와 같은 이유)
+                "misinfo_rate": r["misinfo_rate"],
+                "misinfo_n": r["misinfo_n"],
+                "misinfo_violated_n": r["misinfo_violated_n"]}
     if name == "cache":
         from eval.cache_eval import compute
         r = await compute()

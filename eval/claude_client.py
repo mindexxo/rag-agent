@@ -8,7 +8,7 @@ OpenAI 호환 API가 아니라 `claude -p`(헤드리스 CLI)를 서브프로세�
 LlmClient(rag/llm.py)와 acomplete 시그니처를 맞춰 eval/generation.py에 주입한다.
 다른 점 — 전부 결과 각주에 명시할 것:
 - extra_body(출처 꼬리 structural_tag 제약)를 **받되 무시한다**. CLI에 그 배관이 없다.
-  꼬리는 프롬프트 서술(rag/prompt_texts.py의 TAIL_EXAMPLE 규칙)만으로 유도되고, 채점기는
+  꼬리는 프롬프트 서술(rag/prompt_texts.py의 TAIL_EXAMPLE_MULTI 규칙)만으로 유도되고, 채점기는
   꼬리 부재를 인용 0으로 세므로 미준수는 수치에 정직하게 반영된다.
 - astream 없음 — eval generate()는 acomplete만 쓴다. 필요해지면 그때 추가.
 - temperature·max_tokens 통제 불가(CLI 미노출).

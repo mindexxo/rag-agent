@@ -210,24 +210,54 @@ def expected_points_hits(answer: str, points: list[str]) -> list[bool]:
     hits = [_contains_point(norm_answer, re.sub(r"\s+", "", p)) for p in points]
 
     remaining_idx = [i for i, h in enumerate(hits) if not h]
-    if remaining_idx:
+    # 금액 게이트 (#119): 포인트에 "원(₩) 단위 금액"이 있으면 그 값이 답변에 실재할 때만
+    # 임베딩 폴백을 허용한다. 임베딩은 "값"이 아니라 "주제 유사도"로 판정해서, 값이 없는데도
+    # 같은 주제 세그먼트로 통과하는 위양성이 있었다. 두 갈래 모두 실측으로 잡았다:
+    #   ① 답변이 금액을 누락(미완결 계산·두루뭉술) — summers_ca001: 정답의 '12,000원'은
+    #      세그먼트 코사인 미달로 놓치고, 값이 빠진 미완결 답변은 '적립금' 단어 유사도로 통과해
+    #      정답<오답 역전.
+    #   ② 답변이 틀린 금액을 진술 — goodpeople_cf001: 정답 40만원인데 답변 50만원을,
+    #      임베딩이 '연간 매칭 한도' 주제 유사도로 통과시킴.
+    # 게이트 대상을 "원 단위 숫자"로 한정하는 이유: 개수·월·퍼센트는 답변에서 한글 수사로
+    # 나오거나('두 개'), ISO 날짜는 0-패딩('04' vs '4월')이라 전량 매칭을 걸면 위음성이
+    # 쏟아진다(실측: harim_pp016·summers_tm002). '원'을 앵커로 삼으면 무게(1000g)·연도(2026)도
+    # 자연히 빠지고 진짜 금액 누락만 겨냥한다(harim_md006의 1000g 오인 방지).
+    norm_answer_num = _normalize_number_notation(norm_answer)
+    def _amount_ok(idx: int) -> bool:
+        # '만원'→'0000원' 정규화 후 원 앞 숫자만 추출 (콤마는 정규화가 이미 제거)
+        amts = re.findall(r"(\d+)원", _normalize_number_notation(points[idx]))
+        return all(a in norm_answer_num for a in amts)   # 금액 없으면 all([])=True → 폴백 허용
+    gated_idx = [i for i in remaining_idx if _amount_ok(i)]
+    if gated_idx:
         segments = _split_segments(answer)
         if segments:
-            remaining = [points[i] for i in remaining_idx]
+            remaining = [points[i] for i in gated_idx]
             embs = embed_texts_sync(remaining + segments)
             p_vecs = [e.dense for e in embs[:len(remaining)]]
             s_vecs = [e.dense for e in embs[len(remaining):]]
-            for i, pv in zip(remaining_idx, p_vecs):     # index 직접 — 중복 포인트도 각자 갱신
+            for i, pv in zip(gated_idx, p_vecs):     # index 직접 — 중복 포인트도 각자 갱신
                 if max(_cosine(pv, sv) for sv in s_vecs) >= EPCOV_SIM_THRESHOLD:
                     hits[i] = True
     return hits
 
 
+# 'N만원'/'N만' → 'N0000' (예: '3만원'→'30000', '18.9만'→'189000'). 콤마 제거와 같은 계층의
+# 표기 정규화다 — 고난도 전수검증(#119)에서 정답 "3만원"이 기대 "30,000원"과 안 맞아 감점되던
+# false fail의 최다 원인. 소수도 처리('2.5만'→'25000'). '만' 뒤에 원/숫자가 붙는 경우만 잡아
+# '만족'·'십만 건' 같은 비금액 '만'은 건드리지 않는다(뒤가 원 또는 문자열 끝/비숫자일 때만).
+_MAN_RE = re.compile(r'(\d+(?:\.\d+)?)만(?=원|$|[^\d가-힣])')
+
+
+def _normalize_number_notation(s: str) -> str:
+    s = s.replace(',', '')
+    return _MAN_RE.sub(lambda m: str(int(float(m.group(1)) * 10000)), s)
+
+
 def _contains_point(norm_answer: str, norm_point: str) -> bool:
     """숫자 경계를 지키는 부분문자열 매칭 — '30분'이 '130분'/'305분'에 오탐되는 것 방지.
-    콤마는 양쪽에서 제거 — xlsx 숫자셀('38000')과 모델 표기('38,000원')의 표기 차이 흡수."""
-    norm_answer = norm_answer.replace(',', '')
-    norm_point = norm_point.replace(',', '')
+    콤마·만원 표기를 양쪽에서 정규화 — '38,000원'·'3만원'과 xlsx 숫자셀('38000'·'30000')의 표기 차이 흡수 (#119)."""
+    norm_answer = _normalize_number_notation(norm_answer)
+    norm_point = _normalize_number_notation(norm_point)
     if not norm_point:
         return False
     for m in re.finditer(re.escape(norm_point), norm_answer):

@@ -13,9 +13,15 @@ metric (reference 불필요 3축 — context_recall류는 완성형 정답문이
 - answer_relevancy   : 답변이 질문에 맞는가 (동문서답)
 - context_precision  : top5 각 청크가 답변에 유용했는가 — Hit@1이 못 보는 '비-gold 청크 노이즈' 축
 
+- claude: Claude(claude -p 헤드리스) 교차채점 (#103) — 자기채점 다변화, API 키·과금 없음.
+  콜=서브프로세스라 느림(전체 450 ≈ 19~38시간) → 스모크 규모로만. judge 다르면 절대값 비교 불가.
+  주의: 스모크 표본이 앞쪽 쉬운 문항(단일 사실)만이면 어느 judge든 만점이라 무의미하다 —
+  judge 견해차를 보려면 약점 축(paraphrase·multi_doc)이 표본에 들도록 골라야 한다(리뷰 발견).
+
 실행: python -m eval.ragas_eval                        # 사내 vLLM judge, SMOKE=3
       SMOKE=0 python -m eval.ragas_eval                # 사내 vLLM judge, 전체
       RAGAS_JUDGE=openai python -m eval.ragas_eval     # 외부 judge (rate limit 주의)
+      RAGAS_JUDGE=claude SMOKE=10 python -m eval.ragas_eval   # Claude 교차채점 스모크 (#103)
       (vllm judge의 실제 대상 = .env의 VLLM_BASE_URL — 현재 worker15:18888)
 """
 import os
@@ -63,6 +69,7 @@ def compute(smoke: int | None = None) -> dict:
     if n_smoke:
         ds = ds[:n_smoke]
 
+    max_workers = 32
     if JUDGE == "vllm":
         from config import settings
         judge = LangchainLLMWrapper(ChatOpenAI(
@@ -72,6 +79,15 @@ def compute(smoke: int | None = None) -> dict:
             temperature=0.2,                     # 채점 일관성 (운영 생성과 동일값, greedy 금지 — Qwen3 모델 카드)
             timeout=300,
         ))
+    elif JUDGE == "claude":
+        # Claude 교차채점 (#103) — claude -p 헤드리스를 langchain 어댑터로 감싼다.
+        # 콜=서브프로세스라 vLLM 연속배칭이 없다 → max_workers를 4로 낮춘다(longcontext_claude
+        # 선례와 동일 근거). 전체 450은 19~38시간 추정이라 스모크 규모(SMOKE=10 내외)로만 쓴다.
+        from eval.claude_client import ClaudeCliClient
+        from eval.claude_langchain import ClaudeCliChatModel
+        judge = LangchainLLMWrapper(
+            ClaudeCliChatModel(client=ClaudeCliClient(model=os.getenv("CLAUDE_MODEL", "sonnet"))))
+        max_workers = 4
     else:
         judge = LangchainLLMWrapper(
             ChatOpenAI(model=OPENAI_JUDGE_MODEL),
@@ -86,8 +102,8 @@ def compute(smoke: int | None = None) -> dict:
         llm=judge,
         embeddings=emb,
         # max_workers 6→32 (8/29): 6은 클라이언트 병목이었다 — 6동시로 돌 때 vLLM 대기 큐 0·
-        # KV 캐시 18%로 서버가 놀았다(n450 3축 2시간 6분). 32로 늘린 뒤 소요 시간·NaN율 관찰할 것.
-        run_config=RunConfig(max_workers=32, max_retries=10),
+        # KV 캐시 18%로 서버가 놀았다(n450 3축 2시간 6분). claude judge는 4로 낮춤(#103, 위).
+        run_config=RunConfig(max_workers=max_workers, max_retries=10),
     )
 
     # 퇴근 후에도 남게 파일로 저장 (per-sample + 집계).

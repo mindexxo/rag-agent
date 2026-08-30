@@ -119,12 +119,22 @@ def _build_messages(query: str, answer: str) -> list[dict]:
 
 
 def judge_llm() -> LlmClient:
-    """판정용 클라이언트. 기본은 생성과 같은 사내 vLLM(self-judge) —
-    ABSENCE_JUDGE=openai면 외부 judge로 스팟체크한다(eval/ragas_eval.py와 같은 관례)."""
-    if os.getenv("ABSENCE_JUDGE", "vllm") == "openai":
+    """판정용 클라이언트. 기본은 생성과 같은 사내 vLLM(self-judge).
+
+    ABSENCE_JUDGE=claude면 Claude(claude -p 헤드리스)로 교차채점한다(#103) — 자기채점
+    편향을 다른 모델로 다변화한다. ClaudeCliClient는 acomplete 시그니처가 LlmClient와
+    같아(덕 타이핑) 그대로 주입되고, acomplete_validated의 JSON 파싱·실패 폴백이 동일하게
+    작동한다(스키마 강제 extra_body만 무시됨 — JSON은 프롬프트 지시로 유도). 판정자가
+    다르면 절대값 비교 불가(회귀 감시는 judge 통일 필요) — 교차검증 병기용이다.
+    반환 타입 힌트는 LlmClient지만 실제 계약은 acomplete(messages, extra_body) → str 덕 타이핑."""
+    judge = os.getenv("ABSENCE_JUDGE", "vllm")
+    if judge == "claude":
+        from eval.claude_client import ClaudeCliClient
+        return ClaudeCliClient(model=os.getenv("CLAUDE_MODEL", "sonnet"))
+    if judge == "openai":
         raise NotImplementedError(
-            "외부 judge 경로는 미구현이다 — eval/ragas_eval.py의 OpenAI 배관을 참고해 붙일 것. "
-            "지금 필요한 건 회귀 감시(상대 비교)라 self-judge로 충분하다는 판단이다(#76)."
+            "외부 judge(openai) 경로는 미구현이다 — eval/ragas_eval.py의 OpenAI 배관 참고. "
+            "Claude 교차채점은 ABSENCE_JUDGE=claude로 지원(#103)."
         )
     return LlmClient()
 

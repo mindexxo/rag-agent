@@ -7,25 +7,27 @@ Claude judge도 LLM이라 순환을 "끊는" 게 아니라 "다변화" — 최�
 **부재단정 축**만 다룬다(저렴 — 인용 0건 답변 ~50건). RAGAS 축 교차검증은 전체가 19~38시간
 이라 스모크 규모로만 별도 실행(ragas_eval.py RAGAS_JUDGE=claude), 여기서 안 묶는다.
 
-입력 두 경로:
-- --audit <파일>: 기존 refusal 실행이 남긴 absence_judge_*.jsonl을 재활용 —
-  그 안의 answer에 **Claude judge만** 새로 적용(vLLM 판정은 파일의 absence 컬럼). GPU 불필요.
-- (--audit 없음): refusal.compute()를 즉석 실행해 answer+vLLM판정을 얻고 Claude를 적용.
-  생성·vLLM judge를 새로 태우므로 GPU 필요.
+**입력은 audit 재활용 한 경로뿐이다.** 기존 refusal 실행이 남긴 absence_judge_*.jsonl의
+answer에 **Claude judge만** 새로 적용하고, vLLM 판정은 파일의 absence 컬럼을 쓴다. 같은
+answer에 두 judge를 적용하는 게 순수 비교의 핵심 — 생성을 두 번 하면 비결정성이 섞여
+judge 비교가 오염된다(그래서 refusal 즉석 실행 경로는 없앴다: absence_misses가 answer를
+보존하지 않아 무의미했다, 리뷰 발견). GPU 불필요(Claude 좌석만).
 
-같은 answer에 두 judge를 적용하는 게 핵심 — 생성을 두 번 하면 비결정성이 섞여 순수한
-judge 비교가 안 된다. 그래서 audit 재활용(같은 answer 고정)이 정석이다.
+**judge 비결정성**: Claude도 LLM이라 1회 판정은 흔들릴 수 있다(absence_judge selftest가
+그 흔들림을 실측). 그래서 불일치로 판정된 건만 Claude 재판정 1회를 더 해 flaky를 표시한다
+(refusal.compute의 assertion 재판정 패턴과 같은 근거) — 불일치가 견해차인지 그 순간의
+flaky인지 결과에 남긴다.
 
 실행: python -m eval.judge_crosscheck --audit eval/results/absence_judge_XXXX.jsonl
 """
 import argparse
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 
 from eval.absence_judge import judge_absence
 from eval.claude_client import ClaudeCliClient
-from rag.llm_schemas import LlmJudgmentFailed
 
 CONCURRENCY = 4   # claude -p 콜=서브프로세스 (longcontext_claude 선례)
 RESULT_DIR = Path(__file__).resolve().parent / "results"
@@ -33,42 +35,45 @@ RESULT_DIR = Path(__file__).resolve().parent / "results"
 
 async def _claude_label(claude: ClaudeCliClient, sem: asyncio.Semaphore,
                         query: str, answer: str) -> tuple[bool | None, str | None]:
-    """Claude judge 판정 → (부재단정 여부, 사유). 판정 불가는 (None, error)."""
+    """Claude judge 판정 → (부재단정 여부, 사유). 어떤 실패든 (None, error)로 흡수한다.
+
+    LlmJudgmentFailed(JSON 파싱 실패)뿐 아니라 RuntimeError(타임아웃·좌석 한도, claude_client가
+    시끄럽게 던짐)도 잡는다 — 좁게 잡으면 다건 중 1건 실패가 gather를 뚫어 이미 계산된
+    나머지 결과가 통째로 유실된다(리뷰 발견). refusal._one·absence.selftest와 같은 넓은 캐치.
+    """
     async with sem:
         try:
             v = await judge_absence(claude, query, answer)
             return v.label == "absence_assertion", v.reason
-        except LlmJudgmentFailed as exc:
-            return None, f"판정 불가: {exc}"
+        except Exception as exc:
+            return None, f"판정 불가: {type(exc).__name__}: {exc}"
 
 
-async def _rows_from_audit(path: Path) -> list[dict]:
-    """기존 audit 재활용 — answer는 그대로, vLLM 판정은 absence 컬럼."""
+def _load_audit(path: Path) -> list[dict]:
+    """audit 재활용 — answer는 그대로, vLLM 판정은 absence 컬럼, judge 버전 보존.
+
+    여러 버전이 섞인 파일이면 불일치가 judge 차이인지 프롬프트 버전 차이인지 구분 불가라
+    중단한다(리뷰 발견 — 지금은 전부 v1이지만 재사용 시 조용히 오염될 구조였다).
+    """
     rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
-    return [{"id": r["id"], "query": r["query"], "answer": r["answer"],
-             "vllm": r.get("absence")} for r in rows if r.get("answer")]
-
-
-async def _rows_from_refusal() -> list[dict]:
-    """audit이 없으면 refusal을 즉석 실행 — 인용 0건 답변에 대한 vLLM 판정을 얻는다 (GPU 필요)."""
-    from eval.refusal import compute
-    r = await compute()
-    # compute()가 부재단정 판정한 행(absence is not None)만 교차검증 대상
-    return [{"id": m["id"], "query": m["query"], "answer": m["query"],  # audit 없으면 answer 미보존
-             "vllm": None} for m in r.get("absence_misses", [])]
+    kept = [{"id": r["id"], "query": r["query"], "answer": r["answer"],
+             "vllm": r.get("absence"), "vllm_judge_version": r.get("judge_prompt_version")}
+            for r in rows if r.get("answer")]
+    versions = {r["vllm_judge_version"] for r in kept}
+    if len(versions) > 1:
+        raise SystemExit(f"audit에 judge 버전이 섞여 있다 {versions} — 버전별로 분리해 실행할 것.")
+    return kept
 
 
 async def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--audit", help="기존 absence_judge_*.jsonl (재활용, GPU 불필요)")
+    ap.add_argument("--audit", required=True,
+                    help="기존 absence_judge_*.jsonl (answer 보존분 재활용, GPU 불필요)")
     args = ap.parse_args()
 
-    if args.audit:
-        rows = await _rows_from_audit(Path(args.audit))
-        print(f"[교차검증] audit 재활용 {len(rows)}건 — Claude judge만 적용 (vLLM 판정은 파일값)")
-    else:
-        rows = await _rows_from_refusal()
-        print(f"[교차검증] refusal 즉석 실행 {len(rows)}건")
+    rows = _load_audit(Path(args.audit))
+    ver = rows[0]["vllm_judge_version"] if rows else None
+    print(f"[교차검증] audit 재활용 {len(rows)}건 — Claude judge 적용 (vLLM 판정 버전 {ver})")
 
     claude = ClaudeCliClient()
     sem = asyncio.Semaphore(CONCURRENCY)
@@ -80,22 +85,28 @@ async def main() -> None:
         v = r["vllm"]
         if claude_label is None:
             failed += 1
-            row = {**r, "claude": None, "claude_reason": reason, "match": None}
+            compared.append({**r, "claude": None, "claude_reason": reason, "match": None})
         elif v is None:
-            row = {**r, "claude": claude_label, "claude_reason": reason, "match": None}
+            compared.append({**r, "claude": claude_label, "claude_reason": reason, "match": None})
         else:
             match = (v == claude_label)
             agree += match
             disagree += not match
-            row = {**r, "claude": claude_label, "claude_reason": reason, "match": match}
-        compared.append(row)
+            compared.append({**r, "claude": claude_label, "claude_reason": reason, "match": match})
+
+    # 불일치 건만 Claude 재판정 1회 — 견해차 vs flaky 구분 (비용 미미, 불일치 수만큼)
+    for r in compared:
+        if r["match"] is False:
+            again, _ = await _claude_label(claude, sem, r["query"], r["answer"])
+            r["claude_flaky"] = (again != r["claude"])   # 재판정에서 뒤집히면 flaky
 
     RESULT_DIR.mkdir(exist_ok=True)
-    out = RESULT_DIR / "judge_crosscheck.jsonl"
+    stamp = datetime.now().strftime("%Y%m%d_%H%M")   # 고정 이름 덮어쓰기 사고 방지 (save_audit 관례)
+    out = RESULT_DIR / f"judge_crosscheck_{stamp}_n{len(compared)}.jsonl"
     out.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in compared) + "\n")
 
     total = agree + disagree
-    print(f"\n부재단정 축 — vLLM↔Claude 판정")
+    print(f"\n부재단정 축 — vLLM(judge {ver}) ↔ Claude 판정")
     if total:
         print(f"  일치 {agree}/{total} = {agree/total:.1%} · 불일치 {disagree} = {disagree/total:.1%}")
     print(f"  Claude 판정 불가 {failed}건")
@@ -103,8 +114,9 @@ async def main() -> None:
         print(f"\n[불일치 — 사람이 원문을 읽어 어느 쪽이 맞는지 확인할 것]")
         for r in compared:
             if r["match"] is False:
+                flaky = " [flaky — 재판정에서 뒤집힘]" if r.get("claude_flaky") else ""
                 print(f"  {r['id']}: vLLM={'단정' if r['vllm'] else '정상'} / "
-                      f"Claude={'단정' if r['claude'] else '정상'}")
+                      f"Claude={'단정' if r['claude'] else '정상'}{flaky}")
                 print(f"    Q: {r['query'][:50]}")
                 print(f"    A: {r['answer'][:90]!r}")
                 print(f"    Claude 사유: {(r['claude_reason'] or '')[:80]}")

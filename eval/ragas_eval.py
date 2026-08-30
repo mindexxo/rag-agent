@@ -15,6 +15,8 @@ metric (reference 불필요 3축 — context_recall류는 완성형 정답문이
 
 - claude: Claude(claude -p 헤드리스) 교차채점 (#103) — 자기채점 다변화, API 키·과금 없음.
   콜=서브프로세스라 느림(전체 450 ≈ 19~38시간) → 스모크 규모로만. judge 다르면 절대값 비교 불가.
+  주의: 스모크 표본이 앞쪽 쉬운 문항(단일 사실)만이면 어느 judge든 만점이라 무의미하다 —
+  judge 견해차를 보려면 약점 축(paraphrase·multi_doc)이 표본에 들도록 골라야 한다(리뷰 발견).
 
 실행: python -m eval.ragas_eval                        # 사내 vLLM judge, SMOKE=3
       SMOKE=0 python -m eval.ragas_eval                # 사내 vLLM judge, 전체

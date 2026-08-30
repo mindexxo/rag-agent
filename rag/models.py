@@ -226,6 +226,6 @@ class TenantQuota(Base):
     __tablename__ = "tenant_quotas"
 
     tenant_id: Mapped[str] = mapped_column(primary_key=True)                                # 테넌트당 row 1개
-    concurrency_limit: Mapped[int] = mapped_column(default=10, server_default="10")         # 동시 in-flight (테넌트) — config 기본값과 동일하게 유지
-    user_concurrency: Mapped[int] = mapped_column(default=10, server_default="10")          # 동시 in-flight (사용자) — config 기본값과 동일하게 유지
+    concurrency_limit: Mapped[int] = mapped_column(default=5, server_default="5")           # 동시 in-flight (테넌트) — config 기본값과 동일하게 유지 (#101 하향)
+    user_concurrency: Mapped[int] = mapped_column(default=1, server_default="1")            # 동시 in-flight (사용자) — config 기본값과 동일하게 유지 (#101 하향)
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())                 # 갱신 시각

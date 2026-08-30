@@ -39,8 +39,14 @@ class Settings(BaseSettings):
 
     # 동시 in-flight 제한 (F6). GPU/모델 미정이라 env로 튜닝. tenant_quotas 행이 있으면 그게 우선.
     # 이 두 값은 tenant_quotas의 DDL 기본값과 같게 유지할 것 — 행 유무로 상한이 달라지면 안 된다(#24).
-    concurrency_limit_default: int = 10   # 테넌트 동시 in-flight 기본 (quota 행 없을 때)
-    user_concurrency_default: int = 10    # 사용자(X-User-Id)별 동시 in-flight 기본
+    # 부하 실측(#101): 인프라 붕괴점이 동시 ~32(완료 p95가 12초→63초로 폭증)이고 안전선은 24.
+    # 그런데 테넌트가 23개라 테넌트당 10이면 이론상 동시 230까지 앱이 허용해 전역 상한이 없다 —
+    # 한정된 GPU(14B 단일)에 맞춰 테넌트 상한을 조인다. 전역 동시 상한은 최종 스펙 확정 시 별도.
+    concurrency_limit_default: int = 5    # 테넌트 동시 in-flight 기본 (quota 행 없을 때)
+    # 1 = 멀티창으로 동시 두 질문 차단. 상담 보조 도구라 한 사람이 병렬 질의할 이유가 없고,
+    # 자원이 한정적이라 열어줄 여유가 없다. **X-User-Id 헤더가 있을 때만 적용**된다(limiter
+    # docstring) — FE가 헤더를 안 보내면 테넌트 상한만 걸리므로, 이 값이 실효하려면 FE 전송 필요.
+    user_concurrency_default: int = 1     # 사용자(X-User-Id)별 동시 in-flight 기본
     inflight_max_seconds: int = 120       # in-flight 유령 판정 — 넘으면 카운트서 제거(강제종료 아님)
     sse_ping_interval_seconds: int = 15   # SSE 유휴 ping 주기 — 프록시 idle 종료 대비 (#56, 생성 경로만)
     # 재접속용 Redis Stream (#75). TTL은 종료 후 재접속 유예 — 레이스(이력 조회와 구독 사이에

@@ -225,8 +225,8 @@ CREATE INDEX IF NOT EXISTS idx_msg_content_trgm
 -- 기본값은 config(CONCURRENCY_LIMIT_DEFAULT·USER_CONCURRENCY_DEFAULT)와 같은 값으로 유지할 것.
 CREATE TABLE IF NOT EXISTS tenant_quotas (
     tenant_id           TEXT        PRIMARY KEY,
-    concurrency_limit   INTEGER     NOT NULL DEFAULT 10,   -- 동시 in-flight (테넌트 합산)
-    user_concurrency    INTEGER     NOT NULL DEFAULT 10,   -- 동시 in-flight (사용자별)
+    concurrency_limit   INTEGER     NOT NULL DEFAULT 5,    -- 동시 in-flight (테넌트 합산) — #101 하향
+    user_concurrency    INTEGER     NOT NULL DEFAULT 1,    -- 동시 in-flight (사용자별) — #101 하향
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 -- 기존 DB 반영(#24): 미사용 컬럼 제거 + 기본값 정합. 정의만 있고 코드가 읽지 않던 컬럼들 —
@@ -241,3 +241,9 @@ CREATE TABLE IF NOT EXISTS tenant_quotas (
 -- ALTER TABLE tenant_quotas DROP COLUMN IF EXISTS block_reason;
 -- ALTER TABLE tenant_quotas ALTER COLUMN concurrency_limit SET DEFAULT 10;   -- 8 → 10
 -- ALTER TABLE tenant_quotas ALTER COLUMN user_concurrency  SET DEFAULT 10;   -- 3 → 10
+-- 기존 DB 반영(#101, 부하 실측 후 하향): 기본값 정합 + 이미 기본값으로 박힌 quota 행 갱신.
+-- 커스텀 값을 넣어둔 테넌트가 있으면 덮지 않도록 옛 기본값(10)인 행만 조인다.
+-- ALTER TABLE tenant_quotas ALTER COLUMN concurrency_limit SET DEFAULT 5;    -- 10 → 5
+-- ALTER TABLE tenant_quotas ALTER COLUMN user_concurrency  SET DEFAULT 1;    -- 10 → 1
+-- UPDATE tenant_quotas SET concurrency_limit = 5 WHERE concurrency_limit = 10;
+-- UPDATE tenant_quotas SET user_concurrency  = 1 WHERE user_concurrency  = 10;

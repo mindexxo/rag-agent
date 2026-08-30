@@ -23,6 +23,7 @@ LlmClient(rag/llm.py)와 acomplete 시그니처를 맞춰 eval/generation.py에 
 스모크: python -m eval.claude_client   (LLM 서버·DB 불필요, claude CLI 로그인만 필요)
 """
 import asyncio
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -38,6 +39,12 @@ class ClaudeCliClient:
         self.model = model
         # 프로젝트 컨텍스트 오염 방지용 중립 cwd — 클라이언트 수명 동안 유지
         self._workdir = tempfile.mkdtemp(prefix="claude-eval-")
+        # claude 실행 파일을 절대경로로 고정한다 — 백그라운드/cron 셸은 로그인 PATH를
+        # 상속 못 해 'claude'를 못 찾는다(실측: 대량 런이 FileNotFoundError로 통째 실패).
+        # 여기서 한 번 해석해두면 서브프로세스가 PATH에 의존하지 않는다.
+        self._exe = shutil.which("claude")
+        if not self._exe:
+            raise RuntimeError("claude 실행 파일을 PATH에서 찾지 못함 — claude-code 설치·로그인 확인")
 
     async def acomplete(self, messages: list[dict], extra_body: dict | None = None) -> str:
         """비스트리밍 1콜. extra_body는 시그니처 호환용 — 무시한다 (모듈 docstring)."""
@@ -46,7 +53,7 @@ class ClaudeCliClient:
         # assistant 턴이 섞인 형태가 오면 순서대로 이어붙인다 — 정보 소실보다 낫다.
         prompt = "\n\n".join(m["content"] for m in messages if m["role"] != "system")
 
-        cmd = ["claude", "-p", "--model", self.model, "--tools", "",
+        cmd = [self._exe, "-p", "--model", self.model, "--tools", "",
                "--output-format", "text"]
         if system:
             cmd += ["--system-prompt", system]

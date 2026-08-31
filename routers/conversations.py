@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/kms')
 
-MAX_CONVERSATIONS = 10   # 페이지 크기 상한 (#10부터 offset 페이지네이션의 limit 상한 의미)
+MAX_CONVERSATIONS = 50   # 페이지 크기 상한 (#10부터 offset 페이지네이션의 limit 상한 의미)
 
 async def _get_owned_conversation(
         session: AsyncSession, conversation_id: int, tenant_id: str, user_id: str | None,

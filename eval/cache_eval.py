@@ -26,9 +26,12 @@ q1·q2 임베딩은 여기서 한 번씩 만들어 save_answer/get_semantic에 �
 기록하기 위함. TEI는 호출마다 비결정적(실측 1.4e-4)이라 운영 경로의 판정과 등가다.
 
 실행: python -m eval.cache_eval
+판정기 포함: CACHE_EVAL_VERIFIER=1 python -m eval.cache_eval — 임계 아래 대역을 LLM
+판정기(#113)까지 태운다. **vLLM 의존이 추가**되므로 기본은 끔(run_all --cache 의존 불변).
 """
 import asyncio
 import json
+import os
 from collections import defaultdict
 from pathlib import Path
 
@@ -67,20 +70,25 @@ async def _clear(session) -> None:
     await session.commit()
 
 
-def _failed_guard(similarity: float, docset_equal: bool, guard_reason: str | None) -> str | None:
+def _failed_guard(similarity: float, docset_equal: bool, guard_reason: str | None,
+                  verifier_on: bool) -> str | None:
     """미스일 때 어느 가드가 막았는가 — 오판정 분해용. 히트면 None.
 
-    판정 순서는 운영(get_semantic)과 동일: threshold → docset → 기계 가드(#113).
+    판정 순서는 운영(get_semantic)과 동일: threshold → docset → 기계 가드 → 판정기(#113).
+    verifier_on이면 [floor, threshold) 대역은 threshold가 아니라 'verifier'로 귀속된다 —
+    그 대역의 미스는 임계가 아니라 LLM 판정이 만든 결과이기 때문이다.
     """
     below = similarity < settings.semantic_cache_threshold
-    if below and not docset_equal:
-        return "both"
-    if below:
-        return "threshold"
+    in_band = (verifier_on and settings.semantic_cache_verifier
+               and similarity >= settings.semantic_cache_verifier_floor)
+    if below and not in_band:
+        return "both" if not docset_equal else "threshold"
     if not docset_equal:
         return "docset"
     if guard_reason:
         return f"guard:{guard_reason}"
+    if below:
+        return "verifier"
     return None
 
 
@@ -93,6 +101,10 @@ async def compute() -> dict:
     """
     pairs = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
     rows = []
+    llm = None
+    if os.environ.get("CACHE_EVAL_VERIFIER") == "1":
+        from rag.clients import shared_llm
+        llm = shared_llm
 
     async with AsyncSessionLocal() as session:
         await _clear(session)
@@ -109,12 +121,13 @@ async def compute() -> dict:
             # 2. q2로 조회 — 히트하나?
             ids2 = await _docids(session, p["tenant"], p["q2"])
             hit = await cache.get_semantic(session, EVAL_TENANT, p["q2"], ids2,
-                                           query_embedding=v2) is not None
+                                           query_embedding=v2, llm=llm) is not None
             await _clear(session)     # 다음 쌍 오염 방지
             rows.append({**p, "hit": hit, "ok": hit == p["should_hit"],
                          "similarity": round(similarity, 4),
                          "failed_guard": _failed_guard(similarity, set(ids1) == set(ids2),
-                                                       cache.guard_blocks(p["q1"], p["q2"]))})
+                                                       cache.guard_blocks(p["q1"], p["q2"]),
+                                                       verifier_on=llm is not None)})
 
     by_kind = defaultdict(lambda: [0, 0])
     for r in rows:

@@ -8,6 +8,8 @@
 from rag.citation_labels import (TAIL_END, TAIL_START, attachment_display,
                                  source_display, sources_from_chunks)
 from rag.prompt_texts import (
+    CACHE_REUSE_JUDGE_SYSTEM,
+    CACHE_REUSE_JUDGE_USER_TEMPLATE,
     DEFAULT_DOMAIN_HINT,
     PRIOR_TURNS_LABEL,
     STANDALONE_QUERY_LABEL,
@@ -218,6 +220,16 @@ def build_knowledge_generation_prompt(
         build_user_message(original_query, chunks, prior_turns=prior_turns,
                            attachments=attachments, standalone_query=standalone_query),
     )
+
+
+def build_cache_reuse_judge_messages(cached_query: str, new_query: str) -> list[dict]:
+    """캐시 재사용 판정(#113) 메시지 — cache._verify_reuse가 쓴다."""
+    return [
+        {'role': 'system', 'content': CACHE_REUSE_JUDGE_SYSTEM},
+        {'role': 'user', 'content': (CACHE_REUSE_JUDGE_USER_TEMPLATE
+                                     .replace('__CACHED_QUERY__', cached_query)
+                                     .replace('__NEW_QUERY__', new_query))},
+    ]
 
 
 def build_classify_user_message(query: str, has_attachments: bool = False) -> str:

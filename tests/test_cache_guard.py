@@ -70,6 +70,15 @@ class TestGuardBlocks_통과:
         assert guard_blocks("보온이 안 되면 교환되나요?",
                             "보온이 안 되는데 교환 가능한가요?") is None
 
+    def test_한자어_시간_표현은_고유어와_같은_시점이다(self):
+        # 40쌍 실측의 오차단 사례 — '이번 달'↔'당월'은 같은 시점
+        assert guard_blocks("홈플 프라임 해지하면 이번 달 구독료 돌려받아요?",
+                            "프라임 구독 해지 시 당월 구독료 환불 기준이 어떻게 되나요?") is None
+
+    def test_한자어끼리도_다른_시점이면_차단(self):
+        # 정규화는 표기 통일일 뿐 — 당월 vs 익월은 여전히 다른 시점
+        assert guard_blocks("당월 출금 되나요?", "익월 출금 되나요?") == "time"
+
 
 class TestGuardBlocks_경계:
     def test_빈_문자열은_통과(self):

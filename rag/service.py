@@ -472,7 +472,8 @@ class RagService:
             semantic_hit = await cache.get_semantic(
                 self.session, self.tenant_id, standalone_query, source_doc_ids,
                 # 검색이 방금 만든 벡터를 그대로 넘긴다 — 같은 문자열을 다시 임베딩하지 않는다 (#50)
-                query_embedding=retrieval.query_embedding)
+                query_embedding=retrieval.query_embedding,
+                llm=self._llm)   # 임계 아래 대역 후보의 재사용 판정기 (#113)
             if semantic_hit is not None:
                 return PreparedRag(
                     conversation_id=conversation_id,

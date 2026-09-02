@@ -29,6 +29,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from rag.embeddings import embed_query
+from rag.llm_schemas import acomplete_validated, ReuseJudgment
+from rag.prompts import build_cache_reuse_judge_messages
 from schemas.kms import SourceCitation
 from rag.models import AnswerCache as AnswerCacheRow, Faq
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -61,6 +63,18 @@ _TIME_WORDS = (
     '이번 주', '이번주', '이번 달', '이번달', '다음 주', '다음주', '다음 달', '다음달',
 )
 
+# 한자어 시간 표현 → 고유어 정규화. 같은 시점의 다른 표기("이번 달"↔"당월")가 서로 다른
+# 지문이 되어 정당한 재사용을 차단한 실사례(40쌍 실측: 프라임 구독 쌍) 때문에 존재한다.
+# 서로 '다른' 시점은 정규화 후에도 집합이 달라 여전히 차단된다 — 안전성 손실 없음.
+_TIME_CANON = (
+    ('당월', '이번 달'), ('금월', '이번 달'), ('익월', '다음 달'), ('전월', '지난달'),
+    ('금일', '오늘'), ('명일', '내일'), ('작일', '어제'),
+    ('금주', '이번 주'), ('차주', '다음 주'), ('익주', '다음 주'), ('전주', '지난주'),
+    ('금년', '올해'), ('내년도', '내년'),
+    # '당일·전일·익일'은 제외 — 기준일이 '지금'이 아니라 사건에 붙는 복합어가 흔하다
+    # (당일배송, 전일 21시 마감, 익일 출고). '오늘/어제/내일'로 합치면 다른 시점이 같아진다.
+)
+
 _NUMBER_RE = re.compile(r'\d+(?:\.\d+)?')
 _THOUSANDS_COMMA_RE = re.compile(r'(?<=\d),(?=\d)')
 
@@ -77,9 +91,29 @@ def guard_blocks(cached_query: str, new_query: str) -> str | None:
         return 'numeric'
     if {m for m in _NEGATION_MARKERS if m in a} != {m for m in _NEGATION_MARKERS if m in b}:
         return 'negation'
+    for hanja, canon in _TIME_CANON:
+        a, b = a.replace(hanja, canon), b.replace(hanja, canon)
     if {w for w in _TIME_WORDS if w in a} != {w for w in _TIME_WORDS if w in b}:
         return 'time'
     return None
+
+
+async def _verify_reuse(llm, cached_query: str, new_query: str) -> bool:
+    """판정기(#113) — 임계 아래 대역 후보의 재사용 가부를 LLM에 묻는다.
+
+    True=재사용 승인. 판정 실패(스키마 불신·호출 실패)는 False — 오판 비용 비대칭
+    (잘못 승인=오답 재생, 잘못 거절=생성 1회)이라 모든 불확실성은 거절로 수렴시킨다.
+    프롬프트·검증 실측은 rag/prompt_texts.py의 CACHE_REUSE_JUDGE_* 참조 (40쌍 39/40·
+    위험 방향 0·3회 반복 흔들림 0 — 그래서 운영은 1콜).
+    """
+    try:
+        judgment = await acomplete_validated(
+            llm, build_cache_reuse_judge_messages(cached_query, new_query), ReuseJudgment)
+        logger.info('캐시 재사용 판정: %s — %s', judgment.same_answer, judgment.reason[:120])
+        return judgment.same_answer
+    except Exception:
+        logger.exception('캐시 재사용 판정 실패 — 거절로 처리')
+        return False
 
 
 def _normalize_query(query: str) -> str:
@@ -127,11 +161,16 @@ async def get_semantic(
         session: AsyncSession, tenant_id: str, query: str,
         current_source_doc_ids: list[int],
         query_embedding: list[float] | None = None,
+        llm=None,
 ) -> CacheHit | None:
     """Postgres semantic cache를 조회한다.
 
     질문 임베딩 유사도가 충분히 높고, 현재 검색된 문서 집합이 캐시 엔트리의
     문서 집합과 같을 때만 hit로 인정한다.
+
+    llm(#113): 있으면 임계 아래 [verifier_floor, threshold) 대역의 후보를 판정기
+    (_verify_reuse)로 재사용 심사한다 — 임계가 잘라내던 구어체 paraphrase 회수.
+    None이면 판정기 생략(기존 동작) — 테스트·eval 기본 경로가 이쪽이다.
 
     query_embedding: 검색이 이미 만든 원본 쿼리 벡터(#50). 있으면 그대로 쓴다 —
     검색·캐시 조회·캐시 저장이 같은 문자열을 각자 임베딩해 TEI를 3번 때리던 것을 1번으로
@@ -175,8 +214,14 @@ async def get_semantic(
         cache_row, cosine_distance = row
         similarity = 1 - cosine_distance
 
-        # 5. 가장 가까운 캐시라도 threshold보다 낮으면 의미가 충분히 같지 않다고 본다
-        if similarity < settings.semantic_cache_threshold:
+        # 5. 가장 가까운 캐시라도 threshold보다 낮으면 의미가 충분히 같지 않다고 본다.
+        # 단 판정기(#113)가 있으면 [floor, threshold) 대역은 즉시 miss가 아니라 심사 대상 —
+        # doc집합·기계 가드를 먼저 통과시킨 뒤 9번에서 판정한다.
+        needs_verification = similarity < settings.semantic_cache_threshold
+        if needs_verification and (
+                llm is None
+                or not settings.semantic_cache_verifier
+                or similarity < settings.semantic_cache_verifier_floor):
             return None
 
         # 6. 질문 의미가 비슷해도, 현재 검색 결과의 근거 문서 집합이 다르면 miss 처리한다.
@@ -190,6 +235,13 @@ async def get_semantic(
         if reason:
             logger.info('기계 가드(%s)가 캐시 재사용 차단 — miss (tenant=%s, sim=%.4f)',
                         reason, tenant_id, similarity)
+            return None
+
+        # 6.7. 판정기(#113): 임계 아래 대역 후보는 LLM 재사용 심사를 통과해야 hit.
+        # 판정 실패(예외 포함)는 miss — 바깥 try의 fail-open과 별개로 여기서도 보수적으로 간다.
+        if needs_verification and not await _verify_reuse(llm, cache_row.query_text, query):
+            logger.info('판정기가 캐시 재사용 거절 — miss (tenant=%s, sim=%.4f)',
+                        tenant_id, similarity)
             return None
 
         # 7. semantic hit 통계 갱신.

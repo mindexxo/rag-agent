@@ -124,6 +124,11 @@ class Settings(BaseSettings):
     # (cache.guard_blocks)가 막는다. 하향은 기각(#113 40쌍 실측): 0.92~0.95 대역에 가드로 못
     # 잡는 답-상이 쌍(0.9218)이 실존하는데 얻는 히트는 1건 — 재론은 섀도 모드 실데이터로.
     semantic_cache_threshold: float = 0.95
+    # 2차 검증 판정기(#113): 임계 아래 [floor, threshold) 대역의 후보를 LLM이 재사용 판정.
+    # 임계가 잘라내던 구어체 paraphrase를 회수한다(40쌍 실측: 판정 39/40·오답 방향 0·흔들림 0).
+    # 판정 콜은 대역 후보가 존재할 때만 1회 — 히트(≥임계)는 판정 없이 기존 경로 그대로.
+    semantic_cache_verifier: bool = True
+    semantic_cache_verifier_floor: float = 0.80   # 실측 paraphrase 최저 0.8058 포괄, 그 아래는 잡음
     # 미히트 캐시 보존 기간(#16) — last_hit_at 기준이라 히트마다 연장, 인기 답변은 영구 생존.
     # TTL이 아님: 정확성은 무효화·doc집합 비교가 담당하고 이건 죽은 row 위생(LIMIT 1 가림 완화).
     cache_retention_days: int = 90

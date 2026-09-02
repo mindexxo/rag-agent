@@ -68,6 +68,16 @@ class RouteDecision(BaseModel):
     reason: str | None = None   # safe=false일 때 차단 사유 — 옵셔널은 의도(정상 턴엔 없음)
 
 
+class ReuseJudgment(BaseModel):
+    """캐시 재사용 판정(#113) 출력 — 임계 아래 대역 후보를 재사용해도 되는가.
+
+    reason은 관측용(Phoenix 스팬·로그) — 판정 근거가 남아야 오판 사례를 역추적할 수 있다.
+    검증 실측은 rag/prompt_texts.py의 CACHE_REUSE_JUDGE_SYSTEM 주석 참조.
+    """
+    same_answer: bool
+    reason: str
+
+
 class CondenseResult(BaseModel):
     """condense_query(단일) 출력 — 검색 가능한 독립 질문 한 문장."""
     standalone: str

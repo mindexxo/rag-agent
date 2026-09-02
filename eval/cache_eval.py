@@ -1,6 +1,7 @@
 """시맨틱 캐시 히트 정확성 평가 — 캐시가 '같은 질문은 재사용, 다른 질문은 안 섞는지'.
 
-캐시 히트 조건은 이중 가드: 임베딩 유사도 ≥ threshold(0.95) AND 검색 doc집합 동일.
+캐시 히트 조건은 삼중 가드: 임베딩 유사도 ≥ threshold(0.95) AND 검색 doc집합 동일
+AND 기계 가드 통과(수치·부정·시점 지문 — rag/cache.guard_blocks, #113).
 두 실패 방향:
 - 오탐(false hit): 임베딩은 비슷하나 의미가 다른 질문("환불 되는"vs"안되는")이 옛 답 재생 → 오답.
 - 과잉거절(false miss): 같은 질문의 다른 표현(paraphrase)인데 캐시 미스 → 캐시 효용 손실.
@@ -66,8 +67,11 @@ async def _clear(session) -> None:
     await session.commit()
 
 
-def _failed_guard(similarity: float, docset_equal: bool) -> str | None:
-    """미스일 때 어느 가드가 막았는가 — 오판정 분해용. 히트면 None."""
+def _failed_guard(similarity: float, docset_equal: bool, guard_reason: str | None) -> str | None:
+    """미스일 때 어느 가드가 막았는가 — 오판정 분해용. 히트면 None.
+
+    판정 순서는 운영(get_semantic)과 동일: threshold → docset → 기계 가드(#113).
+    """
     below = similarity < settings.semantic_cache_threshold
     if below and not docset_equal:
         return "both"
@@ -75,6 +79,8 @@ def _failed_guard(similarity: float, docset_equal: bool) -> str | None:
         return "threshold"
     if not docset_equal:
         return "docset"
+    if guard_reason:
+        return f"guard:{guard_reason}"
     return None
 
 
@@ -107,7 +113,8 @@ async def compute() -> dict:
             await _clear(session)     # 다음 쌍 오염 방지
             rows.append({**p, "hit": hit, "ok": hit == p["should_hit"],
                          "similarity": round(similarity, 4),
-                         "failed_guard": _failed_guard(similarity, set(ids1) == set(ids2))})
+                         "failed_guard": _failed_guard(similarity, set(ids1) == set(ids2),
+                                                       cache.guard_blocks(p["q1"], p["q2"]))})
 
     by_kind = defaultdict(lambda: [0, 0])
     for r in rows:
@@ -142,7 +149,7 @@ async def main() -> None:
     print(f"  과잉거절(같은질문 미스): {r['false_miss']}/{r['false_miss_n']}  ← 캐시 효용 손실")
 
     if r["misses"]:
-        print("\n[오판정]  (막은 가드: threshold=유사도 미달 · docset=근거집합 상이)")
+        print("\n[오판정]  (막은 가드: threshold=유사도 미달 · docset=근거집합 상이 · guard:*=기계 가드)")
         for m in r["misses"]:
             verdict = "재사용함" if m["hit"] else f"미스({m['failed_guard']})"
             print(f"  [{m['kind']}] sim={m['similarity']:.4f} "

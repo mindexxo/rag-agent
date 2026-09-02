@@ -13,7 +13,7 @@ from rag.prompt_texts import NO_EVIDENCE_ANSWER
 from rag.retriever import RetrievalResult
 from rag.service import PreparedRag, RagService
 from schemas.kms import SourceCitation
-from tests.conftest import fake_vector, register_faq
+from tests.conftest import FakeLlm, fake_vector, register_faq
 
 
 @pytest.mark.asyncio
@@ -23,7 +23,8 @@ async def test_같은_질의_같은_근거집합이면_hit(tenant_id, fake_embed
         await cache.save_answer(session, tenant_id, '배송비 얼마예요', '3천원입니다', src, [5])
         await session.commit()
 
-        hit = await cache.get_semantic(session, tenant_id, '배송비 얼마예요', [5])
+        hit = await cache.get_semantic(session, tenant_id, '배송비 얼마예요', [5],
+                                       llm=FakeLlm())   # 판정 승인 없이는 히트 없음 (#113)
         assert hit is not None
         assert hit.answer == '3천원입니다'
         assert hit.sources == src
@@ -263,7 +264,7 @@ async def test_벡터를_넘기면_임베딩을_다시_하지_않는다(tenant_i
         await session.commit()
 
         hit = await cache.get_semantic(session, tenant_id, '배송비 얼마예요', [5],
-                                       query_embedding=vec)
+                                       query_embedding=vec, llm=FakeLlm())
         assert hit is not None and hit.answer == '3천원입니다'
 
 

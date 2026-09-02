@@ -1,7 +1,9 @@
 """RAG 답변 캐시 — Postgres semantic 단층. 상태 없는 모듈 함수 모음.
 
-조회 = standalone query 임베딩의 pgvector 최근접 1건 → threshold → 근거 문서 집합 비교
-→ 기계 가드(수치·부정·시점 지문 대조, #113 — guard_blocks가 정의점).
+조회 = standalone query 임베딩의 pgvector 최근접 1건 → floor(후보 게이트) → 근거 문서
+집합 비교 → LLM 재사용 판정(_verify_reuse). **판정 승인 없이는 서빙이 없다** (#113 —
+자동 서빙 임계와 규칙 기반 기계 가드는 제거됐다: 판정기가 전 negative를 잡는 것이 실측된
+순간 규칙 사전(부정 마커·시간 어휘)은 유지보수 부채이고, 실제 오차단도 냈다).
 캐시 키는 질의 재작성된 standalone query 기준. (과거의 Redis exact 계층은 제거됨)
 
 공개 표면: CacheHit · snapshot_faq_versions · get_semantic · save_answer ·
@@ -16,10 +18,10 @@ invalidate_source · sweep_stale. 나머지는 내부 헬퍼(_).
   비교(get_semantic)가 자가치유. 명시 무효화(invalidate_source)는 죽은 row 청소용.
 - FAQ 수정: faq_id 불변이라 자가치유 불가 → routers/faqs.py의 명시 무효화 +
   생성 중(in-flight) write-back 레이스는 save_answer의 updated_at 낙관적 검증이 차단.
-- 모델 교체: 미보호 — 8B 전환 전 조회 model 필터 또는 일괄 flush 필요 (백로그).
+- 모델 교체: 미보호 — 교체 시 일괄 flush로 처리한다 (조회 model 필터는 기각 #113:
+  답을 바꾸는 미보호 축이 여럿이라 그 하나만 막는 건 착시).
 """
 import logging
-import re
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -29,6 +31,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from rag.embeddings import embed_query
+from rag.llm_schemas import acomplete_validated, ReuseJudgment
+from rag.prompts import build_cache_reuse_judge_messages
 from schemas.kms import SourceCitation
 from rag.models import AnswerCache as AnswerCacheRow, Faq
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -43,43 +47,22 @@ class CacheHit:
     source_doc_ids: list[int]
 
 
-# ─── 기계 가드 (#113) — 임베딩 유사도가 못 가르는 "의미는 비슷한데 답이 다른" 축 3종.
-# 검색용 임베딩(BGE-M3)은 부정·수치·시점 차이에 둔감하다(#16 실측 0.918~0.949,
-# #113 실측 0.9618~0.9927에서 실제 오답 재생 4건). 저장된 질의(query_text)와 새 질의를
-# 문자열로 대조해 아래 지문(fingerprint)이 하나라도 다르면 재사용을 차단한다.
-# 오판 비용이 비대칭이라 가드는 보수적이어도 된다 — 잘못 차단하면 캐시 미스(생성 1회)일 뿐,
-# 잘못 통과하면 오답 재생이다.
+async def _verify_reuse(llm, cached_query: str, new_query: str) -> bool:
+    """판정기(#113) — 캐시 후보의 재사용 가부를 LLM에 묻는다. 모든 히트의 필요조건이다.
 
-# 부정 극성 마커 — 존재 집합을 비교한다 ("복원되는 경우" vs "복원 안 되는 경우").
-_NEGATION_MARKERS = ('불가', '안 되', '안되', '안 돼', '안돼', '않', '못', '없')
-
-# 상대 시간 어휘 — 숫자 없이 시점을 바꾸는 말 ("닷새 전" vs "보름 전", 실측 0.9927 누수).
-_TIME_WORDS = (
-    '그저께', '그제', '어제', '오늘', '내일', '모레', '글피',
-    '하루', '이틀', '사흘', '나흘', '닷새', '엿새', '이레', '여드레', '아흐레', '열흘', '보름',
-    '지난주', '지난 주', '지난달', '지난 달', '지난해', '작년', '올해', '내년',
-    '이번 주', '이번주', '이번 달', '이번달', '다음 주', '다음주', '다음 달', '다음달',
-)
-
-_NUMBER_RE = re.compile(r'\d+(?:\.\d+)?')
-_THOUSANDS_COMMA_RE = re.compile(r'(?<=\d),(?=\d)')
-
-
-def guard_blocks(cached_query: str, new_query: str) -> str | None:
-    """두 질의의 답이 달라질 신호가 있으면 차단 사유('numeric'|'negation'|'time')를, 없으면 None.
-
-    임계·doc집합 가드를 통과한 뒤의 마지막 관문(get_semantic)이자, eval의 오판정 분해에도
-    쓰인다 — 판정 규칙의 단일 정의점이 여기다.
+    True=재사용 승인. 판정 실패(스키마 불신·호출 실패)는 False — 오판 비용 비대칭
+    (잘못 승인=오답 재생, 잘못 거절=생성 1회)이라 모든 불확실성은 거절로 수렴시킨다.
+    프롬프트·검증 실측은 rag/prompt_texts.py의 CACHE_REUSE_JUDGE_* 참조 (40쌍 39/40·
+    위험 방향 0·3회 반복 흔들림 0 — 그래서 운영은 1콜).
     """
-    a, b = _THOUSANDS_COMMA_RE.sub('', cached_query), _THOUSANDS_COMMA_RE.sub('', new_query)
-    # 수치는 다중집합 비교 — "30구 중 3개"(30,3) vs "30구 중 5개"(30,5)는 다르다.
-    if sorted(_NUMBER_RE.findall(a)) != sorted(_NUMBER_RE.findall(b)):
-        return 'numeric'
-    if {m for m in _NEGATION_MARKERS if m in a} != {m for m in _NEGATION_MARKERS if m in b}:
-        return 'negation'
-    if {w for w in _TIME_WORDS if w in a} != {w for w in _TIME_WORDS if w in b}:
-        return 'time'
-    return None
+    try:
+        judgment = await acomplete_validated(
+            llm, build_cache_reuse_judge_messages(cached_query, new_query), ReuseJudgment)
+        logger.info('캐시 재사용 판정: %s — %s', judgment.same_answer, judgment.reason[:120])
+        return judgment.same_answer
+    except Exception:
+        logger.exception('캐시 재사용 판정 실패 — 거절로 처리')
+        return False
 
 
 def _normalize_query(query: str) -> str:
@@ -127,18 +110,22 @@ async def get_semantic(
         session: AsyncSession, tenant_id: str, query: str,
         current_source_doc_ids: list[int],
         query_embedding: list[float] | None = None,
+        llm=None,
 ) -> CacheHit | None:
     """Postgres semantic cache를 조회한다.
 
-    질문 임베딩 유사도가 충분히 높고, 현재 검색된 문서 집합이 캐시 엔트리의
-    문서 집합과 같을 때만 hit로 인정한다.
+    hit 조건(#113, 순서대로): 최근접 후보의 유사도 ≥ floor(후보 게이트) → 검색 doc집합
+    동일 → **LLM 재사용 판정 승인**. 자동 서빙 임계는 없다 — 실측에서 유사도 0.96~0.99
+    쌍조차 답이 반대인 경우가 4건 나와, 유사도 단독으로는 어떤 값에서도 서빙을 정당화할
+    수 없었다. 판정은 모든 히트의 필요조건이고, 그래서 **llm이 None이면 항상 miss**다
+    (판정 없는 서빙 경로 자체가 없다).
 
     query_embedding: 검색이 이미 만든 원본 쿼리 벡터(#50). 있으면 그대로 쓴다 —
     검색·캐시 조회·캐시 저장이 같은 문자열을 각자 임베딩해 TEI를 3번 때리던 것을 1번으로
     줄인다. 재사용이 안전한 근거: 벡터의 출처가 물리적으로 같다(embed_query는
     embed_texts([text])[0] 래퍼고, 쿼리에는 색인 때 붙는 '파일명>헤딩' 프리픽스가 없다).
     게다가 TEI는 호출마다 비결정적(실측 1.4e-4)이라 "매번 새로 임베딩"해도 애초에 같은
-    벡터가 아니었다 — 재사용본도 그 노이즈 폭 안이고, 임계값(semantic 0.95) 판정을 흔들
+    벡터가 아니었다 — 재사용본도 그 노이즈 폭 안이고, floor 게이트 판정을 흔들
     수준이 아니다. **이 rationale의 단일 정의점이 여기다** — retriever·service는 참조만 한다.
 
     None이면 예전처럼 embed_query(query)로 직접 만든다. 벡터를 손에 들지 않은 호출부
@@ -175,24 +162,24 @@ async def get_semantic(
         cache_row, cosine_distance = row
         similarity = 1 - cosine_distance
 
-        # 5. 가장 가까운 캐시라도 threshold보다 낮으면 의미가 충분히 같지 않다고 본다
-        if similarity < settings.semantic_cache_threshold:
+        # 5. 후보 게이트 — floor 미만은 판정 비용을 쓸 가치가 없는 잡음이다.
+        # llm이 없으면 판정이 불가능하므로 서빙도 없다 (판정 없는 히트 경로는 없다 #113).
+        if llm is None or similarity < settings.semantic_cache_floor:
             return None
 
         # 6. 질문 의미가 비슷해도, 현재 검색 결과의 근거 문서 집합이 다르면 miss 처리한다.
         # 비슷하지만 다른 정책/문서에 답해야 하는 케이스에서 오답 재사용을 막기 위함이다.
+        # 판정보다 먼저 — LLM 콜 없이 걸러지는 후보에 콜을 쓰지 않는다.
         if set(cache_row.source_doc_ids) != set(current_source_doc_ids):
             return None
 
-        # 6.5. 기계 가드(#113): 임계·doc집합을 다 통과해도 수치·부정·시점 지문이 다르면 차단.
-        # 실측 근거: 유사도 0.9618~0.9927에서 답이 반대인 쌍 4건이 두 가드를 모두 뚫었다.
-        reason = guard_blocks(cache_row.query_text, query)
-        if reason:
-            logger.info('기계 가드(%s)가 캐시 재사용 차단 — miss (tenant=%s, sim=%.4f)',
-                        reason, tenant_id, similarity)
+        # 7. 재사용 판정(#113) — 모든 히트의 필요조건. 판정 실패(예외 포함)는 miss.
+        if not await _verify_reuse(llm, cache_row.query_text, query):
+            logger.info('판정기가 캐시 재사용 거절 — miss (tenant=%s, sim=%.4f)',
+                        tenant_id, similarity)
             return None
 
-        # 7. semantic hit 통계 갱신.
+        # 8. semantic hit 통계 갱신.
         # hit_count = hit_count + 1 형태라 동시 요청에서도 카운터 손실이 x.
         await session.execute(
             update(AnswerCacheRow)

@@ -42,8 +42,8 @@
   tests/test_turn_status_contract.py tests/test_docs_freshness.py`.
   (건수는 적지 않는다 — 테스트를 추가할 때마다 어긋나고, 린터가 잡아주지 못하는 종류다.)
 - eval: `python -m eval.run_all --intent --condense --refusal --cache --other --retrieval --ragas`
-  축마다 의존이 다르다 — `--retrieval`은 DB+TEI, `--cache`는 임베딩·리랭커(TEI)+DB
-  (`retrieve()`가 rerank를 태운다 — 리랭커가 죽어 있으면 dense 폴백으로 doc집합이 달라질 수 있다),
+  축마다 의존이 다르다 — `--retrieval`은 DB+TEI, `--cache`는 임베딩·리랭커(TEI)+DB+LLM
+  (검색이 rerank를 태우고, 히트 판정이 LLM 재사용 심사를 거친다 #113),
   `--refusal`은 DB+LLM+TEI(`prepare()`가 검색을 태우므로 TEI가 필요하다 — 실수하기 쉽다),
   `--other`는 DB+LLM(OTHER 라우팅은 검색을 건너뛴다), `--intent`·`--condense`는 LLM.
   `--ragas`는 **미리 생성된 답변만 채점**한다(생성은 `python -m eval.generation`, 무겁다).
@@ -52,7 +52,7 @@
 
 우선순위: OS 환경변수 > `.env`(gitignore, 로컬 전용) > `.env.dev`(커밋됨, 개발계 공용).
 없으면 무엇이 죽는지: `DATABASE_URL`→기동 즉시 실패, Redis→limiter·cancellation·스트림 재개,
-vLLM→인텐트·질의재작성·생성, TEI→인덱싱·검색·캐시.
+vLLM→인텐트·질의재작성·생성·캐시 재사용 판정, TEI→인덱싱·검색·캐시.
 **비밀값은 이 파일에 적지 않는다** — `config.py`의 필드명만 참조하라.
 
 ## 이름이 비슷해서 헷갈리는 것 — 절대 동일시하지 말 것

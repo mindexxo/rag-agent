@@ -212,6 +212,7 @@ class FakeLlm:
         from rag.citation_labels import citation_tail
         self.answer = answer if answer is not None else f'테스트 답변입니다. {citation_tail([1])}'
         self.intent_json = '{"safe": true, "intent": "KNOWLEDGE"}'
+        self.reuse_judge_json = '{"same_answer": true, "reason": "테스트 고정 승인"}'   # 캐시 판정 (#113)
         self.calls: list[str] = []          # 어떤 용도로 호출됐는지 기록 (검증용)
         self.system_prompts: list[tuple[str, str]] = []   # (용도, 시스템 프롬프트) — 주입 내용 검증용
         self.extra_bodies: list[dict | None] = []   # astream별 extra_body — 꼬리 제약 주입 검증용(#56·#65)
@@ -237,6 +238,8 @@ class FakeLlm:
             return 'condense_multi'
         if '재작성' in system:
             return 'condense'
+        if '재사용 판정기' in system:     # 캐시 재사용 판정 (#113)
+            return 'reuse_judge'
         return 'generate'
 
     def _record(self, kind: str, messages: list[dict]) -> None:
@@ -251,6 +254,10 @@ class FakeLlm:
             raise FakeSchemaRejected('structured_outputs를 모르는 구버전 서버 재현')
         if kind == 'intent':
             return self.intent_json
+        if kind == 'reuse_judge':
+            # 캐시 재사용 판정(#113) — 판정 승인 없이는 히트가 없으므로 기본 승인.
+            # 거절 시나리오는 reuse_judge_json을 교체해서 쓴다.
+            return self.reuse_judge_json
         if kind == 'condense':
             # 실제 질문을 JSON으로 반향 (#43). 구현 주의: 옛 코드는 마지막 줄을 반향했는데
             # 그건 질문이 아니라 라벨이었다(잠복 버그 — 이 값을 검증하는 테스트가 없어 안 드러남).

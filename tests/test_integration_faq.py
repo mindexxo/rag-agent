@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
+from tests.conftest import FakeLlm
 from rag import cache
 from rag.models import AnswerCache as AnswerCacheRow, Chunk, Faq
 from rag.retriever import retrieve_candidates
@@ -115,8 +116,9 @@ async def test_꺼진_동안_캐시는_켠_후_doc집합_비교로_자가치유(
         await cache.save_answer(session, tenant_id, '배송비 얼마예요', 'FAQ 없던 시절 답', [], [123])
         await session.commit()
 
-        # 같은 근거 집합이면 hit (전제 확인)
-        hit = await cache.get_semantic(session, tenant_id, '배송비 얼마예요', [123])
+        # 같은 근거 집합이면 hit (전제 확인 — 판정 승인 없이는 히트 없음 #113)
+        hit = await cache.get_semantic(session, tenant_id, '배송비 얼마예요', [123],
+                                       llm=FakeLlm())
         assert hit is not None
 
         # FAQ가 켜져 검색 근거가 [123, -faq]로 바뀌면 → 집합 불일치로 miss (자가치유)

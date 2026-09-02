@@ -1,16 +1,15 @@
 """시맨틱 캐시 히트 정확성 평가 — 캐시가 '같은 질문은 재사용, 다른 질문은 안 섞는지'.
 
-캐시 히트 조건은 삼중 가드: 임베딩 유사도 ≥ threshold(0.95) AND 검색 doc집합 동일
-AND 기계 가드 통과(수치·부정·시점 지문 — rag/cache.guard_blocks, #113).
+캐시 히트 조건(#113): 유사도 ≥ floor(후보 게이트) AND 검색 doc집합 동일 AND
+**LLM 재사용 판정 승인** — 판정 없이는 서빙이 없다(자동 서빙 임계·기계 가드 제거).
 두 실패 방향:
 - 오탐(false hit): 임베딩은 비슷하나 의미가 다른 질문("환불 되는"vs"안되는")이 옛 답 재생 → 오답.
 - 과잉거절(false miss): 같은 질문의 다른 표현(paraphrase)인데 캐시 미스 → 캐시 효용 손실.
 
 셋 구성(#113 확장, 40쌍): negative 22 = negation(6)·numeric(4)·condition(4)·temporal(4)·
 exception(4) / positive 18 = para_surface(9)·para_deep(9). kind는 문형 분류이지 현행 판정
-분류가 아니다 — para_deep에는 지금도 히트하는 쌍과 임계 미달 쌍이 섞여 있고, 그 간극이
-임계·가드 개선의 측정 대상이다. **positive 쌍은 전부 "q1·q2의 top-5 doc집합이 실측 동일"을
-확인하고 넣었다** — doc집합이 다르면 임계를 고쳐도 히트가 불가능해 문항 오류가 되기 때문
+분류가 아니다. **positive 쌍은 전부 "q1·q2의 top-5 doc집합이 실측 동일"을
+확인하고 넣었다** — doc집합이 다르면 판정기까지 못 가서 히트가 불가능해 문항 오류가 되기 때문
 (#113 실측: 구어체 쌍 25개 중 18개가 doc집합 상이 — 이런 쌍은 여기 없고, doc집합 가드
 완화(#113 개선 4)의 근거 데이터로만 남겼다). 셋을 고치면 아래 건수 주장과 composition을
 같이 갱신하라 — tests/test_docs_freshness.py가 기계 검증한다.
@@ -19,19 +18,18 @@ exception(4) / positive 18 = para_surface(9)·para_deep(9). kind는 문형 분�
 캐시 저장/조회는 버려도 되는 가짜 테넌트(EVAL_TENANT)에 격리 → 실테넌트 캐시 오염 없음.
 쌍마다 save_answer(q1)→조회(q2)→정리. 쌍마다 지우므로 DB에 항상 row 1개 — get_semantic의
 LIMIT 1이 교란 요인이 아니게 하는 전제이니 "한 번에 다 심는" 최적화를 하지 마라.
-LLM 생성 없음. 의존: DB + TEI 임베딩 + TEI 리랭커(retrieve가 rerank_enabled 기본 True로 탐).
+의존: DB + TEI 임베딩 + TEI 리랭커(retrieve가 rerank를 탐) + vLLM(재사용 판정 #113).
 
 q1·q2 임베딩은 여기서 한 번씩 만들어 save_answer/get_semantic에 넘기고(#50 계약과 동일)
-쌍별 유사도도 같은 벡터로 계산한다 — 오판정이 임계 탓인지 doc집합 탓인지(failed_guard)를
+쌍별 유사도도 같은 벡터로 계산한다 — 오판정이 어느 관문 탓인지(failed_guard)를
 기록하기 위함. TEI는 호출마다 비결정적(실측 1.4e-4)이라 운영 경로의 판정과 등가다.
 
-실행: python -m eval.cache_eval
-판정기 포함: CACHE_EVAL_VERIFIER=1 python -m eval.cache_eval — 임계 아래 대역을 LLM
-판정기(#113)까지 태운다. **vLLM 의존이 추가**되므로 기본은 끔(run_all --cache 의존 불변).
+실행: python -m eval.cache_eval — 운영 경로 그대로 판정기를 태우므로 **vLLM 필수**
+(DB·TEI에 더해). 판정이 LLM이라 경계 문항은 실행마다 ±1건 흔들릴 수 있다 — 케이스
+판단은 오판정 목록의 사유로 하라.
 """
 import asyncio
 import json
-import os
 from collections import defaultdict
 from pathlib import Path
 
@@ -70,41 +68,29 @@ async def _clear(session) -> None:
     await session.commit()
 
 
-def _failed_guard(similarity: float, docset_equal: bool, guard_reason: str | None,
-                  verifier_on: bool) -> str | None:
-    """미스일 때 어느 가드가 막았는가 — 오판정 분해용. 히트면 None.
+def _failed_guard(similarity: float, docset_equal: bool) -> str | None:
+    """미스일 때 어느 관문이 막았는가 — 오판정 분해용. 히트면 None.
 
-    판정 순서는 운영(get_semantic)과 동일: threshold → docset → 기계 가드 → 판정기(#113).
-    verifier_on이면 [floor, threshold) 대역은 threshold가 아니라 'verifier'로 귀속된다 —
-    그 대역의 미스는 임계가 아니라 LLM 판정이 만든 결과이기 때문이다.
+    판정 순서는 운영(get_semantic)과 동일: floor → docset → 판정기(#113).
     """
-    below = similarity < settings.semantic_cache_threshold
-    in_band = (verifier_on and settings.semantic_cache_verifier
-               and similarity >= settings.semantic_cache_verifier_floor)
-    if below and not in_band:
-        return "both" if not docset_equal else "threshold"
+    if similarity < settings.semantic_cache_floor:
+        return "floor" if docset_equal else "floor+docset"
     if not docset_equal:
         return "docset"
-    if guard_reason:
-        return f"guard:{guard_reason}"
-    if below:
-        return "verifier"
-    return None
+    return "verifier"
 
 
 async def compute() -> dict:
     """캐시 히트 정확성 채점 → 요약.
 
     반환: {accuracy, n, false_hit, false_miss, by_kind, misses, composition}.
-    rows(misses 포함)에는 similarity·failed_guard가 실린다 — 오판정이 임계 탓인지
-    doc집합 탓인지 목록에서 바로 읽기 위함.
+    rows(misses 포함)에는 similarity·failed_guard가 실린다 — 오판정이 어느 관문
+    (floor/docset/verifier) 탓인지 목록에서 바로 읽기 위함.
     """
     pairs = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
     rows = []
-    llm = None
-    if os.environ.get("CACHE_EVAL_VERIFIER") == "1":
-        from rag.clients import shared_llm
-        llm = shared_llm
+    from rag.clients import shared_llm
+    llm = shared_llm
 
     async with AsyncSessionLocal() as session:
         await _clear(session)
@@ -125,9 +111,8 @@ async def compute() -> dict:
             await _clear(session)     # 다음 쌍 오염 방지
             rows.append({**p, "hit": hit, "ok": hit == p["should_hit"],
                          "similarity": round(similarity, 4),
-                         "failed_guard": _failed_guard(similarity, set(ids1) == set(ids2),
-                                                       cache.guard_blocks(p["q1"], p["q2"]),
-                                                       verifier_on=llm is not None)})
+                         "failed_guard": (None if hit else
+                                          _failed_guard(similarity, set(ids1) == set(ids2)))})
 
     by_kind = defaultdict(lambda: [0, 0])
     for r in rows:
@@ -162,7 +147,7 @@ async def main() -> None:
     print(f"  과잉거절(같은질문 미스): {r['false_miss']}/{r['false_miss_n']}  ← 캐시 효용 손실")
 
     if r["misses"]:
-        print("\n[오판정]  (막은 가드: threshold=유사도 미달 · docset=근거집합 상이 · guard:*=기계 가드)")
+        print("\n[오판정]  (막은 관문: floor=후보 게이트 미달 · docset=근거집합 상이 · verifier=판정 거절)")
         for m in r["misses"]:
             verdict = "재사용함" if m["hit"] else f"미스({m['failed_guard']})"
             print(f"  [{m['kind']}] sim={m['similarity']:.4f} "

@@ -42,7 +42,8 @@
   tests/test_turn_status_contract.py tests/test_docs_freshness.py`.
   (건수는 적지 않는다 — 테스트를 추가할 때마다 어긋나고, 린터가 잡아주지 못하는 종류다.)
 - eval: `python -m eval.run_all --intent --condense --refusal --cache --other --retrieval --ragas`
-  축마다 의존이 다르다 — `--retrieval`은 DB+TEI, `--cache`는 임베딩+DB,
+  축마다 의존이 다르다 — `--retrieval`은 DB+TEI, `--cache`는 임베딩·리랭커(TEI)+DB
+  (`retrieve()`가 rerank를 태운다 — 리랭커가 죽어 있으면 dense 폴백으로 doc집합이 달라질 수 있다),
   `--refusal`은 DB+LLM+TEI(`prepare()`가 검색을 태우므로 TEI가 필요하다 — 실수하기 쉽다),
   `--other`는 DB+LLM(OTHER 라우팅은 검색을 건너뛴다), `--intent`·`--condense`는 LLM.
   `--ragas`는 **미리 생성된 답변만 채점**한다(생성은 `python -m eval.generation`, 무겁다).

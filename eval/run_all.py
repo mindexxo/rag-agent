@@ -63,7 +63,9 @@ ROWS = [
     Row("intent", "safe_accuracy", "가드 차단 정확도"),   # 안전성 분리 축 (#22) — 합산에 묻히면 회귀를 못 잡는다
     Row("condense", "accuracy", "질의재작성 정확도"),
     Row("refusal", "accuracy", "거절 정확도"),
-    Row("cache", "accuracy", "캐시히트 정확도"),
+    # 캐시 셋 구성이 바뀌면(6쌍→40쌍 #113) 분모가 달라 다른 눈금 — 구성 변경 첫 실행을
+    # '비교 불가'로 처리한다 (retrieval의 gold_composition과 같은 메커니즘).
+    Row("cache", "accuracy", "캐시히트 정확도", version_key="cache_composition"),
     Row("other", "accuracy", "OTHER 경계준수"),
     # 검색 전체 평균 4행: #95에서 고난도 90행이 TYPES에 편입돼 **구성이 바뀌었다** —
     # version_key(gold_composition)가 구성 변경 첫 실행을 '비교 불가'로 처리한다
@@ -271,7 +273,8 @@ async def _run_async(name: str):
         from eval.cache_eval import compute
         r = await compute()
         return {"accuracy": r["accuracy"],
-                "false_hit": r["false_hit"], "false_miss": r["false_miss"]}
+                "false_hit": r["false_hit"], "false_miss": r["false_miss"],
+                "cache_composition": r["composition"]}   # version_key 재료 (#113)
     if name == "other":
         from eval.other_eval import compute
         r = await compute()

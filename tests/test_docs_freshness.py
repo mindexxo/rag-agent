@@ -186,6 +186,10 @@ class TestSymbolReferences:
 # (실제 사고: #88 조사에서 refusal.py가 60/48이라 주장, 실제 58/50)
 _DOCSTRING_COUNT_CLAIMS = (
     ('eval/refusal.py', 'eval/gold_set_v2.jsonl', 'type', ('no_evidence', 'trap')),
+    # 캐시 셋 40쌍 확장(#113) — kind별 건수를 docstring이 주장하므로 기계 검증
+    ('eval/cache_eval.py', 'eval/cache_set_v1.jsonl', 'kind',
+     ('negation', 'numeric', 'condition', 'temporal', 'exception',
+      'para_surface', 'para_deep')),
 )
 
 

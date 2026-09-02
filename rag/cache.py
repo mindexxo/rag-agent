@@ -1,6 +1,7 @@
 """RAG 답변 캐시 — Postgres semantic 단층. 상태 없는 모듈 함수 모음.
 
-조회 = standalone query 임베딩의 pgvector 최근접 1건 → threshold → 근거 문서 집합 비교.
+조회 = standalone query 임베딩의 pgvector 최근접 1건 → threshold → 근거 문서 집합 비교
+→ 기계 가드(수치·부정·시점 지문 대조, #113 — guard_blocks가 정의점).
 캐시 키는 질의 재작성된 standalone query 기준. (과거의 Redis exact 계층은 제거됨)
 
 공개 표면: CacheHit · snapshot_faq_versions · get_semantic · save_answer ·
@@ -18,6 +19,7 @@ invalidate_source · sweep_stale. 나머지는 내부 헬퍼(_).
 - 모델 교체: 미보호 — 8B 전환 전 조회 model 필터 또는 일괄 flush 필요 (백로그).
 """
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -39,6 +41,45 @@ class CacheHit:
     answer: str
     sources: list[SourceCitation]
     source_doc_ids: list[int]
+
+
+# ─── 기계 가드 (#113) — 임베딩 유사도가 못 가르는 "의미는 비슷한데 답이 다른" 축 3종.
+# 검색용 임베딩(BGE-M3)은 부정·수치·시점 차이에 둔감하다(#16 실측 0.918~0.949,
+# #113 실측 0.9618~0.9927에서 실제 오답 재생 4건). 저장된 질의(query_text)와 새 질의를
+# 문자열로 대조해 아래 지문(fingerprint)이 하나라도 다르면 재사용을 차단한다.
+# 오판 비용이 비대칭이라 가드는 보수적이어도 된다 — 잘못 차단하면 캐시 미스(생성 1회)일 뿐,
+# 잘못 통과하면 오답 재생이다.
+
+# 부정 극성 마커 — 존재 집합을 비교한다 ("복원되는 경우" vs "복원 안 되는 경우").
+_NEGATION_MARKERS = ('불가', '안 되', '안되', '안 돼', '안돼', '않', '못', '없')
+
+# 상대 시간 어휘 — 숫자 없이 시점을 바꾸는 말 ("닷새 전" vs "보름 전", 실측 0.9927 누수).
+_TIME_WORDS = (
+    '그저께', '그제', '어제', '오늘', '내일', '모레', '글피',
+    '하루', '이틀', '사흘', '나흘', '닷새', '엿새', '이레', '여드레', '아흐레', '열흘', '보름',
+    '지난주', '지난 주', '지난달', '지난 달', '지난해', '작년', '올해', '내년',
+    '이번 주', '이번주', '이번 달', '이번달', '다음 주', '다음주', '다음 달', '다음달',
+)
+
+_NUMBER_RE = re.compile(r'\d+(?:\.\d+)?')
+_THOUSANDS_COMMA_RE = re.compile(r'(?<=\d),(?=\d)')
+
+
+def guard_blocks(cached_query: str, new_query: str) -> str | None:
+    """두 질의의 답이 달라질 신호가 있으면 차단 사유('numeric'|'negation'|'time')를, 없으면 None.
+
+    임계·doc집합 가드를 통과한 뒤의 마지막 관문(get_semantic)이자, eval의 오판정 분해에도
+    쓰인다 — 판정 규칙의 단일 정의점이 여기다.
+    """
+    a, b = _THOUSANDS_COMMA_RE.sub('', cached_query), _THOUSANDS_COMMA_RE.sub('', new_query)
+    # 수치는 다중집합 비교 — "30구 중 3개"(30,3) vs "30구 중 5개"(30,5)는 다르다.
+    if sorted(_NUMBER_RE.findall(a)) != sorted(_NUMBER_RE.findall(b)):
+        return 'numeric'
+    if {m for m in _NEGATION_MARKERS if m in a} != {m for m in _NEGATION_MARKERS if m in b}:
+        return 'negation'
+    if {w for w in _TIME_WORDS if w in a} != {w for w in _TIME_WORDS if w in b}:
+        return 'time'
+    return None
 
 
 def _normalize_query(query: str) -> str:
@@ -141,6 +182,14 @@ async def get_semantic(
         # 6. 질문 의미가 비슷해도, 현재 검색 결과의 근거 문서 집합이 다르면 miss 처리한다.
         # 비슷하지만 다른 정책/문서에 답해야 하는 케이스에서 오답 재사용을 막기 위함이다.
         if set(cache_row.source_doc_ids) != set(current_source_doc_ids):
+            return None
+
+        # 6.5. 기계 가드(#113): 임계·doc집합을 다 통과해도 수치·부정·시점 지문이 다르면 차단.
+        # 실측 근거: 유사도 0.9618~0.9927에서 답이 반대인 쌍 4건이 두 가드를 모두 뚫었다.
+        reason = guard_blocks(cache_row.query_text, query)
+        if reason:
+            logger.info('기계 가드(%s)가 캐시 재사용 차단 — miss (tenant=%s, sim=%.4f)',
+                        reason, tenant_id, similarity)
             return None
 
         # 7. semantic hit 통계 갱신.

@@ -1,0 +1,8 @@
+# 대시보드 as-code (#129) — json/ 아래 파일을 기동 시 자동 로드. UI에서 고친 뒤에는
+# export JSON을 여기 다시 커밋한다(리뷰 가능·재현 가능 — 측정 규율과 같은 정신).
+apiVersion: 1
+providers:
+  - name: kms
+    type: file
+    options:
+      path: /etc/grafana/provisioning/dashboards/json

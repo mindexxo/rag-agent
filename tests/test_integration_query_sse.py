@@ -157,10 +157,10 @@ async def test_제약_미지원_서버는_제약_없이_재시도한다(client, 
     await register_faq(client)
     original = fake_llm.astream
 
-    async def rejects_grammar(messages, extra_body=None):
+    async def rejects_grammar(messages, extra_body=None, on_finish_reason=None):
         if extra_body is not None:
             raise RuntimeError('400: unknown field structured_outputs')   # 구버전 서버 재현
-        async for t in original(messages):
+        async for t in original(messages, on_finish_reason=on_finish_reason):
             yield t
 
     fake_llm.astream = rejects_grammar

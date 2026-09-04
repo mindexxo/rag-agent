@@ -38,7 +38,7 @@ from dataclasses import dataclass
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import cancellation, limiter, otel, stream_resume
+from rag import cancellation, limiter, metrics, otel, stream_resume
 from rag.limiter import Lease
 from rag.citation_tail import TailSplitter, resolve_citations
 from rag.models import TurnStatus
@@ -243,7 +243,13 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
         async with AsyncSessionLocal() as session:
             svc = RagService(tenant_id=lease.tenant_id, session=session)
             with otel.span('generate', 'LLM') as sp:   # 배경 태스크 — 컨텍스트 복사로 kms.query의 자식 (#7)
+                first_token_at = None                   # 체감 TTFT (#129) — 첫 청크 도착 시각
                 async for chunk in svc.generate(prepared):
+                    if first_token_at is None:
+                        first_token_at = time.monotonic()
+                        # t_request(요청 도착, routers/kms.py)부터 첫 청크까지 — prepare 포함
+                        # 체감값이라 vLLM 서버측 TTFT와 다르다 (rag/metrics.py 역할 분담).
+                        metrics.TTFT_SECONDS.labels(route=prepared.route).observe(first_token_at - t_request)
                     text = splitter.feed(chunk) if splitter else chunk
                     if text:
                         parts.append(text)
@@ -252,8 +258,16 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
                     parts.append(tail_flush)             # 마커 접두인 줄 알았던 본문 끝자락
                     await emit(EVENT_DELTA, {"text": tail_flush})
                 answer = "".join(parts)
+                # vLLM 종료 사유 (#129) — 완주한 스트림만 여기 도달하므로 값이 있으면 신뢰 가능.
+                # 카운터(집계)와 스팬 속성(개별 드릴다운)을 같이 남긴다: 대시보드에서 length
+                # 비율이 튀면 Phoenix에서 해당 대화를 찾아 들어갈 수 있어야 한다.
+                if svc.last_vllm_finish_reason is not None:
+                    metrics.FINISH_REASON_TOTAL.labels(
+                        route=prepared.route, reason=svc.last_vllm_finish_reason).inc()
                 if sp.is_recording():   # 가드가 먼저 — no-op이면 clip 비용도 없어야 한다 (otel.py 규약, #54 시정)
                     otel.set_attrs(sp, {otel.LLM_MODEL: settings.vllm_model, otel.OUTPUT_VALUE: otel.clip(answer)})
+                    if svc.last_vllm_finish_reason is not None:
+                        otel.set_attrs(sp, {'kms.llm_finish_reason': svc.last_vllm_finish_reason})
                     if splitter and splitter.tail_raw is not None:
                         # 꼬리 원문(번호 목록) — OUTPUT_VALUE는 걷어낸 본문이라 여기 없으면 어디에도
                         # 안 남는다. 고객이 "인용 문서가 잘못됐다"고 할 때 모델 판단(번호 자체가

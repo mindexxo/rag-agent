@@ -1,0 +1,58 @@
+{
+  "uid": "vllm-serving",
+  "title": "vLLM 서빙 (worker15)",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "panels": [
+    {
+      "id": 1, "type": "timeseries", "title": "KV캐시 사용률",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "max": 1}, "overrides": []},
+      "targets": [{"expr": "vllm:kv_cache_usage_perc", "legendFormat": "{{model_name}}"}]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "동시 실행 / 대기 요청",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "targets": [
+        {"expr": "vllm:num_requests_running", "legendFormat": "running"},
+        {"expr": "vllm:num_requests_waiting", "legendFormat": "waiting"}
+      ]
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "TTFT (vLLM 서버측) p50 / p95",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum(rate(vllm:time_to_first_token_seconds_bucket[5m])) by (le))", "legendFormat": "p50"},
+        {"expr": "histogram_quantile(0.95, sum(rate(vllm:time_to_first_token_seconds_bucket[5m])) by (le))", "legendFormat": "p95"}
+      ]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "E2E 요청 지연 p95",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(vllm:e2e_request_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p95"}]
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "생성 토큰 처리량 (TPS)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "targets": [{"expr": "rate(vllm:generation_tokens_total[1m])", "legendFormat": "tokens/s"}]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Prefix Cache 히트율",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "max": 1}, "overrides": []},
+      "targets": [{"expr": "rate(vllm:prefix_cache_hits_total[5m]) / rate(vllm:prefix_cache_queries_total[5m])", "legendFormat": "hit rate"}]
+    }
+  ]
+}

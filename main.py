@@ -12,6 +12,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from starlette.responses import Response
 
 from config import settings
 from rag import cancellation
@@ -56,6 +58,16 @@ app.add_middleware(
     allow_methods=['*'],
     allow_headers=['*'],
 )
+
+# Prometheus 스크레이프 (#129) — 앱 지표(rag/metrics.py: 체감 TTFT·finish_reason)와
+# prometheus_client 기본 프로세스 지표를 노출. 인증 없음 — 사내망 개발계 전제, 외부 노출
+# 경로가 생기면 접근 제어 재검토. rag/metrics.py는 routers→rag.streaming 경유로 이미
+# import되므로 여기서 따로 불러올 필요 없다.
+# mount(make_asgi_app()) 대신 직접 라우트인 이유: mount는 /metrics→/metrics/ 307을 낸다(실측).
+@app.get('/metrics', include_in_schema=False)
+async def metrics() -> Response:
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 
 app.include_router(kms_router)
 app.include_router(document_router)

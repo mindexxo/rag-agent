@@ -1,4 +1,4 @@
-"""dense-only 검색 + 리랭커 + 근거 게이트 (F99).
+"""dense 검색 + trgm 어휘 주입(하이브리드 #128) + 리랭커 + 근거 게이트.
 
 흐름 — 각 단계가 함수 하나다 (번호 주석 대신 이름으로 좇는다):
 
@@ -6,6 +6,7 @@
       -> embed_texts                 쿼리 전체를 배치 1회로 임베딩
       -> _search_dense_per_query     쿼리별 dense top-N (cosine distance)
       -> (단일: distance 순 그대로 / 멀티: _rank_multi 로 RRF 융합)
+      -> _search_trgm                pg_trgm 어휘 후보를 dense 뒤에 주입 (#128, 플래그)
       -> _fetch_chunk_map            본문·메타 IN절 1회 조회
       -> rerank / rerank_maxpool     cross-encoder 재정렬 (rag.reranker, settings.rerank_enabled)
       -> [:top_n]                    두 경로 공통 — 슬라이스는 항상 리랭크 뒤다
@@ -28,7 +29,7 @@ LLM 호출 없음. Stage D의 RagService가 이 결과를 받아 답변 생성 �
 """
 from dataclasses import dataclass, field
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
@@ -191,6 +192,43 @@ async def _search_dense_per_query(
     return per_query_ids, dense_results
 
 
+async def _search_trgm(
+    session: AsyncSession,
+    tenant_id: str,
+    query: str,
+    limit: int,
+) -> list[int]:
+    """pg_trgm 어휘 채널 (#128) — 원본 쿼리와 문자 유사한 청크 top-N의 id.
+
+    dense가 놓친 어휘 일치 후보를 리랭커 풀에 주입하는 용도다. 현행 모의 코퍼스에선
+    주입 상방 0(어블레이션 v2)이라 이득이 없지만, 실코퍼스의 상품코드·고유명 대비
+    선제 채널로 켜둔다(사용자 결정) — 최종 순위는 리랭커가 정하므로 무관 후보는 걸러진다.
+
+    유사도 대상은 chunks.text 원문 — '파일명>헤딩' 프리픽스 텍스트는 DB에 없다
+    (rag/index_text.py: 조립은 임베딩·리랭커 입력 시점). 프리픽스 어휘까지 태우려면
+    색인 텍스트 컬럼 추가가 필요한데, 상방 0 실측에서 그 투자는 정당화되지 않았다.
+
+    인덱스 없음이 의도다: tenant WHERE로 좁힌 뒤(테넌트당 수백 청크) similarity를
+    계산하는 편이 충분히 싸다. 코퍼스가 테넌트당 수천 청크로 커지면 그때
+    gist_trgm_ops 인덱스 + `<->` 정렬로 전환한다.
+    similarity() > 0 필터 — 조각이 하나도 안 겹치는 행은 후보가 아니다.
+    """
+    sim = func.similarity(Chunk.text, query).label('sim')
+    stmt = (
+        select(Chunk.id, sim)
+        .outerjoin(Document, Chunk.document_id == Document.id)
+        .outerjoin(Folder, Document.folder_id == Folder.id)
+        .outerjoin(Faq, Chunk.faq_id == Faq.id)
+        .where(Chunk.tenant_id == tenant_id)         # 격리 강제 — dense 검색과 동일 경로
+        .where(_searchable_condition())
+        .where(func.similarity(Chunk.text, query) > 0)
+        .order_by(sim.desc())
+        .limit(limit)
+    )
+    rows = (await session.execute(stmt)).all()
+    return [r.id for r in rows]
+
+
 def _rank_multi(per_query_ids: list[list[int]]) -> list[int]:
     """쿼리 확장(#5) 순위 — RRF로 union 전체를 정렬한다. 자르지 않는다.
 
@@ -302,10 +340,20 @@ async def retrieve_candidates(
     multi = len(per_query_ids) > 1
     top_ids = _rank_multi(per_query_ids) if multi else per_query_ids[0]
 
-    # 빈 결과 → 빈 후보 반환 (no_results 판정은 apply_gate가)
+    # 빈 결과 → 빈 후보 반환 (no_results 판정은 apply_gate가).
+    # dense가 비면 trgm 주입도 안 한다 — 게이트 신호(top-1 거리)가 dense 기준이라,
+    # 어휘 후보만으로 채우면 '근거 없음' 판정이 조용히 무력화된다.
     if not top_ids:
         return RetrievalCandidates(chunks=[], top_dense_distance=999.0,
                                    query_embedding=query_embedding)
+
+    # 하이브리드 어휘 주입 (#128) — 원본 쿼리 기준 trgm 상위 중 dense 미포함분을 뒤에 붙인다.
+    # '뒤에'가 계약이다: 리랭크 꺼짐/실패 폴백에서 dense 순위가 깨지지 않아야 한다
+    # (리랭크 on에선 cross-encoder가 쌍 독립 채점이라 순서 무관). 슬라이스는 여전히 리랭크 뒤.
+    if settings.hybrid_trgm_enabled:
+        trgm_ids = await _search_trgm(session, tenant_id, query, candidates_per_branch)
+        seen = set(top_ids)
+        top_ids = top_ids + [cid for cid in trgm_ids if cid not in seen][:settings.hybrid_trgm_inject]
 
     chunk_map = await _fetch_chunk_map(session, top_ids)
     result = [chunk_map[cid] for cid in top_ids]      # 순위 순서 그대로 재배열

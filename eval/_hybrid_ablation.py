@@ -30,7 +30,7 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import select, text as sa_text
 
 from database import AsyncSessionLocal
 from eval.generation import row_tenant
@@ -97,6 +97,29 @@ class Bm25:
         return [cid for cid, _ in sorted(scores.items(), key=lambda x: -x[1])[:n]]
 
 
+async def _trgm_top(session, tenant: str, query: str, n: int) -> list[int]:
+    """pg_trgm 채널 — 운영 후보 그대로(기설치 확장) 실제 DB similarity()로 잰다.
+
+    대상 텍스트는 chunks.text 원문 — 운영에서 GIN 인덱스를 걸 컬럼과 동일하게.
+    (임베딩형 프리픽스 텍스트는 DB에 없다 — 그걸 쓰려면 컬럼 추가라 별도 판단.)
+    searchable 필터는 dense와 동일해야 변인이 격리된다.
+    """
+    stmt = sa_text("""
+        SELECT c.id, similarity(c.text, :q) AS sim
+        FROM chunks c
+        LEFT JOIN documents d ON c.document_id = d.id
+        LEFT JOIN folders f ON d.folder_id = f.id
+        LEFT JOIN faqs q2 ON c.faq_id = q2.id
+        WHERE c.tenant_id = :tenant
+          AND ((c.document_id IS NOT NULL AND d.is_active AND d.status = 'ready'
+                AND d.is_searchable AND (d.folder_id IS NULL OR f.is_searchable))
+               OR (c.faq_id IS NOT NULL AND q2.is_active))
+        ORDER BY sim DESC
+        LIMIT :n""")
+    rows = (await session.execute(stmt, {"q": query, "tenant": tenant, "n": n})).all()
+    return [r.id for r in rows if r.sim and r.sim > 0]
+
+
 async def _load_corpus(session, tenant: str) -> dict[int, str]:
     """BM25 코퍼스 — dense와 동일한 searchable 풀. 텍스트는 임베딩 입력과 동일 조립."""
     stmt = (
@@ -154,11 +177,12 @@ async def main() -> None:
     for g in target:
         by_tenant[row_tenant(g)].append(g)
 
-    variants = ["baseline", "hyb_union", "bm25only",
+    variants = ["baseline", "hyb_union", "hyb_trgm", "bm25only",
                 "baseline_norr", "hyb_union_norr", "bm25only_norr"]
     rows: dict[str, list[dict]] = {v: [] for v in variants}
     skipped = 0
     inject_wins: list[str] = []   # 주입 상방 — 정답이 dense30 밖 & bm25_30 안
+    trgm_wins: list[str] = []     # 동일 상방 — trgm 채널
 
     async with AsyncSessionLocal() as session:
         for tenant, items in by_tenant.items():
@@ -177,15 +201,20 @@ async def main() -> None:
                 dense_ids = per_query_ids[0]
                 bm25_ids = bm25.top(q, POOL)
 
+                trgm_ids = await _trgm_top(session, tenant, q, POOL)
                 injected = [c for c in bm25_ids if c not in set(dense_ids)][:BM25_INJECT]
+                trgm_injected = [c for c in trgm_ids if c not in set(dense_ids)][:BM25_INJECT]
                 if not (set(gold_ids) & set(dense_ids)) and (set(gold_ids) & set(bm25_ids)):
                     inject_wins.append(g["id"])
+                if not (set(gold_ids) & set(dense_ids)) and (set(gold_ids) & set(trgm_ids)):
+                    trgm_wins.append(g["id"])
                 cand = {
                     "baseline": dense_ids,
                     "bm25only": bm25_ids,
                     # union: dense 뒤에 주입 — norr(리랭크 없음)에서 dense 순위가 안 깨지게.
                     # 리랭크 on에선 순서 무관(cross-encoder가 쌍 독립 채점).
                     "hyb_union": dense_ids + injected,
+                    "hyb_trgm": dense_ids + trgm_injected,   # 전환 후보 채널(#128 사용자 결정)
                 }
                 for name, ids in cand.items():
                     got = await _final_ids(session, q, ids, use_rerank=True)
@@ -213,11 +242,12 @@ async def main() -> None:
 
     base = _agg(rows["baseline"])["by_type"]
     print("\n[type별 Hit@1 — baseline 대비 Δ]")
-    for v in ("hyb_union", "bm25only"):
+    for v in ("hyb_union", "hyb_trgm", "bm25only"):
         a = _agg(rows[v])["by_type"]
         deltas = {t: round(a[t]["hit_at_1"] - base[t]["hit_at_1"], 3) for t in sorted(base)}
         print(f"  {v}: { {t: d for t, d in deltas.items() if abs(d) >= 0.005} or '전 타입 ±0.005 미만' }")
     print(f"\n주입 상방(정답이 dense30 밖 & bm25 안): {len(inject_wins)}건 {inject_wins}")
+    print(f"주입 상방(정답이 dense30 밖 & trgm 안): {len(trgm_wins)}건 {trgm_wins}")
     print(f"행 저장: {OUT}")
 
 

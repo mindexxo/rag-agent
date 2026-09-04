@@ -104,6 +104,12 @@ class Settings(BaseSettings):
 
     # reranker (F99: TEI /rerank, cross-encoder 재정렬). on/off 토글 한 줄.
     rerank_enabled: bool = True                       # False면 dense-only 순서 그대로 (리랭크 skip). .env로 오버라이드 가능
+    # 하이브리드 어휘 채널(#128): pg_trgm 상위 후보 중 dense 미포함분을 리랭커 풀에 주입.
+    # 현행 모의 코퍼스 실측은 이득 0(주입 상방 0/450)·저하 노이즈 1문항 — 그럼에도 켜는 근거는
+    # 실코퍼스(상품코드·고유명 분포) 대비 선제 채널(사용자 결정, 이슈 #128). 자세한 수치는
+    # eval/report_hybrid_ablation_v2.md.
+    hybrid_trgm_enabled: bool = True
+    hybrid_trgm_inject: int = 15                      # dense 미포함 trgm 상위 주입 수 (어블레이션 조립과 동일)
     rerank_base_url: str = "http://localhost:38890"   # TEI 리랭커 서버 (bge-reranker-v2-m3, /rerank) — 실주소는 .env
     rerank_timeout: float = 30.0
 

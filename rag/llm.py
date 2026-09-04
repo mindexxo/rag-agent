@@ -4,7 +4,7 @@ vLLM의 OpenAI 호환 API를 래핑. RagService는 이 클라이언트만 바라
 URL·모델명을 config에서 주입하므로 OpenAI 호환 서버라면 환경 변수만 바꿔 교체할 수 있다
 (초기엔 Ollama로 돌렸고 vllm_base_url 기본값 11434가 그 잔재 — 운영은 사내 GPU vLLM).
 """
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 import httpx
 from openai import AsyncOpenAI
@@ -48,8 +48,17 @@ class LlmClient:
         )
         return response.choices[0].message.content
 
-    async def astream(self, messages: list[dict], extra_body: dict | None = None) -> AsyncIterator[str]:
-        """스트리밍 호출. vLLM이 토큰을 만들어내는 족족 yield."""
+    async def astream(self, messages: list[dict], extra_body: dict | None = None,
+                      on_finish_reason: Callable[[str], None] | None = None) -> AsyncIterator[str]:
+        """스트리밍 호출. vLLM이 토큰을 만들어내는 족족 yield.
+
+        on_finish_reason: 종료 사유(stop|length|...)를 받는 콜백 (#129). 마지막 청크는
+        delta 없이 finish_reason만 실려 와서 예전 `if delta:` 가드가 통째로 삼켰다 —
+        max_tokens에 잘려도(length) 호출부가 알 길이 없었다. 반환이 AsyncIterator[str]라
+        값을 실을 통로가 없어 콜백으로 뺐다. 이 모듈은 0층(다른 rag/ 모듈 import 금지)이라
+        지표 기록은 호출부 몫이다 — 여기서는 값만 올려보낸다. 콜백은 호출마다 새로 받으므로
+        shared_llm 싱글톤이어도 동시 요청 간 값이 섞이지 않는다(인스턴스 속성 방식을 피한 이유).
+        """
         stream = await self._client.chat.completions.create(
             messages=messages,
             stream=True,
@@ -57,9 +66,11 @@ class LlmClient:
         )
         try:
             async for chunk in stream:
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    yield delta
+                choice = chunk.choices[0]
+                if choice.delta.content:
+                    yield choice.delta.content
+                if choice.finish_reason and on_finish_reason:
+                    on_finish_reason(choice.finish_reason)
         finally:
             # 정상완료·예외(타임아웃 등)·소비 중단 어느 경우든 vLLM 연결을 닫아
             # 버려진 생성이 GPU를 물지 않게 한다 (P2 llm.py:44).

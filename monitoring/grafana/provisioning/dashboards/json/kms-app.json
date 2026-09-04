@@ -1,0 +1,38 @@
+{
+  "uid": "kms-app",
+  "title": "KMS 앱 (상담도우미 백엔드)",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "panels": [
+    {
+      "id": 1, "type": "timeseries", "title": "체감 TTFT p95 (route별 — prepare 포함, vLLM측과 다름)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(kms_ttft_seconds_bucket[5m])) by (le, route))", "legendFormat": "p95 {{route}}"}]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "체감 TTFT p50 (route별)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "targets": [{"expr": "histogram_quantile(0.50, sum(rate(kms_ttft_seconds_bucket[5m])) by (le, route))", "legendFormat": "p50 {{route}}"}]
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "vLLM finish_reason (사유별)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "targets": [{"expr": "sum(rate(kms_llm_finish_reason_total[5m])) by (reason)", "legendFormat": "{{reason}}"}]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "length 잘림 비율 (경보 후보 — 토스 사건2 유형)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "max": 1}, "overrides": []},
+      "targets": [{"expr": "sum(rate(kms_llm_finish_reason_total{reason=\"length\"}[5m])) / sum(rate(kms_llm_finish_reason_total[5m]))", "legendFormat": "length 비율"}]
+    }
+  ]
+}

@@ -224,6 +224,7 @@ class FakeLlm:
         # 시간(sleep) 대신 Event로 멈추는 이유: 테스트가 "정확히 N토큰 뒤"를 잡을 수 있어
         # CI에서 타이밍 플레이크가 나지 않는다.
         self.pause_after_tokens: int | None = None
+        self.finish_reason = 'stop'   # astream 완주 시 콜백에 전달 (#129) — 'length'로 바꿔 잘림 재현
         # 생성 실패 테스트용 — N번째 토큰에서 스트림이 끊긴 상황(LLM·네트워크 장애) 주입.
         # pause와 달리 재개가 없다: 실패 경로의 저장 규칙을 보려는 것이라 중단 자체가 목적.
         self.raise_after_tokens: int | None = None
@@ -271,7 +272,8 @@ class FakeLlm:
                               ensure_ascii=False)
         return self.answer
 
-    async def astream(self, messages: list[dict], extra_body: dict | None = None):
+    async def astream(self, messages: list[dict], extra_body: dict | None = None,
+                      on_finish_reason=None):
         kind = self._kind(messages)
         self.calls.append('stream:' + kind)
         self._record(kind, messages)
@@ -283,6 +285,10 @@ class FakeLlm:
                 self.paused.set()
                 await self.resume.wait()      # 취소 테스트가 여기서 task.cancel()을 건다
             yield token + ' '
+        # 실제 llm.py처럼 완주 시 종료 사유를 콜백으로 알린다 (#129).
+        # finish_reason 속성을 'length'로 바꾸면 잘림 시나리오를 흉내 낼 수 있다.
+        if on_finish_reason:
+            on_finish_reason(self.finish_reason)
 
 
 @pytest.fixture

@@ -14,7 +14,7 @@
 
 - **0층(leaf, 다른 `rag/` 모듈을 안 씀)**: `config.py`, `rag/models.py`, `rag/tokens.py`,
   `rag/prompt_texts.py`, `rag/llm.py`, `rag/embeddings.py`, `rag/chunking.py`,
-  `rag/index_text.py`, `rag/limiter.py`, `rag/otel.py`
+  `rag/index_text.py`, `rag/limiter.py`, `rag/otel.py`, `rag/metrics.py`
 - **중간층(조합)**: `rag/citation_labels.py`, `rag/clients.py`, `rag/llm_schemas.py`,
   `rag/turn_state.py`, `rag/cache.py`, `rag/reranker.py`, `rag/retriever.py`,
   `rag/stream_resume.py`, `rag/cancellation.py`, `rag/citation_tail.py`, `rag/documents.py`,
@@ -71,6 +71,9 @@ vLLM→인텐트·질의재작성·생성·캐시 재사용 판정, TEI→인덱
   헷갈리면 각 정의 위치를 직접 열어 확인하라. (별개로 `rag/citation_labels.py`는 "인용 번호
   순서"의 정의점이다 — 이름이 비슷하지만 다른 문제를 다룬다.)
 - `RetrievalResult.no_evidence`(원시 판정) ≠ `PreparedRag.no_evidence`(첨부 보정 후 실제 판정).
+- SSE `done`의 finish_reason(TurnStatus 어휘 — `rag/streaming.py`의 `TurnResult`)
+  ≠ vLLM 레벨 finish_reason(`stop`/`length` — `RagService.last_vllm_finish_reason`, SSE로
+  나가지 않고 지표 `kms_llm_finish_reason_total`·스팬 속성 전용, #129). 이름이 같지만 다른 축.
 - `Message.intent`(DB 저장값) ≠ `RouteDecision.intent`(LLM 출력, RETRY는 저장 전 소멸)
   ≠ `PreparedRag.intent_label`(파생).
 - 질의 4형제: `request.query` ≠ `original_query` ≠ `standalone_query` ≠ `display_query`.

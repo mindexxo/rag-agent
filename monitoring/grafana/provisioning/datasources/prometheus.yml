@@ -1,0 +1,9 @@
+# Grafana 데이터소스 프로비저닝 (#129) — UI 설정 없이 기동만으로 연결.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus          # 대시보드 JSON이 이 uid를 참조한다 — 바꾸면 같이 바꿀 것
+    type: prometheus
+    access: proxy
+    url: http://localhost:9090   # network_mode: host — 같은 호스트의 Prometheus
+    isDefault: true

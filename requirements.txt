@@ -27,6 +27,7 @@ httpx-sse==0.4.3
 # ---- 관측성 (#7: OTel 수동 계측 → Phoenix. endpoint 미설정 시 no-op) ----
 opentelemetry-sdk==1.44.0
 opentelemetry-exporter-otlp-proto-http==1.44.0
+prometheus-client==0.26.0   # #129: 앱 지표(/metrics) — vLLM·TEI는 자체 노출, 여긴 클라이언트만
 
 # ---- LLM (vLLM은 OpenAI 호환 API로 호출) ----
 openai==2.30.0

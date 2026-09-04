@@ -198,6 +198,10 @@ class RagService:
         self.session = session
         self.user_id = user_id          # 지표 씨앗 — user 메시지에 기록 (X-User-Id)
         self._llm = shared_llm          # 공용 싱글톤 재사용 (요청마다 HTTP 풀 생성 방지 — P1-12)
+        # vLLM 스트림 종료 사유(stop|length|...) — generate() 완주 후 streaming.py가 읽어
+        # 지표·스팬에 기록한다 (#129). TurnStatus finish_reason과 이름이 같지만 다른 축이다
+        # (AGENTS.md '헷갈리는 것'). 인스턴스가 요청 단위라 동시 요청 간 안 섞인다.
+        self.last_vllm_finish_reason: str | None = None
 
 
     async def prepare(
@@ -545,6 +549,10 @@ class RagService:
         # row가 JSON null(과거 저장분)일 수 있어 방어 — SQL NULL과 JSON null은 IS NOT NULL 판정이 다름
         return [attachment for row in rows if row for attachment in row]
 
+    def _set_vllm_finish(self, reason: str) -> None:
+        """astream의 on_finish_reason 콜백 (#129) — 값 보관만. 기록은 streaming.py가 한다."""
+        self.last_vllm_finish_reason = reason
+
     async def generate(self, prepared: PreparedRag) -> AsyncIterator[str]:
         """답변 토큰을 생성한다. 갈래는 셋뿐이다 (#36):
 
@@ -566,10 +574,14 @@ class RagService:
             yield answer
             return
 
+        self.last_vllm_finish_reason = None   # 호출마다 리셋 — 이전 턴 값 누출 방지 (#129)
+
         if prepared.route == "other":
             try:
                 user_msg = build_other_user_message(prepared.original_query, prepared.prior_turns)
-                async for token in self._llm.astream(build_chat_prompt(build_other_system_prompt(prepared.domain_hint), user_msg)):
+                async for token in self._llm.astream(
+                        build_chat_prompt(build_other_system_prompt(prepared.domain_hint), user_msg),
+                        on_finish_reason=self._set_vllm_finish):
                     yield token
             except Exception:
                 logger.exception('LLM error(other gen)')
@@ -592,12 +604,13 @@ class RagService:
         # 서버가 미지원(400 등, 첫 토큰 전에 터진다)이면 제약 없이 재시도(fail-open) —
         # 이때도 꼬리 파서의 번호 범위 검증은 동일하므로 조용한 오답 확정은 없다.
         constraint = build_citation_constraint(*prepared.citation_candidates)
-        stream = self._llm.astream(prompt, extra_body=constraint)
+        stream = self._llm.astream(prompt, extra_body=constraint,
+                                   on_finish_reason=self._set_vllm_finish)
         try:
             first = await anext(stream, None)
         except Exception:
             logger.warning('꼬리 제약 요청 실패 — 제약 없이 재시도 (fail-open, #56·#65)')
-            stream = self._llm.astream(prompt)
+            stream = self._llm.astream(prompt, on_finish_reason=self._set_vllm_finish)
             first = await anext(stream, None)
         if first is not None:
             yield first

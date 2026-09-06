@@ -3,7 +3,7 @@
 - folders        : 1단 폴더 (검색 참조 제어 전용 그룹)
 - documents      : 업로드된 원본 문서 (filename + version 단위)
 - faqs           : FAQ 항목 (검색 편입은 chunks로)
-- chunks         : 검색 단위 (dense 임베딩 보유 — dense-only, F99)
+- chunks         : 검색 단위 (dense 임베딩 F99 + 어휘 채널 lex_tsv/lex_len #135)
 - answer_cache   : LLM 응답 영속 캐시 (semantic 매칭 + 문서 단위 무효화)
 - conversations  : 멀티턴 대화 세션
 - messages       : 대화 내 한 턴 (user/assistant)
@@ -29,6 +29,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 from pgvector.sqlalchemy import Vector
+from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy import (
     ARRAY,
     BigInteger,
@@ -125,6 +126,8 @@ class Chunk(Base):
     heading_path: Mapped[list[str]] = mapped_column(ARRAY(Text), server_default="{}")                     # 헤딩 계층 경로 ["3. 배송지연", "3.2 지급기준"]
     meta: Mapped[dict] = mapped_column("metadata", JSONB, server_default="{}")                            # 자유 키-값 확장 영역 (DB 컬럼명은 metadata)
     dense: Mapped[Any] = mapped_column(Vector(1024))                                                      # BGE-M3 dense 임베딩 (1024차원)
+    lex_tsv: Mapped[Any] = mapped_column(TSVECTOR, nullable=True)                                         # 어휘 채널(#135): bigram 토큰 집합 (입력=임베딩과 동일 index_text) — GIN은 schema.sql
+    lex_len: Mapped[int | None]                                                                           # 위 토큰 총수(dl) — BM25 길이 정규화용 (token_count와 별개: 그건 LLM 토큰 자리)
 
     __table_args__ = (
         UniqueConstraint("document_id", "chunk_index"),

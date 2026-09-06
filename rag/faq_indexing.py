@@ -4,9 +4,10 @@
 문서 인제스션과 달리 파싱·청킹이 없어 워커 큐를 태우지 않는다 (임베딩 1회뿐).
 임베딩은 async(TEI AsyncClient) — 호출부(라우터)가 직접 await한다.
 """
-from sqlalchemy import delete
+from sqlalchemy import ARRAY, Text, cast, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from rag import lexical
 from rag.models import Chunk, Faq
 
 
@@ -26,13 +27,19 @@ async def reindex_faq(session: AsyncSession, faq: Faq, embedding) -> None:
     add만 하고 commit은 호출자가 담당한다.
     """
     await session.execute(delete(Chunk).where(Chunk.faq_id == faq.id))
+    text = build_faq_chunk_text(faq.question, faq.variants or [], faq.answer)
+    # 어휘 채널(#135) — FAQ는 프리픽스 없이 원문 그대로 (임베딩 입력과 동일한 비대칭,
+    # 어블레이션 코퍼스 조립도 같다). 청크와 같은 트랜잭션이라 별도 정합 관리 없음.
+    toks = lexical.bigrams(text)
     session.add(Chunk(
         faq_id=faq.id,
         document_id=None,
         tenant_id=faq.tenant_id,
         chunk_index=0,
-        text=build_faq_chunk_text(faq.question, faq.variants or [], faq.answer),
+        text=text,
         heading_path=[faq.question],
         page=None,
         dense=embedding.dense,
+        lex_tsv=func.array_to_tsvector(cast(lexical.tsvector_lexemes(toks), ARRAY(Text))),
+        lex_len=len(toks),
     ))

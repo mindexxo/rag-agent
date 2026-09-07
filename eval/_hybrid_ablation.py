@@ -39,6 +39,7 @@ from eval.retrieval import resolve_gold, score_one
 from eval.retrieval_v2 import DIFFICULTY, GOLD, METRICS, TYPES
 from rag.embeddings import embed_texts
 from rag.index_text import build_index_text
+from rag.lexical import bigrams as _bigrams   # 정의점은 운영 코드(#135) — 측정과 운영이 같은 함수
 from rag.models import Chunk, Document, Faq, Folder
 from rag.reranker import rerank
 from rag.retriever import (_fetch_chunk_map, _keep_single_table, _search_dense_per_query,
@@ -55,17 +56,6 @@ BM25_INJECT = 15    # dense30에 없는 bm25 상위 주입 수 — 리랭커 풀
 
 
 # ── BM25 (Okapi, 문자 bigram) ────────────────────────────────────────────────
-
-def _bigrams(text: str) -> list[str]:
-    """어절 내 bigram (#133 개선 — 구판은 공백 제거 후 절단이라 "반품 기간"→"품기" 같은
-    어절 경계를 넘는 가짜 조각을 만들었다). 1글자 어절은 그대로 토큰."""
-    out = []
-    for w in text.lower().split():
-        if len(w) < 2:
-            out.append(w)
-        else:
-            out.extend(w[i:i + 2] for i in range(len(w) - 1))
-    return out or [text.lower()]
 
 
 _kiwi = None

@@ -104,6 +104,13 @@ class Settings(BaseSettings):
 
     # reranker (F99: TEI /rerank, cross-encoder 재정렬). on/off 토글 한 줄.
     rerank_enabled: bool = True                       # False면 dense-only 순서 그대로 (리랭크 skip). .env로 오버라이드 가능
+    # 하이브리드 어휘 채널(#135): FTS(bigram tsvector) 회수 → 앱 BM25 재점수 → dense 미포함
+    # 상위를 리랭커 풀에 주입. 현행 모의 코퍼스 실측은 이득 0(주입 상방 0/450, 토크나이저
+    # bigram·kiwi 둘 다 — #133 A/B)이지만 실코퍼스(상품코드·고유명 분포) 대비 정식 채널로
+    # 켠다(사용자 결정). 통계(df·N·avgdl)는 질의 시 계산 — 테넌트 수만 청크 도달 시
+    # pg_search 설치 가능 여부 확인 후 불가면 통계 테이블 승격(이슈 #135 결정 기록).
+    hybrid_lexical_enabled: bool = True
+    hybrid_lexical_inject: int = 15                   # dense 미포함 BM25 상위 주입 수 (어블레이션 조립과 동일)
     rerank_base_url: str = "http://localhost:38890"   # TEI 리랭커 서버 (bge-reranker-v2-m3, /rerank) — 실주소는 .env
     rerank_timeout: float = 30.0
 

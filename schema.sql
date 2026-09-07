@@ -100,6 +100,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     heading_path  TEXT[]       NOT NULL DEFAULT '{}',
     metadata      JSONB        NOT NULL DEFAULT '{}'::jsonb,
     dense         VECTOR(1024) NOT NULL,
+    lex_tsv       TSVECTOR,             -- 어휘 채널(#135): 어절 내 bigram 토큰 집합 (입력=임베딩과 동일 index_text, 정의점 rag/lexical.py)
+    lex_len       INTEGER,              -- 위 토큰 총수(dl) — BM25 길이 정규화용. NULL=어휘 백필 전 (dense 검색은 무관)
     UNIQUE (document_id, chunk_index),
     CHECK ((document_id IS NOT NULL AND faq_id IS NULL) OR (document_id IS NULL AND faq_id IS NOT NULL))
 );
@@ -109,6 +111,13 @@ CREATE INDEX IF NOT EXISTS idx_chunks_tenant_doc
 CREATE INDEX IF NOT EXISTS idx_chunks_dense_hnsw
     ON chunks USING hnsw (dense vector_cosine_ops)
     WITH (m = 16, ef_construction = 64);
+-- 어휘 채널 FTS 회수용 (#135) — retriever._search_lexical의 @@ 매칭과 df 계산이 탄다
+CREATE INDEX IF NOT EXISTS idx_chunks_lex_gin ON chunks USING gin (lex_tsv);
+-- 기존 DB 반영(#135, 추가형 — 재구축 불필요):
+--   ALTER TABLE chunks ADD COLUMN IF NOT EXISTS lex_tsv TSVECTOR;
+--   ALTER TABLE chunks ADD COLUMN IF NOT EXISTS lex_len INTEGER;
+--   CREATE INDEX IF NOT EXISTS idx_chunks_lex_gin ON chunks USING gin (lex_tsv);
+-- 이후 기존 청크 백필(임베딩 재계산 없음·TEI 불필요): python -m eval.backfill_lexical --all
 
 -- ---------- LLM 응답 캐시 ----------
 -- 기존 DB 반영(#56): 인용 방식 전환(인라인 라벨 → 출처 꼬리)으로 옛 캐시 행(라벨 박힌

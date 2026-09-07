@@ -6,11 +6,11 @@ import mimetypes
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import select, delete
+from sqlalchemy import ARRAY, Text, cast, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import AsyncSessionLocal
-from rag import cache
+from rag import cache, lexical
 from rag.chunking import chunk_file
 from rag.embeddings import embed_texts
 from rag.index_text import build_index_text
@@ -81,9 +81,10 @@ async def index_pending_document(document_id: int) -> None:
             raise ValueError('추출된 텍스트가 없습니다 (빈 파일이거나 파싱 결과가 비어 있음)')
         # 임베딩 입력에만 '파일명 > 헤딩' 컨텍스트를 얹는다 (저장되는 chunk.text는 원문 유지).
         # 리랭커도 rag/reranker.py에서 같은 조립을 쓴다 — 두 단계가 같은 형태를 보게.
-        embeddings = await embed_texts([
-            build_index_text(c.text, filename, c.heading_path) for c in chunks
-        ])
+        index_texts = [build_index_text(c.text, filename, c.heading_path) for c in chunks]
+        embeddings = await embed_texts(index_texts)
+        # 어휘 채널(#135)도 같은 조립을 토큰화한다 — 세 소비자(임베딩·리랭커·BM25)가 같은 형태.
+        lex_tokens = [lexical.bigrams(t) for t in index_texts]
 
         # ── 3) 짧은 쓰기 — 청크 저장 + supersede + ready 승격 + 캐시 무효화 ──
         async with AsyncSessionLocal() as session:
@@ -92,7 +93,7 @@ async def index_pending_document(document_id: int) -> None:
                 return
 
             # 청크 insert (xlsx 청크는 meta에 is_table·sheet — retriever '한 시트만' 필터용)
-            for chunk, embedding in zip(chunks, embeddings):
+            for chunk, embedding, toks in zip(chunks, embeddings, lex_tokens):
                 session.add(Chunk(
                     document_id=doc.id,
                     tenant_id=doc.tenant_id,
@@ -102,6 +103,9 @@ async def index_pending_document(document_id: int) -> None:
                     heading_path=chunk.heading_path,
                     meta=chunk.meta or {},
                     dense=embedding.dense,
+                    # 어휘 채널(#135) — 청크와 같은 트랜잭션이라 별도 정합 관리가 없다
+                    lex_tsv=func.array_to_tsvector(cast(lexical.tsvector_lexemes(toks), ARRAY(Text))),
+                    lex_len=len(toks),
                   ))
 
             # supersede: 같은 filename의 다른 active 버전 내리기 + 청크 삭제

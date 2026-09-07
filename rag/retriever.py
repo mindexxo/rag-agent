@@ -1,4 +1,4 @@
-"""dense-only 검색 + 리랭커 + 근거 게이트 (F99).
+"""dense 검색 + 어휘 채널 주입(하이브리드 #135) + 리랭커 + 근거 게이트.
 
 흐름 — 각 단계가 함수 하나다 (번호 주석 대신 이름으로 좇는다):
 
@@ -6,6 +6,7 @@
       -> embed_texts                 쿼리 전체를 배치 1회로 임베딩
       -> _search_dense_per_query     쿼리별 dense top-N (cosine distance)
       -> (단일: distance 순 그대로 / 멀티: _rank_multi 로 RRF 융합)
+      -> _search_lexical             FTS 회수 + BM25 재점수 후보를 dense 뒤에 주입 (#135, 플래그)
       -> _fetch_chunk_map            본문·메타 IN절 1회 조회
       -> rerank / rerank_maxpool     cross-encoder 재정렬 (rag.reranker, settings.rerank_enabled)
       -> [:top_n]                    두 경로 공통 — 슬라이스는 항상 리랭크 뒤다
@@ -28,12 +29,14 @@ LLM 호출 없음. Stage D의 RagService가 이 결과를 받아 답변 생성 �
 """
 from dataclasses import dataclass, field
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, cast, func, or_, select
+from sqlalchemy.dialects.postgresql import TSQUERY
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from rag import otel
+from rag import lexical, otel
 from rag.embeddings import embed_texts
+from rag.index_text import build_index_text
 from rag.models import Chunk, Document, Faq, Folder
 
 DEFAULT_TOP_N = 20      # 후보 수 — retrieve_candidates 기본값과 retrieve() 호출부의 단일 출처
@@ -191,6 +194,65 @@ async def _search_dense_per_query(
     return per_query_ids, dense_results
 
 
+async def _search_lexical(
+    session: AsyncSession,
+    tenant_id: str,
+    query: str,
+    limit: int,
+) -> list[int]:
+    """어휘 채널 (#135) — FTS(bigram) 회수 → 앱 BM25 재점수 → 상위 limit개의 id.
+
+    dense가 놓친 어휘 일치(상품코드·고유명)를 리랭커 풀에 주입하는 용도. 최종 순위는
+    리랭커가 정하므로 무관 후보는 걸러진다. 산식·토크나이저는 rag/lexical.py가 정의점.
+
+    통계는 저장하지 않는다(#135 B안): N·avgdl은 집계 1방, df는 회수된 후보에서 센다 —
+    질의 토큰을 가진 청크는 전부 회수되므로(OR 매칭) 후보 내 df가 곧 코퍼스 df다.
+    회수가 사실상 테넌트 전 청크여도 의도다 — 현 규모(테넌트당 ~100청크)에선 전수
+    재점수가 수 ms고, 이 비용이 커지는 규모(수만 청크)가 곧 통계 테이블/pg_search 승격
+    트리거다(config 주석). BM25 입력은 임베딩과 동일 조립(문서=파일명>헤딩 프리픽스,
+    FAQ=원문) — lex_len이 그 조립의 토큰 수라 tf·dl·avgdl의 기준이 일관된다.
+
+    백필 전 청크(lex_tsv NULL)는 이 채널에 안 잡힌다(@@가 NULL이면 거짓) — dense
+    검색은 무관하므로 리콜이 조용히 죽지 않고, 백필(eval/backfill_lexical)이 닫는다.
+    """
+    q_tokens = lexical.bigrams(query)
+    if not q_tokens:
+        return []
+    tsq = cast(lexical.tsquery_or(q_tokens), TSQUERY)
+
+    # N·avgdl — 검색 가능 + 어휘 색인된 풀 기준 (dense와 같은 searchable 정의)
+    n_docs, avgdl = (await session.execute(
+        select(func.count(), func.avg(Chunk.lex_len))
+        .outerjoin(Document, Chunk.document_id == Document.id)
+        .outerjoin(Folder, Document.folder_id == Folder.id)
+        .outerjoin(Faq, Chunk.faq_id == Faq.id)
+        .where(Chunk.tenant_id == tenant_id)          # 격리 강제 — dense 검색과 동일 경로
+        .where(_searchable_condition())
+        .where(Chunk.lex_len.is_not(None))
+    )).one()
+    if not n_docs:
+        return []
+
+    rows = (await session.execute(
+        select(Chunk.id, Chunk.text, Chunk.heading_path, Document.filename)
+        .outerjoin(Document, Chunk.document_id == Document.id)
+        .outerjoin(Folder, Document.folder_id == Folder.id)
+        .outerjoin(Faq, Chunk.faq_id == Faq.id)
+        .where(Chunk.tenant_id == tenant_id)
+        .where(_searchable_condition())
+        .where(Chunk.lex_tsv.op('@@')(tsq))
+    )).all()
+    cand_tokens = {
+        r.id: lexical.bigrams(
+            r.text if r.filename is None                 # FAQ — 프리픽스 없음 (인제스션과 동일)
+            else build_index_text(r.text, r.filename, list(r.heading_path or []))
+        )
+        for r in rows
+    }
+    ranked = lexical.bm25_rank(query, cand_tokens, int(n_docs), float(avgdl or 0.0))
+    return ranked[:limit]
+
+
 def _rank_multi(per_query_ids: list[list[int]]) -> list[int]:
     """쿼리 확장(#5) 순위 — RRF로 union 전체를 정렬한다. 자르지 않는다.
 
@@ -302,10 +364,20 @@ async def retrieve_candidates(
     multi = len(per_query_ids) > 1
     top_ids = _rank_multi(per_query_ids) if multi else per_query_ids[0]
 
-    # 빈 결과 → 빈 후보 반환 (no_results 판정은 apply_gate가)
+    # 빈 결과 → 빈 후보 반환 (no_results 판정은 apply_gate가).
+    # dense가 비면 어휘 주입도 안 한다 — 게이트 신호(top-1 거리)가 dense 기준이라,
+    # 어휘 후보만으로 채우면 '근거 없음' 판정이 조용히 무력화된다.
     if not top_ids:
         return RetrievalCandidates(chunks=[], top_dense_distance=999.0,
                                    query_embedding=query_embedding)
+
+    # 하이브리드 어휘 주입 (#135) — 원본 쿼리 기준 BM25 상위 중 dense 미포함분을 뒤에 붙인다.
+    # '뒤에'가 계약이다: 리랭크 꺼짐/실패 폴백에서 dense 순위가 깨지지 않아야 한다
+    # (리랭크 on에선 cross-encoder가 쌍 독립 채점이라 순서 무관). 슬라이스는 여전히 리랭크 뒤.
+    if settings.hybrid_lexical_enabled:
+        lex_ids = await _search_lexical(session, tenant_id, query, candidates_per_branch)
+        seen = set(top_ids)
+        top_ids = top_ids + [cid for cid in lex_ids if cid not in seen][:settings.hybrid_lexical_inject]
 
     chunk_map = await _fetch_chunk_map(session, top_ids)
     result = [chunk_map[cid] for cid in top_ids]      # 순위 순서 그대로 재배열

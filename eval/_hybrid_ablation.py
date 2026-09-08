@@ -13,6 +13,21 @@
   + 채널 단독 회수력(top30 리콜·주입 상방)은 리랭크 없이 별도 계측
 kiwi(kiwipiepy)는 eval 전용 선택 의존 — 미설치면 kiwi 채널만 스킵.
 
+`--os` (#139, OpenSearch A/B): 검색 계층만 OpenSearch로 바꾼 변형을 같은 표에 얹는다.
+같은 청크·같은 벡터(재계산 금지)·같은 리랭커·같은 채점이므로 **검색 계층만이 변인**이다.
+  os_knn          OS kNN 30 → 리랭크 → top20            (dense 채널 대체)
+  hyb_os_bigram   dense30 + OS BM25(bigram) 주입 15      (BM25 구현만 다름 — 토큰 동일)
+  hyb_os_nori     dense30 + OS BM25(Nori) 주입 15        (토크나이저만 다름)
+  os_hybrid       OS hybrid(kNN+BM25 Nori) + 정규화 융합 30
+읽는 법 — 각 대조가 한 변인만 분리한다:
+  os_knn        vs baseline       → kNN 구현 차이 (pgvector HNSW vs OS lucene HNSW)
+  hyb_os_bigram vs hyb_bigram     → BM25 구현 차이 (Lucene vs 앱 계산). 토큰 동일
+  hyb_os_nori   vs hyb_os_bigram  → 토크나이저 차이 (Nori vs bigram). BM25 엔진 동일
+  os_hybrid     vs os_knn         → 엔진 융합의 상방
+게이트 3(kNN 동형성)을 먼저 찍는다 — os_knn 후보가 dense 후보와 거의 같아야 한다(같은 벡터·
+같은 코사인·같은 m/ef_construction·같은 색인 집합). 크게 벌어지면 품질 차이가 아니라 배선
+오류다. 매핑·색인·잔차의 근거는 eval/_os_backend.py, 색인·나머지 게이트는 eval/_os_index.py.
+
 BM25 = 순수 Python Okapi(k1=1.5, b=0.75), 토크나이저 = 문자 bigram(pg_bigm 프리뷰 —
 구 어블레이션과 동일). 입력 텍스트 = 임베딩과 동일한 build_index_text(파일명>헤딩+본문).
 후보 코퍼스 = dense와 같은 _searchable_condition 풀 (변인 격리).
@@ -22,8 +37,10 @@ gold_ids 분포를 바꾼다 — resolve_gold docstring), score_one(ks=(5,20)), 
 리랭크·융합 뒤 한 번, _keep_single_table 동일 위치. baseline 파일은 덮어쓰지 않고
 eval/results/hybrid_ablation_v2.jsonl 에 변형별 행을 저장한다.
 
-실행: python -m eval._hybrid_ablation   (의존: DB + TEI 임베딩·리랭커. LLM 불필요)
+실행: python -m eval._hybrid_ablation           (의존: DB + TEI 임베딩·리랭커. LLM 불필요)
+      python -m eval._hybrid_ablation --os      (+ OpenSearch — eval._os_index 선행 필요)
 """
+import argparse
 import asyncio
 import json
 import math
@@ -46,6 +63,8 @@ from rag.retriever import (_fetch_chunk_map, _keep_single_table, _search_dense_p
                            _searchable_condition)
 
 OUT = Path(__file__).resolve().parent / "results" / "hybrid_ablation_v2.jsonl"
+# --os는 별도 파일에 쓴다 — 기존 눈금 파일(#128 리포트의 근거)을 덮지 않는다.
+OUT_OS = Path(__file__).resolve().parent / "results" / "os_ablation_v1.jsonl"
 POOL = 30           # 채널별 후보 수 = candidates_per_branch 기본값과 동일
 TOP_N = 20
 # 가중 RRF+상위30 컷 변형은 v2 1차 실행에서 조립 결함으로 판명 — dense 우세 가중에선
@@ -115,6 +134,25 @@ class Bm25:
         return [cid for cid, _ in sorted(scores.items(), key=lambda x: -x[1])[:n]]
 
 
+class OsBm25Channel:
+    """OpenSearch BM25 어휘 채널 (#139) — Bm25와 같은 `.top(query, n)` 계약.
+
+    같은 인터페이스로 맞춘 이유: 아래 측정 루프가 채널 종류를 몰라도 되게 해서, 앱 BM25와
+    엔진 BM25가 **같은 위치·같은 주입 규칙**으로 비교되도록 하는 것이다.
+
+    pretok=True면 질의를 rag.lexical.bigrams()로 잘라 공백으로 이어 넘긴다 — 필드
+    analyzer가 whitespace라 색인 토큰과 바이트 단위로 같아진다(_os_backend.LEX_BIGRAM_FIELD 주석).
+    """
+
+    def __init__(self, os_client, tenant: str, field: str, *, pretok: bool):
+        self.c, self.tenant, self.field, self.pretok = os_client, tenant, field, pretok
+
+    def top(self, query: str, n: int) -> list[int]:
+        import eval._os_backend as B
+        q = " ".join(_bigrams(query)) if self.pretok else query
+        return B.bm25_ids(self.c, self.tenant, self.field, q, n)
+
+
 async def _load_corpus(session, tenant: str) -> dict[int, str]:
     """BM25 코퍼스 — dense와 동일한 searchable 풀. 텍스트는 임베딩 입력과 동일 조립."""
     stmt = (
@@ -166,6 +204,11 @@ def _agg(rows_v: list[dict]) -> dict:
 
 
 async def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--os", action="store_true",
+                    help="OpenSearch 변형 추가 (#139). eval._os_index 선행 색인 필요")
+    args = ap.parse_args()
+
     gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
     target = [g for g in gold if g["type"] in TYPES]
     by_tenant = defaultdict(list)
@@ -173,11 +216,23 @@ async def main() -> None:
         by_tenant[row_tenant(g)].append(g)
 
     variants = ["baseline", "hyb_bigram", "hyb_kiwi"]
+    os_client = None
+    if args.os:
+        import eval._os_backend as B
+        os_client = B.client()
+        if not os_client.indices.exists(B.INDEX):
+            raise SystemExit(f"인덱스 {B.INDEX} 없음 — python -m eval._os_index --recreate 먼저")
+        B.ensure_pipeline(os_client)
+        variants += ["os_knn", "hyb_os_bigram", "hyb_os_nori", "os_hybrid"]
+        print(f"OpenSearch {os_client.info()['version']['number']} · 인덱스 {B.INDEX}")
     rows: dict[str, list[dict]] = {v: [] for v in variants}
     skipped = 0
+    # 게이트 3 — kNN 동형성. os_knn 후보가 dense 후보와 거의 같아야 한다(같은 벡터·같은 코사인·
+    # 같은 HNSW 파라미터·같은 색인 집합). 벌어지면 품질 차이가 아니라 배선 오류다.
+    knn_gate = {"n": 0, "overlap": 0, "top1_same": 0}
     # 토크나이저 A/B (#133): 채널 단독 회수력 + 주입 상방을 리랭크 없이 계측
-    chan_stats = {c: {"recall30": 0, "uplift": 0, "uplift_ids": []}
-                  for c in ("bigram", "kiwi")}
+    chan_names = ["bigram", "kiwi"] + (["os_bigram", "os_nori"] if args.os else [])
+    chan_stats = {c: {"recall30": 0, "uplift": 0, "uplift_ids": []} for c in chan_names}
     try:
         _kiwi_tokens("초기화")
         kiwi_ok = True
@@ -191,6 +246,11 @@ async def main() -> None:
             channels = {"bigram": Bm25(corpus, tokenize=_bigrams)}
             if kiwi_ok:
                 channels["kiwi"] = Bm25(corpus, tokenize=_kiwi_tokens)
+            if os_client is not None:
+                channels["os_bigram"] = OsBm25Channel(
+                    os_client, tenant, B.LEX_BIGRAM_FIELD, pretok=True)
+                channels["os_nori"] = OsBm25Channel(
+                    os_client, tenant, B.NORI_FIELD, pretok=False)
             resolved = await resolve_gold(session, tenant, items)
             print(f"[{tenant}] 청크 {len(corpus)} · 문항 {len(items)}", flush=True)
             for g in items:
@@ -205,6 +265,16 @@ async def main() -> None:
                 dense_hit = bool(gold_ids & set(dense_ids))
 
                 cand = {"baseline": dense_ids}
+                if os_client is not None:
+                    vec = list(q_embs[0].dense)
+                    os_knn = B.knn_ids(os_client, tenant, vec, POOL)
+                    cand["os_knn"] = os_knn
+                    cand["os_hybrid"] = B.hybrid_ids(
+                        os_client, tenant, vec, q, B.NORI_FIELD, POOL)
+                    knn_gate["n"] += 1
+                    knn_gate["overlap"] += len(set(dense_ids) & set(os_knn)) / max(len(dense_ids), 1)
+                    knn_gate["top1_same"] += bool(dense_ids and os_knn
+                                                  and dense_ids[0] == os_knn[0])
                 for cname, bm in channels.items():
                     ch_ids = bm.top(q, POOL)
                     st = chan_stats[cname]
@@ -225,28 +295,46 @@ async def main() -> None:
     if not any(rows.values()):
         raise SystemExit("결과 0행 — DB/코퍼스 상태 확인 (파일 미저장)")
 
+    if knn_gate["n"]:
+        ov = knn_gate["overlap"] / knn_gate["n"]
+        t1 = knn_gate["top1_same"] / knn_gate["n"]
+        # 임계 0.95: 같은 벡터·같은 코사인·같은 m/ef_construction·같은 색인 집합이므로 후보가
+        # 거의 같아야 한다. 남는 차이는 HNSW 탐색의 근사성(ef_search 기본값이 두 엔진에서
+        # 다르다)뿐이다. 이보다 낮으면 space_type·정규화·필터 중 하나가 어긋난 것이다.
+        verdict = "통과" if ov >= 0.95 else "실패 — 배선을 먼저 고칠 것"
+        print(f"\n[게이트 3 — kNN 동형성] 후보 겹침 {ov:.3f} · top1 일치 {t1:.3f}"
+              f" ({knn_gate['n']}문항) → {verdict}")
+        if ov < 0.95:
+            # **결과 파일을 쓰지 않고 멈춘다.** 콘솔 경고만 찍고 jsonl을 남기면, 나중에 그
+            # 파일만 집어다 분석하는 사람이 배선 오류를 품질 차이로 오독한다. 게이트 통과
+            # 전에는 수치를 남기지도 않는 것이 AGENTS.md 측정 규율이다(_os_index도 동일).
+            raise SystemExit(
+                "게이트 3 실패 — os_knn 후보가 dense 후보와 다르다. 결과를 저장하지 않았다.\n"
+                "  space_type(cosinesimil)·벡터 정규화·테넌트 필터·ef_search를 확인할 것.")
+
+    out_path = OUT_OS if args.os else OUT
     out_rows = [{"variant": v, **r} for v in variants for r in rows[v]]
-    OUT.parent.mkdir(exist_ok=True)
-    OUT.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in out_rows))
+    out_path.parent.mkdir(exist_ok=True)
+    out_path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in out_rows))
 
     print(f"\n측정 {datetime.now():%Y-%m-%d %H:%M} · 대상 {len(rows['baseline'])}문항 (skip {skipped})")
-    print(f"{'variant':<13}{'R@5':>7}{'Hit@1':>8}{'MRR':>7}{'R@5 hard':>10}{'Hit@1 hard':>12}")
+    print(f"{'variant':<15}{'R@5':>7}{'Hit@1':>8}{'MRR':>7}{'R@5 hard':>10}{'Hit@1 hard':>12}")
     for v in variants:
         if not rows[v]:
             continue
         a = _agg(rows[v])
         hard = a["by_difficulty"].get("hard_new", {})
-        print(f"{v:<13}{a['recall_at_5']:>7.3f}{a['hit_at_1']:>8.3f}{a['mrr']:>7.3f}"
+        print(f"{v:<15}{a['recall_at_5']:>7.3f}{a['hit_at_1']:>8.3f}{a['mrr']:>7.3f}"
               f"{hard.get('recall_at_5', 0):>10.3f}{hard.get('hit_at_1', 0):>12.3f}")
 
     n = len(rows["baseline"])
-    print("\n[토크나이저 채널 단독 비교 — 리랭크 무관 회수력]")
+    print("\n[채널 단독 비교 — 리랭크 무관 회수력]")
     for cname, st in chan_stats.items():
         if cname == "kiwi" and not kiwi_ok:
             continue
         print(f"  {cname:<7} 단독 리콜(top30): {st['recall30']}/{n} ({st['recall30']/n:.1%})"
               f" · 주입 상방(dense 실패 구제): {st['uplift']}건 {st['uplift_ids']}")
-    print(f"행 저장: {OUT}")
+    print(f"행 저장: {out_path}")
 
 
 if __name__ == "__main__":

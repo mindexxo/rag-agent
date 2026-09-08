@@ -3,7 +3,11 @@
 - 측정: 2026-09-08, `main bad4e24` 기준 브랜치 `feat/issue-139-opensearch`
 - 실행: `python -m eval._os_index --recreate` → `python -m eval._hybrid_ablation --os`
   (의존: DB + TEI 임베딩·리랭커 + 로컬 OpenSearch. LLM 불필요)
-- 대상: gold v2+hard95 450문항(멀티턴 제외 TYPES 10종), skip 0 · 코퍼스 602 searchable 청크
+- 대상: gold v2+hard95 450문항(멀티턴 제외 TYPES 10종), skip 0
+- 코퍼스: **재측정 시점 813 searchable 청크**(골드 6테넌트 504 + aromatica 92 + inticube 211 + 잡 6).
+  1차 측정은 602 청크 스냅샷이었다 — 개발계 DB를 공유하는 다른 세션이 그 사이 #138 실문서
+  211청크(`inticube`)를 넣었다. **표시 지표와 채널 단독 리콜이 두 스냅샷에서 전부 동일했다**
+  (아래 "df 스코프" 절). 골드 테넌트의 청크는 변하지 않았고 모든 검색이 테넌트 필터를 탄다.
 - 엔진: OpenSearch **2.18.0**(Lucene 9.12.0) + `analysis-nori` — NCP Search Engine Service가
   제공하는 최상단 버전. 업스트림은 3.8(2026-08)이지만 운영에서 못 쓸 버전으로 재면 무의미하다.
 - 환경: **로컬 맥 컨테이너.** 그래서 **성능 축(색인 처리량·검색 지연·메모리)은 재지 않았다** —
@@ -84,7 +88,7 @@ R@5 0.989 · Hit@1 0.633으로 미동이 없다 — 그 병목은 구판↔개�
 - **`hyb_os_bigram` vs `hyb_bigram` → BM25 구현 차이: 없다.** 세 지표·건수·채널 단독 리콜(436)이
   전부 같다. 토큰을 바이트 단위로 같게 맞췄으니 남은 변인은 구현뿐인데, 예상했던 잔차
   (Lucene의 인덱스 전체 df vs 우리 앱의 테넌트 단위 df, Lucene의 길이 노름 양자화 —
-  `eval/_os_backend.py` docstring)가 top30 순위에는 나타나지 않았다.
+  `rag/opensearch.py` docstring)가 top30 순위에는 나타나지 않았다.
   **"우리가 파이썬으로 계산하는 BM25가 Lucene보다 못하다"는 가설은 이 규모에서 기각이다.**
 - **`hyb_os_nori` vs `hyb_os_bigram` → 토크나이저 차이: 잡음 수준.** 단독 리콜 438 vs 436(2문항),
   최종 지표는 Nori가 1문항 **낮다**. #133이 bigram↔kiwi에서 얻은 "사실상 무차이" 결론이
@@ -99,6 +103,26 @@ R@5 0.989 · Hit@1 0.633으로 미동이 없다 — 그 병목은 구판↔개�
 정답은 단순변심 반품 불가 조항이다. 어휘 채널이 구어체 패러프레이즈를 깎는 기존 패턴
 (`eval/report_hybrid_ablation_v2.md`의 "paraphrase −3.3%p", 임베딩 비교 때의 "paraphrase는
 sparse가 깎음")과 같은 방향이고, 형태소 분석기 3종이 공통으로 그렇다는 점이 새로 확인된 것이다.
+
+## df 스코프 — 위험은 실재하지만 이번엔 영향이 0이었다
+
+단일 인덱스라 Lucene의 df가 **인덱스 전체**다. 앱 BM25는 통계를 테넌트 단위로 잡으므로
+(`_search_lexical`의 N·avgdl이 `WHERE tenant_id`) 이 성질이 없다. 즉 OpenSearch 쪽에서는
+**다른 테넌트의 데이터가 우리 테넌트의 idf를 움직인다.**
+
+이 위험을 실물로 겪었다: 측정 중 다른 세션이 실문서 211청크를 넣어 색인 대상이 602 → 813으로
+**35% 늘었다**(골드 테넌트와 무관한 `inticube`). 재색인 후 전량 재측정한 결과 —
+
+**표시 지표(R@5·Hit@1·MRR·hard)와 채널 단독 리콜(436/439/436/438)이 소수점까지 전부 동일했다.**
+(문항 단위 동일성은 1차 원자료를 덮어써서 확인하지 못했다 — 표시 지표 수준의 진술이다.)
+
+읽는 법: 이 규모·이 혼합에서는 df 공유의 실측 민감도가 0이었다. 위험이 사라진 것이 아니라
+**측정되지 않았다**는 뜻이다. 테넌트 수와 코퍼스 편차가 커지면 다시 봐야 하고, 대안은
+테넌트별 인덱스다(그러면 이 성질 자체가 없어진다). 운영 전환 선결 조건으로 기록했다
+(`config.py`의 `search_backend` 주석).
+
+부수적으로, 이 사건은 **개발계 DB가 공유 자원**이라는 것을 다시 보여줬다. 측정 결과를 인용할
+때 커밋·축과 함께 **코퍼스 스냅샷**을 적어야 하는 이유다.
 
 ## OpenSearch 2.18의 실측 결함 — hybrid × 형태소 분석기
 
@@ -179,6 +203,32 @@ read past EOF (pos=2147483647) ... [slice=_0.nvd]     # 2147483647 = Lucene NO_M
   강제로 재려면 `index.knn.advanced.approximate_threshold`를 0으로 내려야 하는데, 그건
   실제로 운영할 구성이 아니다.
 
+## 운영 백엔드 구현 (#139 완료 기준, 2026-09-08 추가)
+
+어블레이션만으로는 "전환이 가능한가"를 코드로 증명하지 못하므로 운영 검색 경로에도 백엔드를
+넣었다. **기본값은 `pg`이고 운영 전환 선결 조건이 남아 있다**(`config.py`의 `search_backend`).
+
+- `rag/opensearch.py` — 매핑·질의 조립의 정의점. eval도 이것을 쓴다(`rag/`는 `eval/`을 import할
+  수 없으므로 방향이 이쪽이다). 운영과 측정이 같은 매핑·같은 질의 절을 공유한다.
+- `rag/retriever.py` — `settings.search_backend`로 후보 회수 **두 개만** 갈아끼운다
+  (`_dense_candidates`·`_lexical_candidates`). 멀티쿼리 RRF 융합(#5)·리랭커·표 필터·top_n
+  슬라이스·게이트 판정·`_fetch_chunk_map`은 백엔드와 무관해 그대로다.
+- **청크 본문·메타는 어느 백엔드든 PG에서 읽는다.** PG가 정본이라 색인이 낡아도 인용
+  파일명·버전·페이지가 틀리지 않는다.
+- 게이트 신호는 `2 - 2*score`로 환산한다 — 실측으로 pgvector `cosine_distance`와 소수점
+  6자리까지 일치(5건). 대조표를 `tests/test_opensearch_pure.py`에 고정했다.
+
+**검증**: 운영 `retrieve()`를 두 백엔드로 각각 호출해 **12문항 전부 top-5 chunk id가 완전
+동일**했다(2026-09-08, 813 스냅샷).
+
+구현 중 발견한 결함 하나를 고쳤다: `result = [chunk_map[cid] for cid in top_ids]`는 외부 색인
+백엔드에서 **KeyError로 검색 전체를 죽인다**(색인이 낡아 삭제된 청크 id를 돌려주는 경우).
+`if cid in chunk_map` 가드를 넣었다 — PG 경로는 id가 PG에서 나와 집합이 같으므로 동작 보존이고,
+"PG에 없는 것은 결과에 못 들어온다"는 안전판이 된다.
+
+엔진 융합(`hybrid` + normalization-processor)으로 바꾸지 않은 이유: 실측에서 우리 union 주입과
+결과가 동일했고(`os_hybrid` ≡ `hyb_os_nori`), 바꾸면 멀티쿼리 경로를 다시 설계해야 한다.
+
 ## 재실행
 
 ```bash
@@ -186,6 +236,9 @@ docker compose -f docker-compose.opensearch.yml up -d --build   # 2.18 + analysi
 python -m eval._os_index --recreate                             # PG→OS 색인 + 게이트 1·2·4·5
 python -m eval._hybrid_ablation --os                            # 게이트 3 + 7 variant
 ```
+
+운영 경로를 OpenSearch로 돌려보려면 `.env`에 `SEARCH_BACKEND=opensearch` (기본은 `pg`).
+색인은 스냅샷이므로 문서 업로드·삭제·검색토글 뒤에는 `_os_index`를 다시 돌려야 한다.
 
 매핑을 바꿨으면 `--recreate`가 필수다(매핑은 사후 변경 불가). 원자료는
 `eval/results/os_ablation_v1.jsonl`, 게이트는 `eval/results/os_index_gates.md`(둘 다 gitignore).

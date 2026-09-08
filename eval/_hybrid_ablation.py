@@ -26,7 +26,8 @@ kiwi(kiwipiepy)는 eval 전용 선택 의존 — 미설치면 kiwi 채널만 스
   os_hybrid     vs os_knn         → 엔진 융합의 상방
 게이트 3(kNN 동형성)을 먼저 찍는다 — os_knn 후보가 dense 후보와 거의 같아야 한다(같은 벡터·
 같은 코사인·같은 m/ef_construction·같은 색인 집합). 크게 벌어지면 품질 차이가 아니라 배선
-오류다. 매핑·색인·잔차의 근거는 eval/_os_backend.py, 색인·나머지 게이트는 eval/_os_index.py.
+오류다. 매핑·질의·잔차의 정의점은 rag/opensearch.py(운영 백엔드와 동일), 색인·나머지 게이트는
+eval/_os_index.py.
 
 BM25 = 순수 Python Okapi(k1=1.5, b=0.75), 토크나이저 = 문자 bigram(pg_bigm 프리뷰 —
 구 어블레이션과 동일). 입력 텍스트 = 임베딩과 동일한 build_index_text(파일명>헤딩+본문).
@@ -141,16 +142,16 @@ class OsBm25Channel:
     엔진 BM25가 **같은 위치·같은 주입 규칙**으로 비교되도록 하는 것이다.
 
     pretok=True면 질의를 rag.lexical.bigrams()로 잘라 공백으로 이어 넘긴다 — 필드
-    analyzer가 whitespace라 색인 토큰과 바이트 단위로 같아진다(_os_backend.LEX_BIGRAM_FIELD 주석).
+    analyzer가 whitespace라 색인 토큰과 바이트 단위로 같아진다(rag/opensearch.py의 LEX_BIGRAM_FIELD 주석).
     """
 
     def __init__(self, os_client, tenant: str, field: str, *, pretok: bool):
         self.c, self.tenant, self.field, self.pretok = os_client, tenant, field, pretok
 
-    def top(self, query: str, n: int) -> list[int]:
-        import eval._os_backend as B
+    async def top(self, query: str, n: int) -> list[int]:
+        from rag import opensearch as B
         q = " ".join(_bigrams(query)) if self.pretok else query
-        return B.bm25_ids(self.c, self.tenant, self.field, q, n)
+        return await B.bm25_ids(self.c, self.tenant, self.field, q, n)
 
 
 async def _load_corpus(session, tenant: str) -> dict[int, str]:
@@ -218,13 +219,16 @@ async def main() -> None:
     variants = ["baseline", "hyb_bigram", "hyb_kiwi"]
     os_client = None
     if args.os:
-        import eval._os_backend as B
+        from config import settings
+        from rag import opensearch as B
         os_client = B.client()
-        if not os_client.indices.exists(B.INDEX):
-            raise SystemExit(f"인덱스 {B.INDEX} 없음 — python -m eval._os_index --recreate 먼저")
-        B.ensure_pipeline(os_client)
+        if not await os_client.indices.exists(settings.opensearch_index):
+            raise SystemExit(f"인덱스 {settings.opensearch_index} 없음 — "
+                             "python -m eval._os_index --recreate 먼저")
+        await B.ensure_pipeline(os_client)
         variants += ["os_knn", "hyb_os_bigram", "hyb_os_nori", "os_hybrid"]
-        print(f"OpenSearch {os_client.info()['version']['number']} · 인덱스 {B.INDEX}")
+        info = await os_client.info()
+        print(f"OpenSearch {info['version']['number']} · 인덱스 {settings.opensearch_index}")
     rows: dict[str, list[dict]] = {v: [] for v in variants}
     skipped = 0
     # 게이트 3 — kNN 동형성. os_knn 후보가 dense 후보와 거의 같아야 한다(같은 벡터·같은 코사인·
@@ -267,16 +271,19 @@ async def main() -> None:
                 cand = {"baseline": dense_ids}
                 if os_client is not None:
                     vec = list(q_embs[0].dense)
-                    os_knn = B.knn_ids(os_client, tenant, vec, POOL)
+                    os_knn = await B.knn_ids(os_client, tenant, vec, POOL)
                     cand["os_knn"] = os_knn
-                    cand["os_hybrid"] = B.hybrid_ids(
+                    cand["os_hybrid"] = await B.hybrid_ids(
                         os_client, tenant, vec, q, B.NORI_FIELD, POOL)
                     knn_gate["n"] += 1
                     knn_gate["overlap"] += len(set(dense_ids) & set(os_knn)) / max(len(dense_ids), 1)
                     knn_gate["top1_same"] += bool(dense_ids and os_knn
                                                   and dense_ids[0] == os_knn[0])
                 for cname, bm in channels.items():
-                    ch_ids = bm.top(q, POOL)
+                    # OS 채널만 코루틴 — 엔진 호출이 async라서다(rag/opensearch.py).
+                    # 앱 BM25(Bm25)는 인메모리 계산이라 동기 그대로 둔다.
+                    ch_ids = (await bm.top(q, POOL) if isinstance(bm, OsBm25Channel)
+                              else bm.top(q, POOL))
                     st = chan_stats[cname]
                     st["recall30"] += bool(gold_ids & set(ch_ids))
                     if not dense_hit and (gold_ids & set(ch_ids)):
@@ -335,6 +342,8 @@ async def main() -> None:
         print(f"  {cname:<7} 단독 리콜(top30): {st['recall30']}/{n} ({st['recall30']/n:.1%})"
               f" · 주입 상방(dense 실패 구제): {st['uplift']}건 {st['uplift_ids']}")
     print(f"행 저장: {out_path}")
+    if os_client is not None:
+        await os_client.close()
 
 
 if __name__ == "__main__":

@@ -114,6 +114,25 @@ class Settings(BaseSettings):
     rerank_base_url: str = "http://localhost:38890"   # TEI 리랭커 서버 (bge-reranker-v2-m3, /rerank) — 실주소는 .env
     rerank_timeout: float = 30.0
 
+    # 검색 백엔드 (#139) — 'pg' | 'opensearch'. **기본은 pg이고, 바꾸지 마라.**
+    # 'opensearch'는 "PG 단일 스택 대신 검색 엔진을 쓰면 나은가"를 실측하기 위한 실험 경로다.
+    # 현행 근거로는 이득이 0이다(eval/report_os_ablation_v1.md: kNN 구현 차이 0·BM25 구현 차이
+    # 0·토크나이저 차이 잡음). 채택/기각 판정은 실문서(#138) 대기.
+    #
+    # **운영으로 켜기 전 선결 조건 두 개** — 지금은 둘 다 없다:
+    #  1) 색인 동기화. 인제스션·삭제·문서 상태 변경이 OpenSearch에 반영되지 않는다. 색인은
+    #     `python -m eval._os_index`가 PG에서 만드는 **스냅샷**이라, 업로드·삭제·검색토글 후
+    #     재색인하지 않으면 낡은 결과가 나온다(삭제된 문서가 계속 인용될 수 있다).
+    #  2) BM25 통계 스코프. 단일 인덱스라 Lucene의 df가 인덱스 전체다 — 다른 테넌트의 데이터가
+    #     우리 테넌트의 idf를 움직인다(실측: 다른 세션이 실문서 211청크를 넣자 색인 대상이
+    #     602→813). 앱 BM25는 통계를 테넌트 단위로 잡아 이 성질이 없다. 테넌트별 인덱스 또는
+    #     스코프 설계가 필요하다.
+    # 청크 본문·메타는 어느 백엔드든 PG에서 읽는다(PG가 정본) — rag/opensearch.py docstring.
+    search_backend: str = "pg"
+    opensearch_url: str = "http://localhost:9200"     # 실주소는 .env (개발계 이관 시 포트 23336)
+    opensearch_index: str = "kms_chunks_v1"
+    opensearch_timeout: float = 30.0
+
     # 컨텍스트 예산 (F100). context_window는 vLLM --max-model-len과 반드시 일치시킬 것.
     context_window: int = 30720
     generation_reserve_tokens: int = 3000    # 답변 생성 몫 = max_tokens (한글 ~4,500자 상한 — 폭주 방지용, 정상 답변은 미도달)

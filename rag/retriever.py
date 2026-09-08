@@ -253,6 +253,37 @@ async def _search_lexical(
     return ranked[:limit]
 
 
+# ===== 검색 백엔드 분기 (#139) ======================================
+#
+# settings.search_backend로 후보 회수 두 개만 갈아끼운다. 기본은 'pg'이고 그 경로는
+# 위 두 함수를 그대로 호출한다 — 분기가 없던 때와 동작이 같다.
+#
+# 왜 여기가 경계인가: 상위(service.py)는 retrieve() 하나만 의존하고, 아래의 멀티쿼리 RRF·
+# 리랭커·표 필터·top_n 슬라이스·게이트 판정·_fetch_chunk_map은 백엔드와 무관하다(실측).
+# 청크 본문·메타는 어느 백엔드든 PG에서 읽는다 — PG가 정본이라, 색인이 낡아도 인용
+# 파일명·버전·페이지가 틀리지 않는다. 설계 근거·잔차는 rag/opensearch.py docstring.
+#
+# opensearch 경로의 운영 전환 선결 조건(색인 동기화·BM25 통계 스코프)은 config.py의
+# search_backend 주석이 정본이다. 지금은 둘 다 없다 — 실험 경로다.
+
+
+async def _dense_candidates(session: AsyncSession, tenant_id: str, q_embs: list,
+                            candidates_per_branch: int):
+    if settings.search_backend == 'opensearch':
+        from rag import opensearch          # 지연 import — opensearch-py는 선택 의존
+        return await opensearch.search_dense_per_query(
+            tenant_id, q_embs, candidates_per_branch)
+    return await _search_dense_per_query(session, tenant_id, q_embs, candidates_per_branch)
+
+
+async def _lexical_candidates(session: AsyncSession, tenant_id: str, query: str,
+                              limit: int) -> list[int]:
+    if settings.search_backend == 'opensearch':
+        from rag import opensearch          # 지연 import (위와 동일 사유)
+        return await opensearch.search_lexical(tenant_id, query, limit)
+    return await _search_lexical(session, tenant_id, query, limit)
+
+
 def _rank_multi(per_query_ids: list[list[int]]) -> list[int]:
     """쿼리 확장(#5) 순위 — RRF로 union 전체를 정렬한다. 자르지 않는다.
 
@@ -355,7 +386,7 @@ async def retrieve_candidates(
                                           # AnswerCacheRow.query_embedding)가 list[float]를 받으므로
                                           # 하위 모듈이 rag.embeddings.Embedding을 알 필요가 없다.
 
-    per_query_ids, dense_results = await _search_dense_per_query(
+    per_query_ids, dense_results = await _dense_candidates(
         session, tenant_id, q_embs, candidates_per_branch,
     )
 
@@ -375,12 +406,16 @@ async def retrieve_candidates(
     # '뒤에'가 계약이다: 리랭크 꺼짐/실패 폴백에서 dense 순위가 깨지지 않아야 한다
     # (리랭크 on에선 cross-encoder가 쌍 독립 채점이라 순서 무관). 슬라이스는 여전히 리랭크 뒤.
     if settings.hybrid_lexical_enabled:
-        lex_ids = await _search_lexical(session, tenant_id, query, candidates_per_branch)
+        lex_ids = await _lexical_candidates(session, tenant_id, query, candidates_per_branch)
         seen = set(top_ids)
         top_ids = top_ids + [cid for cid in lex_ids if cid not in seen][:settings.hybrid_lexical_inject]
 
     chunk_map = await _fetch_chunk_map(session, top_ids)
-    result = [chunk_map[cid] for cid in top_ids]      # 순위 순서 그대로 재배열
+    # 순위 순서 그대로 재배열. `if cid in chunk_map`은 pg 경로에선 무의미하지만(id가 PG에서
+    # 나오므로 집합이 같다) 외부 색인 백엔드(#139)에선 필수다 — 색인이 낡아 삭제된 청크 id를
+    # 돌려주면 KeyError로 검색 전체가 죽는다. PG를 정본으로 두는 설계의 안전판이기도 하다:
+    # PG에 없는 것은 결과에 들어오지 못한다.
+    result = [chunk_map[cid] for cid in top_ids if cid in chunk_map]
 
     # ----- 리랭커 재정렬 (on/off = settings.rerank_enabled) ----------
     # 호출 시점마다 settings를 읽는다 — eval/retrieval.py가 이 속성을 런타임에 켰다 껐다 한다.

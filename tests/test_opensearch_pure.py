@@ -1,4 +1,4 @@
-"""OpenSearch 매핑·질의 계약 (#139) — DB·OpenSearch 없이 도는 순수 테스트.
+"""OpenSearch 백엔드 계약 (#139) — DB·OpenSearch 없이 도는 순수 테스트.
 
 여기서 지키는 것은 **변인 격리의 전제**다. A/B의 결론은 "검색 계층만 다르다"는 전제 위에
 서는데, 그 전제는 값 몇 개가 PG와 같아야 성립한다. 그 값들이 조용히 어긋나면 측정은
@@ -8,12 +8,14 @@
   2. dense 차원·HNSW 파라미터가 schema.sql과 같다   (pgvector 인덱스와 동일 조건)
   3. 어휘 입력 텍스트 조립이 운영과 같다             (문서=프리픽스 / FAQ=원문)
   4. Nori 질의에 2.18 결함 회피 플래그가 붙어 있다   (조용히 사라지면 500이 돌아온다)
+  5. 게이트 신호 환산이 실측값과 같다                (틀리면 no_evidence 판정이 조용히 어긋난다)
+  6. 검색 백엔드 기본값이 pg다                       (실험 경로가 실수로 운영이 되지 않게)
 """
 import inspect
 import re
 from pathlib import Path
 
-from eval import _os_backend as B
+from rag import opensearch as B
 from rag import lexical
 from rag.index_text import build_index_text
 
@@ -49,7 +51,7 @@ def test_dense_필드가_pgvector와_같은_조건이다():
     method = dense["method"]
     assert method["name"] == "hnsw"
     # cosinesimil — pgvector가 vector_cosine_ops(코사인)이므로. lucene 엔진을 쓰는 이유는
-    # cosinesimil 지원 + 필터를 kNN 탐색 단계에서 처리(_os_backend._knn_clause 주석).
+    # cosinesimil 지원 + 필터를 kNN 탐색 단계에서 처리(rag/opensearch.py의 knn_clause 주석).
     assert method["space_type"] == "cosinesimil"
     assert method["engine"] == "lucene"
     assert method["parameters"] == {"m": int(m), "ef_construction": int(efc)}
@@ -79,13 +81,39 @@ def test_bigram_필드는_공백만_자른다():
 
 def test_nori_질의에_2_18_결함_회피가_붙어_있다():
     """auto_generate_synonyms_phrase_query=False가 빠지면 hybrid+nori가 500으로 죽는다
-    (실측 47/450 — _os_backend._lex_clause docstring). 조용히 사라지지 않게 묶는다."""
-    clause = B._lex_clause(B.NORI_FIELD, "적립금 얼마")
+    (실측 47/450 — rag/opensearch.py의 lex_clause docstring). 조용히 사라지지 않게 묶는다."""
+    clause = B.lex_clause(B.NORI_FIELD, "적립금 얼마")
     assert clause["match"][B.NORI_FIELD]["auto_generate_synonyms_phrase_query"] is False
 
 
 def test_융합_가중치는_합이_1이어야_한다():
-    """2.18 normalization-processor 계약. 어긋난 채 측정되면 융합 축이 조용히 무의미해진다."""
+    """2.18 normalization-processor 계약. 어긋난 채 측정되면 융합 축이 조용히 무의미해진다.
+
+    코루틴이라 asyncio.run으로 깨운다 — assert가 첫 await 앞이라 클라이언트는 안 쓰인다."""
+    import asyncio
+
     import pytest
     with pytest.raises(AssertionError):
-        B.ensure_pipeline(object(), weights=(0.7, 0.7))
+        asyncio.run(B.ensure_pipeline(None, weights=(0.7, 0.7)))
+
+
+def test_게이트_신호_환산이_실측과_같다():
+    """OpenSearch cosinesimil 점수 → pgvector cosine_distance = 2 - 2*score.
+
+    실측 대조표(2026-09-08, adererror 5건). 이 환산이 틀리면 apply_gate의 no_evidence
+    판정이 조용히 어긋난다 — 운영은 게이트가 꺼져 있어(GATE_DISABLED) eval sweep에
+    국한되지만, 그 sweep이 임계값을 정하는 근거다.
+
+    허용오차 2e-6: 표의 두 값이 각각 소수점 6자리로 반올림된 기록이라 각 5e-7까지 어긋날 수
+    있고, distance는 score에 2를 곱하므로 그만큼 증폭된다. 실제 환산은 정확하다."""
+    for score, pg_distance in ((0.862583, 0.274834), (0.849968, 0.300063),
+                               (0.842895, 0.314211), (0.842461, 0.315078),
+                               (0.830557, 0.338887)):
+        assert abs(B.score_to_cosine_distance(score) - pg_distance) < 2e-6, score
+
+
+def test_검색_백엔드_기본값은_pg다():
+    """실험 경로(#139)가 실수로 운영이 되지 않게. 운영 전환 선결 조건은 아직 없다 —
+    색인 동기화·BM25 통계 스코프(config.py의 search_backend 주석)."""
+    from config import Settings
+    assert Settings(database_url="postgresql+asyncpg://x/y").search_backend == "pg"

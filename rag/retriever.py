@@ -300,18 +300,30 @@ def _rank_multi(per_query_ids: list[list[int]]) -> list[int]:
 async def _fetch_chunk_map(
     session: AsyncSession,
     ids: list[int],
+    searchable_only: bool = False,
 ) -> dict[int, RetrievedChunk]:
     """id → RetrievedChunk 본문·메타 조회. IN 절 한 번 (개별 SELECT N번 안 함).
 
     부수효과 없음 (DB 읽기 전용). 순서는 호출부가 정한다 — 여기선 dict만 만든다.
     FAQ 청크는 filename을 'FAQ'로 — 인용 후보 접기(sources_from_chunks)와 표시명이 이 값을 따름.
+
+    **searchable_only (#139)**: 외부 색인 백엔드가 준 id를 PG로 되물을 때 켠다. PG를 정본으로
+    두는 설계의 실질적 방어선이다 — 색인이 낡아 삭제된·비공개된 청크 id를 돌려줘도 PG 조건을
+    통과하지 못하면 결과에 못 들어온다. 덕분에 **문서 삭제·검색토글·폴더 off·FAQ off가 색인을
+    건드리지 않아도 즉시 반영된다**(정합 3층 설계의 1층 — rag/opensearch.py 상단 참조).
+    pg 경로는 False다: id가 이미 같은 조건을 통과해 나왔으므로 걸 이유가 없고, 걸면 조인만
+    늘어난다.
     """
-    rows = await session.execute(
+    stmt = (
         select(Chunk, Document.filename, Document.version, Folder.name, Folder.description)
         .outerjoin(Document, Chunk.document_id == Document.id)   # FAQ 청크는 filename/version이 NULL로 옴
         .outerjoin(Folder, Document.folder_id == Folder.id)      # 미분류 문서·FAQ는 폴더가 NULL로 옴
         .where(Chunk.id.in_(ids))
     )
+    if searchable_only:
+        # _searchable_condition()이 Faq.is_active를 보므로 조인을 하나 더 붙인다.
+        stmt = stmt.outerjoin(Faq, Chunk.faq_id == Faq.id).where(_searchable_condition())
+    rows = await session.execute(stmt)
     return {
         c.id: RetrievedChunk(
             chunk_id=c.id,
@@ -410,7 +422,9 @@ async def retrieve_candidates(
         seen = set(top_ids)
         top_ids = top_ids + [cid for cid in lex_ids if cid not in seen][:settings.hybrid_lexical_inject]
 
-    chunk_map = await _fetch_chunk_map(session, top_ids)
+    # 외부 색인 백엔드일 때만 PG 권위 필터를 켠다 (#139 정합 1층 — _fetch_chunk_map docstring)
+    chunk_map = await _fetch_chunk_map(
+        session, top_ids, searchable_only=(settings.search_backend == 'opensearch'))
     # 순위 순서 그대로 재배열. `if cid in chunk_map`은 pg 경로에선 무의미하지만(id가 PG에서
     # 나오므로 집합이 같다) 외부 색인 백엔드(#139)에선 필수다 — 색인이 낡아 삭제된 청크 id를
     # 돌려주면 KeyError로 검색 전체가 죽는다. PG를 정본으로 두는 설계의 안전판이기도 하다:

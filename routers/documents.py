@@ -33,7 +33,7 @@ from starlette.responses import FileResponse, JSONResponse
 
 from config import settings
 from database import get_session
-from rag import cache
+from rag import cache, opensearch
 from rag.chunking import extract_text
 from rag.documents import handle_upload
 from rag.models import Chunk, Document, Folder
@@ -370,6 +370,10 @@ async def delete_document(
         await cache.invalidate_source(session, tenant_id, did)
 
     await session.commit()
+    # 외부 색인에서도 제거 (#139) — pg면 no-op. 이게 실패해도 오답은 나지 않는다:
+    # 읽기 권위 필터가 PG에 없는 청크를 걸러내므로(정합 1층) 삭제된 문서는 인용되지 않는다.
+    # 이 호출은 인덱스 위생(크기·df)과 재동기화 부담 절감용이다.
+    await opensearch.drop_documents(doc_ids)
 
 
 @router.get('/documents/{document_id}/download')

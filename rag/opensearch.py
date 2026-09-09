@@ -374,3 +374,275 @@ async def analyze(os_client, analyzer: str, text: str) -> list[str]:
     resp = await os_client.indices.analyze(
         index=settings.opensearch_index, body={"analyzer": analyzer, "text": text})
     return [t["token"] for t in resp["tokens"]]
+
+
+# ===== 색인 쓰기 경로 — 정합 관리 3층 =====================================
+#
+# PG는 청크와 어휘 색인을 **한 트랜잭션**에 쓴다(#135 B안: "별도 정합 관리가 없다"가
+# rag/documents.py·faq_indexing.py 주석에 그대로 적혀 있다). 외부 엔진을 들이면 그 성질을
+# 잃는다 — 그 비용을 어떻게 관리하는지가 아래 3층이다.
+#
+# ## 설계의 출발점 — 불일치 두 방향의 위험도가 다르다
+#
+#   OS에 있고 PG엔 없음/비검색  → 삭제·비공개 문서가 답변에 인용되는 **오답**
+#   PG에 있고 OS엔 없음         → 못 찾는 **누락**(no_evidence로 귀결). 오답은 아니다
+#
+# 그래서 오답 방향은 **구조적으로 불가능하게** 만들고, 누락 방향만 최선노력 + 재동기화로
+# 다룬다. 두 방향을 같은 비용으로 막으려 하면 과설계가 된다.
+#
+# ## 1층 — 읽기 권위 (오답 차단, 쓰기 작업 0)
+#
+# 검색은 id만 OpenSearch에서 받고 본문·메타는 PG로 되묻는다. 그 되묻는 쿼리에
+# `_searchable_condition()`을 걸면(retriever._fetch_chunk_map의 searchable_only) PG를
+# 통과하지 못하는 것은 결과에 못 들어온다. 덕분에 **문서 삭제·검색토글·폴더 off·FAQ off는
+# 색인을 건드리지 않아도 즉시 반영된다** — 아래 2층 함수가 이 사건들을 다룰 필요가 없다.
+# PG 경로의 post-filter와 같은 모양이라 새 개념도 아니다.
+#
+# ## 2층 — 이중 쓰기 (누락 최소화, 아래 함수들)
+#
+# 청크가 **생기고 사라지는** 지점에서 PG 커밋 *후*에 OS에 반영한다. 커밋 전에 하면 PG가
+# 롤백됐는데 OS만 반영되는 더 나쁜 불일치가 된다.
+#
+# **실패해도 예외를 올리지 않는다.** PG는 이미 커밋됐고, 여기서 터뜨리면 OpenSearch 장애가
+# 곧 업로드 장애가 된다 — 파생 인덱스가 정본의 가용성을 깎는 건 뒤바뀐 설계다. 대신 실패가
+# 조용해지는 대가를 지표로 갚는다(metrics.SEARCH_INDEX_SYNC_TOTAL, result='error').
+#
+# `refresh='wait_for'`를 쓴다 — OpenSearch는 기본 1초 refresh라 쓰자마자 검색되지 않는다.
+# 업로드 직후 검색이 되는 PG 의미에 최대한 붙이려는 것이고, 비용은 인제스션 끝에 최대 1초다
+# (파싱·임베딩이 이미 초 단위라 무의미한 증가다).
+#
+# ## 3층 — 재동기화 (최종 안전판)
+#
+# `python -m eval._os_index --repair`가 PG↔OS의 id 집합을 대조해 누락분을 색인하고 잉여분을
+# 지운다(reconcile). 2층이 놓친 것을 여기서 줍는다. 크론으로 돌릴 수 있다.
+#
+# ## 지금 하지 않는 것 — outbox (승격 경로)
+#
+# 정석은 outbox 테이블이다: PG 트랜잭션 안에 "이 청크들을 색인하라"는 행을 남기고 arq 워커가
+# 드레인한다. 2층의 최선노력과 달리 프로세스가 죽어도 반영이 보장되고, 3층 배치를 기다리지
+# 않는다. 지금 안 하는 이유는 값이다 — 테이블·마이그레이션·잡을 늘리는데, 이 백엔드는 품질
+# 이득이 0으로 측정된 실험 경로다(eval/report_os_ablation_v1.md).
+# **승격 트리거: 색인 지연이 SLA가 될 때** — 즉 "업로드하고 몇 초 뒤엔 반드시 검색돼야 한다"가
+# 요구사항이 되는 순간. 그때는 이 주석을 지우고 outbox로 바꿔라.
+
+
+def enabled() -> bool:
+    """이 백엔드가 켜져 있는지. 쓰기 훅들이 첫 줄에서 이걸 보고 조용히 빠진다 —
+    호출부(인제스션·라우터)가 백엔드를 알 필요가 없게 하려는 것이다."""
+    return settings.search_backend == 'opensearch'
+
+
+def build_doc(chunk, filename: str | None, version: int | None) -> dict:
+    """OpenSearch 문서 본문 — **정의점**. 색인 배치(eval/_os_index)와 이중 쓰기가 같이 쓴다.
+
+    두 벌로 갈라지면 배치로 만든 색인과 운영이 만든 색인의 모양이 달라지고, 그러면
+    어블레이션 눈금이 운영을 예언하지 못한다.
+
+    filename=None은 FAQ 청크다 — 'FAQ'로 적는다(_fetch_chunk_map과 동일 규약).
+    """
+    from rag.lexical import bigrams
+    lex = lex_text(chunk.text, filename, chunk.heading_path)
+    return {
+        "chunk_id": chunk.id,
+        "tenant_id": chunk.tenant_id,
+        "document_id": chunk.document_id,
+        "faq_id": chunk.faq_id,
+        "page": chunk.page,
+        "version": version or 1,
+        "is_table": bool((chunk.meta or {}).get("is_table")),
+        "filename": filename or "FAQ",
+        "heading_path": list(chunk.heading_path or []),
+        "text": chunk.text,
+        NORI_FIELD: lex,
+        LEX_BIGRAM_FIELD: " ".join(bigrams(lex)),
+        # 임베딩을 재계산하지 않는다 — TEI는 호출마다 비결정적이다(실측 1.4e-4).
+        # PG에 저장된 값을 그대로 옮긴다. float32 → float 변환은 json 직렬화 때문.
+        "dense": [float(x) for x in chunk.dense],
+    }
+
+
+async def bulk_index(docs: list[dict]) -> int:
+    """_bulk 색인. _id=chunk_id라 재실행이 중복을 만들지 않고 upsert가 된다.
+
+    **_bulk은 원자적이지 않다** — 건별로 성공/실패한다. 부분 실패를 삼키면 색인이 조용히
+    비므로 첫 오류를 예외로 올린다(호출부가 잡아 지표로 기록한다).
+    """
+    import json
+    if not docs:
+        return 0
+    lines = []
+    for d in docs:
+        lines.append(json.dumps({"index": {"_index": settings.opensearch_index,
+                                           "_id": str(d["chunk_id"])}}))
+        lines.append(json.dumps(d, ensure_ascii=False))
+    resp = await client().bulk(body="\n".join(lines) + "\n", refresh="wait_for")
+    if resp.get("errors"):
+        first = next(i["index"] for i in resp["items"] if i["index"].get("error"))
+        raise RuntimeError(f"bulk 색인 실패: {first['error']}")
+    return len(docs)
+
+
+async def _delete_by_terms(field: str, values: list) -> int:
+    """_delete_by_query — 문서·FAQ 단위 청크 제거. chunk_id를 모르는 삭제 경로용."""
+    if not values:
+        return 0
+    resp = await client().delete_by_query(
+        index=settings.opensearch_index, refresh=True,
+        body={"query": {"terms": {field: list(values)}}})
+    return int(resp.get("deleted", 0))
+
+
+async def _index_rows(session, *, document_ids=None, faq_ids=None) -> list[dict]:
+    """색인할 청크를 PG에서 읽어 문서 본문으로 조립한다.
+
+    `_searchable_condition()`을 걸어 검색 가능한 것만 담는다 — 비검색 청크를 넣어도 1층이
+    걸러내므로 오답은 안 되지만, 인덱스 전체 df를 흔들어 어휘 점수를 움직인다
+    (모듈 docstring의 "df 스코프" 잔차).
+
+    지연 import: retriever가 이 모듈을 (함수 안에서) 참조하므로 톱레벨로 올리면 순환이다.
+    """
+    from sqlalchemy import select
+
+    from rag.models import Chunk, Document, Faq, Folder
+    from rag.retriever import _searchable_condition
+
+    stmt = (
+        select(Chunk, Document.filename, Document.version)
+        .outerjoin(Document, Chunk.document_id == Document.id)
+        .outerjoin(Folder, Document.folder_id == Folder.id)
+        .outerjoin(Faq, Chunk.faq_id == Faq.id)
+        .where(_searchable_condition())
+    )
+    if document_ids is not None:
+        stmt = stmt.where(Chunk.document_id.in_(list(document_ids)))
+    if faq_ids is not None:
+        stmt = stmt.where(Chunk.faq_id.in_(list(faq_ids)))
+    return [build_doc(c, fn, ver) for c, fn, ver in (await session.execute(stmt)).all()]
+
+
+async def _run(op: str, coro):
+    """쓰기 훅 공통 래퍼 — 실패를 삼키고 지표·경고로 드러낸다(사유는 모듈 상단 2층 설명)."""
+    import logging
+
+    from rag.metrics import SEARCH_INDEX_SYNC_TOTAL
+    logger = logging.getLogger(__name__)
+    try:
+        n = await coro
+        SEARCH_INDEX_SYNC_TOTAL.labels(op=op, result='ok').inc()
+        return n
+    except Exception as e:                     # noqa: BLE001 — 삼키는 것이 의도다
+        SEARCH_INDEX_SYNC_TOTAL.labels(op=op, result='error').inc()
+        logger.warning('검색 색인 동기화 실패 (%s) — 색인이 낡았다. '
+                       '복구: python -m eval._os_index --repair · 원인=%s', op, e)
+        return 0
+
+
+async def sync_documents(session, document_ids) -> int:
+    """문서들의 청크를 색인에 반영(upsert). 인제스션 커밋 **후**에 부른다."""
+    if not enabled() or not document_ids:
+        return 0
+    return await _run('sync_documents', _sync_documents(session, document_ids))
+
+
+async def _sync_documents(session, document_ids) -> int:
+    return await bulk_index(await _index_rows(session, document_ids=document_ids))
+
+
+async def sync_after_ingest(document_id: int, superseded_ids) -> int:
+    """인제스션 커밋 후 훅 — 새 문서 색인 + supersede된 구버전 청크 제거.
+
+    **자기 세션을 직접 연다**(호출부의 세션은 이미 닫혔다). 그리고 세션 열기까지 포함해
+    전부 `_run`이 감싸므로 **이 함수는 어떤 경우에도 예외를 올리지 않는다** — 호출부
+    (rag/documents.py)가 이걸 try 안에서 부르는데, 여기서 예외가 나면 이미 커밋된 인제스션이
+    `_mark_failed`로 뒤집힌다. 파생 인덱스가 정본의 상태를 망치는 건 뒤바뀐 설계다.
+    """
+    if not enabled():
+        return 0
+    return await _run('sync_after_ingest', _sync_after_ingest(document_id, superseded_ids))
+
+
+async def _sync_after_ingest(document_id: int, superseded_ids) -> int:
+    from database import AsyncSessionLocal
+    async with AsyncSessionLocal() as session:
+        n = await bulk_index(await _index_rows(session, document_ids=[document_id]))
+    if superseded_ids:
+        await _delete_by_terms('document_id', list(superseded_ids))
+    return n
+
+
+async def drop_documents(document_ids) -> int:
+    """문서들의 청크를 색인에서 제거. PG 청크 삭제 커밋 **후**에 부른다.
+
+    1층이 이미 오답을 막으므로 이건 위생(인덱스 크기·df)과 재동기화 부담 절감용이다.
+    """
+    if not enabled() or not document_ids:
+        return 0
+    return await _run('drop_documents', _delete_by_terms('document_id', list(document_ids)))
+
+
+async def sync_faqs(session, faq_ids) -> int:
+    if not enabled() or not faq_ids:
+        return 0
+    return await _run('sync_faqs', _sync_faqs(session, faq_ids))
+
+
+async def _sync_faqs(session, faq_ids) -> int:
+    # FAQ 재인덱싱은 기존 청크를 지우고 새로 넣는다(faq_indexing.reindex_faq와 같은 모양) —
+    # chunk_id가 바뀌므로 옛 문서를 먼저 지워야 유령이 남지 않는다.
+    await _delete_by_terms('faq_id', list(faq_ids))
+    return await bulk_index(await _index_rows(session, faq_ids=faq_ids))
+
+
+async def drop_faqs(faq_ids) -> int:
+    if not enabled() or not faq_ids:
+        return 0
+    return await _run('drop_faqs', _delete_by_terms('faq_id', list(faq_ids)))
+
+
+async def reconcile(session) -> dict:
+    """3층 — PG↔OS id 집합 대조 후 복구. `eval/_os_index --repair`가 부른다.
+
+    반환: {'pg': n, 'os': n, 'indexed': 누락분 색인 수, 'deleted': 잉여분 삭제 수}
+    2층이 놓친 것(OpenSearch 장애 중 업로드·삭제)을 여기서 줍는다.
+    """
+    from sqlalchemy import select
+
+    from rag.models import Chunk, Document, Faq, Folder
+    from rag.retriever import _searchable_condition
+
+    # **순서가 계약이다: OpenSearch를 먼저 읽고 PG를 나중에 읽는다.**
+    # 두 스냅샷 사이에 인제스션이 끼어들 수 있고, 그때 어느 쪽이 먼저인지가 결과를 가른다:
+    #   PG 먼저 → 새 청크가 pg_ids에 없고 os_ids에는 있다 → 'extra'로 판정돼 **삭제된다**.
+    #             방금 정상 색인된 청크를 재동기화가 지우는, 이 함수가 막아야 할 사고다.
+    #   OS 먼저 → 새 청크가 os_ids에 없고 pg_ids에는 있다 → 'missing'으로 판정돼 재색인된다.
+    #             이미 있는 것을 다시 넣는 것이므로 _id=chunk_id upsert에서 무해하다.
+    # 잔여 경합을 무해한 방향으로 떨어뜨리는 것이 이 모듈의 설계 원칙과 같다(상단 참조).
+    os_client = client()
+    os_ids: set[int] = set()
+    resp = await os_client.search(index=settings.opensearch_index, scroll='2m',
+                                  body={"size": 1000, "_source": ["chunk_id"],
+                                        "query": {"match_all": {}}})
+    while resp["hits"]["hits"]:
+        os_ids.update(int(h["_source"]["chunk_id"]) for h in resp["hits"]["hits"])
+        resp = await os_client.scroll(scroll_id=resp["_scroll_id"], scroll='2m')
+    await os_client.clear_scroll(scroll_id=resp["_scroll_id"])   # 스크롤 컨텍스트 반납
+
+    pg_ids = set((await session.execute(
+        select(Chunk.id)
+        .outerjoin(Document, Chunk.document_id == Document.id)
+        .outerjoin(Folder, Document.folder_id == Folder.id)
+        .outerjoin(Faq, Chunk.faq_id == Faq.id)
+        .where(_searchable_condition())
+    )).scalars().all())
+
+    missing, extra = pg_ids - os_ids, os_ids - pg_ids
+    indexed = 0
+    if missing:
+        from rag.models import Chunk as C
+        stmt = (select(C, Document.filename, Document.version)
+                .outerjoin(Document, C.document_id == Document.id)
+                .where(C.id.in_(list(missing))))
+        docs = [build_doc(c, fn, ver) for c, fn, ver in (await session.execute(stmt)).all()]
+        indexed = await bulk_index(docs)
+    deleted = await _delete_by_terms('chunk_id', list(extra)) if extra else 0
+    return {'pg': len(pg_ids), 'os': len(os_ids), 'indexed': indexed, 'deleted': deleted}

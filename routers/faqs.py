@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
-from rag import cache
+from rag import cache, opensearch
 from rag.embeddings import embed_texts
 from rag.faq_indexing import build_faq_chunk_text, reindex_faq
 from rag.models import Faq
@@ -73,6 +73,7 @@ async def create_faq(
     embedding = await _embed_chunk_text(faq.question, faq.variants, faq.answer)
     await reindex_faq(session, faq, embedding)
     await session.commit()
+    await opensearch.sync_faqs(session, [faq.id])   # 외부 색인 반영 (#139) — pg면 no-op
     return _to_response(faq)
 
 
@@ -118,6 +119,10 @@ async def update_faq(
         await cache.invalidate_source(session, tenant_id, -faq.id)   # 음수 = FAQ 네임스페이스
 
     await session.commit()
+    # 외부 색인 반영 (#139) — pg면 no-op. is_active off는 색인을 건드릴 필요가 없다
+    # (읽기 권위 필터가 즉시 걸러낸다 — 정합 1층) 지만, 내용 변경은 청크 id가 바뀌므로 반영한다.
+    if content_changed:
+        await opensearch.sync_faqs(session, [faq.id])
     return _to_response(faq)
 
 
@@ -132,3 +137,4 @@ async def delete_faq(
     await cache.invalidate_source(session, tenant_id, -faq.id)
     await session.delete(faq)
     await session.commit()
+    await opensearch.drop_faqs([faq_id])   # 외부 색인에서 제거 (#139) — pg면 no-op

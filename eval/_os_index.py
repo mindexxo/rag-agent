@@ -63,7 +63,7 @@ def _vec(dense) -> list[float]:
 
 async def _rows(session):
     stmt = (
-        select(Chunk, Document.filename, Document.version, Folder.name, Folder.description)
+        select(Chunk, Document.filename, Document.version)
         .outerjoin(Document, Chunk.document_id == Document.id)
         .outerjoin(Folder, Document.folder_id == Folder.id)
         .outerjoin(Faq, Chunk.faq_id == Faq.id)
@@ -72,27 +72,9 @@ async def _rows(session):
     return (await session.execute(stmt)).all()
 
 
-def _doc(c, filename, ver, _fname, _fdesc) -> dict:
-    lex = B.lex_text(c.text, filename, c.heading_path)
-    return {
-        "chunk_id": c.id,
-        "tenant_id": c.tenant_id,
-        "document_id": c.document_id,
-        "faq_id": c.faq_id,
-        "page": c.page,
-        "version": ver or 1,
-        "is_table": bool((c.meta or {}).get("is_table")),
-        "filename": filename or "FAQ",      # _fetch_chunk_map과 동일 규약
-        "heading_path": list(c.heading_path or []),
-        "text": c.text,
-        B.NORI_FIELD: lex,
-        B.LEX_BIGRAM_FIELD: " ".join(bigrams(lex)),
-        "dense": _vec(c.dense),
-    }
-
-
 async def _bulk(os_client, docs: list[dict]) -> int:
-    """_bulk 색인. _id에 chunk_id를 쓴다 — 재실행이 중복을 만들지 않고 upsert가 된다.
+    """전량 색인용 _bulk. 정의점(rag.opensearch.bulk_index)과 달리 refresh를 끄고 마지막에
+    한 번만 refresh한다 — 배치는 건별 가시성이 필요 없고, wait_for를 배치마다 걸면 느리다.
 
     **_bulk은 원자적이지 않다** — 건별로 성공/실패한다. 부분 실패를 삼키면 색인이 조용히
     비므로 첫 오류에서 멈춘다(게이트 1이 뒤에서 다시 잡지만, 원인 메시지는 여기서만 나온다).
@@ -112,7 +94,20 @@ async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--recreate", action="store_true",
                     help="인덱스를 삭제하고 다시 만든다(매핑 변경 시 필수 — 매핑은 사후 변경 불가)")
+    ap.add_argument("--repair", action="store_true",
+                    help="재동기화만 — PG↔OS id 집합을 대조해 누락분 색인·잉여분 삭제 "
+                         "(정합 3층. 이중 쓰기가 놓친 것을 줍는다)")
     args = ap.parse_args()
+
+    if args.repair:
+        # 전량 색인 없이 차이만 메운다 — 크론으로 돌릴 수 있게 짧게 끝난다.
+        os_client = B.client()
+        async with AsyncSessionLocal() as session:
+            r = await B.reconcile(session)
+        print(f"재동기화: PG {r['pg']} · OS {r['os']} → "
+              f"누락 색인 {r['indexed']}건 · 잉여 삭제 {r['deleted']}건")
+        await os_client.close()
+        return
 
     os_client = B.client()
     if args.recreate and await os_client.indices.exists(INDEX):
@@ -126,7 +121,7 @@ async def main() -> None:
 
     async with AsyncSessionLocal() as session:
         rows = await _rows(session)
-        docs = [_doc(*r) for r in rows]
+        docs = [B.build_doc(c, fn, ver) for c, fn, ver in rows]
         n = 0
         for i in range(0, len(docs), BULK):
             n += await _bulk(os_client, docs[i:i + BULK])

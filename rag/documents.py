@@ -154,7 +154,7 @@ async def index_pending_document(document_id: int) -> None:
         # 외부 검색 색인 반영 (#139) — 커밋 **후**다. 커밋 전에 넣으면 PG가 롤백됐는데
         # 색인만 반영되는 더 나쁜 불일치가 된다. search_backend='pg'(기본)면 아래는 no-op이고,
         # 실패해도 예외를 올리지 않는다(PG는 이미 커밋됐고, 여기서 터뜨리면 색인 장애가 곧
-        # 업로드 장애가 된다) — 실패는 지표·경고로 드러난다. 정합 3층 설계는
+        # 업로드 장애가 된다) — 실패는 지표·경고로 드러난다. 정합 관리 설계는
         # rag/opensearch.py 상단 참조.
         # 이 호출은 어떤 경우에도 예외를 올리지 않는다 — try 안이라 예외가 나면 이미 커밋된
         # 인제스션이 _mark_failed로 뒤집힌다(그 보장은 sync_after_ingest docstring).

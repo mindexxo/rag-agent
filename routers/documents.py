@@ -328,6 +328,10 @@ async def update_document(
         await cache.invalidate_source(session, tenant_id, doc.id)
 
     await session.commit()
+    # 외부 색인의 비정규화 메타 갱신 (#139) — pg면 no-op. 검색가능·폴더 값이 청크 문서마다
+    # 복사돼 있어 fan-out이 필요하다. **재색인이 아니라 부분 갱신**이다(재색인은 벡터가 없는
+    # 구성에서 재임베딩을 부른다 — rag/opensearch._update_meta).
+    await opensearch.sync_meta_documents(session, [doc.id])
     return _to_response(doc)
 
 
@@ -370,9 +374,10 @@ async def delete_document(
         await cache.invalidate_source(session, tenant_id, did)
 
     await session.commit()
-    # 외부 색인에서도 제거 (#139) — pg면 no-op. 이게 실패해도 오답은 나지 않는다:
-    # 읽기 권위 필터가 PG에 없는 청크를 걸러내므로(정합 1층) 삭제된 문서는 인용되지 않는다.
-    # 이 호출은 인덱스 위생(크기·df)과 재동기화 부담 절감용이다.
+    # 외부 색인에서도 제거 (#139) — pg면 no-op. **색인이 서빙 정본이므로 이 호출이 실패하면
+    # 삭제된 문서가 계속 인용될 수 있다** — 실패는 지표(kms_search_index_sync_total)로
+    # 드러나고 `_os_index --repair`가 줍는다. 이 창을 없애려면 outbox가 필요하다
+    # (rag/opensearch.py "정합 관리" 절).
     await opensearch.drop_documents(doc_ids)
 
 

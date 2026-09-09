@@ -122,7 +122,9 @@ async def update_faq(
     # 외부 색인 반영 (#139) — pg면 no-op. is_active off는 색인을 건드릴 필요가 없다
     # (읽기 권위 필터가 즉시 걸러낸다 — 정합 1층) 지만, 내용 변경은 청크 id가 바뀌므로 반영한다.
     if content_changed:
-        await opensearch.sync_faqs(session, [faq.id], embedding)
+        await opensearch.sync_faqs(session, [faq.id], embedding)   # 청크 id가 바뀌므로 재색인
+    elif turned_off or request.is_active is not None:
+        await opensearch.sync_meta_faqs(session, [faq.id])         # 활성 토글은 부분 갱신
     return _to_response(faq)
 
 

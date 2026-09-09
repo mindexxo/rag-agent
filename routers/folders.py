@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
-from rag import cache
+from rag import cache, opensearch
 from rag.models import Document, Folder
 from routers.kms import get_tenant_id
 from schemas.kms import FolderInfo, FolderCreateRequest, FolderUpdateRequest
@@ -110,6 +110,15 @@ async def update_folder(
     except IntegrityError:
         await session.rollback()
         raise HTTPException(status_code=409, detail='같은 이름의 폴더가 이미 있습니다.')
+    # 외부 색인의 비정규화 메타 갱신 (#139) — pg면 no-op. 폴더 이름·설명·검색토글이 소속
+    # 문서의 **모든 청크 문서**에 복사돼 있어 fan-out이 필요하다(폴더가 fan-out의 최대 단위다).
+    # 부분 갱신이라 청크 수와 무관하게 _update_by_query 1~2회로 끝난다.
+    doc_ids = (await session.execute(
+        select(Document.id)
+        .where(Document.tenant_id == tenant_id)
+        .where(Document.folder_id == folder.id)
+    )).scalars().all()
+    await opensearch.sync_meta_documents(session, doc_ids)
     return _to_info(folder)
 
 

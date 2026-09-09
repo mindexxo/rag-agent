@@ -10,6 +10,8 @@
   4. Nori 질의에 2.18 결함 회피 플래그가 붙어 있다   (조용히 사라지면 500이 돌아온다)
   5. 게이트 신호 환산이 실측값과 같다                (틀리면 no_evidence 판정이 조용히 어긋난다)
   6. 검색 백엔드 기본값이 pg다                       (실험 경로가 실수로 운영이 되지 않게)
+  7. 필터가 엔진에서 걸린다                          (PG로 걸러내면 post-filter가 되어 후보가 깎인다)
+  8. searchable 비정규화가 PG 조건과 같은 답을 낸다  (두 벌이 갈라지면 필터가 어긋난다)
 """
 import inspect
 import re
@@ -117,3 +119,42 @@ def test_검색_백엔드_기본값은_pg다():
     색인 동기화·BM25 통계 스코프(config.py의 search_backend 주석)."""
     from config import Settings
     assert Settings(database_url="postgresql+asyncpg://x/y").search_backend == "pg"
+
+
+def test_필터는_엔진에서_걸린다():
+    """테넌트·검색가능 둘 다 엔진 필터여야 한다.
+
+    검색 후 PG로 걸러내면 상위 k를 뽑은 뒤 빼는 post-filter가 되어 후보가 조용히 깎인다
+    (rag/retriever.py:57-67이 pg 경로에서 겪고 있는 그 함정). 실무 표준 구성에서는 필터에
+    쓰는 메타를 엔진에 비정규화해 두는 것이 그 대가다.
+    """
+    terms = B.tenant_filter('t1')['bool']['filter']
+    assert {'term': {'tenant_id': 't1'}} in terms
+    assert {'term': {'searchable': True}} in terms
+    # 매핑에도 필드가 있어야 실제로 걸린다
+    props = B.MAPPING['mappings']['properties']
+    assert props['searchable']['type'] == 'boolean'
+    assert props['folder_id']['type'] == 'long'    # 폴더 단위 fan-out update의 필터 키
+
+
+def test_searchable_비정규화가_PG_조건과_같다():
+    """rag/retriever._searchable_condition()을 파이썬으로 옮긴 것 — 두 벌이 갈라지면
+    엔진 필터와 PG 필터가 다른 답을 낸다. 조건을 바꿀 때 함께 고치라는 계약을 고정한다."""
+    ok = dict(is_faq=False, doc_is_active=True, doc_status='ready', doc_is_searchable=True)
+    assert B.effective_searchable(**ok, folder_is_searchable=None) is True   # 미분류 문서
+    assert B.effective_searchable(**ok, folder_is_searchable=True) is True
+    assert B.effective_searchable(**ok, folder_is_searchable=False) is False  # 폴더 off
+    assert B.effective_searchable(**{**ok, 'doc_is_active': False}) is False
+    assert B.effective_searchable(**{**ok, 'doc_status': 'deleted'}) is False
+    assert B.effective_searchable(**{**ok, 'doc_is_searchable': False}) is False
+    assert B.effective_searchable(is_faq=True, faq_is_active=True) is True
+    assert B.effective_searchable(is_faq=True, faq_is_active=False) is False
+
+
+def test_엔진이_돌려준_청크에_인용_메타가_다_실린다():
+    """PG를 되묻지 않으므로 RetrievedChunk의 모든 필드가 _source에 있어야 한다.
+    하나라도 빠지면 인용 표시나 리랭커 입력이 조용히 비어버린다."""
+    props = B.MAPPING['mappings']['properties']
+    for f in ('chunk_id', 'document_id', 'faq_id', 'text', 'heading_path', 'page',
+              'filename', 'version', 'is_table', 'folder_name', 'folder_description'):
+        assert f in props, f

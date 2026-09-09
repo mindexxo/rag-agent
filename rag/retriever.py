@@ -259,7 +259,8 @@ async def _search_lexical(
 # 위 두 함수를 그대로 호출한다 — 분기가 없던 때와 동작이 같다.
 #
 # 왜 여기가 경계인가: 상위(service.py)는 retrieve() 하나만 의존하고, 아래의 멀티쿼리 RRF·
-# 리랭커·표 필터·top_n 슬라이스·게이트 판정·_fetch_chunk_map은 백엔드와 무관하다(실측).
+# 리랭커·표 필터·top_n 슬라이스·게이트 판정은 백엔드와 무관하다(실측). 본문·메타 조회는
+# 백엔드가 자기 저장소에서 한다(_chunk_map) — 엔진 구성은 PG를 되묻지 않는다.
 # 청크 본문·메타는 어느 백엔드든 PG에서 읽는다 — PG가 정본이라, 색인이 낡아도 인용
 # 파일명·버전·페이지가 틀리지 않는다. 설계 근거·잔차는 rag/opensearch.py docstring.
 #
@@ -284,6 +285,19 @@ async def _lexical_candidates(session: AsyncSession, tenant_id: str, query: str,
     return await _search_lexical(session, tenant_id, query, limit)
 
 
+async def _chunk_map(session: AsyncSession, ids: list[int]) -> dict[int, RetrievedChunk]:
+    """id → RetrievedChunk. 백엔드가 자기 저장소에서 만든다.
+
+    opensearch 경로가 PG를 되묻지 않는 이유(실무 표준): 엔진이 텍스트·메타를 함께 들고
+    있으므로 왕복이 한 번으로 끝나고, 필터도 엔진에서 이미 걸렸다. 대가는 색인이 정본으로
+    쓰인다는 것이고, 그 정합은 쓰기 경로가 책임진다(rag/opensearch.py 상단).
+    """
+    if settings.search_backend == 'opensearch':
+        from rag import opensearch          # 지연 import (위와 동일 사유)
+        return await opensearch.fetch_chunk_map(ids)
+    return await _fetch_chunk_map(session, ids)
+
+
 def _rank_multi(per_query_ids: list[list[int]]) -> list[int]:
     """쿼리 확장(#5) 순위 — RRF로 union 전체를 정렬한다. 자르지 않는다.
 
@@ -300,19 +314,14 @@ def _rank_multi(per_query_ids: list[list[int]]) -> list[int]:
 async def _fetch_chunk_map(
     session: AsyncSession,
     ids: list[int],
-    searchable_only: bool = False,
 ) -> dict[int, RetrievedChunk]:
     """id → RetrievedChunk 본문·메타 조회. IN 절 한 번 (개별 SELECT N번 안 함).
 
     부수효과 없음 (DB 읽기 전용). 순서는 호출부가 정한다 — 여기선 dict만 만든다.
     FAQ 청크는 filename을 'FAQ'로 — 인용 후보 접기(sources_from_chunks)와 표시명이 이 값을 따름.
 
-    **searchable_only (#139)**: 외부 색인 백엔드가 준 id를 PG로 되물을 때 켠다. PG를 정본으로
-    두는 설계의 실질적 방어선이다 — 색인이 낡아 삭제된·비공개된 청크 id를 돌려줘도 PG 조건을
-    통과하지 못하면 결과에 못 들어온다. 덕분에 **문서 삭제·검색토글·폴더 off·FAQ off가 색인을
-    건드리지 않아도 즉시 반영된다**(정합 3층 설계의 1층 — rag/opensearch.py 상단 참조).
-    pg 경로는 False다: id가 이미 같은 조건을 통과해 나왔으므로 걸 이유가 없고, 걸면 조인만
-    늘어난다.
+    외부 색인 백엔드(#139)는 이 함수를 쓰지 않는다 — 엔진이 텍스트·메타를 함께 들고 있어
+    `rag.opensearch.fetch_chunk_map`이 그 _source로 같은 자료형을 만든다(실무 표준: 왕복 1회).
     """
     stmt = (
         select(Chunk, Document.filename, Document.version, Folder.name, Folder.description)
@@ -320,9 +329,6 @@ async def _fetch_chunk_map(
         .outerjoin(Folder, Document.folder_id == Folder.id)      # 미분류 문서·FAQ는 폴더가 NULL로 옴
         .where(Chunk.id.in_(ids))
     )
-    if searchable_only:
-        # _searchable_condition()이 Faq.is_active를 보므로 조인을 하나 더 붙인다.
-        stmt = stmt.outerjoin(Faq, Chunk.faq_id == Faq.id).where(_searchable_condition())
     rows = await session.execute(stmt)
     return {
         c.id: RetrievedChunk(
@@ -422,13 +428,11 @@ async def retrieve_candidates(
         seen = set(top_ids)
         top_ids = top_ids + [cid for cid in lex_ids if cid not in seen][:settings.hybrid_lexical_inject]
 
-    # 외부 색인 백엔드일 때만 PG 권위 필터를 켠다 (#139 정합 1층 — _fetch_chunk_map docstring)
-    chunk_map = await _fetch_chunk_map(
-        session, top_ids, searchable_only=(settings.search_backend == 'opensearch'))
+    chunk_map = await _chunk_map(session, top_ids)
     # 순위 순서 그대로 재배열. `if cid in chunk_map`은 pg 경로에선 무의미하지만(id가 PG에서
-    # 나오므로 집합이 같다) 외부 색인 백엔드(#139)에선 필수다 — 색인이 낡아 삭제된 청크 id를
-    # 돌려주면 KeyError로 검색 전체가 죽는다. PG를 정본으로 두는 설계의 안전판이기도 하다:
-    # PG에 없는 것은 결과에 들어오지 못한다.
+    # 나오므로 집합이 같다) 외부 색인 백엔드(#139)에선 필수다 — 검색과 본문 조회가 다른
+    # 호출이라 그 사이에 문서가 지워지면 조회에서 빠지고, 가드가 없으면 KeyError로 검색
+    # 전체가 죽는다.
     result = [chunk_map[cid] for cid in top_ids if cid in chunk_map]
 
     # ----- 리랭커 재정렬 (on/off = settings.rerank_enabled) ----------

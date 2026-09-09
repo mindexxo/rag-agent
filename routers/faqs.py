@@ -73,7 +73,7 @@ async def create_faq(
     embedding = await _embed_chunk_text(faq.question, faq.variants, faq.answer)
     await reindex_faq(session, faq, embedding)
     await session.commit()
-    await opensearch.sync_faqs(session, [faq.id])   # 외부 색인 반영 (#139) — pg면 no-op
+    await opensearch.sync_faqs(session, [faq.id], embedding)   # 외부 색인 반영 (#139) — pg면 no-op
     return _to_response(faq)
 
 
@@ -122,7 +122,7 @@ async def update_faq(
     # 외부 색인 반영 (#139) — pg면 no-op. is_active off는 색인을 건드릴 필요가 없다
     # (읽기 권위 필터가 즉시 걸러낸다 — 정합 1층) 지만, 내용 변경은 청크 id가 바뀌므로 반영한다.
     if content_changed:
-        await opensearch.sync_faqs(session, [faq.id])
+        await opensearch.sync_faqs(session, [faq.id], embedding)
     return _to_response(faq)
 
 

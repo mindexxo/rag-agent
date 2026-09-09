@@ -7,6 +7,7 @@
 """
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 이 파일(config.py)이 앱 루트에 있으므로, 그 디렉터리가 프로젝트 루트.
@@ -142,6 +143,43 @@ class Settings(BaseSettings):
     opensearch_url: str = "http://localhost:9200"     # 실주소는 .env (개발계 이관 시 포트 23336)
     opensearch_index: str = "kms_chunks_v1"
     opensearch_timeout: float = 30.0
+
+    # PG가 검색용 파생 컬럼(chunks.dense·lex_tsv·lex_len)을 계속 들지 (#139).
+    # **search_backend와 별개 스위치인 이유**: 둘을 한 값으로 묶으면 백엔드를 바꾸는 순간
+    # 스키마 마이그레이션이 강제되고, 마이그레이션 전에 업로드하면 dense NOT NULL 위반으로
+    # 인제스션이 죽는다. 전환은 두 단계여야 한다 —
+    #   1단계: search_backend=opensearch (컬럼은 그대로) → 검색만 엔진으로. 되돌리기 자유.
+    #   2단계: 아래를 False로 + 스키마 마이그레이션 → PG는 본문만 든다.
+    #
+    # False로 바꾸면:
+    #  - 인제스션·FAQ 색인이 PG에 dense/lex를 쓰지 않고, 계산한 임베딩을 OpenSearch로 직접 넘긴다.
+    #  - 재색인·재동기화(eval/_os_index)는 PG 벡터를 못 읽으므로 **chunks.text에서 임베딩 입력을
+    #    재조립해 다시 임베딩한다**(rag/opensearch.lex_text가 인제스션과 동일 조립임이 근거).
+    #    즉 색인 재구축 비용이 '몇 초'에서 'TEI 임베딩 배치'로 올라간다 — 그게 이 선택의 값이다.
+    #  - `search_backend='pg'`로 되돌릴 수 없다(어휘·벡터 컬럼이 비어 있다). 아래 검증이 막는다.
+    #
+    # 선결 마이그레이션 순서(schema.sql 하단에 기록, 실행은 사람이):
+    #   ① ALTER TABLE chunks ALTER COLUMN dense DROP NOT NULL;   ← 이거만 하면 False 운영 가능
+    #   ② DROP INDEX idx_chunks_dense_hnsw; DROP INDEX idx_chunks_lex_gin;  ← 검색을 안 하므로
+    #   ③ OpenSearch 스냅샷 설정 + 복구 리허설을 **마친 뒤**
+    #      ALTER TABLE chunks DROP COLUMN dense, DROP COLUMN lex_tsv, DROP COLUMN lex_len;
+    # ②③ 사이를 건너뛰면 백업 없는 유일 저장소가 되는 구간이 생긴다.
+    pg_vector_columns: bool = True
+
+    @model_validator(mode='after')
+    def _check_search_backend(self):
+        """조합 검증 — 조용히 빈 결과를 내는 설정을 기동 시점에 막는다.
+
+        pg 백엔드 + 파생 컬럼 없음은 "dense가 비었는데 dense로 검색"이라 검색이 0건이 된다.
+        런타임에 no_evidence로만 드러나면 원인을 찾기 어려우므로 여기서 끊는다.
+        """
+        if self.search_backend not in ('pg', 'opensearch'):
+            raise ValueError(f"search_backend는 'pg'|'opensearch'만: {self.search_backend!r}")
+        if self.search_backend == 'pg' and not self.pg_vector_columns:
+            raise ValueError(
+                "search_backend='pg'인데 pg_vector_columns=False — PG 검색이 쓸 벡터·어휘 "
+                "컬럼이 없어 결과가 항상 비게 된다. 되돌리려면 재인제스트(재임베딩)가 필요하다.")
+        return self
 
     # 컨텍스트 예산 (F100). context_window는 vLLM --max-model-len과 반드시 일치시킬 것.
     context_window: int = 30720

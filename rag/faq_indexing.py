@@ -7,7 +7,7 @@
 from sqlalchemy import ARRAY, Text, cast, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from rag import lexical
+from rag import lexical, opensearch
 from rag.models import Chunk, Faq
 
 
@@ -30,7 +30,16 @@ async def reindex_faq(session: AsyncSession, faq: Faq, embedding) -> None:
     text = build_faq_chunk_text(faq.question, faq.variants or [], faq.answer)
     # 어휘 채널(#135) — FAQ는 프리픽스 없이 원문 그대로 (임베딩 입력과 동일한 비대칭,
     # 어블레이션 코퍼스 조립도 같다). 청크와 같은 트랜잭션이라 별도 정합 관리 없음.
+    #
+    # 파생 컬럼은 PG가 그것들을 들 때만 쓴다 (#139) — 외부 엔진 구성에서는 라우터가
+    # 커밋 후 opensearch.sync_faqs(..., embedding)로 이 임베딩을 엔진에 직접 넘긴다.
+    # 스위치·마이그레이션 순서는 config.py의 pg_vector_columns 주석이 정본이다.
     toks = lexical.bigrams(text)
+    derived = {
+        'dense': embedding.dense,
+        'lex_tsv': func.array_to_tsvector(cast(lexical.tsvector_lexemes(toks), ARRAY(Text))),
+        'lex_len': len(toks),
+    } if opensearch.pg_stores_vectors() else {}
     session.add(Chunk(
         faq_id=faq.id,
         document_id=None,
@@ -39,7 +48,5 @@ async def reindex_faq(session: AsyncSession, faq: Faq, embedding) -> None:
         text=text,
         heading_path=[faq.question],
         page=None,
-        dense=embedding.dense,
-        lex_tsv=func.array_to_tsvector(cast(lexical.tsvector_lexemes(toks), ARRAY(Text))),
-        lex_len=len(toks),
+        **derived,
     ))

@@ -93,7 +93,20 @@ async def index_pending_document(document_id: int) -> None:
                 return
 
             # 청크 insert (xlsx 청크는 meta에 is_table·sheet — retriever '한 시트만' 필터용)
+            #
+            # 검색용 파생 컬럼(dense·lex_tsv·lex_len)은 **PG가 그것들을 들 때만** 쓴다 (#139).
+            # 외부 엔진이 검색을 맡는 구성에서는 PG에 둘 이유가 없고, 그때 벡터는 아래
+            # sync_after_ingest가 여기서 계산한 embeddings를 그대로 엔진에 넘긴다.
+            # 스위치·마이그레이션 순서는 config.py의 pg_vector_columns 주석이 정본이다.
+            keep_pg_vectors = opensearch.pg_stores_vectors()
             for chunk, embedding, toks in zip(chunks, embeddings, lex_tokens):
+                derived = {
+                    'dense': embedding.dense,
+                    # 어휘 채널(#135) — 청크와 같은 트랜잭션이라 별도 정합 관리가 없다
+                    'lex_tsv': func.array_to_tsvector(
+                        cast(lexical.tsvector_lexemes(toks), ARRAY(Text))),
+                    'lex_len': len(toks),
+                } if keep_pg_vectors else {}
                 session.add(Chunk(
                     document_id=doc.id,
                     tenant_id=doc.tenant_id,
@@ -102,10 +115,7 @@ async def index_pending_document(document_id: int) -> None:
                     page=chunk.page,
                     heading_path=chunk.heading_path,
                     meta=chunk.meta or {},
-                    dense=embedding.dense,
-                    # 어휘 채널(#135) — 청크와 같은 트랜잭션이라 별도 정합 관리가 없다
-                    lex_tsv=func.array_to_tsvector(cast(lexical.tsvector_lexemes(toks), ARRAY(Text))),
-                    lex_len=len(toks),
+                    **derived,
                   ))
 
             # supersede: 같은 filename의 다른 active 버전 내리기 + 청크 삭제
@@ -148,7 +158,7 @@ async def index_pending_document(document_id: int) -> None:
         # rag/opensearch.py 상단 참조.
         # 이 호출은 어떤 경우에도 예외를 올리지 않는다 — try 안이라 예외가 나면 이미 커밋된
         # 인제스션이 _mark_failed로 뒤집힌다(그 보장은 sync_after_ingest docstring).
-        await opensearch.sync_after_ingest(document_id, old_active_ids)
+        await opensearch.sync_after_ingest(document_id, old_active_ids, embeddings)
     except Exception as e:
         await _mark_failed(document_id, str(e))
 

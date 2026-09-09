@@ -432,16 +432,37 @@ def enabled() -> bool:
     return settings.search_backend == 'opensearch'
 
 
-def build_doc(chunk, filename: str | None, version: int | None) -> dict:
+def pg_stores_vectors() -> bool:
+    """PG가 검색용 파생 컬럼(dense·lex_tsv·lex_len)을 계속 드는지 (#139).
+
+    인제스션·FAQ 색인이 이 값을 보고 PG 쓰기를 건너뛴다. 전환 2단계의 스위치이고, 조합
+    검증은 config.Settings._check_search_backend가 한다. 사유·마이그레이션 순서는
+    config.py의 `pg_vector_columns` 주석이 정본이다.
+    """
+    return settings.pg_vector_columns
+
+
+def build_doc(chunk, filename: str | None, version: int | None,
+              dense: list[float] | None = None) -> dict:
     """OpenSearch 문서 본문 — **정의점**. 색인 배치(eval/_os_index)와 이중 쓰기가 같이 쓴다.
 
     두 벌로 갈라지면 배치로 만든 색인과 운영이 만든 색인의 모양이 달라지고, 그러면
     어블레이션 눈금이 운영을 예언하지 못한다.
 
     filename=None은 FAQ 청크다 — 'FAQ'로 적는다(_fetch_chunk_map과 동일 규약).
+
+    **dense를 명시로 받는 이유**: PG가 벡터를 안 들 수 있다(config의 pg_vector_columns).
+    그때는 인제스션이 방금 계산한 임베딩을 그대로 넘긴다 — PG를 경유하지 않으므로 왕복도
+    없고, 컬럼이 없어도 동작한다. 넘기지 않으면 PG 값을 쓴다(전환 1단계·전량 색인 경로).
     """
     from rag.lexical import bigrams
     lex = lex_text(chunk.text, filename, chunk.heading_path)
+    vec = dense if dense is not None else getattr(chunk, 'dense', None)
+    if vec is None:
+        # 조용히 벡터 없는 문서를 색인하면 kNN에서 안 잡히는 유령이 된다 — 크게 실패한다.
+        raise ValueError(
+            f'chunk {getattr(chunk, "id", "?")}: 벡터가 없다. PG에 dense가 없으면 '
+            f'호출부가 dense=를 넘겨야 한다(재색인 경로는 _fill_vectors가 재임베딩한다).')
     return {
         "chunk_id": chunk.id,
         "tenant_id": chunk.tenant_id,
@@ -455,9 +476,9 @@ def build_doc(chunk, filename: str | None, version: int | None) -> dict:
         "text": chunk.text,
         NORI_FIELD: lex,
         LEX_BIGRAM_FIELD: " ".join(bigrams(lex)),
-        # 임베딩을 재계산하지 않는다 — TEI는 호출마다 비결정적이다(실측 1.4e-4).
-        # PG에 저장된 값을 그대로 옮긴다. float32 → float 변환은 json 직렬화 때문.
-        "dense": [float(x) for x in chunk.dense],
+        # float32 → float 변환은 json 직렬화 때문. PG 값을 쓸 때는 재계산하지 않는다 —
+        # TEI는 호출마다 비결정적이다(실측 1.4e-4).
+        "dense": [float(x) for x in vec],
     }
 
 
@@ -517,7 +538,54 @@ async def _index_rows(session, *, document_ids=None, faq_ids=None) -> list[dict]
         stmt = stmt.where(Chunk.document_id.in_(list(document_ids)))
     if faq_ids is not None:
         stmt = stmt.where(Chunk.faq_id.in_(list(faq_ids)))
-    return [build_doc(c, fn, ver) for c, fn, ver in (await session.execute(stmt)).all()]
+    return await _rows_to_docs((await session.execute(stmt)).all())
+
+
+async def _rows_to_docs(rows) -> list[dict]:
+    """(Chunk, filename, version) 행들 → OpenSearch 문서. 벡터가 없으면 **재임베딩**한다.
+
+    PG가 벡터를 안 드는 구성(config의 pg_vector_columns=False)에서 전량 색인·재동기화가
+    타는 경로다. 재임베딩 입력은 `lex_text()` — 인제스션이 임베딩에 넣은 것과 같은 조립이라
+    (rag/documents.py의 index_texts, rag/index_text.build_index_text) 원래 벡터를 재현한다.
+    TEI가 호출마다 비결정적이라 완전히 같은 값은 아니지만(실측 1.4e-4) 검색 품질에는 잡음
+    수준이다.
+
+    **이 재임베딩이 "PG에서 벡터를 버리는" 선택의 값이다** — 색인 재구축이 '몇 초'에서
+    'TEI 배치'로 올라간다. 배치 분할은 embed_texts가 담당한다(TEI 상한 32).
+    """
+    need = [(c, fn, ver) for c, fn, ver in rows if getattr(c, 'dense', None) is None]
+    vectors: dict[int, list[float]] = {}
+    if need:
+        from rag.embeddings import embed_texts
+        texts = [lex_text(c.text, fn, c.heading_path) for c, fn, _ in need]
+        embs = await embed_texts(texts)
+        vectors = {c.id: e.dense for (c, _, _), e in zip(need, embs)}
+    return [build_doc(c, fn, ver, dense=vectors.get(c.id)) for c, fn, ver in rows]
+
+
+async def index_chunks_with_vectors(session, document_id: int, embeddings) -> int:
+    """인제스션이 방금 계산한 임베딩으로 직접 색인 — PG 벡터를 경유하지 않는다.
+
+    chunk_index 순서로 정렬해 embeddings와 zip한다. 인제스션이 그 순서로 넣었으므로
+    (rag/documents.py의 `zip(chunks, embeddings, lex_tokens)`) 짝이 맞는다. 개수가 어긋나면
+    조용히 잘못 짝지어 엉뚱한 벡터가 붙으므로 크게 실패한다.
+    """
+    from sqlalchemy import select
+
+    from rag.models import Chunk, Document
+
+    rows = (await session.execute(
+        select(Chunk, Document.filename, Document.version)
+        .outerjoin(Document, Chunk.document_id == Document.id)
+        .where(Chunk.document_id == document_id)
+        .order_by(Chunk.chunk_index)
+    )).all()
+    if len(rows) != len(embeddings):
+        raise ValueError(f'문서 {document_id}: 청크 {len(rows)}개 vs 임베딩 '
+                         f'{len(embeddings)}개 — 짝이 안 맞아 색인을 중단한다')
+    docs = [build_doc(c, fn, ver, dense=list(e.dense))
+            for (c, fn, ver), e in zip(rows, embeddings)]
+    return await bulk_index(docs)
 
 
 async def _run(op: str, coro):
@@ -548,7 +616,7 @@ async def _sync_documents(session, document_ids) -> int:
     return await bulk_index(await _index_rows(session, document_ids=document_ids))
 
 
-async def sync_after_ingest(document_id: int, superseded_ids) -> int:
+async def sync_after_ingest(document_id: int, superseded_ids, embeddings=None) -> int:
     """인제스션 커밋 후 훅 — 새 문서 색인 + supersede된 구버전 청크 제거.
 
     **자기 세션을 직접 연다**(호출부의 세션은 이미 닫혔다). 그리고 세션 열기까지 포함해
@@ -558,13 +626,18 @@ async def sync_after_ingest(document_id: int, superseded_ids) -> int:
     """
     if not enabled():
         return 0
-    return await _run('sync_after_ingest', _sync_after_ingest(document_id, superseded_ids))
+    return await _run('sync_after_ingest',
+                      _sync_after_ingest(document_id, superseded_ids, embeddings))
 
 
-async def _sync_after_ingest(document_id: int, superseded_ids) -> int:
+async def _sync_after_ingest(document_id: int, superseded_ids, embeddings) -> int:
     from database import AsyncSessionLocal
     async with AsyncSessionLocal() as session:
-        n = await bulk_index(await _index_rows(session, document_ids=[document_id]))
+        if embeddings is not None:
+            # 방금 계산한 벡터를 그대로 쓴다 — PG에 dense가 없어도 되고, 있어도 왕복이 없다.
+            n = await index_chunks_with_vectors(session, document_id, embeddings)
+        else:
+            n = await bulk_index(await _index_rows(session, document_ids=[document_id]))
     if superseded_ids:
         await _delete_by_terms('document_id', list(superseded_ids))
     return n
@@ -580,16 +653,25 @@ async def drop_documents(document_ids) -> int:
     return await _run('drop_documents', _delete_by_terms('document_id', list(document_ids)))
 
 
-async def sync_faqs(session, faq_ids) -> int:
+async def sync_faqs(session, faq_ids, embedding=None) -> int:
+    """FAQ 청크 색인. embedding을 주면 PG 벡터를 경유하지 않는다(라우터가 방금 계산한 값)."""
     if not enabled() or not faq_ids:
         return 0
-    return await _run('sync_faqs', _sync_faqs(session, faq_ids))
+    return await _run('sync_faqs', _sync_faqs(session, faq_ids, embedding))
 
 
-async def _sync_faqs(session, faq_ids) -> int:
+async def _sync_faqs(session, faq_ids, embedding=None) -> int:
     # FAQ 재인덱싱은 기존 청크를 지우고 새로 넣는다(faq_indexing.reindex_faq와 같은 모양) —
     # chunk_id가 바뀌므로 옛 문서를 먼저 지워야 유령이 남지 않는다.
     await _delete_by_terms('faq_id', list(faq_ids))
+    if embedding is not None and len(faq_ids) == 1:
+        from sqlalchemy import select
+
+        from rag.models import Chunk
+        rows = (await session.execute(
+            select(Chunk).where(Chunk.faq_id == faq_ids[0]))).scalars().all()
+        return await bulk_index([build_doc(c, None, None, dense=list(embedding.dense))
+                                 for c in rows])
     return await bulk_index(await _index_rows(session, faq_ids=faq_ids))
 
 
@@ -642,7 +724,8 @@ async def reconcile(session) -> dict:
         stmt = (select(C, Document.filename, Document.version)
                 .outerjoin(Document, C.document_id == Document.id)
                 .where(C.id.in_(list(missing))))
-        docs = [build_doc(c, fn, ver) for c, fn, ver in (await session.execute(stmt)).all()]
+        # 벡터가 없으면 재임베딩한다(_rows_to_docs) — PG가 벡터를 안 드는 구성의 복구 경로.
+        docs = await _rows_to_docs((await session.execute(stmt)).all())
         indexed = await bulk_index(docs)
     deleted = await _delete_by_terms('chunk_id', list(extra)) if extra else 0
     return {'pg': len(pg_ids), 'os': len(os_ids), 'indexed': indexed, 'deleted': deleted}

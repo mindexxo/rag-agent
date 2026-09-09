@@ -256,3 +256,22 @@ CREATE TABLE IF NOT EXISTS tenant_quotas (
 -- ALTER TABLE tenant_quotas ALTER COLUMN user_concurrency  SET DEFAULT 1;    -- 10 → 1
 -- UPDATE tenant_quotas SET concurrency_limit = 5 WHERE concurrency_limit = 10;
 -- UPDATE tenant_quotas SET user_concurrency  = 1 WHERE user_concurrency  = 10;
+
+-- ── #139 OpenSearch 채택 시 마이그레이션 (아직 실행하지 않음) ─────────────────
+-- 검색을 OpenSearch가 맡으면 PG의 검색용 파생 컬럼은 불필요해진다. 스위치는
+-- config.py의 `pg_vector_columns`이고 그 주석이 사유·순서의 정본이다.
+-- **순서를 지켜라** — ②와 ③ 사이를 건너뛰면 벡터의 백업 없는 유일 저장소가 생긴다.
+--
+--   ① 파생 컬럼 쓰기를 멈출 수 있게 제약 완화 (이것만 하면 pg_vector_columns=False 운영 가능)
+--      ALTER TABLE chunks ALTER COLUMN dense DROP NOT NULL;
+--
+--   ② 검색을 안 하므로 인덱스 제거 (순수 이득 — 실측 HNSW 6.5MB + GIN, 868청크 기준)
+--      DROP INDEX IF EXISTS idx_chunks_dense_hnsw;
+--      DROP INDEX IF EXISTS idx_chunks_lex_gin;
+--
+--   ③ OpenSearch 스냅샷 설정 + **복구 리허설을 마친 뒤** 컬럼 제거
+--      ALTER TABLE chunks DROP COLUMN dense, DROP COLUMN lex_tsv, DROP COLUMN lex_len;
+--
+-- 되돌리려면 컬럼을 다시 만들고 **전량 재임베딩**해야 한다(chunks.text는 남아 있으므로
+-- 가능하다 — rag/opensearch._rows_to_docs가 같은 조립으로 재임베딩하는 경로다).
+-- answer_cache.query_embedding은 이 정리의 대상이 아니다 — 의미캐시 자체가 쓰는 값이다.

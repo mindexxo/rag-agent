@@ -11,10 +11,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import AsyncSessionLocal
 from rag import cache, lexical
-from rag.chunking import chunk_file
+from rag.chunking import chunk_file, pdf_image_area_ratio
 from rag.embeddings import embed_texts
 from rag.index_text import build_index_text
 from rag.models import Chunk, Document
+
+# 이미지 면적이 이 비율을 넘으면 인제스션에서 경고를 남긴다 (#137 결함 4).
+# 실측(실문서 21건): 도표가 이미지인 3건이 21.1% / 4.4% / 0.7%, 나머지 18건 0%.
+# 0.7%짜리도 수당 산정식 하나가 통째로 사라졌으므로 임계를 낮게 잡는다.
+IMAGE_WARN_RATIO = 0.5
 
 _MIME_OVERRIDES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -76,6 +81,7 @@ async def index_pending_document(document_id: int) -> None:
         # starlette(run_in_threadpool)를 들이면 도메인 계층이 웹 프레임워크에 묶인다.
         # 형식 분기는 chunk_file 안에 하나뿐이다 (#42 — 두 곳이던 게 xlsx 버그의 원인).
         chunks = await asyncio.to_thread(chunk_file, blob_path, description=description)
+        image_ratio = await asyncio.to_thread(pdf_image_area_ratio, blob_path)
         # 빈 파일·텍스트레이어 없는 PDF 등 → 청크 0개면 ready 승격 대신 failed (C2 유령 ready 방지)
         if not chunks:
             raise ValueError('추출된 텍스트가 없습니다 (빈 파일이거나 파싱 결과가 비어 있음)')
@@ -133,6 +139,14 @@ async def index_pending_document(document_id: int) -> None:
             doc.status = "ready"
             doc.is_active = True
             doc.char_count = sum(len(c.text) for c in chunks)
+            # 도표가 이미지로 렌더된 문서는 그 내용이 색인되지 않는데도 ready가 된다
+            # (#137 결함 4). 근거가 비어 있다는 사실을 사용자가 알 수 있게 남긴다 —
+            # 검색·인용은 정상 동작하므로 상태는 ready 그대로 둔다.
+            if image_ratio >= IMAGE_WARN_RATIO:
+                doc.status_reason = (
+                    f'이미지가 쪽 면적의 {image_ratio:.0f}%를 차지합니다. '
+                    f'이미지로 그려진 표·흐름도는 텍스트를 추출할 수 없어 검색되지 않습니다.'
+                )[:500]
             doc.indexed_at = datetime.now(timezone.utc).replace(tzinfo=None)   # naive 컬럼 — UTC 유지
 
             # 옛 문서 근거 캐시 무효화

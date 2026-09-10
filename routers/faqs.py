@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
-from rag import cache, opensearch
+from rag import cache, outbox
 from rag.embeddings import embed_texts
 from rag.faq_indexing import build_faq_chunk_text, reindex_faq
 from rag.models import Faq
@@ -72,8 +72,9 @@ async def create_faq(
 
     embedding = await _embed_chunk_text(faq.question, faq.variants, faq.answer)
     await reindex_faq(session, faq, embedding)
+    outbox.enqueue(session, tenant_id, outbox.INDEX_FAQ, faq_id=faq.id)   # 같은 트랜잭션 (#139)
     await session.commit()
-    await opensearch.sync_faqs(session, [faq.id], embedding)   # 외부 색인 반영 (#139) — pg면 no-op
+    await outbox.drain_now(session)
     return _to_response(faq)
 
 
@@ -118,13 +119,14 @@ async def update_faq(
     if content_changed or turned_off:
         await cache.invalidate_source(session, tenant_id, -faq.id)   # 음수 = FAQ 네임스페이스
 
-    await session.commit()
-    # 외부 색인 반영 (#139) — pg면 no-op. is_active off는 색인을 건드릴 필요가 없다
-    # (읽기 권위 필터가 즉시 걸러낸다 — 정합 1층) 지만, 내용 변경은 청크 id가 바뀌므로 반영한다.
+    # 외부 색인 반영을 같은 트랜잭션에 적재 (#139) — 내용 변경은 청크 id가 바뀌므로 재색인,
+    # 활성 토글은 메타 부분 갱신이면 된다(재색인은 벡터 없는 구성에서 재임베딩을 부른다).
     if content_changed:
-        await opensearch.sync_faqs(session, [faq.id], embedding)   # 청크 id가 바뀌므로 재색인
-    elif turned_off or request.is_active is not None:
-        await opensearch.sync_meta_faqs(session, [faq.id])         # 활성 토글은 부분 갱신
+        outbox.enqueue(session, tenant_id, outbox.INDEX_FAQ, faq_id=faq.id)
+    elif request.is_active is not None:
+        outbox.enqueue(session, tenant_id, outbox.META_FAQS, faq_ids=[faq.id])
+    await session.commit()
+    await outbox.drain_now(session)
     return _to_response(faq)
 
 
@@ -138,5 +140,6 @@ async def delete_faq(
     faq = await _get_faq(session, tenant_id, faq_id)
     await cache.invalidate_source(session, tenant_id, -faq.id)
     await session.delete(faq)
+    outbox.enqueue(session, tenant_id, outbox.DROP_FAQS, faq_ids=[faq_id])   # 같은 트랜잭션 (#139)
     await session.commit()
-    await opensearch.drop_faqs([faq_id])   # 외부 색인에서 제거 (#139) — pg면 no-op
+    await outbox.drain_now(session)

@@ -111,6 +111,33 @@ class Faq(Base):
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
 
+
+class SearchIndexOutbox(Base):
+    """외부 검색 색인 반영 대기열 (#139 outbox).
+
+    **행을 PG 변경과 같은 트랜잭션에 쓴다** — 그것이 이 패턴의 전부다. 커밋이 성공하면
+    반영해야 할 일이 반드시 기록돼 있고, 롤백되면 그 일도 함께 사라진다. 커밋 후 직접
+    호출하는 방식(이전 구성)은 그 사이에 프로세스가 죽으면 색인이 조용히 낡았다.
+
+    처리 주체는 둘이다: 커밋 직후 인라인 드레인(빠른 반영)과 워커 cron(보장). 성공하면
+    행을 지운다 — 남아 있는 행이 곧 '아직 반영 안 된 일'이다. 실패는 attempts·last_error에
+    쌓이고 next_attempt_at로 지수 백오프한다.
+
+    연산은 멱등이다(색인은 _id=chunk_id upsert, 삭제는 없는 것을 지워도 무해) — 그래서
+    인라인과 cron이 겹쳐 두 번 처리해도 결과가 같다.
+    """
+    __tablename__ = "search_index_outbox"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    tenant_id: Mapped[str]
+    op: Mapped[str]                        # 어휘의 정의점은 rag/outbox.py (INDEX_DOCUMENT 등 상수)
+    payload: Mapped[Any] = mapped_column(JSONB, default=dict)   # {"document_ids": [...]} 등
+    attempts: Mapped[int] = mapped_column(default=0, server_default="0")
+    last_error: Mapped[str | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    next_attempt_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
 class Chunk(Base):
     """검색 단위 (검색 인덱스). 출처는 document 또는 faq 정확히 하나 — DDL의 CHECK가 강제."""
     __tablename__ = "chunks"

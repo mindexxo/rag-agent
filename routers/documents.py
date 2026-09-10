@@ -33,7 +33,7 @@ from starlette.responses import FileResponse, JSONResponse
 
 from config import settings
 from database import get_session
-from rag import cache, opensearch
+from rag import cache, outbox
 from rag.chunking import extract_text
 from rag.documents import handle_upload
 from rag.models import Chunk, Document, Folder
@@ -327,11 +327,12 @@ async def update_document(
     if effective_before and not effective_after:
         await cache.invalidate_source(session, tenant_id, doc.id)
 
+    # 외부 색인의 비정규화 메타 갱신을 같은 트랜잭션에 적재 (#139) — 검색가능·폴더 값이
+    # 청크 문서마다 복사돼 있어 fan-out이 필요하다. **재색인이 아니라 부분 갱신**이다
+    # (재색인은 벡터 없는 구성에서 재임베딩을 부른다 — rag/opensearch._update_meta).
+    outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=[doc.id])
     await session.commit()
-    # 외부 색인의 비정규화 메타 갱신 (#139) — pg면 no-op. 검색가능·폴더 값이 청크 문서마다
-    # 복사돼 있어 fan-out이 필요하다. **재색인이 아니라 부분 갱신**이다(재색인은 벡터가 없는
-    # 구성에서 재임베딩을 부른다 — rag/opensearch._update_meta).
-    await opensearch.sync_meta_documents(session, [doc.id])
+    await outbox.drain_now(session)
     return _to_response(doc)
 
 
@@ -373,12 +374,11 @@ async def delete_document(
     for did in doc_ids:
         await cache.invalidate_source(session, tenant_id, did)
 
+    # 외부 색인에서도 제거 (#139). **색인이 서빙 정본이라 이게 누락되면 삭제된 문서가 계속
+    # 인용된다** — 그래서 같은 트랜잭션에 적재해 반영을 보장한다(rag/outbox.py).
+    outbox.enqueue(session, tenant_id, outbox.DROP_DOCUMENTS, document_ids=list(doc_ids))
     await session.commit()
-    # 외부 색인에서도 제거 (#139) — pg면 no-op. **색인이 서빙 정본이므로 이 호출이 실패하면
-    # 삭제된 문서가 계속 인용될 수 있다** — 실패는 지표(kms_search_index_sync_total)로
-    # 드러나고 `_os_index --repair`가 줍는다. 이 창을 없애려면 outbox가 필요하다
-    # (rag/opensearch.py "정합 관리" 절).
-    await opensearch.drop_documents(doc_ids)
+    await outbox.drain_now(session)
 
 
 @router.get('/documents/{document_id}/download')

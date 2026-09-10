@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
-from rag import cache, opensearch
+from rag import cache, outbox
 from rag.models import Document, Folder
 from routers.kms import get_tenant_id
 from schemas.kms import FolderInfo, FolderCreateRequest, FolderUpdateRequest
@@ -105,20 +105,22 @@ async def update_folder(
         if folder.is_searchable and not request.is_searchable:
             await _invalidate_folder_docs(session, tenant_id, folder.id)
         folder.is_searchable = request.is_searchable
-    try:
-        await session.commit()
-    except IntegrityError:
-        await session.rollback()
-        raise HTTPException(status_code=409, detail='같은 이름의 폴더가 이미 있습니다.')
-    # 외부 색인의 비정규화 메타 갱신 (#139) — pg면 no-op. 폴더 이름·설명·검색토글이 소속
-    # 문서의 **모든 청크 문서**에 복사돼 있어 fan-out이 필요하다(폴더가 fan-out의 최대 단위다).
-    # 부분 갱신이라 청크 수와 무관하게 _update_by_query 1~2회로 끝난다.
+    # 폴더 이름·설명·검색토글은 소속 문서의 **모든 청크 문서**에 복사돼 있다 (#139) —
+    # 같은 트랜잭션에 fan-out 갱신을 적재한다. 폴더가 fan-out의 최대 단위이고, 부분 갱신이라
+    # 청크 수와 무관하게 _update_by_query 1~2회로 끝난다.
     doc_ids = (await session.execute(
         select(Document.id)
         .where(Document.tenant_id == tenant_id)
         .where(Document.folder_id == folder.id)
     )).scalars().all()
-    await opensearch.sync_meta_documents(session, doc_ids)
+    if doc_ids:
+        outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=list(doc_ids))
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail='같은 이름의 폴더가 이미 있습니다.')
+    await outbox.drain_now(session)
     return _to_info(folder)
 
 

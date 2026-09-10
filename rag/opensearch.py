@@ -703,97 +703,10 @@ async def index_chunks_with_vectors(session, document_id: int, embeddings) -> in
     return await bulk_index(docs)
 
 
-async def _run(op: str, coro):
-    """쓰기 훅 공통 래퍼 — 실패를 삼키고 지표·경고로 드러낸다(사유는 모듈 상단 2층 설명)."""
-    import logging
-
-    from rag.metrics import SEARCH_INDEX_SYNC_TOTAL
-    logger = logging.getLogger(__name__)
-    try:
-        n = await coro
-        SEARCH_INDEX_SYNC_TOTAL.labels(op=op, result='ok').inc()
-        return n
-    except Exception as e:                     # noqa: BLE001 — 삼키는 것이 의도다
-        SEARCH_INDEX_SYNC_TOTAL.labels(op=op, result='error').inc()
-        logger.warning('검색 색인 동기화 실패 (%s) — 색인이 낡았다. '
-                       '복구: python -m eval._os_index --repair · 원인=%s', op, e)
-        return 0
-
-
-async def sync_documents(session, document_ids) -> int:
-    """문서들의 청크를 색인에 반영(upsert). 인제스션 커밋 **후**에 부른다."""
-    if not enabled() or not document_ids:
-        return 0
-    return await _run('sync_documents', _sync_documents(session, document_ids))
-
-
-async def _sync_documents(session, document_ids) -> int:
-    return await bulk_index(await _index_rows(session, document_ids=document_ids))
-
-
-async def sync_after_ingest(document_id: int, superseded_ids, embeddings=None) -> int:
-    """인제스션 커밋 후 훅 — 새 문서 색인 + supersede된 구버전 청크 제거.
-
-    **자기 세션을 직접 연다**(호출부의 세션은 이미 닫혔다). 그리고 세션 열기까지 포함해
-    전부 `_run`이 감싸므로 **이 함수는 어떤 경우에도 예외를 올리지 않는다** — 호출부
-    (rag/documents.py)가 이걸 try 안에서 부르는데, 여기서 예외가 나면 이미 커밋된 인제스션이
-    `_mark_failed`로 뒤집힌다. 파생 인덱스가 정본의 상태를 망치는 건 뒤바뀐 설계다.
-    """
-    if not enabled():
-        return 0
-    return await _run('sync_after_ingest',
-                      _sync_after_ingest(document_id, superseded_ids, embeddings))
-
-
-async def _sync_after_ingest(document_id: int, superseded_ids, embeddings) -> int:
-    from database import AsyncSessionLocal
-    async with AsyncSessionLocal() as session:
-        if embeddings is not None:
-            # 방금 계산한 벡터를 그대로 쓴다 — PG에 dense가 없어도 되고, 있어도 왕복이 없다.
-            n = await index_chunks_with_vectors(session, document_id, embeddings)
-        else:
-            n = await bulk_index(await _index_rows(session, document_ids=[document_id]))
-    if superseded_ids:
-        await _delete_by_terms('document_id', list(superseded_ids))
-    return n
-
-
-async def drop_documents(document_ids) -> int:
-    """문서들의 청크를 색인에서 제거. PG 청크 삭제 커밋 **후**에 부른다.
-
-    1층이 이미 오답을 막으므로 이건 위생(인덱스 크기·df)과 재동기화 부담 절감용이다.
-    """
-    if not enabled() or not document_ids:
-        return 0
-    return await _run('drop_documents', _delete_by_terms('document_id', list(document_ids)))
-
-
-async def sync_faqs(session, faq_ids, embedding=None) -> int:
-    """FAQ 청크 색인. embedding을 주면 PG 벡터를 경유하지 않는다(라우터가 방금 계산한 값)."""
-    if not enabled() or not faq_ids:
-        return 0
-    return await _run('sync_faqs', _sync_faqs(session, faq_ids, embedding))
-
-
-async def _sync_faqs(session, faq_ids, embedding=None) -> int:
-    # FAQ 재인덱싱은 기존 청크를 지우고 새로 넣는다(faq_indexing.reindex_faq와 같은 모양) —
-    # chunk_id가 바뀌므로 옛 문서를 먼저 지워야 유령이 남지 않는다.
-    await _delete_by_terms('faq_id', list(faq_ids))
-    if embedding is not None and len(faq_ids) == 1:
-        from sqlalchemy import select
-
-        from rag.models import Chunk
-        rows = (await session.execute(
-            select(Chunk).where(Chunk.faq_id == faq_ids[0]))).scalars().all()
-        return await bulk_index([build_doc(c, None, None, dense=list(embedding.dense))
-                                 for c in rows])
-    return await bulk_index(await _index_rows(session, faq_ids=faq_ids))
-
-
-async def drop_faqs(faq_ids) -> int:
-    if not enabled() or not faq_ids:
-        return 0
-    return await _run('drop_faqs', _delete_by_terms('faq_id', list(faq_ids)))
+# 아래 연산들은 **실패를 삼키지 않는다** — 예외를 올려 outbox가 재시도·백오프를 걸게 한다
+# (rag/outbox.py). 삼킴과 지표는 그쪽 한 곳에 모여 있다. 전부 멱등이다: 색인은
+# _id=chunk_id upsert, 삭제는 없는 것을 지워도 무해, 메타 갱신은 같은 값을 덮어쓸 뿐이라
+# 인라인 드레인과 워커 cron이 겹쳐 두 번 처리해도 결과가 같다.
 
 
 async def _update_meta(field: str, values: list, meta: dict) -> int:
@@ -803,8 +716,8 @@ async def _update_meta(field: str, values: list, meta: dict) -> int:
     바꾸는데 GPU를 태우는 건 뒤바뀐 설계다. 그래서 부분 갱신이 이 경로의 유일한 선택이다.
 
     conflicts=proceed: 같은 문서를 동시에 재색인 중이면 버전 충돌이 날 수 있다. 그때 전체를
-    실패시키기보다 넘긴다 — 놓친 것은 재동기화(--repair)가 잡고, 여기서 멈추면 나머지 청크가
-    옛 메타로 남는 쪽이 더 나쁘다.
+    실패시키기보다 넘긴다 — 놓친 것은 재동기화(--repair)와 outbox 재시도가 잡고, 여기서
+    멈추면 나머지 청크가 옛 메타로 남는 쪽이 더 나쁘다.
     """
     if not values:
         return 0
@@ -816,20 +729,47 @@ async def _update_meta(field: str, values: list, meta: dict) -> int:
     return int(resp.get("updated", 0))
 
 
-async def sync_meta_documents(session, document_ids) -> int:
-    """문서 메타(검색가능·폴더) 변경을 색인에 반영. 커밋 **후**에 부른다.
+async def index_document_chunks(session, document_id: int) -> int:
+    """문서의 청크를 색인에 반영(upsert). PG에 벡터가 없으면 재임베딩한다(_rows_to_docs)."""
+    return await bulk_index(await _index_rows(session, document_ids=[document_id]))
 
-    문서 단위 토글·폴더 이동, 그리고 폴더 자체의 변경(이름·설명·검색토글)에서 모두 쓴다 —
-    폴더 변경은 호출부가 그 폴더의 document_ids를 넘긴다.
 
-    같은 메타 값을 갖는 문서끼리 묶어 호출 수를 줄인다(폴더 변경이면 대개 1~2번으로 끝난다).
+async def index_document_with_vectors(document_id: int, superseded_ids, embeddings) -> int:
+    """인제스션 전용 빠른 길 — 방금 계산한 임베딩을 그대로 쓴다.
+
+    outbox 드레인(index_document_chunks)은 PG에서 벡터를 읽는데, PG가 벡터를 안 드는
+    구성에서는 그게 **재임베딩**이다. 인제스션은 벡터를 손에 들고 있으므로 그 낭비를 피한다.
+    실패하면 outbox 행이 남아 워커가 재임베딩으로라도 반영한다 — 느린 길이 보험이다.
     """
-    if not enabled() or not document_ids:
-        return 0
-    return await _run('sync_meta_documents', _sync_meta_documents(session, document_ids))
+    from database import AsyncSessionLocal
+    async with AsyncSessionLocal() as session:
+        n = await index_chunks_with_vectors(session, document_id, embeddings)
+    if superseded_ids:
+        await _delete_by_terms('document_id', list(superseded_ids))
+    return n
 
 
-async def _sync_meta_documents(session, document_ids) -> int:
+async def drop_documents_now(document_ids) -> int:
+    return await _delete_by_terms('document_id', list(document_ids))
+
+
+async def drop_faqs_now(faq_ids) -> int:
+    return await _delete_by_terms('faq_id', list(faq_ids))
+
+
+async def index_faq_chunks(session, faq_id: int) -> int:
+    """FAQ 청크 재색인. 재인덱싱은 청크를 지우고 새로 넣어 chunk_id가 바뀌므로,
+    옛 문서를 먼저 지워야 색인에 유령이 남지 않는다."""
+    await _delete_by_terms('faq_id', [faq_id])
+    return await bulk_index(await _index_rows(session, faq_ids=[faq_id]))
+
+
+async def sync_meta_documents_now(session, document_ids) -> int:
+    """문서 메타(검색가능·폴더) 부분 갱신. 문서 토글·폴더 이동, 그리고 폴더 자체의 변경
+    (이름·설명·검색토글 → 호출부가 그 폴더의 document_ids를 넘긴다)에서 쓴다.
+
+    같은 메타 값을 갖는 문서끼리 묶어 호출 수를 줄인다 — 폴더 변경이면 대개 1~2번이다.
+    """
     from collections import defaultdict
 
     from sqlalchemy import select
@@ -860,14 +800,8 @@ async def _sync_meta_documents(session, document_ids) -> int:
     return n
 
 
-async def sync_meta_faqs(session, faq_ids) -> int:
-    """FAQ 활성 토글을 색인에 반영 (부분 갱신)."""
-    if not enabled() or not faq_ids:
-        return 0
-    return await _run('sync_meta_faqs', _sync_meta_faqs(session, faq_ids))
-
-
-async def _sync_meta_faqs(session, faq_ids) -> int:
+async def sync_meta_faqs_now(session, faq_ids) -> int:
+    """FAQ 활성 토글 부분 갱신."""
     from collections import defaultdict
 
     from sqlalchemy import select

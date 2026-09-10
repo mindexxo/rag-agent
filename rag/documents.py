@@ -10,7 +10,7 @@ from sqlalchemy import ARRAY, Text, cast, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import AsyncSessionLocal
-from rag import cache, lexical, opensearch
+from rag import cache, lexical, opensearch, outbox
 from rag.chunking import chunk_file
 from rag.embeddings import embed_texts
 from rag.index_text import build_index_text
@@ -149,16 +149,22 @@ async def index_pending_document(document_id: int) -> None:
             for old_id in old_active_ids:
                 await cache.invalidate_source(session, doc.tenant_id, old_id)
 
+            # 외부 색인 반영을 **같은 트랜잭션에** 적재한다 (#139 outbox). 커밋 후 직접
+            # 호출하면 그 사이 프로세스가 죽었을 때 색인이 조용히 낡는다 — 커밋이 성공하면
+            # 할 일이 반드시 남아 있게 만드는 것이 이 패턴의 요점이다. pg면 no-op.
+            outbox.enqueue(session, doc.tenant_id, outbox.INDEX_DOCUMENT,
+                           document_id=document_id)
+            if old_active_ids:
+                outbox.enqueue(session, doc.tenant_id, outbox.DROP_DOCUMENTS,
+                               document_ids=old_active_ids)
+
             await session.commit()
 
-        # 외부 검색 색인 반영 (#139) — 커밋 **후**다. 커밋 전에 넣으면 PG가 롤백됐는데
-        # 색인만 반영되는 더 나쁜 불일치가 된다. search_backend='pg'(기본)면 아래는 no-op이고,
-        # 실패해도 예외를 올리지 않는다(PG는 이미 커밋됐고, 여기서 터뜨리면 색인 장애가 곧
-        # 업로드 장애가 된다) — 실패는 지표·경고로 드러난다. 정합 관리 설계는
-        # rag/opensearch.py 상단 참조.
-        # 이 호출은 어떤 경우에도 예외를 올리지 않는다 — try 안이라 예외가 나면 이미 커밋된
-        # 인제스션이 _mark_failed로 뒤집힌다(그 보장은 sync_after_ingest docstring).
-        await opensearch.sync_after_ingest(document_id, old_active_ids, embeddings)
+        # 빠른 길 — 방금 계산한 임베딩으로 바로 색인하고 그 대기열 행을 지운다.
+        # 느린 길(워커 cron)은 PG에서 벡터를 읽는데, PG가 벡터를 안 드는 구성에선 그게
+        # 재임베딩이다. 실패해도 대기열 행이 남아 워커가 반영을 보장하므로 여기선 삼킨다
+        # (try 안이라 예외가 새면 이미 커밋된 인제스션이 _mark_failed로 뒤집힌다).
+        await outbox.flush_document_index(document_id, old_active_ids, embeddings)
     except Exception as e:
         await _mark_failed(document_id, str(e))
 

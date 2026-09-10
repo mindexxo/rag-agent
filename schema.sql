@@ -275,3 +275,21 @@ CREATE TABLE IF NOT EXISTS tenant_quotas (
 -- 되돌리려면 컬럼을 다시 만들고 **전량 재임베딩**해야 한다(chunks.text는 남아 있으므로
 -- 가능하다 — rag/opensearch._rows_to_docs가 같은 조립으로 재임베딩하는 경로다).
 -- answer_cache.query_embedding은 이 정리의 대상이 아니다 — 의미캐시 자체가 쓰는 값이다.
+
+-- ── #139 outbox — 외부 검색 색인 반영 대기열 ─────────────────────────────────
+-- 색인이 서빙의 정본인 구성에서 "반영 누락"은 곧 낡은 답변이다. 커밋 후 직접 호출하는
+-- 방식은 그 사이 프로세스가 죽으면 조용히 낡으므로, 할 일을 **같은 트랜잭션에** 남긴다.
+-- 성공하면 행을 지운다 — 남아 있는 행이 곧 '아직 반영 안 된 일'이다.
+-- 어휘(op)와 처리 규약은 rag/outbox.py가 정의점.
+CREATE TABLE IF NOT EXISTS search_index_outbox (
+    id              BIGSERIAL PRIMARY KEY,
+    tenant_id       TEXT      NOT NULL,
+    op              TEXT      NOT NULL,
+    payload         JSONB     NOT NULL DEFAULT '{}'::jsonb,
+    attempts        INTEGER   NOT NULL DEFAULT 0,
+    last_error      TEXT,
+    created_at      TIMESTAMP NOT NULL DEFAULT now(),
+    next_attempt_at TIMESTAMP NOT NULL DEFAULT now()
+);
+-- 드레인은 "처리할 때가 된 것부터 오래된 순"으로만 읽는다 — 그 한 가지 접근 경로만 받친다.
+CREATE INDEX IF NOT EXISTS idx_outbox_ready ON search_index_outbox (next_attempt_at, id);

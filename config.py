@@ -139,6 +139,30 @@ class Settings(BaseSettings):
     # storage
     blob_storage_dir: str = str(PROJECT_ROOT / "docs")
 
+    # PDF 파서 — docling 재도입 (#143). PDF 인제스션(chunk_file) 경로만 대상이고 채팅 첨부
+    # (extract_text)는 pdfplumber 유지 — 첨부는 사용자 대기 경로라 콜드 스타트 4.4초가 그대로 보인다.
+    # 값은 전부 2026-09-11 실측(M3 CPU, 실문서 21건)에서 왔고, **Linux 워커에서 재측정 후 조정한다**
+    # — macOS와 glibc 할당자의 메모리 반납 패턴이 다를 수 있다. 소비처는 rag/chunking.py(연결 예정).
+    docling_enabled: bool = False             # False면 현행 pdfplumber 경로. 워커 실측 전까지 꺼둔다
+    docling_table_mode: str = "accurate"      # fast | accurate. accurate이 병합 셀을 한 셀로 잡는다(출장 지급표
+                                              # '부회장/사장' 실측). RAM 차이 +110MB(687→796MB)라 정확도를 택한다
+    docling_do_ocr: bool = False              # 켜도 텍스트 PDF 안의 그림은 못 읽는다(자리표시만) — RAM만 +200MB.
+                                              # 스캔 PDF가 들어오는 날 재검토. 그림 인식은 #144
+    docling_do_cell_matching: bool = False    # 7월 설정 계승 — 켜면 한글 표 셀의 공백이 뭉친다 ("편도 3,000원")
+    docling_device: str = "cpu"               # 'auto'는 서버에서 GPU/MPS 탐색을 시도한다. 앱은 GPU 장비에 안 올린다
+    docling_num_threads: int = 4              # 워커 vCPU 수에 맞춤. 공식 실측: 4→16스레드에 쪽당 1.67→1.09초
+    docling_page_batch_size: int = 4          # **메모리 상한의 실질 결정자.** 쪽 수가 아니라 이 값이 피크를 정한다
+                                              # (26쪽 문서 579MB < 1쪽 문서 844MB 실측). 밴드 0.35~0.85GB
+    docling_max_concurrency: int = 1          # **arq max_jobs(10)와 별개인 변환 동시 상한.** chunk_file은 to_thread라
+                                              # 잡 10개가 겹치면 변환도 10개 겹쳐 메모리가 10배 난다. 세마포어로 막는다.
+                                              # 임베딩 I/O는 max_jobs가 계속 겹치게 둔다 — 변환만 직렬화
+    docling_document_timeout_seconds: float = 300.0   # 사슬: 이 값 < arq job_timeout 600 < DOC_STALE_SECONDS 900.
+                                              # 600 안에서 임베딩 몫을 남긴다. 실측 최대 26쪽 6초라 50배 여유
+    docling_max_num_pages: int = 300          # 병적 입력 가드. 파일 크기 상한은 라우터(DOC_MAX_FILE_BYTES 10MB)가
+                                              # 업로드 시점에 이미 막으므로 여기선 쪽 수만. 10MB 텍스트 PDF ≈ 100~200쪽
+    docling_artifacts_path: str | None = None # 모델 가중치 디렉터리. None이면 첫 변환 때 HF에서 내려받는다 —
+                                              # NCP VM은 외부망 확인 필요. 이미지에 미리 굽고 경로를 주는 쪽이 안전
+
 
 # 모듈 import가 곧 프로세스당 1회이므로 이 전역 자체가 싱글톤이다 (팩토리·캐시 불필요).
 settings = Settings()

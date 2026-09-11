@@ -9,7 +9,9 @@ openpyxl로 직접 읽어 헤더(1행)를 확실히 잡는다 (docling은 헤더
 """
 import openpyxl
 
-from rag.chunking import ChunkData
+# 표 markdown 조립은 chunking.py가 단일 정의점 — PDF 표(#137 결함 5)도 같은 형태를
+# 내놓아야 프롬프트·리랭커·어휘 채널이 형식에 따라 다른 모양을 보지 않는다.
+from rag.chunking import ChunkData, to_markdown_table as _to_markdown
 
 XLSX_MAX_ROWS = 150   # 헤더 제외 데이터 행. 초과 시 거절 (통째 주입 + 임베딩 상한)
 
@@ -23,17 +25,6 @@ class XlsxTooManyRows(Exception):
 def _cell(value) -> str:
     """셀 값을 문자열로. None은 빈칸, 나머지는 그대로 (수치는 숫자 형태 유지)."""
     return '' if value is None else str(value)
-
-
-def _to_markdown(header: list[str], body: list[list[str]]) -> str:
-    """헤더 + 데이터행 → markdown 표. 헤더가 청크에 포함돼 컬럼 의미 보존."""
-    lines = ['| ' + ' | '.join(header) + ' |',
-             '| ' + ' | '.join('---' for _ in header) + ' |']
-    for row in body:
-        # 행 길이를 헤더에 맞춤 (짧으면 빈칸 채움)
-        cells = (row + [''] * len(header))[:len(header)]
-        lines.append('| ' + ' | '.join(cells) + ' |')
-    return '\n'.join(lines)
 
 
 def chunk_xlsx(file_path, description: str = '') -> list[ChunkData]:

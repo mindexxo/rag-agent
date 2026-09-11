@@ -78,7 +78,9 @@ _SYMBOLS_ONLY_RE = re.compile(r'^[\W_]*$')
 _TABLE_MIN_FILL_RATIO = 0.20       # 격자에서 채워진 셀의 비율
 
 # 청크 꼬리에 번호만 남는 것을 되돌릴 때 쓴다 (#137 결함 3). 정의점은 _merge_orphan_markers.
-_ORPHAN_MARKER_RE = re.compile(r'(?:^|\n)[ \t]*(\d{1,2}\.|\(\d{1,2}\))[ \t]*$')
+# 꼬리/머리 판정 공용. 번호 뒤 공백은 물론 개행 하나까지 허용한다 — 원문에서 번호와
+# 항목이 같은 줄일 때(공백)와 번호가 독립 줄일 때(개행)가 둘 다 나온다.
+_ORPHAN_MARKER_RE = re.compile(r'(?:^|\n)[ \t]*(\d{1,2}\.|\(\d{1,2}\))[ \t]*\n?$')
 
 @dataclass
 class ChunkData:
@@ -533,30 +535,35 @@ def _page_at(section: _Section, offset: int) -> int | None:
     return section.line_pages[-1]
 
 
-def _merge_orphan_markers(chunks: list[str]) -> list[str]:
-    """꼬리에 목록 번호만 남은 청크는 그 번호를 다음 청크 머리로 옮긴다 (#137 결함 3).
+def _strip_orphan_marker(chunk: str) -> str:
+    """청크 꼬리에 목록 번호만 남았으면 떼어낸다 (#137 결함 3).
 
     SentenceSplitter의 기본 secondary_chunking_regex가 마침표를 문맥 없이 문장 끝으로
     봐서 '3. 항목' → ['3.', ' 항목']으로 끊는다. 청크 경계가 여기 걸리면 번호는 앞
-    청크 꼬리에 고아로 남고 항목 본문은 번호 없이 시작한다 (실측 266청크 중 50개,
-    조항형 규정에 집중). 내용 유실은 아니지만 조항 번호로 앵커링이 안 되고 LLM이
-    인용할 때 항목 번호를 붙일 수 없다.
+    청크 꼬리에 고아로 남는다(실측 266청크 중 50개, 조항형 규정에 집중). 그 자리에선
+    아무 의미가 없으므로 뗀다 — 항목 쪽에 붙이는 것은 _restore_leading_marker가 한다.
     """
-    if len(chunks) < 2:
-        return chunks
-    out = list(chunks)
-    for i in range(len(out) - 1):
-        match = _ORPHAN_MARKER_RE.search(out[i])
-        if not match or match.end() != len(out[i]):
-            continue
-        marker = match.group(1)
-        head = out[i + 1].lstrip()
-        if head.startswith(marker):        # overlap으로 이미 넘어가 있으면 중복 주입 금지
-            out[i] = out[i][:match.start()].rstrip()
-            continue
-        out[i] = out[i][:match.start()].rstrip()
-        out[i + 1] = f'{marker} {head}'
-    return [chunk for chunk in out if chunk.strip()]
+    match = _ORPHAN_MARKER_RE.search(chunk)
+    return chunk[:match.start()].rstrip() if match and match.end() == len(chunk) else chunk
+
+
+def _restore_leading_marker(body: str, offset: int, chunk: str) -> str:
+    """청크가 목록 번호 **바로 뒤**에서 시작하면 그 번호를 머리에 되살린다 (#137 결함 3).
+
+    판정은 오프셋으로 한다 — 원문에서 이 청크 앞에 붙어 있던 것이 번호뿐일 때만
+    주입한다. 다음 청크가 overlap으로 번호를 이미 갖고 있으면 offset이 번호보다 앞이라
+    조건이 성립하지 않는다.
+
+    **추측으로 하면 안 된다.** 초기 구현이 '다음 청크가 그 번호로 시작하지 않으면 주입'
+    으로 판정했다가, overlap 안쪽에 번호가 이미 있는 경우를 놓쳐 **엉뚱한 자리에 번호를
+    중복 주입**했다(실측: txt 코퍼스 6건에서 `1. [상황 2] 배송 지연 항의\n\n1. "…"`).
+    overlap 길이는 토큰 기준이라 문자 수로 역산할 수 없어, 오프셋만이 정확한 근거다.
+    """
+    prefix = body[:offset]
+    match = _ORPHAN_MARKER_RE.search(prefix)
+    if match and match.end() == len(prefix):
+        return f'{match.group(1)} {chunk.lstrip()}'
+    return chunk
 
 
 def extract_text(file_path: str | Path) -> str:
@@ -677,15 +684,17 @@ def chunk_file(file_path: str | Path, *, description: str = '') -> list[ChunkDat
 
     out: list[ChunkData] = []
     for section in _pack_sections(parser(file_path)):
-        chunks = _merge_orphan_markers(splitter.split_text(section.body))
         cursor = 0
-        for chunk in chunks:
+        for chunk in splitter.split_text(section.body):
             # 청크의 실제 시작 위치로 쪽을 고른다. 섹션 page 하나를 모든 청크에
             # 물려주면 여러 쪽에 걸친 섹션의 뒤쪽 청크가 앞 쪽을 가리킨다 (#137 결함 6).
-            # 번호 병합으로 머리가 바뀐 청크는 find가 빗나가므로 cursor로 폴백한다.
+            # 오프셋은 목록 번호 복원(결함 3)의 판정 근거이기도 하므로 손대기 전에 구한다.
             found = section.body.find(chunk, cursor)
             offset = found if found >= 0 else cursor
             cursor = max(cursor, offset)
-            out.append(ChunkData(text=chunk, heading_path=list(section.heading_path),
+            text = _strip_orphan_marker(_restore_leading_marker(section.body, offset, chunk))
+            if not text.strip():
+                continue
+            out.append(ChunkData(text=text, heading_path=list(section.heading_path),
                                  page=_page_at(section, offset), chunk_index=len(out)))
     return out

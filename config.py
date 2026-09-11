@@ -143,7 +143,8 @@ class Settings(BaseSettings):
     # (extract_text)는 pdfplumber 유지 — 첨부는 사용자 대기 경로라 콜드 스타트 4.4초가 그대로 보인다.
     # 값은 전부 2026-09-11 실측(M3 CPU, 실문서 21건)에서 왔고, **Linux 워커에서 재측정 후 조정한다**
     # — macOS와 glibc 할당자의 메모리 반납 패턴이 다를 수 있다. 소비처는 rag/chunking.py(연결 예정).
-    docling_enabled: bool = False             # False면 현행 pdfplumber 경로. 워커 실측 전까지 꺼둔다
+    docling_enabled: bool = True              # PDF 인제스션의 기본 경로. False = pdfplumber 비상 경로
+                                              # (표·부산물 처리 없음, #141 휴리스틱은 #143에서 제거). 폴백 아님 — 수동 스위치
     docling_table_mode: str = "accurate"      # fast | accurate. accurate이 병합 셀을 한 셀로 잡는다(출장 지급표
                                               # '부회장/사장' 실측). RAM 차이 +110MB(687→796MB)라 정확도를 택한다
     docling_do_ocr: bool = False              # 켜도 텍스트 PDF 안의 그림은 못 읽는다(자리표시만) — RAM만 +200MB.

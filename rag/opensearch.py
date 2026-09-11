@@ -104,8 +104,8 @@ MAPPING = {
     },
     "mappings": {
         "properties": {
-            # PG chunks.id 그대로. 검색 결과를 이 값으로 PG에 되물으므로(_fetch_chunk_map)
-            # 그리고 eval 채점이 chunk id 매칭이므로 필수다.
+            # PG chunks.id 그대로. 색인·삭제의 멱등 키(_id)이자 outbox 연산의 대상이고,
+            # eval 채점이 chunk id 매칭이라 필수다.
             "chunk_id": {"type": "long"},
             # 테넌트 격리 — PG는 RLS 없이 WHERE절이 유일한 방어선이고(rag/models.py:14-26),
             # OpenSearch에서는 그 보장을 filter로 처음부터 다시 세운다.
@@ -131,8 +131,9 @@ MAPPING = {
             "folder_name": {"type": "keyword"},
             # 폴더 설명은 리랭커 입력에만 들어간다(rag/index_text.py) — 검색 대상이 아니다.
             "folder_description": {"type": "text", "index": False},
-            # 확인·디버깅용으로만 둔다. 색인하면 어휘 점수에 이중으로 관여한다.
-            # 검색 결과의 본문은 PG에서 읽는다(모듈 docstring).
+            # index:false — 검색 대상은 아래 두 어휘 필드다(여기까지 색인하면 어휘 점수에
+            # 이중으로 관여한다). 하지만 _source로는 돌려받는다: 검색 결과의 본문이 이 값이다
+            # (fetch_chunk_map — PG를 되묻지 않는다).
             "text": {"type": "text", "index": False},
             # 질의할 때는 반드시 lex_clause()를 쓴다 — 기본 match로 질의하면 2.18 hybrid가
             # 500으로 죽는다(실측 47/450). 사유·실측치는 lex_clause docstring.
@@ -493,6 +494,38 @@ def enabled() -> bool:
     return settings.search_backend == 'opensearch'
 
 
+def pg_stores_chunks() -> bool:
+    """PG가 청크 **행 자체**를 드는지 (#139).
+
+    엔진이 검색·본문·메타를 모두 맡는 구성에서는 PG에 청크를 넣을 이유가 없다 — 서빙 경로가
+    한 번도 읽지 않는 행을 쓰는 것이라 순수 낭비다. 그래서 `search_backend='opensearch'`면
+    인제스션이 PG INSERT를 건너뛰고 파싱 결과를 곧장 색인한다.
+
+    **행이 없으면 파생 컬럼도 없으므로 `pg_vector_columns`는 이 경우 무의미하다** — 그 스위치는
+    "청크 행은 두되 벡터·어휘 컬럼만 뺀다"는 중간 단계용이다.
+
+    되돌리기: 이미 들어가 있는 청크는 그대로 남으므로 기존 코퍼스의 pg 검색은 계속 된다.
+    새 인제스션만 PG를 거치지 않는다 — 완전히 되돌리려면 재인제스트가 필요하다.
+    """
+    return settings.search_backend != 'opensearch'
+
+
+def chunk_os_id(*, document_id: int | None = None, faq_id: int | None = None,
+                chunk_index: int = 0) -> int:
+    """PG 시퀀스 없이 만드는 **결정적** chunk_id.
+
+    PG가 청크 행을 안 들면 BIGSERIAL이 없다. (부모 id, chunk_index)로 계산해 쓴다 —
+    같은 문서를 다시 색인해도 같은 id가 나오므로 `_id` upsert가 그대로 멱등이고, 재색인이
+    유령을 남기지 않는다(옛 청크가 더 적어졌을 때 남는 꼬리는 재색인 전 drop이 치운다).
+
+    chunk_index는 20비트(약 100만)까지 — 한 문서의 청크 수 상한으로 충분하다. FAQ는 음수
+    네임스페이스를 쓴다(캐시가 FAQ 출처를 -faq_id로 표기하는 기존 관례와 같은 방식).
+    """
+    if faq_id is not None:
+        return -((faq_id << 20) | chunk_index)
+    return (document_id << 20) | chunk_index
+
+
 def pg_stores_vectors() -> bool:
     """PG가 검색용 파생 컬럼(dense·lex_tsv·lex_len)을 계속 드는지 (#139).
 
@@ -729,8 +762,72 @@ async def _update_meta(field: str, values: list, meta: dict) -> int:
     return int(resp.get("updated", 0))
 
 
+class _ParsedChunk:
+    """PG 행 없이 build_doc에 넘길 최소 형태 — 파싱 결과(chunk_file 산출물)의 어댑터.
+
+    PG가 청크를 안 들 때 쓴다. id는 chunk_os_id로 계산한 결정적 값이다.
+    """
+
+    __slots__ = ('id', 'tenant_id', 'document_id', 'faq_id',
+                 'text', 'heading_path', 'page', 'meta', 'dense')
+
+    def __init__(self, *, cid, tenant_id, document_id, faq_id, text,
+                 heading_path, page, meta, dense):
+        self.id, self.tenant_id = cid, tenant_id
+        self.document_id, self.faq_id = document_id, faq_id
+        self.text, self.heading_path, self.page, self.meta = text, heading_path, page, meta
+        self.dense = dense
+
+
+async def index_parsed_document(*, document_id: int, tenant_id: str, filename: str,
+                                version: int, folder_id, folder_name, folder_description,
+                                searchable: bool, chunks, embeddings) -> int:
+    """파싱 결과를 **PG를 거치지 않고** 곧장 색인한다 (#139).
+
+    엔진이 서빙의 정본인 구성에서 PG 청크 INSERT는 서빙 경로가 한 번도 읽지 않는 행을 쓰는
+    낭비다. 인제스션이 손에 든 청크·임베딩을 그대로 색인한다.
+
+    같은 문서를 다시 색인할 때 **옛 청크를 먼저 지운다** — 청크 수가 줄면 chunk_index가 큰
+    옛 문서가 꼬리로 남기 때문이다(id가 결정적이라 겹치는 것들은 upsert로 덮인다).
+    """
+    await _delete_by_terms('document_id', [document_id])
+    docs = []
+    for c, e in zip(chunks, embeddings):
+        docs.append(build_doc(
+            _ParsedChunk(cid=chunk_os_id(document_id=document_id, chunk_index=c.chunk_index),
+                         tenant_id=tenant_id, document_id=document_id, faq_id=None,
+                         text=c.text, heading_path=c.heading_path, page=c.page,
+                         meta=c.meta or {}, dense=list(e.dense)),
+            filename, version,
+            folder_id=folder_id, folder_name=folder_name,
+            folder_description=folder_description, searchable=searchable))
+    return await bulk_index(docs)
+
+
+async def index_parsed_faq(*, faq_id: int, tenant_id: str, text: str, question: str,
+                           searchable: bool, embedding) -> int:
+    """FAQ 청크를 PG 없이 색인. 항목당 청크 1개라 chunk_index는 0 고정이다."""
+    await _delete_by_terms('faq_id', [faq_id])
+    doc = build_doc(
+        _ParsedChunk(cid=chunk_os_id(faq_id=faq_id), tenant_id=tenant_id,
+                     document_id=None, faq_id=faq_id, text=text,
+                     heading_path=[question], page=None, meta={},
+                     dense=list(embedding.dense)),
+        None, None, searchable=searchable)
+    return await bulk_index([doc])
+
+
 async def index_document_chunks(session, document_id: int) -> int:
-    """문서의 청크를 색인에 반영(upsert). PG에 벡터가 없으면 재임베딩한다(_rows_to_docs)."""
+    """문서의 청크를 색인에 반영(upsert).
+
+    PG에 청크 행이 없는 구성이면 **원본 blob에서 다시 파싱·임베딩**한다(#139) — 그 경우
+    재색인의 원천이 원본 파일뿐이기 때문이다. 비싼 길이라 정상 경로는 인제스션이 손에 든
+    결과를 바로 색인하고(outbox.flush_document_index) 여기는 재시도 보험이다.
+    PG에 청크는 있고 벡터만 없으면 본문에서 재임베딩한다(_rows_to_docs).
+    """
+    if not pg_stores_chunks():
+        from rag.documents import rederive_and_index      # 지연 import — 순환 회피
+        return await rederive_and_index(document_id)
     return await bulk_index(await _index_rows(session, document_ids=[document_id]))
 
 
@@ -758,8 +855,26 @@ async def drop_faqs_now(faq_ids) -> int:
 
 
 async def index_faq_chunks(session, faq_id: int) -> int:
-    """FAQ 청크 재색인. 재인덱싱은 청크를 지우고 새로 넣어 chunk_id가 바뀌므로,
-    옛 문서를 먼저 지워야 색인에 유령이 남지 않는다."""
+    """FAQ 청크 재색인. 옛 문서를 먼저 지워야 색인에 유령이 남지 않는다.
+
+    PG에 청크 행이 없는 구성이면 FAQ 행(질문·유사질문·답변)에서 텍스트를 다시 조립하고
+    재임베딩한다 — FAQ는 파싱이 없어 원천이 그 행 자체다(문서 재파싱보다 훨씬 싸다).
+    """
+    from sqlalchemy import select
+
+    from rag.models import Faq
+    if not pg_stores_chunks():
+        from rag.embeddings import embed_texts
+        from rag.faq_indexing import build_faq_chunk_text
+        faq = (await session.execute(select(Faq).where(Faq.id == faq_id))).scalars().first()
+        if faq is None:
+            return 0
+        text = build_faq_chunk_text(faq.question, faq.variants or [], faq.answer)
+        embs = await embed_texts([text])          # FAQ는 프리픽스 없이 원문 (인제스션과 동일)
+        return await index_parsed_faq(
+            faq_id=faq_id, tenant_id=faq.tenant_id, text=text, question=faq.question,
+            searchable=effective_searchable(is_faq=True, faq_is_active=faq.is_active),
+            embedding=embs[0])
     await _delete_by_terms('faq_id', [faq_id])
     return await bulk_index(await _index_rows(session, faq_ids=[faq_id]))
 
@@ -818,6 +933,35 @@ async def sync_meta_faqs_now(session, faq_ids) -> int:
     return n
 
 
+async def _reconcile_by_document(session) -> dict:
+    """문서 단위 재동기화 — PG에 청크 행이 없는 구성용.
+
+    청크 id를 대조할 수 없으므로 "PG에 있는 문서가 색인에도 있는가"만 본다. 청크 수준의
+    드리프트(일부 청크 누락)는 못 잡는다 — 그건 outbox가 원자적으로 반영하는 것에 의존한다.
+    """
+    from sqlalchemy import select
+
+    from rag.models import Document
+
+    os_client = client()
+    agg = await os_client.search(index=settings.opensearch_index, body={
+        "size": 0,
+        "aggs": {"d": {"terms": {"field": "document_id", "size": 65536}}}})
+    os_docs = {int(b["key"]) for b in agg["aggregations"]["d"]["buckets"]}
+
+    pg_docs = set((await session.execute(
+        select(Document.id).where(Document.status == 'ready'))).scalars().all())
+
+    missing, extra = pg_docs - os_docs, os_docs - pg_docs
+    indexed = 0
+    for did in sorted(missing):
+        from rag.documents import rederive_and_index      # 지연 import — 순환 회피
+        indexed += await rederive_and_index(did)
+    deleted = await _delete_by_terms('document_id', sorted(extra)) if extra else 0
+    return {'pg': len(pg_docs), 'os': len(os_docs), 'indexed': indexed, 'deleted': deleted,
+            'unit': 'document'}
+
+
 async def reconcile(session) -> dict:
     """3층 — PG↔OS id 집합 대조 후 복구. `eval/_os_index --repair`가 부른다.
 
@@ -846,6 +990,13 @@ async def reconcile(session) -> dict:
     await os_client.clear_scroll(scroll_id=resp["_scroll_id"])   # 스크롤 컨텍스트 반납
 
     # 비검색 청크도 색인 대상이다(플래그로 가른다) — 그래서 조건 없이 전 청크를 센다.
+    #
+    # **PG가 청크를 안 드는 구성에서는 이 대조가 성립하지 않는다** (#139) — 비교할 기준이
+    # 없기 때문이다. 그때는 문서 단위로 본다: PG의 ready 문서 중 색인에 하나도 없는 것을
+    # 찾아 재색인하고(원본 재파싱), PG에 없는 document_id의 청크를 지운다.
+    if not pg_stores_chunks():
+        return await _reconcile_by_document(session)
+
     pg_ids = set((await session.execute(select(Chunk.id))).scalars().all())
 
     missing, extra = pg_ids - os_ids, os_ids - pg_ids

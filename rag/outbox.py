@@ -120,7 +120,8 @@ async def drain(session, limit: int = BATCH) -> dict:
     return {'done': done, 'failed': failed}
 
 
-async def flush_document_index(document_id: int, superseded_ids, embeddings) -> None:
+async def flush_document_index(document_id: int, superseded_ids, embeddings,
+                               parsed_chunks=None) -> None:
     """인제스션 전용 빠른 길 — 방금 계산한 임베딩으로 바로 색인하고 그 대기열 행을 지운다.
 
     느린 길(워커 cron)은 PG에서 벡터를 읽는데, PG가 벡터를 안 드는 구성에선 그게
@@ -134,8 +135,12 @@ async def flush_document_index(document_id: int, superseded_ids, embeddings) -> 
         return
     from database import AsyncSessionLocal
     try:
-        await opensearch.index_document_with_vectors(
-            document_id, superseded_ids, embeddings)
+        if not opensearch.pg_stores_chunks():
+            # PG에 청크 행이 없다 — 파싱 결과를 그대로 색인한다(유일한 경로).
+            await _index_parsed(document_id, superseded_ids, embeddings, parsed_chunks)
+        else:
+            await opensearch.index_document_with_vectors(
+                document_id, superseded_ids, embeddings)
         async with AsyncSessionLocal() as session:
             await session.execute(delete(SearchIndexOutbox).where(
                 SearchIndexOutbox.op.in_([INDEX_DOCUMENT, DROP_DOCUMENTS]),
@@ -146,6 +151,35 @@ async def flush_document_index(document_id: int, superseded_ids, embeddings) -> 
     except Exception as e:                          # noqa: BLE001 — 의도된 삼킴(위 docstring)
         logger.warning('인제스션 빠른 색인 실패 — 워커가 재시도한다 (document_id=%s): %s',
                        document_id, e)
+
+
+async def _index_parsed(document_id, superseded_ids, embeddings, parsed_chunks) -> None:
+    """파싱 결과 직접 색인 — 문서 메타는 PG에서 읽는다(문서 행은 정본으로 남아 있다)."""
+    from sqlalchemy import select
+
+    from database import AsyncSessionLocal
+    from rag.models import Document, Folder
+    async with AsyncSessionLocal() as session:
+        row = (await session.execute(
+            select(Document.tenant_id, Document.filename, Document.version,
+                   Document.is_active, Document.status, Document.is_searchable,
+                   Folder.id, Folder.name, Folder.description, Folder.is_searchable)
+            .outerjoin(Folder, Document.folder_id == Folder.id)
+            .where(Document.id == document_id))).first()
+    if row is None:
+        return
+    (tenant_id, filename, version, d_active, d_status, d_searchable,
+     f_id, f_name, f_desc, f_searchable) = row
+    await opensearch.index_parsed_document(
+        document_id=document_id, tenant_id=tenant_id, filename=filename,
+        version=version or 1, folder_id=f_id, folder_name=f_name,
+        folder_description=f_desc,
+        searchable=opensearch.effective_searchable(
+            is_faq=False, doc_is_active=d_active, doc_status=d_status,
+            doc_is_searchable=d_searchable, folder_is_searchable=f_searchable),
+        chunks=parsed_chunks or [], embeddings=embeddings)
+    if superseded_ids:
+        await opensearch.drop_documents_now(list(superseded_ids))
 
 
 async def drain_now(session) -> None:

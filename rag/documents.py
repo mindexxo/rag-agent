@@ -14,7 +14,7 @@ from rag import cache, lexical, opensearch, outbox
 from rag.chunking import chunk_file
 from rag.embeddings import embed_texts
 from rag.index_text import build_index_text
-from rag.models import Chunk, Document
+from rag.models import Chunk, Document, Folder
 
 _MIME_OVERRIDES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -94,29 +94,31 @@ async def index_pending_document(document_id: int) -> None:
 
             # 청크 insert (xlsx 청크는 meta에 is_table·sheet — retriever '한 시트만' 필터용)
             #
-            # 검색용 파생 컬럼(dense·lex_tsv·lex_len)은 **PG가 그것들을 들 때만** 쓴다 (#139).
-            # 외부 엔진이 검색을 맡는 구성에서는 PG에 둘 이유가 없고, 그때 벡터는 아래
-            # sync_after_ingest가 여기서 계산한 embeddings를 그대로 엔진에 넘긴다.
-            # 스위치·마이그레이션 순서는 config.py의 pg_vector_columns 주석이 정본이다.
-            keep_pg_vectors = opensearch.pg_stores_vectors()
-            for chunk, embedding, toks in zip(chunks, embeddings, lex_tokens):
-                derived = {
-                    'dense': embedding.dense,
-                    # 어휘 채널(#135) — 청크와 같은 트랜잭션이라 별도 정합 관리가 없다
-                    'lex_tsv': func.array_to_tsvector(
-                        cast(lexical.tsvector_lexemes(toks), ARRAY(Text))),
-                    'lex_len': len(toks),
-                } if keep_pg_vectors else {}
-                session.add(Chunk(
-                    document_id=doc.id,
-                    tenant_id=doc.tenant_id,
-                    chunk_index=chunk.chunk_index,
-                    text=chunk.text,
-                    page=chunk.page,
-                    heading_path=chunk.heading_path,
-                    meta=chunk.meta or {},
-                    **derived,
-                  ))
+            # **엔진이 서빙 정본이면 PG에 청크를 넣지 않는다** (#139). 서빙 경로가 한 번도
+            # 읽지 않는 행을 쓰는 것이라 순수 낭비다 — 아래 flush_document_index가 파싱 결과와
+            # 임베딩을 그대로 색인한다. 판단 근거·되돌리기는 opensearch.pg_stores_chunks 주석.
+            # 청크 행을 두는 구성에서는 파생 컬럼(dense·lex_tsv·lex_len)을 다시 갈라
+            # 판단한다(config의 pg_vector_columns).
+            if opensearch.pg_stores_chunks():
+                keep_pg_vectors = opensearch.pg_stores_vectors()
+                for chunk, embedding, toks in zip(chunks, embeddings, lex_tokens):
+                    derived = {
+                        'dense': embedding.dense,
+                        # 어휘 채널(#135) — 청크와 같은 트랜잭션이라 별도 정합 관리가 없다
+                        'lex_tsv': func.array_to_tsvector(
+                            cast(lexical.tsvector_lexemes(toks), ARRAY(Text))),
+                        'lex_len': len(toks),
+                    } if keep_pg_vectors else {}
+                    session.add(Chunk(
+                        document_id=doc.id,
+                        tenant_id=doc.tenant_id,
+                        chunk_index=chunk.chunk_index,
+                        text=chunk.text,
+                        page=chunk.page,
+                        heading_path=chunk.heading_path,
+                        meta=chunk.meta or {},
+                        **derived,
+                      ))
 
             # supersede: 같은 filename의 다른 active 버전 내리기 + 청크 삭제
             others = (await session.execute(
@@ -131,7 +133,7 @@ async def index_pending_document(document_id: int) -> None:
             for o in others:
                 o.is_active = False
                 o.status = "deleted"
-            if old_active_ids:
+            if old_active_ids and opensearch.pg_stores_chunks():
                 await session.execute(
                     delete(Chunk).where(Chunk.document_id.in_(old_active_ids))
                 )
@@ -164,9 +166,50 @@ async def index_pending_document(document_id: int) -> None:
         # 느린 길(워커 cron)은 PG에서 벡터를 읽는데, PG가 벡터를 안 드는 구성에선 그게
         # 재임베딩이다. 실패해도 대기열 행이 남아 워커가 반영을 보장하므로 여기선 삼킨다
         # (try 안이라 예외가 새면 이미 커밋된 인제스션이 _mark_failed로 뒤집힌다).
-        await outbox.flush_document_index(document_id, old_active_ids, embeddings)
+        await outbox.flush_document_index(document_id, old_active_ids, embeddings,
+                                         parsed_chunks=chunks)
     except Exception as e:
         await _mark_failed(document_id, str(e))
+
+
+async def rederive_and_index(document_id: int) -> int:
+    """원본 blob에서 다시 파싱·임베딩해 색인한다 — PG에 청크 행이 없을 때의 재시도 경로 (#139).
+
+    엔진이 서빙 정본이고 PG가 청크를 안 드는 구성에서는 재색인의 원천이 **원본 파일**이다.
+    outbox의 INDEX_DOCUMENT 재시도가 이 길로 온다(빠른 길이 실패했거나 프로세스가 죽은 경우).
+
+    비싸다 — 파싱 + TEI 임베딩 전량이다. 그래서 정상 경로는 인제스션이 손에 든 결과를 바로
+    색인하고(flush_document_index) 이 함수는 보험으로만 쓴다.
+
+    문서가 없거나 blob을 못 읽으면 예외를 올린다 — outbox가 백오프로 재시도하고, 계속 실패하면
+    attempts·last_error에 남아 사람이 본다.
+    """
+    from rag import opensearch
+    async with AsyncSessionLocal() as session:
+        row = (await session.execute(
+            select(Document.tenant_id, Document.filename, Document.version,
+                   Document.blob_path, Document.description,
+                   Document.is_active, Document.status, Document.is_searchable,
+                   Folder.id, Folder.name, Folder.description, Folder.is_searchable)
+            .outerjoin(Folder, Document.folder_id == Folder.id)
+            .where(Document.id == document_id))).first()
+    if row is None:
+        return 0
+    (tenant_id, filename, version, blob_path, desc, d_active, d_status, d_searchable,
+     f_id, f_name, f_desc, f_searchable) = row
+
+    chunks = await asyncio.to_thread(chunk_file, blob_path, description=desc or '')
+    if not chunks:
+        raise ValueError(f'문서 {document_id}: 재파싱 결과가 비었다')
+    index_texts = [build_index_text(c.text, filename, c.heading_path) for c in chunks]
+    embeddings = await embed_texts(index_texts)
+    return await opensearch.index_parsed_document(
+        document_id=document_id, tenant_id=tenant_id, filename=filename,
+        version=version or 1, folder_id=f_id, folder_name=f_name, folder_description=f_desc,
+        searchable=opensearch.effective_searchable(
+            is_faq=False, doc_is_active=d_active, doc_status=d_status,
+            doc_is_searchable=d_searchable, folder_is_searchable=f_searchable),
+        chunks=chunks, embeddings=embeddings)
 
 
 async def handle_upload(

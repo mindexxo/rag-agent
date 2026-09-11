@@ -83,28 +83,25 @@ async def seed_turn(tenant_id: str, question: str, answer: str, status: str = 'd
     return conversation_id
 
 
-class _FakePool:
-    def __init__(self, jobs: list):
-        self._jobs = jobs
-
-    async def enqueue_job(self, name: str, *args) -> None:
-        self._jobs.append((name, *args))
-
-    async def aclose(self) -> None:
-        pass
-
-
 @pytest.fixture
-def fake_queue(monkeypatch):
-    """arq enqueue를 기록만 하는 가짜로 — 실제 Redis 큐에 잡이 쌓이지 않게."""
-    jobs: list = []
+def fake_queue():
+    """(호환용 더미) 업로드가 arq 잡을 등록하던 시절의 픽스처. #139 outbox 전환으로 업로드는
+    문서와 같은 트랜잭션에 대기열 행을 남길 뿐 Redis를 만지지 않는다 — 패치할 것이 없다.
+    시그니처에 남아 있는 테스트들이 그대로 돌게 빈 리스트만 돌려준다."""
+    return []
 
-    async def _create_pool(*a, **kw):
-        return _FakePool(jobs)
 
-    import routers.documents as rd
-    monkeypatch.setattr(rd, 'create_pool', _create_pool)
-    return jobs
+async def ingest(document_id: int) -> dict:
+    """업로드된 문서 하나를 워커처럼 처리한다 — 그 문서의 outbox 행만 drain.
+
+    공유 개발계 DB에서 전체 drain을 돌리면 다른 세션의 pending 업로드까지 처리해 버리므로
+    row_ids로 한정한다. 실패 판정(attempts→failed)까지 운영과 같은 경로를 탄다.
+    """
+    from database import AsyncSessionLocal
+    from rag import outbox
+    async with AsyncSessionLocal() as s:
+        ids = await outbox.pending_row_ids(s, document_id=document_id)
+    return await outbox.drain_once(row_ids=ids)
 
 
 @pytest.fixture

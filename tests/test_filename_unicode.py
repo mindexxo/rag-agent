@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from database import AsyncSessionLocal
 from rag.citation_labels import TAIL_END, TAIL_START, citation_tail
-from rag.documents import index_pending_document
+from tests.conftest import ingest
 from rag.models import Document, Message
 from tests.conftest import sse_meta
 
@@ -62,7 +62,7 @@ async def test_NFD로_올린_문서의_인용은_NFC_파일명으로_잡힌다(
     테스트는 전제가 소멸해 삭제 — 숫자에는 정규형이 없다.)
     """
     body = await _upload(client, FILENAME_NFD)
-    await index_pending_document(body['document_id'])
+    await ingest(body['document_id'])
 
     # 유일 문서 = 후보 1번 인용
     fake_llm.answer = f'단순변심 반품은 14일 이내입니다. {citation_tail([1])}'

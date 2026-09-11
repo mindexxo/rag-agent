@@ -113,29 +113,28 @@ class Faq(Base):
 
 
 class SearchIndexOutbox(Base):
-    """외부 검색 색인 반영 대기열 (#139 outbox).
+    """색인 작업 대기열 (#139 트랜잭셔널 outbox). 어휘·처리 규약의 정의점은 rag/outbox.py.
 
     **행을 PG 변경과 같은 트랜잭션에 쓴다** — 그것이 이 패턴의 전부다. 커밋이 성공하면
-    반영해야 할 일이 반드시 기록돼 있고, 롤백되면 그 일도 함께 사라진다. 커밋 후 직접
-    호출하는 방식(이전 구성)은 그 사이에 프로세스가 죽으면 색인이 조용히 낡았다.
+    색인에 할 일이 반드시 기록돼 있고, 롤백되면 그 일도 함께 사라진다.
 
-    처리 주체는 둘이다: 커밋 직후 인라인 드레인(빠른 반영)과 워커 cron(보장). 성공하면
-    행을 지운다 — 남아 있는 행이 곧 '아직 반영 안 된 일'이다. 실패는 attempts·last_error에
-    쌓이고 next_attempt_at로 지수 백오프한다.
+    단일 워커가 1분 주기로 pending을 id 순으로 처리한다. 성공하면 done, 실패는 attempts에
+    쌓여 MAX_ATTEMPTS를 넘으면 failed(INDEX_DOCUMENT면 문서도 failed). 행은 지우지 않는다 —
+    done/failed 행이 이력이자 관측 지점이다.
 
-    연산은 멱등이다(색인은 _id=chunk_id upsert, 삭제는 없는 것을 지워도 무해) — 그래서
-    인라인과 cron이 겹쳐 두 번 처리해도 결과가 같다.
+    연산은 전부 멱등이다(색인=_id upsert, 삭제=없는 것 지워도 무해, 메타=덮어쓰기) — 재시도가
+    겹쳐도 결과가 같다. at-least-once.
     """
     __tablename__ = "search_index_outbox"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     tenant_id: Mapped[str]
     op: Mapped[str]                        # 어휘의 정의점은 rag/outbox.py (INDEX_DOCUMENT 등 상수)
-    payload: Mapped[Any] = mapped_column(JSONB, default=dict)   # {"document_ids": [...]} 등
+    payload: Mapped[Any] = mapped_column(JSONB, default=dict)   # id만 — 처리 시점에 PG 최신값을 읽는다
+    status: Mapped[str] = mapped_column(default='pending', server_default='pending')  # pending|done|failed
     attempts: Mapped[int] = mapped_column(default=0, server_default="0")
     last_error: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    next_attempt_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
 class Chunk(Base):

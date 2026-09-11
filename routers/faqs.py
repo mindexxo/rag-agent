@@ -74,7 +74,6 @@ async def create_faq(
     await reindex_faq(session, faq, embedding)
     outbox.enqueue(session, tenant_id, outbox.INDEX_FAQ, faq_id=faq.id)   # 같은 트랜잭션 (#139)
     await session.commit()
-    await outbox.drain_now(session)
     return _to_response(faq)
 
 
@@ -126,7 +125,6 @@ async def update_faq(
     elif request.is_active is not None:
         outbox.enqueue(session, tenant_id, outbox.META_FAQS, faq_ids=[faq.id])
     await session.commit()
-    await outbox.drain_now(session)
     return _to_response(faq)
 
 
@@ -142,4 +140,3 @@ async def delete_faq(
     await session.delete(faq)
     outbox.enqueue(session, tenant_id, outbox.DROP_FAQS, faq_ids=[faq_id])   # 같은 트랜잭션 (#139)
     await session.commit()
-    await outbox.drain_now(session)

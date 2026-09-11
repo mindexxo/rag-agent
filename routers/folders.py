@@ -120,7 +120,6 @@ async def update_folder(
     except IntegrityError:
         await session.rollback()
         raise HTTPException(status_code=409, detail='같은 이름의 폴더가 이미 있습니다.')
-    await outbox.drain_now(session)
     return _to_info(folder)
 
 

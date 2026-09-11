@@ -28,7 +28,7 @@ from sqlalchemy import delete, select
 
 from database import AsyncSessionLocal
 from rag import cache
-from rag.documents import index_pending_document
+from rag import outbox
 from rag.models import Chunk, Document
 
 
@@ -61,7 +61,7 @@ async def _targets(tenant_id: str | None) -> list[tuple[int, str, str, int]]:
 async def reindex_one(document_id: int) -> None:
     """문서 하나를 재색인. 기존 청크 삭제 → pending 되돌림 → 워커 로직 재사용.
 
-    index_pending_document는 청크를 insert만 하므로, 먼저 지우지 않으면
+    인제스션 핸들러는 청크를 insert만 하므로(pg 구성), 먼저 지우지 않으면
     UNIQUE(document_id, chunk_index) 위반으로 실패한다.
     캐시도 함께 무효화한다 — 청크 경계가 바뀌면 그 문서를 근거로 만든 답이 낡은 것이 된다.
     """
@@ -75,9 +75,11 @@ async def reindex_one(document_id: int) -> None:
         await session.execute(delete(Chunk).where(Chunk.document_id == doc.id))
         await cache.invalidate_source(session, doc.tenant_id, doc.id)
         doc.status = 'pending'          # 워커 로직의 진입 조건
+        row = outbox.enqueue(session, doc.tenant_id, outbox.INDEX_DOCUMENT, document_id=doc.id)
         await session.commit()
 
-    await index_pending_document(document_id)   # 청킹 + 임베딩 + 청크 저장 + ready 승격
+    # 이 문서의 행만 처리 — 공유 DB의 다른 pending 업로드를 건드리지 않게 row_ids로 한정 (#139)
+    await outbox.drain_once(row_ids=[row.id])   # 청킹 + 임베딩 + 색인 + ready 승격
 
     async with AsyncSessionLocal() as session:  # 승격 확인 — 실패면 status가 failed로 남는다
         doc = await session.get(Document, document_id)

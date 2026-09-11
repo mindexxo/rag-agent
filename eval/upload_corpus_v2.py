@@ -30,7 +30,8 @@ CANARIES = [
 
 async def upload_all() -> None:
     from main import app
-    from rag.documents import index_pending_document
+    from rag import outbox
+    from database import AsyncSessionLocal
 
     total = 0
     for tenant in TENANTS:
@@ -51,8 +52,10 @@ async def upload_all() -> None:
                     continue
                 body = res.json()
                 if body['status'] == 'pending':
-                    await index_pending_document(body['document_id'])
-                    from database import AsyncSessionLocal
+                    # 이 문서의 대기열 행만 처리 (#139 outbox) — 공유 DB의 남의 행은 건드리지 않는다
+                    async with AsyncSessionLocal() as s:
+                        ids = await outbox.pending_row_ids(s, document_id=body['document_id'])
+                    await outbox.drain_once(row_ids=ids)
                     from rag.models import Document
                     async with AsyncSessionLocal() as s:
                         doc = await s.get(Document, body['document_id'])

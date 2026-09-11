@@ -18,7 +18,7 @@
 - **중간층(조합)**: `rag/citation_labels.py`, `rag/clients.py`, `rag/llm_schemas.py`,
   `rag/turn_state.py`, `rag/cache.py`, `rag/reranker.py`, `rag/retriever.py`,
   `rag/stream_resume.py`, `rag/cancellation.py`, `rag/citation_tail.py`, `rag/documents.py`,
-  `rag/prompts.py`, `rag/conversation.py`, `rag/guardrail.py`
+  `rag/prompts.py`, `rag/conversation.py`, `rag/guardrail.py`, `rag/opensearch.py`, `rag/outbox.py`
 - **조립점**: `rag/service.py` — 한 턴의 수명(prepare → generate → finalize)을 조율한다.
 - **진입점**(아무도 이들을 import하지 않는다): `rag/streaming.py`(SSE),
   `rag/worker.py`(arq 백그라운드), `routers/*.py`(HTTP), `main.py`(FastAPI 부트스트랩 전용).
@@ -29,7 +29,9 @@
 
 **함수 안 지연 import은 순환 회피용이며 의도된 것이다 — 톱레벨로 끌어올리지 마라.**
 이걸 하는 모듈: `chunking`(→xlsx_chunking), `embeddings`·`limiter`(→clients),
-`reranker`(→clients, embeddings), `retriever`(→reranker), `stream_resume`(→clients, streaming).
+`reranker`(→clients, embeddings), `retriever`(→reranker, opensearch), `stream_resume`(→clients, streaming),
+`opensearch`(→embeddings, faq_indexing, index_text, lexical, models, retriever, outbox — 검색
+백엔드가 인제스션·검색 양쪽에서 불려 톱레벨로 올리면 순환), `outbox`(→documents, metrics).
 개수는 적지 않는다 — 정확한 목록은 `grep -rn "^\s\+from rag" rag/`로 뽑는다(톱레벨 import는
 줄 시작이 들여쓰기 없음이라 이렇게 구분된다).
 

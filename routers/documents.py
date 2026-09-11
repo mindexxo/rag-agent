@@ -19,10 +19,8 @@ POST /kms/documents (multipart)
 """
 import tempfile
 from uuid import uuid4
-from datetime import timedelta
 from pathlib import Path
 
-from arq.connections import RedisSettings, create_pool
 from fastapi import APIRouter, File, Form, Request, UploadFile, Depends, HTTPException
 from sqlalchemy import delete, func, select, update
 from sqlalchemy import text as sql_text
@@ -61,7 +59,6 @@ router = APIRouter(prefix='/kms')
 # F1a: 지원 형식 화이트리스트 (확장자 기준). 그 외는 400.
 SUPPORTED_SUFFIXES = {'.pdf', '.docx', '.xlsx', '.txt', '.md'}
 DOC_MAX_FILE_BYTES = 10 * 1024 * 1024   # 문서 업로드 크기 상한 (첨부와 별개)
-DOC_STALE_SECONDS = 900                 # pending이 이보다 오래면 워커 타임아웃/중단으로 간주 → failed (job_timeout 600보다 길게)
 
 
 def _reject_if_oversized(request: Request, limit: int) -> None:
@@ -163,20 +160,8 @@ async def upload_document(
         blob_path.unlink(missing_ok=True)
         return _version_conflict(filename, await _current_version(session, tenant_id, filename))
 
-    #5. pending이면 워커에 인덱싱 작업 등록.
-    if doc.status == 'pending':
-        try:
-            pool = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-            try:
-                await pool.enqueue_job('index_document', doc.id)
-            finally:
-                await pool.aclose()
-        except Exception as e:
-            # enqueue 실패(Redis 순단 등) → 문서가 pending 영구 고착하지 않게 failed 기록 (P1-4)
-            doc.status = 'failed'
-            doc.status_reason = f'인덱싱 큐 등록 실패: {e}'[:500]
-            await session.commit()
-
+    # 색인 대기열 행은 handle_upload가 문서와 같은 트랜잭션에 등록했다 (#139 outbox) —
+    # 워커 cron(1분)이 처리한다. 응답 시점의 status는 pending이고, 검색 반영은 최대 1~5분.
     return _to_response(doc)
 
 @router.get('/documents', response_model=list[DocumentUploadResponse])
@@ -186,18 +171,9 @@ async def list_documents(
 ):
     """테넌트의 문서 목록. 최신 업로드가 위로 오도록 id 내림차순.
     supersede된 구버전(deleted)은 제외 — 죽은 행에 폴더/참조 컨트롤이 노출되는 혼란 방지."""
-    # lazy 스윕: 오래 고착된 pending을 failed로 자기치유 (enqueue 실패·워커 타임아웃/크래시 백스톱).
-    # 정상 인제스트는 job_timeout(600s) 내 끝나므로 900s 넘게 pending이면 중단으로 간주. 서버측 시간 비교.
-    res = await session.execute(
-        update(Document)
-        .where(Document.tenant_id == tenant_id)
-        .where(Document.status == 'pending')
-        .where(Document.uploaded_at < func.now() - timedelta(seconds=DOC_STALE_SECONDS))
-        .values(status='failed', status_reason='인덱싱 시간 초과 또는 워커 중단')
-    )
-    if res.rowcount:
-        await session.commit()
-
+    # (구) 900초 pending 스윕은 제거했다 (#139). 인제스션이 outbox 행으로 durable해져
+    # "오래 pending = 잡 유실"이라는 전제가 사라졌고, 대량 업로드·엔진 다운 중엔 15분 넘게
+    # 대기하는 것이 정상이다. 실패 판정은 outbox가 MAX_ATTEMPTS 초과 시 문서를 failed로 찍는다.
     docs = (await session.execute(
         select(Document)
         .where(Document.tenant_id == tenant_id)   # 격리 — WHERE 절 명시
@@ -332,7 +308,6 @@ async def update_document(
     # (재색인은 벡터 없는 구성에서 재임베딩을 부른다 — rag/opensearch._update_meta).
     outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=[doc.id])
     await session.commit()
-    await outbox.drain_now(session)
     return _to_response(doc)
 
 
@@ -378,7 +353,6 @@ async def delete_document(
     # 인용된다** — 그래서 같은 트랜잭션에 적재해 반영을 보장한다(rag/outbox.py).
     outbox.enqueue(session, tenant_id, outbox.DROP_DOCUMENTS, document_ids=list(doc_ids))
     await session.commit()
-    await outbox.drain_now(session)
 
 
 @router.get('/documents/{document_id}/download')

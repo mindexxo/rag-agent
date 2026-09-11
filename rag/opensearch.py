@@ -435,57 +435,46 @@ async def analyze(os_client, analyzer: str, text: str) -> list[str]:
 
 # ===== 색인 쓰기 경로 — 정합 관리 =========================================
 #
-# PG는 청크와 어휘 색인을 **한 트랜잭션**에 쓴다(#135 B안: "별도 정합 관리가 없다"가
-# rag/documents.py·faq_indexing.py 주석에 그대로 적혀 있다). 외부 엔진을 들이면 그 성질을
-# 잃는다 — 그 비용을 어떻게 관리하는지가 이 절이다.
+# PG는 청크와 어휘 색인을 **한 트랜잭션**에 썼다(#135 B안: "별도 정합 관리가 없다"). 외부 엔진을
+# 들이면 그 성질을 잃는다. 그 비용을 어떻게 관리하는지가 이 절이고, 정의점은 rag/outbox.py다.
 #
 # ## 전제 — 색인이 서빙의 정본이다
 #
-# 실무 표준 구성을 택했다: 검색 결과의 텍스트·메타를 엔진이 돌려준다(`fetch_chunk_map`).
-# **PG로 되묻어 검증하지 않는다.** 그래서 "색인이 낡으면 낡은 답이 나간다"가 구조적으로
-# 가능하고, 이전 설계(PG 되묻기)가 갖던 공짜 보장은 없다. 그 자리를 아래 세 가지가 메운다.
-#
-# 이 트레이드를 명시해 둔다: 왕복 1회·엔진 필터·fan-out 없는 읽기를 얻고, 정합을 쓰기
-# 경로의 성실함에 의존하게 됐다. 표준 구성이 실무에서 겪는 사고("삭제한 문서가 아직
-# 검색돼요", "개정했는데 옛 내용으로 답해요")가 우리에게도 가능하다는 뜻이다.
+# 실무 표준 구성: 검색 결과의 텍스트·메타를 엔진이 돌려준다(`fetch_chunk_map`). PG로 되묻어
+# 검증하지 않는다. 그래서 "색인이 낡으면 낡은 답이 나간다"가 구조적으로 가능하고, 그 자리를
+# 아래가 메운다.
 #
 # ## 1) 필터를 엔진에 비정규화
 #
 # `searchable`(PG `_searchable_condition()`의 비정규화)·`tenant_id`를 청크 문서마다 넣고
 # 엔진에서 필터한다. 검색 후 PG로 걸러내면 상위 k를 뽑은 뒤 빼는 post-filter가 되어 후보가
-# 조용히 깎인다 — 필터에 쓰는 메타는 반드시 엔진에 있어야 한다는 것이 표준의 이유다.
-# 비검색 청크도 색인한다: 토글 on/off가 문서 추가·삭제가 아니라 **플래그 부분 갱신**이 된다.
+# 조용히 깎인다. 비검색 청크도 색인한다 — 토글 on/off가 문서 추가·삭제가 아니라 플래그
+# 부분 갱신(`_update_meta`)이 되고, 벡터 없는 구성에서 재임베딩을 피한다.
 #
-# ## 2) 쓰기 즉시 반영 — 청크 변경은 재색인, 메타 변경은 부분 갱신
+# ## 2) 모든 변경은 트랜잭셔널 outbox로 — 처리는 단일 워커 cron 1분
 #
-# 청크가 생기고 사라지는 지점(인제스션·FAQ 재색인·삭제)은 PG 커밋 **후** 색인을 갱신한다.
-# 커밋 전에 하면 PG가 롤백됐는데 색인만 반영되는 더 나쁜 불일치가 된다.
+# 업로드·삭제·토글·FAQ 변경은 라우터가 PG 변경과 **같은 트랜잭션**에 대기열 행을 남긴다
+# (rag/outbox.enqueue). 워커 cron이 1분마다 id 순으로 처리한다. 커밋 후 직접 호출·인라인
+# 처리는 **없다** — 아래 원시 연산들은 drain만 부른다.
 #
-# 메타만 바뀌는 지점(문서 검색토글·폴더 이동, 폴더 이름·설명·토글, FAQ 활성 토글)은
-# **`_update_by_query` 부분 갱신**이다(`sync_meta_documents`·`sync_meta_faqs`). 재색인하면
-# PG가 벡터를 안 드는 구성에서 재임베딩이 따라온다 — 메타 하나 바꾸는데 GPU를 태우는 건
-# 뒤바뀐 설계다. 폴더가 fan-out의 최대 단위이고, 값이 같은 문서를 묶어 1~2회로 끝낸다.
+# 인제스션(INDEX_DOCUMENT)은 rag/documents.index_pending_document가 파싱·임베딩·색인을 한
+# 뒤 **마지막 커밋 하나**에 ready·supersede·done을 넣는다 — `ready ≡ 색인됨`이 커밋 단위로
+# 성립한다. 색인 시 `searchable`은 그 커밋이 만들 상태(ready·active)로 미리 계산해 켜진 채로
+# 넣고, 구버전은 그 뒤에 지운다 — 빈 창이 없다.
 #
-# **실패해도 예외를 올리지 않는다.** PG는 이미 커밋됐고, 여기서 터뜨리면 OpenSearch 장애가
-# 곧 업로드·수정 장애가 된다. 조용해지는 대가는 지표로 갚는다
-# (metrics.SEARCH_INDEX_SYNC_TOTAL, result='error'). refresh='wait_for'로 직후 검색되게 했다.
+# **제품 결정 — 반영 지연을 받아들인다.** 삭제·비검색·FAQ 수정도 cron까지 최대 1분(재시도
+# 포함 1~5분) 검색에 반영되지 않는다: "문서 변경은 검색에 최대 1~5분 뒤 반영될 수 있다"가
+# 가이드다. 답변 캐시는 라우터가 즉시 무효화하므로 창은 새 검색에만 열린다. 좁히려면 워커
+# 폴링 루프(10초)나 "지금 반영" 수동 트리거를 얹으면 되고 둘 다 이 구조 위에 그대로 붙는다.
 #
-# ## 3) 재동기화 — 최종 안전판
+# ## 3) 재동기화 — 안전판
 #
-# `python -m eval._os_index --repair`가 PG↔OS id 집합을 대조해 복구한다(`reconcile`).
-# 2)가 놓친 것(엔진 장애 중의 변경)을 여기서 줍는다. 크론으로 돌릴 수 있다.
-# **메타 드리프트는 이 대조가 잡지 못한다** — id 집합만 보기 때문이다. 메타까지 맞추려면
-# 전량 재색인(`--recreate`)이고, 그건 벡터 없는 구성에서 재임베딩이다. 그래서 2)의 성실함이
-# 실질적인 방어선이고, 이것이 이 구성에서 가장 약한 고리다.
+# `python -m eval._os_index --repair`가 PG↔OS를 대조해 복구한다(`reconcile`). PG가 청크를 안
+# 드는 구성에서는 **문서 단위**로만 본다 — 청크 일부 누락은 못 잡고 outbox의 원자성에 의존한다.
 #
-# ## 지금 하지 않는 것 — outbox (승격 경로)
-#
-# 정석은 PG 트랜잭션 안에 "색인하라"는 행을 남기고 arq 워커가 드레인하는 것이다. 2)의
-# 최선노력과 달리 프로세스가 죽어도 반영이 보장되고, 위의 "가장 약한 고리"를 실제로 닫는다.
-# 안 하는 이유는 값이다 — 테이블·마이그레이션·잡을 늘리는데 이 백엔드는 품질 이득이 0으로
-# 측정된 실험 경로다(eval/report_os_ablation_v1.md).
-# **승격 트리거: 이 백엔드를 운영으로 채택하는 순간.** 색인이 서빙 정본인데 반영 보장이
-# 최선노력인 상태를 운영에 두면 안 된다 — 위 "가장 약한 고리"가 그때는 사고가 된다.
+# 아래 원시 연산들은 **실패를 삼키지 않는다** — 예외를 올려 outbox가 횟수를 세고 MAX_ATTEMPTS에
+# failed로 확정하게 한다. 전부 멱등이다: 색인은 _id=chunk_id upsert(결정적 id), 삭제는 없는 것을
+# 지워도 무해, 메타 갱신은 같은 값을 덮어쓸 뿐이라 재시도가 겹쳐도 결과가 같다.
 
 
 def enabled() -> bool:
@@ -713,33 +702,10 @@ async def _rows_to_docs(rows) -> list[dict]:
     return out
 
 
-async def index_chunks_with_vectors(session, document_id: int, embeddings) -> int:
-    """인제스션이 방금 계산한 임베딩으로 직접 색인 — PG 벡터를 경유하지 않는다.
-
-    chunk_index 순서로 정렬해 embeddings와 zip한다. 인제스션이 그 순서로 넣었으므로
-    (rag/documents.py의 `zip(chunks, embeddings, lex_tokens)`) 짝이 맞는다. 개수가 어긋나면
-    조용히 잘못 짝지어 엉뚱한 벡터가 붙으므로 크게 실패한다.
-    """
-    from rag.models import Chunk
-
-    rows = (await session.execute(
-        _index_stmt().where(Chunk.document_id == document_id).order_by(Chunk.chunk_index)
-    )).all()
-    if len(rows) != len(embeddings):
-        raise ValueError(f'문서 {document_id}: 청크 {len(rows)}개 vs 임베딩 '
-                         f'{len(embeddings)}개 — 짝이 안 맞아 색인을 중단한다')
-    docs = []
-    for row, e in zip(rows, embeddings):
-        meta = _row_meta(row)
-        docs.append(build_doc(row[0], meta.pop('filename'), meta.pop('version'),
-                              dense=list(e.dense), **meta))
-    return await bulk_index(docs)
-
-
 # 아래 연산들은 **실패를 삼키지 않는다** — 예외를 올려 outbox가 재시도·백오프를 걸게 한다
 # (rag/outbox.py). 삼킴과 지표는 그쪽 한 곳에 모여 있다. 전부 멱등이다: 색인은
 # _id=chunk_id upsert, 삭제는 없는 것을 지워도 무해, 메타 갱신은 같은 값을 덮어쓸 뿐이라
-# 인라인 드레인과 워커 cron이 겹쳐 두 번 처리해도 결과가 같다.
+# 재시도가 겹쳐 두 번 처리해도 결과가 같다(단일 워커 cron만 부른다 — 인라인 없음).
 
 
 async def _update_meta(field: str, values: list, meta: dict) -> int:
@@ -820,30 +786,15 @@ async def index_parsed_faq(*, faq_id: int, tenant_id: str, text: str, question: 
 async def index_document_chunks(session, document_id: int) -> int:
     """문서의 청크를 색인에 반영(upsert).
 
-    PG에 청크 행이 없는 구성이면 **원본 blob에서 다시 파싱·임베딩**한다(#139) — 그 경우
-    재색인의 원천이 원본 파일뿐이기 때문이다. 비싼 길이라 정상 경로는 인제스션이 손에 든
-    결과를 바로 색인하고(outbox.flush_document_index) 여기는 재시도 보험이다.
-    PG에 청크는 있고 벡터만 없으면 본문에서 재임베딩한다(_rows_to_docs).
+    **eval·reconcile 전용** — PG에 청크 행이 있는 코퍼스(기존 A/B 코퍼스)를 다시 색인한다.
+    인제스션은 이 함수를 쓰지 않는다: INDEX_DOCUMENT 핸들러(rag/documents.index_pending_document)가
+    파싱 결과를 index_parsed_document로 직접 색인한다. PG에 청크는 있고 벡터만 없으면 본문에서
+    재임베딩한다(_rows_to_docs). PG에 청크가 없으면 할 수 있는 게 없다 — 0을 돌려준다
+    (reconcile은 그 구성에서 문서 단위로 재파싱 경로를 따로 탄다).
     """
     if not pg_stores_chunks():
-        from rag.documents import rederive_and_index      # 지연 import — 순환 회피
-        return await rederive_and_index(document_id)
+        return 0
     return await bulk_index(await _index_rows(session, document_ids=[document_id]))
-
-
-async def index_document_with_vectors(document_id: int, superseded_ids, embeddings) -> int:
-    """인제스션 전용 빠른 길 — 방금 계산한 임베딩을 그대로 쓴다.
-
-    outbox 드레인(index_document_chunks)은 PG에서 벡터를 읽는데, PG가 벡터를 안 드는
-    구성에서는 그게 **재임베딩**이다. 인제스션은 벡터를 손에 들고 있으므로 그 낭비를 피한다.
-    실패하면 outbox 행이 남아 워커가 재임베딩으로라도 반영한다 — 느린 길이 보험이다.
-    """
-    from database import AsyncSessionLocal
-    async with AsyncSessionLocal() as session:
-        n = await index_chunks_with_vectors(session, document_id, embeddings)
-    if superseded_ids:
-        await _delete_by_terms('document_id', list(superseded_ids))
-    return n
 
 
 async def drop_documents_now(document_ids) -> int:
@@ -954,9 +905,19 @@ async def _reconcile_by_document(session) -> dict:
 
     missing, extra = pg_docs - os_docs, os_docs - pg_docs
     indexed = 0
-    for did in sorted(missing):
-        from rag.documents import rederive_and_index      # 지연 import — 순환 회피
-        indexed += await rederive_and_index(did)
+    # 색인에 없는 ready 문서는 pending으로 되돌려 대기열에 넣는다 — 재파싱·재임베딩·ready 승격은
+    # 인제스션 핸들러 한 곳(rag/documents.index_pending_document)이 맡는다. 두 벌을 두지 않는다.
+    if missing:
+        from sqlalchemy import update
+
+        from rag import outbox
+        from rag.models import Document as D
+        await session.execute(update(D).where(D.id.in_(list(missing))).values(status='pending'))
+        for did in sorted(missing):
+            tenant = (await session.execute(select(D.tenant_id).where(D.id == did))).scalar()
+            outbox.enqueue(session, tenant, outbox.INDEX_DOCUMENT, document_id=did)
+        await session.commit()
+        indexed = len(missing)          # 실제 색인은 다음 drain이 한다 — 여기선 재등재 건수
     deleted = await _delete_by_terms('document_id', sorted(extra)) if extra else 0
     return {'pg': len(pg_docs), 'os': len(os_docs), 'indexed': indexed, 'deleted': deleted,
             'unit': 'document'}

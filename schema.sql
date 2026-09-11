@@ -276,20 +276,25 @@ CREATE TABLE IF NOT EXISTS tenant_quotas (
 -- 가능하다 — rag/opensearch._rows_to_docs가 같은 조립으로 재임베딩하는 경로다).
 -- answer_cache.query_embedding은 이 정리의 대상이 아니다 — 의미캐시 자체가 쓰는 값이다.
 
--- ── #139 outbox — 외부 검색 색인 반영 대기열 ─────────────────────────────────
--- 색인이 서빙의 정본인 구성에서 "반영 누락"은 곧 낡은 답변이다. 커밋 후 직접 호출하는
--- 방식은 그 사이 프로세스가 죽으면 조용히 낡으므로, 할 일을 **같은 트랜잭션에** 남긴다.
--- 성공하면 행을 지운다 — 남아 있는 행이 곧 '아직 반영 안 된 일'이다.
--- 어휘(op)와 처리 규약은 rag/outbox.py가 정의점.
+-- ── #139 outbox — 색인 작업 대기열 (트랜잭셔널 outbox) ────────────────────────
+-- 문서·FAQ·폴더 변경과 **같은 트랜잭션**에 "색인에 할 일"을 남긴다. 커밋되면 일이 반드시
+-- 남아 있고 롤백되면 함께 사라진다 — 커밋과 등재가 원자적이라는 것이 이 패턴의 전부다.
+-- 단일 워커가 1분 주기로 pending을 id 순으로 처리해 done으로 넘긴다(rag/outbox.py가 정의점).
+-- 행은 지우지 않는다 — done/failed가 이력이자 관측 지점이다. 보존 정리는 나중에(스케줄러).
 CREATE TABLE IF NOT EXISTS search_index_outbox (
-    id              BIGSERIAL PRIMARY KEY,
-    tenant_id       TEXT      NOT NULL,
-    op              TEXT      NOT NULL,
-    payload         JSONB     NOT NULL DEFAULT '{}'::jsonb,
-    attempts        INTEGER   NOT NULL DEFAULT 0,
-    last_error      TEXT,
-    created_at      TIMESTAMP NOT NULL DEFAULT now(),
-    next_attempt_at TIMESTAMP NOT NULL DEFAULT now()
+    id          BIGSERIAL PRIMARY KEY,
+    tenant_id   TEXT      NOT NULL,
+    op          TEXT      NOT NULL,                       -- rag/outbox.py 상수 (INDEX_DOCUMENT 등)
+    payload     JSONB     NOT NULL DEFAULT '{}'::jsonb,   -- id만 싣는다 — 처리 시점에 PG 최신값을 읽는다
+    status      TEXT      NOT NULL DEFAULT 'pending',     -- pending | done | failed
+    attempts    INTEGER   NOT NULL DEFAULT 0,
+    last_error  TEXT,
+    created_at  TIMESTAMP NOT NULL DEFAULT now()
 );
--- 드레인은 "처리할 때가 된 것부터 오래된 순"으로만 읽는다 — 그 한 가지 접근 경로만 받친다.
-CREATE INDEX IF NOT EXISTS idx_outbox_ready ON search_index_outbox (next_attempt_at, id);
+-- 드레인은 pending만 id 순으로 읽는다 — done이 아무리 쌓여도 이 부분 인덱스만 훑는다.
+CREATE INDEX IF NOT EXISTS idx_outbox_pending ON search_index_outbox (id) WHERE status = 'pending';
+-- 기존 DB 반영 (2026-09-11, 1차 outbox → status 모델로 전환):
+--   ALTER TABLE search_index_outbox ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';
+--   ALTER TABLE search_index_outbox DROP COLUMN IF EXISTS next_attempt_at;
+--   DROP INDEX IF EXISTS idx_outbox_ready;
+--   CREATE INDEX IF NOT EXISTS idx_outbox_pending ON search_index_outbox (id) WHERE status = 'pending';

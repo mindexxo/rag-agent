@@ -14,11 +14,12 @@
 
 - **0층(leaf, 다른 `rag/` 모듈을 안 씀)**: `config.py`, `rag/models.py`, `rag/tokens.py`,
   `rag/prompt_texts.py`, `rag/llm.py`, `rag/embeddings.py`, `rag/chunking.py`,
-  `rag/index_text.py`, `rag/lexical.py`, `rag/limiter.py`, `rag/otel.py`, `rag/metrics.py`
+  `rag/index_text.py`, `rag/lexical.py`, `rag/limiter.py`, `rag/otel.py`, `rag/metrics.py`,
+  `rag/opensearch.py`(톱레벨은 `config`만 — 다른 `rag/` 참조는 전부 함수 안 지연 import)
 - **중간층(조합)**: `rag/citation_labels.py`, `rag/clients.py`, `rag/llm_schemas.py`,
   `rag/turn_state.py`, `rag/cache.py`, `rag/reranker.py`, `rag/retriever.py`,
   `rag/stream_resume.py`, `rag/cancellation.py`, `rag/citation_tail.py`, `rag/documents.py`,
-  `rag/prompts.py`, `rag/conversation.py`, `rag/guardrail.py`, `rag/opensearch.py`, `rag/outbox.py`
+  `rag/prompts.py`, `rag/conversation.py`, `rag/guardrail.py`, `rag/faq_indexing.py`, `rag/outbox.py`
 - **조립점**: `rag/service.py` — 한 턴의 수명(prepare → generate → finalize)을 조율한다.
 - **진입점**(아무도 이들을 import하지 않는다): `rag/streaming.py`(SSE),
   `rag/worker.py`(arq 백그라운드), `routers/*.py`(HTTP), `main.py`(FastAPI 부트스트랩 전용).

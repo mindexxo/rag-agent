@@ -330,12 +330,14 @@ async def purge_tenant(t: str) -> None:
         Faq,
         Folder,
         Message,
+        SearchIndexOutbox,
         TenantQuota,
     )
     async with AsyncSessionLocal() as session:
-        # FK 순서: 자식(청크·메시지) 먼저
+        # FK 순서: 자식(청크·메시지) 먼저. outbox 행(done/failed 포함)도 테넌트 단위로 지운다 —
+        # 운영은 행을 보존하지만(이력) 테스트의 랜덤 테넌트 행이 공유 DB에 쌓일 이유는 없다 (#139).
         for model in (Chunk, Message, Conversation, AnswerCacheRow,
-                      Faq, Document, Folder, TenantQuota):
+                      Faq, Document, Folder, TenantQuota, SearchIndexOutbox):
             await session.execute(delete(model).where(model.tenant_id == t))
         await session.commit()
     # Redis 잔재는 리미터의 in-flight 키뿐 (kms:inflight:*) — 취소 채널은 pub/sub이라 키가 안 남는다

@@ -1,8 +1,8 @@
 """OpenSearch 검색 백엔드 (#139) — 매핑·질의 조립의 **정의점**.
 
 `settings.search_backend == 'opensearch'`일 때 `rag/retriever.py`가 dense·어휘 두 채널을
-이 모듈로 갈아끼운다. **기본값은 'pg'이고, 운영 전환 선결 조건이 남아 있다** — 무엇이
-없는지는 `config.py`의 `search_backend` 주석이 정본이다(색인 동기화, BM25 통계 스코프).
+이 모듈로 갈아끼운다. **기본값은 'pg'다.** 운영 전환 시 받아들이는 것(색인 반영 지연 1~5분)과
+남은 것(BM25 통계 스코프, PG 벡터 컬럼 처분)은 `config.py`의 `search_backend` 주석이 정본이다.
 
 측정 정본은 `eval/report_os_ablation_v1.md`다. 현행 근거로는 이득이 0이다 — kNN 구현 차이 0,
 BM25 구현 차이 0, 토크나이저 차이 잡음 수준, 엔진 융합 차이 0. 그래서 이 모듈은 "전환이
@@ -484,17 +484,15 @@ def enabled() -> bool:
 
 
 def pg_stores_chunks() -> bool:
-    """PG가 청크 **행 자체**를 드는지 (#139).
+    """PG가 청크 **행 자체**를 드는지 (#139) = 백엔드가 pg인지.
 
     엔진이 검색·본문·메타를 모두 맡는 구성에서는 PG에 청크를 넣을 이유가 없다 — 서빙 경로가
     한 번도 읽지 않는 행을 쓰는 것이라 순수 낭비다. 그래서 `search_backend='opensearch'`면
-    인제스션이 PG INSERT를 건너뛰고 파싱 결과를 곧장 색인한다.
+    인제스션이 PG INSERT를 건너뛰고 파싱 결과를 곧장 색인한다(index_parsed_document).
 
-    **행이 없으면 파생 컬럼도 없으므로 `pg_vector_columns`는 이 경우 무의미하다** — 그 스위치는
-    "청크 행은 두되 벡터·어휘 컬럼만 뺀다"는 중간 단계용이다.
-
-    되돌리기: 이미 들어가 있는 청크는 그대로 남으므로 기존 코퍼스의 pg 검색은 계속 된다.
-    새 인제스션만 PG를 거치지 않는다 — 완전히 되돌리려면 재인제스트가 필요하다.
+    **되돌리기는 자유롭지 않다.** 엔진 구성으로 도는 동안 올라간 문서는 PG에 청크가 0건이라,
+    `search_backend`를 pg로 되돌려도 그 문서들은 PG 검색에 잡히지 않는다 — 재인제스트가 필요하다.
+    기존에 pg로 올린 문서는 그대로 검색된다(청크가 남아 있다).
     """
     return settings.search_backend != 'opensearch'
 
@@ -510,19 +508,13 @@ def chunk_os_id(*, document_id: int | None = None, faq_id: int | None = None,
     chunk_index는 20비트(약 100만)까지 — 한 문서의 청크 수 상한으로 충분하다. FAQ는 음수
     네임스페이스를 쓴다(캐시가 FAQ 출처를 -faq_id로 표기하는 기존 관례와 같은 방식).
     """
+    if not 0 <= chunk_index < (1 << 20):
+        # 20비트를 넘으면 상위 비트(부모 id 몫)를 침범해 **다른 문서의 청크와 같은 id**가 된다 —
+        # 조용히 덮어쓰는 것보다 크게 실패한다.
+        raise ValueError(f'chunk_index {chunk_index}가 20비트 상한(1,048,575)을 넘는다')
     if faq_id is not None:
         return -((faq_id << 20) | chunk_index)
     return (document_id << 20) | chunk_index
-
-
-def pg_stores_vectors() -> bool:
-    """PG가 검색용 파생 컬럼(dense·lex_tsv·lex_len)을 계속 드는지 (#139).
-
-    인제스션·FAQ 색인이 이 값을 보고 PG 쓰기를 건너뛴다. 전환 2단계의 스위치이고, 조합
-    검증은 config.Settings._check_search_backend가 한다. 사유·마이그레이션 순서는
-    config.py의 `pg_vector_columns` 주석이 정본이다.
-    """
-    return settings.pg_vector_columns
 
 
 def effective_searchable(*, is_faq: bool, doc_is_active=None, doc_status=None,
@@ -551,7 +543,7 @@ def build_doc(chunk, filename: str | None, version: int | None,
 
     filename=None은 FAQ 청크다 — 'FAQ'로 적는다(_fetch_chunk_map과 동일 규약).
 
-    **dense를 명시로 받는 이유**: PG가 벡터를 안 들 수 있다(config의 pg_vector_columns).
+    **dense를 명시로 받는 이유**: 엔진 구성에서는 PG에 청크 행이 없어 PG 벡터가 없다.
     그때는 인제스션이 방금 계산한 임베딩을 그대로 넘긴다 — PG를 경유하지 않으므로 왕복도
     없고, 컬럼이 없어도 동작한다. 넘기지 않으면 PG 값을 쓴다(전환 1단계·전량 색인 경로).
     """
@@ -678,7 +670,7 @@ def _row_meta(row) -> dict:
 async def _rows_to_docs(rows) -> list[dict]:
     """(Chunk, filename, version) 행들 → OpenSearch 문서. 벡터가 없으면 **재임베딩**한다.
 
-    PG가 벡터를 안 드는 구성(config의 pg_vector_columns=False)에서 전량 색인·재동기화가
+    PG에 청크는 있으나 벡터 컬럼이 비어 있는 경우(향후 컬럼 DROP 전 단계)에 전량 색인·재동기화가
     타는 경로다. 재임베딩 입력은 `lex_text()` — 인제스션이 임베딩에 넣은 것과 같은 조립이라
     (rag/documents.py의 index_texts, rag/index_text.build_index_text) 원래 벡터를 재현한다.
     TEI가 호출마다 비결정적이라 완전히 같은 값은 아니지만(실측 1.4e-4) 검색 품질에는 잡음
@@ -717,6 +709,9 @@ async def _update_meta(field: str, values: list, meta: dict) -> int:
     conflicts=proceed: 같은 문서를 동시에 재색인 중이면 버전 충돌이 날 수 있다. 그때 전체를
     실패시키기보다 넘긴다 — 놓친 것은 재동기화(--repair)와 outbox 재시도가 잡고, 여기서
     멈추면 나머지 청크가 옛 메타로 남는 쪽이 더 나쁘다.
+
+    params가 None인 필드(미분류 이동의 folder_id 등)는 painless `ctx._source.x = params.x`로
+    **null이 반영되고** `exists` 필터에서도 없는 것으로 본다 — 2.18.0에서 실측(2026-09-11).
     """
     if not values:
         return 0

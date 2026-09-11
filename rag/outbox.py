@@ -20,6 +20,10 @@
 **의도적으로 하지 않은 것**과 그 트리거:
 - 워커 여러 대 → 지금은 단일 워커라 프로세스 안 `asyncio.Lock` 하나로 cron 겹침(1분 넘게
   도는 회차)을 막는다. 워커를 늘리면 claim 컬럼(+ 고아 회수)이 필요하다.
+  **다른 프로세스**의 drain(테스트 `ingest`, eval 스크립트가 워커 cron과 동시에)은 이 잠금이
+  못 막는다 — SELECT에 행 잠금이 없어 같은 pending 행을 둘이 뽑을 수 있다. 결과는 멱등으로
+  수렴하지만(pg 구성이면 Chunk UNIQUE 위반으로 한쪽이 실패→재시도), 그래서 테스트·eval은
+  `row_ids`로 자기 문서의 행만 처리한다. 개발계에서 워커를 띄운 채 eval을 돌리면 이 경합이 실재한다.
 - 인라인(커밋 직후 즉시 처리) → 안 한다. 삭제·토글·FAQ 수정도 cron까지 최대 1분(재시도 포함
   1~5분) 뒤 검색에 반영된다. **제품 결정**: "문서 변경은 검색에 최대 1~5분 뒤 반영될 수 있다"로
   가이드한다. 그 사이 삭제·비공개 문서가 인용될 수 있음을 받아들인 것이다(답변 캐시는
@@ -47,6 +51,7 @@ from sqlalchemy import select, update
 
 from database import AsyncSessionLocal
 from rag import opensearch
+from rag.metrics import SEARCH_INDEX_SYNC_TOTAL
 from rag.models import Document, SearchIndexOutbox
 
 logger = logging.getLogger(__name__)
@@ -117,8 +122,6 @@ async def drain(session, limit: int = BATCH, *, row_ids: list[int] | None = None
     INDEX_DOCUMENT는 핸들러가 자기 트랜잭션에서 done을 찍는다(ready 승격과 같은 커밋 —
     "ready ≡ 색인됨"을 커밋 단위로 보장). 그래서 여기서는 그 op의 status를 건드리지 않는다.
     """
-    from rag.metrics import SEARCH_INDEX_SYNC_TOTAL
-
     stmt = (select(SearchIndexOutbox.id, SearchIndexOutbox.op, SearchIndexOutbox.payload)
             .where(SearchIndexOutbox.status == PENDING)
             .order_by(SearchIndexOutbox.id).limit(limit))

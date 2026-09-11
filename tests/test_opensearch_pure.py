@@ -12,9 +12,13 @@
   6. 검색 백엔드 기본값이 pg다                       (실험 경로가 실수로 운영이 되지 않게)
   7. 필터가 엔진에서 걸린다                          (PG로 걸러내면 post-filter가 되어 후보가 깎인다)
   8. searchable 비정규화가 PG 조건과 같은 답을 낸다  (두 벌이 갈라지면 필터가 어긋난다)
+  9. build_doc는 PG 벡터 없이도 명시 벡터로 색인하고, 둘 다 없으면 크게 실패한다
+ 10. chunk_os_id는 결정적이고 문서·청크 간 충돌이 없으며 20비트 상한을 강제한다
 """
 import inspect
 import re
+
+import pytest
 from pathlib import Path
 
 from rag import opensearch as B
@@ -158,3 +162,62 @@ def test_엔진이_돌려준_청크에_인용_메타가_다_실린다():
     for f in ('chunk_id', 'document_id', 'faq_id', 'text', 'heading_path', 'page',
               'filename', 'version', 'is_table', 'folder_name', 'folder_description'):
         assert f in props, f
+
+
+class _Chunk:
+    """색인 대상 청크의 최소 형태 — PG 행 대신. dense 속성이 아예 없는 상태(컬럼 DROP 세계)를 만들 수 있다."""
+
+    def __init__(self, cid=1, text='반품은 7일 이내', dense=None, has_dense=True):
+        self.id, self.text = cid, text
+        self.tenant_id, self.document_id, self.faq_id = 't1', 10, None
+        self.page, self.heading_path, self.meta = 3, ['2. 반품'], {}
+        if has_dense:
+            self.dense = dense
+
+
+def test_명시_벡터가_PG값을_이긴다():
+    """인제스션이 방금 계산한 임베딩을 넘기면 PG를 경유하지 않는다."""
+    doc = B.build_doc(_Chunk(dense=[0.1] * 1024), '정책.pdf', 2, dense=[0.9] * 1024)
+    assert doc['dense'][0] == pytest.approx(0.9)
+
+
+def test_PG에_벡터가_없어도_명시로_색인된다():
+    doc = B.build_doc(_Chunk(has_dense=False), '정책.pdf', 2, dense=[0.5] * 1024)
+    assert len(doc['dense']) == 1024 and doc['chunk_id'] == 1 and doc['filename'] == '정책.pdf'
+
+
+def test_벡터가_아예_없으면_크게_실패한다():
+    """조용히 벡터 없는 문서를 색인하면 kNN에 안 잡히는 유령이 된다."""
+    with pytest.raises(ValueError, match='벡터가 없다'):
+        B.build_doc(_Chunk(has_dense=False), '정책.pdf', 2)
+
+
+def test_어휘_필드는_PG_컬럼과_무관하다():
+    """lex_tsv를 PG에서 버려도 엔진 어휘 필드는 본문에서 다시 만들어진다."""
+    ch = _Chunk(has_dense=False)
+    doc = B.build_doc(ch, '정책.pdf', 2, dense=[0.5] * 1024)
+    expected = B.lex_text(ch.text, '정책.pdf', ch.heading_path)
+    assert doc[B.NORI_FIELD] == expected
+    assert doc[B.LEX_BIGRAM_FIELD] == ' '.join(lexical.bigrams(expected))
+
+
+def test_chunk_os_id는_결정적이고_충돌이_없다():
+    """PG 시퀀스 없이 (부모 id, chunk_index)로 만드는 id — 재색인이 같은 _id로 덮여 멱등하려면
+    결정적이어야 하고, 문서·청크 조합마다 달라야 한다."""
+    f = B.chunk_os_id
+    assert f(document_id=1008, chunk_index=3) == f(document_id=1008, chunk_index=3)
+    ids = {f(document_id=d, chunk_index=i) for d in (1, 2, 1008, 99999) for i in (0, 1, 7, 500)}
+    assert len(ids) == 16
+    # 문서 id 1의 첫 청크조차 2^20 이상 — 소규모 PG BIGSERIAL 청크 id와 겹치지 않는다
+    assert f(document_id=1, chunk_index=0) == 1 << 20
+    # FAQ는 음수 네임스페이스 — 문서 id 공간과 절대 겹치지 않는다(캐시의 -faq_id 관례와 같은 방식)
+    assert f(faq_id=42) < 0 and f(faq_id=42) == -(42 << 20)
+    assert {f(faq_id=q) for q in (1, 2, 42)}.isdisjoint(ids)
+
+
+def test_chunk_os_id는_20비트_상한을_강제한다():
+    """상한을 넘으면 상위 비트(문서 id 몫)를 침범해 다른 문서의 청크와 같은 id가 된다 —
+    조용히 덮어쓰지 않고 크게 실패해야 한다."""
+    assert B.chunk_os_id(document_id=5, chunk_index=(1 << 20) - 1) > 0
+    with pytest.raises(ValueError, match='20비트'):
+        B.chunk_os_id(document_id=5, chunk_index=1 << 20)

@@ -220,7 +220,9 @@ async def main() -> None:
     os_client = None
     if args.os:
         from config import settings
+        from eval._os_index import use_eval_index
         from rag import opensearch as B
+        use_eval_index()          # 운영 인덱스가 아닌 측정 인덱스를 본다 (eval/_os_index.py 주석)
         os_client = B.client()
         if not await os_client.indices.exists(settings.opensearch_index):
             raise SystemExit(f"인덱스 {settings.opensearch_index} 없음 — "

@@ -1,8 +1,8 @@
 """D-4: 문서 수명주기 통합 테스트.
 
-업로드(API)→인덱싱(잡 함수 직접 await — 워커 프로세스 없이 잡 로직 검증)→
-버전 엎어치기(supersede)→dedupe→실패 경로(failed 기록)→소프트 삭제.
-arq 큐는 가짜로 치환해 enqueue 여부만 기록한다 (큐 배달 자체는 arq 라이브러리 몫).
+업로드(API)→인덱싱(그 문서의 outbox 행만 drain — 워커 프로세스 없이 핸들러 경로 검증)→
+버전 엎어치기(supersede)→dedupe→실패 경로(drain이 failed 확정)→소프트 삭제.
+업로드는 arq를 만지지 않는다 — 문서와 색인 대기열 행이 같은 트랜잭션에 커밋된다 (#139 outbox).
 """
 import pytest
 from sqlalchemy import func, select
@@ -385,6 +385,13 @@ async def test_409면_blob이_남지_않는다(client, tenant_id, fake_queue, bl
 
     assert (await _post(client, '환불정책.md', MD, expect_version=0)).status_code == 409
     assert sorted((blob_tmp / tenant_id).iterdir()) == before
+    # 대기열 행도 문서와 같은 트랜잭션이라 409 롤백에 함께 사라져야 한다 (#139 outbox 원자성).
+    # v1의 행은 ingest로 done이 됐으니 pending은 0이어야 한다.
+    async with AsyncSessionLocal() as s:
+        pending = (await s.execute(select(func.count()).select_from(SearchIndexOutbox)
+                                   .where(SearchIndexOutbox.tenant_id == tenant_id)
+                                   .where(SearchIndexOutbox.status == 'pending'))).scalar()
+    assert pending == 0
 
 
 @pytest.mark.asyncio

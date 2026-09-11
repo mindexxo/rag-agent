@@ -38,13 +38,13 @@ async def reindex_faq(session: AsyncSession, faq: Faq, embedding) -> str:
     #
     # 파생 컬럼은 PG가 그것들을 들 때만 쓴다 (#139) — 외부 엔진 구성에서는 라우터가
     # 반영은 outbox가 맡는다(라우터가 같은 트랜잭션에 적재) — rag/outbox.py.
-    # 스위치·마이그레이션 순서는 config.py의 pg_vector_columns 주석이 정본이다.
+    # 엔진 구성인지는 opensearch.pg_stores_chunks()가 정한다(search_backend).
     toks = lexical.bigrams(text)
     derived = {
         'dense': embedding.dense,
         'lex_tsv': func.array_to_tsvector(cast(lexical.tsvector_lexemes(toks), ARRAY(Text))),
         'lex_len': len(toks),
-    } if opensearch.pg_stores_vectors() else {}
+    }
     session.add(Chunk(
         faq_id=faq.id,
         document_id=None,

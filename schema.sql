@@ -258,11 +258,12 @@ CREATE TABLE IF NOT EXISTS tenant_quotas (
 -- UPDATE tenant_quotas SET user_concurrency  = 1 WHERE user_concurrency  = 10;
 
 -- ── #139 OpenSearch 채택 시 마이그레이션 (아직 실행하지 않음) ─────────────────
--- 검색을 OpenSearch가 맡으면 PG의 검색용 파생 컬럼은 불필요해진다. 스위치는
--- config.py의 `pg_vector_columns`이고 그 주석이 사유·순서의 정본이다.
+-- 검색을 OpenSearch가 맡으면(search_backend=opensearch) 인제스션이 PG에 청크 행을 쓰지 않으므로
+-- 기존 청크의 검색용 파생 컬럼은 남아만 있는 데이터가 된다. 사유·순서는 config.py의
+-- search_backend 주석("PG chunks.dense의 처분")이 정본이다.
 -- **순서를 지켜라** — ②와 ③ 사이를 건너뛰면 벡터의 백업 없는 유일 저장소가 생긴다.
 --
---   ① 파생 컬럼 쓰기를 멈출 수 있게 제약 완화 (이것만 하면 pg_vector_columns=False 운영 가능)
+--   ① NOT NULL 해제 — 엔진 구성은 청크 행 자체를 안 쓰므로 운영에 필수는 아니고, ③ 컬럼 DROP의 전 단계
 --      ALTER TABLE chunks ALTER COLUMN dense DROP NOT NULL;
 --
 --   ② 검색을 안 하므로 인덱스 제거 (순수 이득 — 실측 HNSW 6.5MB + GIN, 868청크 기준)

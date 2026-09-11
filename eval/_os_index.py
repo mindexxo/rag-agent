@@ -30,6 +30,7 @@ AGENTS.md 측정 규율("바뀐 결과물을 값으로 검증한 뒤 측정한�
 산출: eval/results/os_index_gates.md — 사람이 읽는 게이트 실측값.
 """
 import argparse
+import os
 import asyncio
 import json
 import random
@@ -46,7 +47,21 @@ from rag.models import Chunk, Document, Faq, Folder
 from rag.retriever import _searchable_condition
 
 OUT = Path(__file__).resolve().parent / "results" / "os_index_gates.md"
-INDEX = settings.opensearch_index
+# **측정 인덱스는 운영 인덱스와 다르다.** 이 도구는 PG에 청크가 있는 기존 A/B 코퍼스를
+# PG chunk.id로 색인하고 `--recreate`로 인덱스를 통째로 지운다. 운영 인덱스(엔진 구성이
+# chunk_os_id로 채우는 settings.opensearch_index)에 그걸 돌리면 두 id 체계가 한 인덱스에 섞이고
+# `--recreate`가 운영 색인을 삭제한다(리뷰 지적). 그래서 별도 이름을 쓰고, 이 프로세스 안에서만
+# settings를 그쪽으로 돌린다 — rag/opensearch의 질의 헬퍼가 settings.opensearch_index를 읽기 때문.
+EVAL_INDEX = os.getenv('OS_EVAL_INDEX', 'kms_chunks_eval')
+
+
+def use_eval_index() -> str:
+    """이 프로세스의 OpenSearch 대상 인덱스를 측정 인덱스로 돌린다. eval 스크립트 시작에서 부른다."""
+    settings.opensearch_index = EVAL_INDEX
+    return EVAL_INDEX
+
+
+INDEX = use_eval_index()
 BULK = 200          # 청크가 수백~수천 규모라 넉넉하다. 실문서 확대 시 재조정.
 SAMPLE_N = 5        # 게이트 2·4 표본 수
 

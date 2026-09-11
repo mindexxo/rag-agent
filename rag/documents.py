@@ -70,7 +70,10 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         blob_path, description = doc.blob_path, doc.description or ''
         folder_id, doc_searchable = doc.folder_id, doc.is_searchable
         # 같은 filename의 active 구버전 — 엔진에서 지우고 PG에서 내릴 대상. 여기서 한 번 읽어
-        # ②·③이 같은 집합을 쓴다(라우터의 버전 충돌 검사가 동시 업로드를 막는다).
+        # ②·③이 같은 집합을 쓴다. 이 집합이 ③까지 유효한 근거는 **단일 워커의 순차 처리**다
+        # (drain이 행 하나를 끝까지 처리한 뒤 다음 행으로 — 같은 파일명의 다음 버전 INDEX 행은
+        # 그 뒤에 처리된다). 라우터의 expect_version 검사는 FE가 보낼 때만 도는 선택적 방어라
+        # 여기의 근거로 삼지 않는다.
         old_active_ids = list((await session.execute(
             select(Document.id)
             .where(Document.tenant_id == tenant_id)
@@ -91,17 +94,18 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
     index_texts = [build_index_text(c.text, filename, c.heading_path) for c in chunks]
     embeddings = await embed_texts(index_texts)
 
+    indexed_searchable = None
     if opensearch.enabled():
         # searchable은 PG의 **현재** 상태(pending·inactive)가 아니라 **아래 ③이 만들 상태**
         # (ready·active)로 계산한다 — 켜진 채로 바로 넣어 "켜기" 단계를 없애기 위함이다.
         # 문서 검색토글·폴더 토글은 PG 값을 그대로 쓴다.
-        searchable = opensearch.effective_searchable(
+        indexed_searchable = opensearch.effective_searchable(
             is_faq=False, doc_is_active=True, doc_status='ready',
             doc_is_searchable=doc_searchable, folder_is_searchable=folder_searchable)
         await opensearch.index_parsed_document(
             document_id=document_id, tenant_id=tenant_id, filename=filename, version=version,
             folder_id=folder_id, folder_name=folder_name, folder_description=folder_desc,
-            searchable=searchable, chunks=chunks, embeddings=embeddings)
+            searchable=indexed_searchable, chunks=chunks, embeddings=embeddings)
         # 신버전이 이미 켜져 있으니 구버전을 지워도 빈 창이 없다.
         if old_active_ids:
             await opensearch.drop_documents_now(old_active_ids)
@@ -110,8 +114,9 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
     async with AsyncSessionLocal() as session:
         doc = await session.get(Document, document_id)
         if doc is None or doc.status != 'pending':
-            # ②가 도는 사이 삭제됐다. 엔진에 넣은 청크는 그 삭제가 만든 DROP 행(이 행보다
-            # 뒤 id)이 곧 지운다 — 같은 회차나 다음 회차에서.
+            # ②가 도는 사이 삭제됐다. 엔진에 넣은 청크는 그 삭제가 만든 DROP 행이 지운다 —
+            # **다음 회차**다: drain은 pending 행을 회차 시작 시 한 번의 SELECT로 고정하므로
+            # ② 도중 생긴 행은 이번 배치에 없다. 노출 창 ≤ 1분(cron) — 제품 결정 범위 안.
             if outbox_row_id is not None:
                 await outbox.mark_done(session, outbox_row_id)
                 await session.commit()
@@ -119,7 +124,6 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
 
         if opensearch.pg_stores_chunks():
             # PG가 색인인 구성 — 청크 행 + 파생 컬럼(dense·lex)을 여기서 쓴다. 이 커밋이 곧 색인이다.
-            keep_pg_vectors = opensearch.pg_stores_vectors()
             for chunk, embedding, text in zip(chunks, embeddings, index_texts):
                 toks = lexical.bigrams(text)
                 derived = {
@@ -127,7 +131,7 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
                     'lex_tsv': func.array_to_tsvector(
                         cast(lexical.tsvector_lexemes(toks), ARRAY(Text))),
                     'lex_len': len(toks),
-                } if keep_pg_vectors else {}
+                }
                 session.add(Chunk(
                     document_id=doc.id, tenant_id=doc.tenant_id, chunk_index=chunk.chunk_index,
                     text=chunk.text, page=chunk.page, heading_path=chunk.heading_path,
@@ -149,6 +153,22 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         doc.indexed_at = datetime.now(timezone.utc).replace(tzinfo=None)   # naive 컬럼 — UTC 유지
         for old_id in old_active_ids:
             await cache.invalidate_source(session, tenant_id, old_id)
+
+        if indexed_searchable is not None:
+            # ②가 도는 사이(초~분) 문서 검색토글·폴더 토글·폴더 이동이 있었을 수 있다. 그 META 행은
+            # 이미 색인된 청크만 갱신하므로(이 문서는 그때 엔진에 없었다) 여기서 ① 시점 값으로 넣은
+            # 것이 낡은 채 남는다 — reconcile은 id 집합만 보고 메타 드리프트는 못 잡는다(리뷰 지적).
+            # 최신 PG 상태로 다시 계산해 어긋나면 META 행을 **이 커밋에** 얹어 다음 회차가 맞춘다.
+            f_on = None
+            if doc.folder_id is not None:
+                f_on = (await session.execute(
+                    select(Folder.is_searchable).where(Folder.id == doc.folder_id))).scalar()
+            now_searchable = opensearch.effective_searchable(
+                is_faq=False, doc_is_active=True, doc_status='ready',
+                doc_is_searchable=doc.is_searchable, folder_is_searchable=f_on)
+            if now_searchable != indexed_searchable or doc.folder_id != folder_id:
+                outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=[document_id])
+
         if outbox_row_id is not None:
             await outbox.mark_done(session, outbox_row_id)   # ready와 같은 커밋 — 정의점 rag/outbox.py
         await session.commit()

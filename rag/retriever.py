@@ -260,9 +260,8 @@ async def _search_lexical(
 #
 # 왜 여기가 경계인가: 상위(service.py)는 retrieve() 하나만 의존하고, 아래의 멀티쿼리 RRF·
 # 리랭커·표 필터·top_n 슬라이스·게이트 판정은 백엔드와 무관하다(실측). 본문·메타 조회는
-# 백엔드가 자기 저장소에서 한다(_chunk_map) — 엔진 구성은 PG를 되묻지 않는다.
-# 청크 본문·메타는 어느 백엔드든 PG에서 읽는다 — PG가 정본이라, 색인이 낡아도 인용
-# 파일명·버전·페이지가 틀리지 않는다. 설계 근거·잔차는 rag/opensearch.py docstring.
+# 백엔드가 자기 저장소에서 한다(_chunk_map) — 엔진 구성은 PG를 되묻지 않는다(실무 표준).
+# 설계 근거·잔차는 rag/opensearch.py docstring.
 #
 # opensearch 경로의 운영 전환 선결 조건(색인 동기화·BM25 통계 스코프)은 config.py의
 # search_backend 주석이 정본이다. 지금은 둘 다 없다 — 실험 경로다.

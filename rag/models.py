@@ -15,13 +15,14 @@
 이 프로젝트는 **RLS를 사용하지 않는다.** 격리의 유일한 방어선은 쿼리의 WHERE 절이다.
 
 1. 멀티테넌트 테이블을 읽는 모든 쿼리에 `.where(Model.tenant_id == tenant_id)`를 직접 쓴다.
-   래퍼 유틸을 두지 않는 이유: 실제 쿼리 상당수가 join·컬럼 지정(`select(Chunk.id, distance)`)·
+   래퍼 유틸을 두지 않는 이유: 실제 쿼리 상당수가 join·컬럼 지정(`select(Document.id, Document.filename)`)·
    집계(`select(func.count())`) 형태라 `select(Model)`을 감싸는 헬퍼가 절반도 덮지 못하고,
    반쯤 적용된 유틸은 "안 썼으니 격리가 빠졌나?"라는 오독을 만든다. 손 WHERE로 일관시킨다.
 2. UPDATE/DELETE는 대상 id를 **tenant 스코프 조회로 먼저 확정**한 뒤 그 id로 실행한다
-   (예: `delete(Chunk).where(Chunk.document_id.in_(<스코프된 doc_ids>))`).
-3. `chunks.tenant_id`·`messages.tenant_id`는 필터 성능용 비정규화 컬럼이다. 부모와의 일치를
-   DB가 보장하지 않으므로(FK는 부모 id에만 걸림) 삽입 시 부모의 tenant_id를 그대로 넣는다.
+   (예: `update(Document).where(Document.id.in_(<스코프된 doc_ids>))`).
+3. `messages.tenant_id`는 필터 성능용 비정규화 컬럼이다. 부모와의 일치를 DB가 보장하지
+   않으므로(FK는 부모 id에만 걸림) 삽입 시 부모의 tenant_id를 그대로 넣는다.
+   검색 청크의 격리는 PG 밖이다 — OpenSearch 질의마다 `tenant_filter()`가 건다(rag/opensearch.py).
 4. 누락 검출은 통합 테스트가 담당한다 — tests/test_tenant_isolation.py(ORM 읽기),
    tests/test_integration_isolation.py(검색 후보·대화·폴더). 표면이 늘면 여기에 케이스를 추가한다.
 """

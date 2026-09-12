@@ -30,7 +30,7 @@ from eval.claude_client import ClaudeCliClient
 from eval.generation import (GEN_TYPES, GOLD, GOLD_VERSION, RESULT_DIR,
                              _citation_match, _smoke_sample,
                              expected_points_coverage, row_tenant, summarize)
-from rag.models import Chunk, Document
+from rag.models import Document
 
 SMOKE = int(os.getenv("SMOKE", "0")) or None
 CONCURRENCY = 4          # claude -p 서브프로세스 병렬 상한 — vLLM 배칭과 달리 콜=프로세스
@@ -68,24 +68,25 @@ async def load_corpus(session, tenant: str) -> str:
     )).all()
     doc_ids = {d_id: fn for d_id, fn in doc_rows}
 
-    parts: list[str] = []
-    if doc_ids:
-        chunk_rows = (await session.execute(
-            select(Chunk.document_id, Chunk.text)
-            .where(Chunk.document_id.in_(doc_ids))
-            .order_by(Chunk.document_id, Chunk.chunk_index)
-        )).all()
-        by_doc: dict[int, list[str]] = defaultdict(list)
-        for d_id, text in chunk_rows:
-            by_doc[d_id].append(text)
-        for d_id, fn in doc_ids.items():
-            parts.append(f"=== 문서: {fn} ===\n" + "\n".join(by_doc.get(d_id, [])))
+    # 청크는 색인에만 있다(#139) — 테넌트의 searchable 청크를 전부 읽어 문서별로 모은다.
+    # chunk_id = document_id<<20 | chunk_index(FAQ는 음수)라 id 오름차순이 곧 문서·청크 순이다.
+    from config import settings
+    from rag import opensearch
+    resp = await opensearch.client().search(index=settings.opensearch_index, body={
+        "size": 10000, "_source": ["chunk_id", "document_id", "faq_id", "text"],
+        "query": opensearch.tenant_filter(tenant), "sort": [{"chunk_id": "asc"}],
+    })
+    hits = [h["_source"] for h in resp["hits"]["hits"]]
 
-    faq_rows = (await session.execute(
-        select(Chunk.text)
-        .where(Chunk.tenant_id == tenant, Chunk.faq_id.is_not(None))
-        .order_by(Chunk.faq_id)
-    )).scalars().all()
+    parts: list[str] = []
+    by_doc: dict[int, list[str]] = defaultdict(list)
+    for src in hits:
+        if src.get("document_id") in doc_ids:
+            by_doc[src["document_id"]].append(src["text"])
+    for d_id, fn in doc_ids.items():
+        parts.append(f"=== 문서: {fn} ===\n" + "\n".join(by_doc.get(d_id, [])))
+
+    faq_rows = [src["text"] for src in hits if src.get("faq_id") is not None]
     if faq_rows:
         parts.append("=== 문서: FAQ ===\n" + "\n\n".join(faq_rows))
     return "\n\n".join(parts)

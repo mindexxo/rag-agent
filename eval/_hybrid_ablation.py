@@ -52,7 +52,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from eval.generation import row_tenant
+from eval.generation import load_gold, row_tenant
 from eval.retrieval import resolve_gold, score_one
 from eval.retrieval_v2 import DIFFICULTY, GOLD, METRICS, TYPES
 from rag.embeddings import embed_texts
@@ -210,7 +210,7 @@ async def main() -> None:
                     help="OpenSearch 변형 추가 (#139). eval._os_index 선행 색인 필요")
     args = ap.parse_args()
 
-    gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+    gold = load_gold()      # 정본 + eval/gold_private/*.jsonl (실문서 골드, gitignore)
     target = [g for g in gold if g["type"] in TYPES]
     by_tenant = defaultdict(list)
     for g in target:

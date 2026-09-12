@@ -11,10 +11,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import AsyncSessionLocal
 from rag import cache, lexical, opensearch, outbox
-from rag.chunking import chunk_file
+from rag.chunking import chunk_file, pdf_image_area_ratio
 from rag.embeddings import embed_texts
 from rag.index_text import build_index_text
 from rag.models import Chunk, Document, Folder
+
+# 이미지 면적이 이 비율을 넘으면 인제스션에서 경고를 남긴다 (#137 결함 4).
+# 실측(실문서 21건): 도표가 이미지인 3건이 21.1% / 4.4% / 0.7%, 나머지 18건 0%.
+# 0.7%짜리도 수당 산정식 하나가 통째로 사라졌으므로 임계를 낮게 잡는다.
+IMAGE_WARN_RATIO = 0.5
 
 _MIME_OVERRIDES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -87,6 +92,7 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
     # 루프에서 돌리면 PDF 하나에 100~200ms(실문서는 초 단위) 동안 워커가 멈춘다.
     # to_thread(stdlib)를 쓴다 — 이 모듈은 라우터도 import하므로 starlette를 들이지 않는다.
     chunks = await asyncio.to_thread(chunk_file, blob_path, description=description)
+    image_ratio = await asyncio.to_thread(pdf_image_area_ratio, blob_path)   # #137 결함 4 경고용
     if not chunks:      # 빈 파일·텍스트레이어 없는 PDF → ready 승격 대신 실패 (유령 ready 방지)
         raise ValueError('추출된 텍스트가 없습니다 (빈 파일이거나 파싱 결과가 비어 있음)')
     # 임베딩 입력에만 '파일명 > 헤딩' 컨텍스트를 얹는다 (저장되는 chunk.text는 원문 유지).
@@ -150,6 +156,14 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         doc.status = 'ready'
         doc.is_active = True
         doc.char_count = sum(len(c.text) for c in chunks)
+        # 도표가 이미지로 렌더된 문서는 그 내용이 색인되지 않는데도 ready가 된다
+        # (#137 결함 4). 근거가 비어 있다는 사실을 사용자가 알 수 있게 남긴다 —
+        # 검색·인용은 정상 동작하므로 상태는 ready 그대로 둔다.
+        if image_ratio >= IMAGE_WARN_RATIO:
+            doc.status_reason = (
+                f'이미지가 쪽 면적의 {image_ratio:.0f}%를 차지합니다. '
+                f'이미지로 그려진 표·흐름도는 텍스트를 추출할 수 없어 검색되지 않습니다.'
+            )[:500]
         doc.indexed_at = datetime.now(timezone.utc).replace(tzinfo=None)   # naive 컬럼 — UTC 유지
         for old_id in old_active_ids:
             await cache.invalidate_source(session, tenant_id, old_id)

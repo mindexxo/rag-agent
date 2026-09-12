@@ -350,6 +350,10 @@ async def _fetch_chunk_map(
 def _keep_single_table(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
     """표 청크는 최상위 1개만 남기고 나머지 표 청크 제외 (F1a '한 시트만').
 
+    **엑셀(시트=1청크) 기준의 제약이다.** is_table을 세우는 것은 rag/xlsx_chunking뿐이라
+    실제 대상도 엑셀 청크뿐이다. PDF 표는 한 문서에 여러 개가 정상이므로(실측 1쪽에
+    2~6개) 이 필터에 걸리면 안 된다 — PDF 표 청크에 is_table을 붙이지 마라 (#137).
+
     파일이 달라도 표는 하나만 남는다 — 채널톡 ALF와 같은 제약이다
     ("ALF는 한 번의 답변에서 하나의 시트만 참조합니다. 여러 엑셀 파일이나 한 파일 내
     여러 시트를 동시에 참조하는 것은 현재 지원되지 않습니다", docs.channel.io 지식 ALF v2).

@@ -63,7 +63,10 @@ class DocumentUploadResponse(BaseModel):
     filename: str
     version: int
     status: str
-    status_reason: str | None = None   # failed 사유 (예: 150행 초과) — 화면 표시용
+    # failed 사유(예: 150행 초과)뿐 아니라 **ready인 문서의 경고**도 담는다 —
+    # 이미지로 그려진 표·흐름도가 있어 그 내용이 색인되지 않은 경우다 (#137 결함 4).
+    # FE가 failed일 때만 표시하면 그 경고가 사용자에게 도달하지 않는다.
+    status_reason: str | None = None   # 화면 표시용
     is_active: bool
     folder_id: int | None = None
     is_searchable: bool = True

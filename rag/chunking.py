@@ -12,10 +12,10 @@
  채움률은 문서 조판에 달렸다. 모의 코퍼스에서 100%였으나(2026-08-15) 실문서 PDF에서는
  93%였다 — 절 제목이 본문과 같은 크기인 문서는 헤딩이 안 잡힌다 (#137).
 
- - PDF : pdfplumber로 줄별 글자 크기를 보고 헤딩 판정. page도 보존 — 유일.
-         투표 전에 인쇄 부산물을 빼고(_drop_furniture), 표는 markdown으로 조립하며
-         (_pdf_tables), 기호만으로 된 줄은 헤딩 후보에서 뺀다. 셋 다 #137 실측 결함이다.
-         page는 **청크마다 그 청크가 실제로 있는 쪽**이다 (섹션 시작 쪽이 아니다 — #137 결함 6).
+ - PDF : **docling**(레이아웃 ML + TableFormer, OCR 끔)이 기본 — #143. 인쇄 부산물·제목 분할·표 빈 셀을
+         모델이 구조적으로 처리하고, 헤딩 층만 한국 규정 번호 체계('제 N 장'/'제 N 조')로 복원한다.
+         `docling_enabled=False`면 pdfplumber 글자 크기 휴리스틱(비상 경로). page는 **청크마다 실제 쪽**.
+         채팅 첨부(extract_text)는 항상 pdfplumber — 사용자 대기 경로라 콜드 스타트를 안 태운다.
  - DOCX: python-docx로 body를 문서 순서대로 읽어 Heading 스타일 기준 섹션 분할.
  - MD  : '#' 헤딩 정규식 + 코드 펜스 가드.
  - TXT : 평문(인코딩 감지 utf-8→cp949). 헤딩 구조가 없어 heading_path는 빈다.
@@ -33,6 +33,7 @@
  """
 
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,6 +42,8 @@ from docx import Document as DocxDocument
 from docx.table import Table as DocxTable
 from docx.text.paragraph import Paragraph as DocxParagraph
 from llama_index.core.node_parser import SentenceSplitter
+
+from config import settings
 
 _HEADING_RE = re.compile(r'^(#{1,6})\s+(.+)$')
 _DOCX_HEADING_RE = re.compile(r'^Heading (\d+)$')     # python-docx는 빌트인 헤딩을 영문명으로 준다
@@ -51,36 +54,20 @@ _MD_FENCE_RE = re.compile(r'^(`{3,}|~{3,})')          # 코드 펜스 — 안쪽
 # 아래 형제끼리만)이 먼저 걸려 실측 청크 중앙값은 200자대다. 실제 토큰 상한은 SentenceSplitter.
 _PACK_CHARS = 500
 
-# ── PDF 인쇄 부산물(page furniture) 판별 ──────────────────────────────────────
-# 브라우저 "인쇄 → PDF"로 만든 인트라넷 문서는 상·하단 여백에 인쇄 시각과 원본 URL을
-# 찍는다. 이 줄이 본문 크기 투표(_pdf_sections)에 참여하면 짧은 문서에서 최빈값을
-# 빼앗아 본문 전체가 헤딩으로 승격되고, flush()의 '본문 없으면 섹션 없음' 가드와
-# 겹쳐 내용이 소멸한다 (#137 결함 1 — 실측 최소 격차 13글자로 뒤집혔다).
-# 위치와 형태를 **함께** 본다: 위치만 보면 여백에 걸친 정상 본문을 지우고,
-# 형태만 보면 본문에 인용된 URL까지 지운다.
-_FURNITURE_RE = re.compile(
-    r'https?://'                                            # 원본 URL 푸터
-    r'|^\d{1,4}\.\s*\d{1,2}\.\s*\d{1,2}\.\s*(?:오전|오후)'   # 인쇄 시각 헤더
-    r'|^\d+\s*/\s*\d+$'                                    # 쪽 표기 '3/5'
-)
-# 실측(#137, 인쇄 PDF 9건): 인쇄 헤더 top 2.0% / URL 푸터 bottom 98.2%
-#                           본문 최상단 9.0% / 본문 최하단 95.8% → 6%·96%로 가른다.
-_FURNITURE_TOP_PCT = 6.0
-_FURNITURE_BOTTOM_PCT = 96.0
-
-# 기호·구두점만으로 이뤄진 줄은 헤딩 후보에서 뺀다. 제목이 '[대분류 | 소분류] 문서명'
-# 꼴이면 한글과 대괄호가 서로 다른 폰트로 조판돼 베이스라인이 어긋나고(실측 3.0pt),
-# pdfplumber가 '[ | ]' 조각을 별도 줄로 끊는다. 그 조각이 제목과 같은 크기라 같은 레벨
-# 헤딩이 되고, del stack[level-1:]이 진짜 제목을 덮어썼다 (#137 결함 2, 인쇄 PDF 9건).
-_SYMBOLS_ONLY_RE = re.compile(r'^[\W_]*$')
-
-# 표 판별 — 실측 근거와 깨질 조건은 _pdf_tables docstring. 애매하면 평문으로 보낸다.
-_TABLE_MIN_FILL_RATIO = 0.20       # 격자에서 채워진 셀의 비율
-
-# 청크 꼬리에 번호만 남는 것을 되돌릴 때 쓴다 (#137 결함 3). 정의점은 _merge_orphan_markers.
-# 꼬리/머리 판정 공용. 번호 뒤 공백은 물론 개행 하나까지 허용한다 — 원문에서 번호와
-# 항목이 같은 줄일 때(공백)와 번호가 독립 줄일 때(개행)가 둘 다 나온다.
+# 청크 꼬리에 번호만 남는 것을 되돌릴 때 쓴다 (#137 결함 3). 정의점은 _strip_orphan_marker /
+# _restore_leading_marker. 번호 뒤 공백은 물론 개행 하나까지 허용한다 — 원문에서 번호와 항목이
+# 같은 줄일 때(공백)와 번호가 독립 줄일 때(개행)가 둘 다 나온다.
 _ORPHAN_MARKER_RE = re.compile(r'(?:^|\n)[ \t]*(\d{1,2}\.|\(\d{1,2}\))[ \t]*\n?$')
+
+# 한국 규정 문서의 장(章) 제목 — '제 3 장 복 무', '제3장 총칙'. docling은 장과 조를 같은 레벨로
+# 내놓으므로(#143 실측: 26쪽 141개 헤딩 전부 level 1) 이 패턴으로 층을 복원한다. 마크다운의 '#'처럼
+# 문서가 스스로 선언하는 층이라 폰트 크기 휴리스틱과 성격이 다르다 — 코퍼스가 아니라 도메인 관례다.
+_CHAPTER_RE = re.compile(r'^제\s*\d+\s*장\b')
+
+# docling 그림 요소의 자리표시. 텍스트 PDF 안에 렌더된 도표는 어떤 파서도 못 읽는다(#137 결함 4 —
+# docling 표 모드·OCR·VLM 셋 다 실측 실패). 지우지 않고 남겨 "여기 도표가 있었다"를 알리고,
+# #144(VLM 캡션)가 이 자리를 채운다.
+_PICTURE_PLACEHOLDER = '<!-- image -->'
 
 @dataclass
 class ChunkData:
@@ -108,26 +95,17 @@ class _Section:
     line_pages: list[int | None] | None = None
 
 
-@dataclass
-class _Line:
-    """PDF 줄 하나. 헤딩 판정에 크기가, 부산물 제거에 위치가 필요해 함께 나른다.
-
-    좌표를 버리면 하류 어느 단계도 복구할 수 없다 — 인쇄 부산물 판별(위치)과
-    표 영역 판별(bbox)이 둘 다 이 단계에만 있는 정보를 쓴다.
-    """
-    page: int
-    text: str
-    size: float                 # 줄의 최대 글자 크기 (헤딩 판정용)
-    top_pct: float              # 페이지 높이 대비 % — 부산물 판별
-    bottom_pct: float
-    is_table: bool = False      # 표에서 조립된 줄 — 크기 투표·헤딩 판정에서 제외
+# (page, text, level) — 두 PDF 경로(docling / pdfplumber)가 _build_sections에 흘리는 공통 단위.
+# level이 None이면 본문 줄, 정수면 그 레벨의 헤딩. text는 여러 줄일 수 있다(표 markdown).
+_Item = tuple[int | None, str, int | None]
 
 
 def to_markdown_table(header: list[str], body: list[list[str]]) -> str:
     """헤더 + 데이터행 → markdown 표. 헤더가 청크에 포함돼 컬럼 의미가 보존된다.
 
     PDF·XLSX 표 직렬화의 단일 정의점 (rag/xlsx_chunking이 이 이름을 import한다).
-    빈 셀은 자리를 지킨다 — 지우면 뒷 열이 앞으로 당겨져 값이 다른 열로 읽힌다.
+    빈 셀은 자리를 지킨다 — 지우면 뒷 열이 앞으로 당겨져 값이 다른 열로 읽힌다
+    (#137 결함 5: 개인부담 O가 회사지원 O로 읽히는 형태. 유실이 0이라 커버리지에 안 잡히고 답만 틀린다).
     """
     lines = ['| ' + ' | '.join(header) + ' |',
              '| ' + ' | '.join('---' for _ in header) + ' |']
@@ -136,6 +114,7 @@ def to_markdown_table(header: list[str], body: list[list[str]]) -> str:
         cells = (row + [''] * len(header))[:len(header)]
         lines.append('| ' + ' | '.join(cells) + ' |')
     return '\n'.join(lines)
+
 
 def _read_text(file_path) -> str:
     """텍스트 파일을 인코딩 감지해 읽는다 (P2 CP949).
@@ -154,165 +133,35 @@ def _read_text(file_path) -> str:
 def _pdf_pages(file_path: str | Path) -> list[tuple[int, str]]:
     """PDF를 페이지별 텍스트로 (page 번호 보존 — 인용용). 텍스트 레이어 없으면 빈 문자열.
     비ML 추출(pdfplumber) — 표는 행/열이 공백 구분 텍스트로 나오며 구조 서식은 없다.
+    채팅 첨부(extract_text) 전용 — 사용자 대기 경로라 docling 콜드 스타트(4.4초)를 태우지 않는다.
     """
     with pdfplumber.open(str(file_path)) as pdf:
         return [(i, page.extract_text() or '') for i, page in enumerate(pdf.pages, start=1)]
 
 
-def _pdf_tables(page) -> list[tuple[float, float, str]]:
-    """페이지의 표를 (top, bottom, markdown) 목록으로. 표가 아닌 격자는 걸러낸다.
+# ── 섹션 조립 — 두 PDF 경로의 공통 후단 ──────────────────────────────────────────
 
-    extract_tables()는 빈 셀을 ''로, 병합 셀을 None으로 **정확히** 준다 — 평탄화
-    텍스트(extract_text_lines)가 버리는 열 위치 정보가 여기 살아 있다. 빈 셀이
-    사라지면 뒷 열이 앞으로 당겨져 'O' 표시가 다른 열의 값으로 읽힌다
-    (#137 결함 5 — 개인부담 O가 회사지원 O로 읽히는 형태. 유실이 0이라
-    커버리지 지표에는 안 잡히고 답만 틀린다). docx·xlsx 파서가 같은 이유로 자리를
-    지키고 있었고 PDF만 이 규약에서 빠져 있었다.
+def _build_sections(items: list[_Item]) -> list[_Section]:
+    """(page, text, level) 흐름을 헤딩 스택으로 _Section 목록에 접는다.
 
-    **확실한 표만 통과시킨다.** find_tables()의 기본 전략은 그려진 선을 격자로 보는데,
-    조항형 규정의 본문 테두리·들여쓰기 선이 격자로 오인돼 **산문이 표로 둔갑한다**
-    (실측: 노사협의회 규정의 조항 19줄이 `| 문장 |  |  |` 꼴로 감싸이고 그 과정에서
-    조항 번호 ③이 셀 경계로 잘려 나갔다). 표로 못 알아보는 손실보다 산문을 표로
-    왜곡하는 손실이 크므로, 애매하면 평문 경로로 보낸다.
-
-    ── 판별 기준 두 개 (실문서 21건의 격자 54개를 원본 육안 판정과 대조해 잡았다.
-       정답: 진짜 표 30개 / 가짜 격자 24개. 두 조건으로 54/54 분리된다.)
-
-    1. **값이 2개 이상 채워진 행이 하나 이상.** 임계가 아니라 정의다 — 표의 행은
-       여러 필드를 가진 레코드이고, 그런 행이 하나도 없으면 테두리 쳐진 산문이다.
-       이 조건 하나가 가짜 24개 중 20개를 걸러낸다.
-    2. **채워진 셀 비율 >= 20%.** 남은 가짜 4개는 pdfplumber가 14~28열을 지어낸
-       경우로, 수백 개 셀 중 수십 개만 채워진다(밀도 8~11%). 진짜 표의 최저 밀도는
-       25%라 간극이 2.3배다. "셀 다섯 중 하나는 채워야 표"라는 뜻.
-
-    ── 깨질 조건: **빈 셀이 아주 많은 진짜 표**(대각선 체크표 등)는 거부된다.
-       그때는 밀도를 낮추거나 열 수 대비 지표로 바꿀 것.
-
-    ── 기각한 대안 (같은 실측에서):
-       - `lines_strict` 전략(rect 변을 경계로 안 쓰는 것): 오검출 원인을 정확히
-         겨냥하지만 이 문서들은 진짜 표도 rect로 그려서 **표 0개 검출**이 된다.
-       - 표 영역 원문 대비 셀 텍스트 보존율: 판별력이 없다 — 가짜도 99~100%다.
-       - docling(TableFormer) 재도입: 품질·라이선스(MIT)·CPU 동작은 맞지만
-         **상주 메모리 약 6.2GB**라 워커 장비에 과하다(2026-09-10 판단).
-         이 기준은 그래서 임시 해법이고, 파서 교체는 별도 이슈로 남긴다.
+    docx·md 파서와 같은 스택 규약(`del stack[level-1:]` + append)이다. 그 위에 #137에서 확인된
+    두 가지를 더한다:
+      - **줄별 쪽 번호(line_pages)** — 섹션이 여러 쪽에 걸치면 뒤쪽 청크가 앞 쪽을 물려받았다
+        (결함 6). 표 markdown처럼 text가 여러 줄이면 그 줄 수만큼 같은 쪽을 채워 1:1을 지킨다.
+      - **본문 없는 헤딩 보존(orphans)** — 같은 레벨 헤딩이 연달아 오면 `del stack[level-1:]`이
+        직전 것을 지워 흔적 없이 소멸했다(결함 1·2의 소멸 경로). 본문을 한 번도 못 만든 헤딩은
+        붙잡아 다음 섹션 본문에 되살린다. (부모→자식처럼 레벨이 깊어지는 경우는 스택 뒤에 붙으므로
+        원래 안전하다 — _docx_sections docstring의 "정보 손실은 없다"는 그 경우에만 맞다.)
     """
-    out: list[tuple[float, float, str]] = []
-    for table in page.find_tables():
-        rows = [[('' if cell is None else str(cell)).replace('\n', ' ').strip()
-                 for cell in row]
-                for row in table.extract()]
-        rows = [row for row in rows if any(row)]     # 완전 빈 행만 스킵 (docx·xlsx와 동일)
-        if len(rows) < 2 or len(rows[0]) < 2:
-            continue
-        if not any(sum(1 for cell in row if cell) >= 2 for row in rows):
-            continue                                 # 레코드가 없다 → 산문이다
-        cells = len(rows) * len(rows[0])
-        filled = sum(1 for row in rows for cell in row if cell)
-        if filled / cells < _TABLE_MIN_FILL_RATIO:
-            continue                                 # 격자를 거의 안 채웠다 → 오검출이다
-        out.append((table.bbox[1], table.bbox[3], to_markdown_table(rows[0], rows[1:])))
-    return out
-
-
-def _pdf_lines(file_path: str | Path) -> list[_Line]:
-    """PDF를 _Line 목록으로 — 헤딩 판정(크기)·부산물 제거(위치)·표 보존에 필요한 것만.
-
-    extract_text()는 크기·좌표를 버리므로 extract_text_lines()로 줄별 char를 본다.
-    표 영역은 markdown으로 따로 조립하고(_pdf_tables), 그 영역에 걸친 평문 줄은
-    빼서 같은 내용이 두 번 들어가지 않게 한다.
-    """
-    out: list[_Line] = []
-    with pdfplumber.open(str(file_path)) as pdf:
-        for page_no, page in enumerate(pdf.pages, start=1):
-            height = page.height or 1
-            tables = _pdf_tables(page)
-            for line in page.extract_text_lines():
-                text = (line.get('text') or '').strip()
-                if not text:
-                    continue
-                middle = (line['top'] + line['bottom']) / 2
-                if any(top <= middle <= bottom for top, bottom, _ in tables):
-                    continue                     # 표 안 줄은 markdown 쪽이 담당한다
-                sizes = [c['size'] for c in line.get('chars', []) if c.get('size')]
-                out.append(_Line(page_no, text, round(max(sizes), 1) if sizes else 0.0,
-                                 line['top'] / height * 100,
-                                 line['bottom'] / height * 100))
-            for top, bottom, markdown in tables:
-                out.append(_Line(page_no, markdown, 0.0, top / height * 100,
-                                 bottom / height * 100, is_table=True))
-    out.sort(key=lambda line: (line.page, line.top_pct))
-    return out
-
-
-def _drop_furniture(lines: list[_Line]) -> list[_Line]:
-    """상·하단 여백의 인쇄 부산물(인쇄 시각·원본 URL·쪽 표기)을 뺀다 (#137 결함 1).
-
-    여러 쪽에서 같은 자리에 반복되는 줄도 부산물로 본다 — 1쪽짜리 문서는 반복이
-    성립하지 않으므로 형태(_FURNITURE_RE)가 그 경우를 받친다.
-    """
-    pages_of: dict[str, set[int]] = {}
-    for line in lines:
-        pages_of.setdefault(line.text, set()).add(line.page)
-    repeated = {text for text, pages in pages_of.items() if len(pages) >= 2}
-
-    def is_furniture(line: _Line) -> bool:
-        if line.is_table:
-            return False
-        in_margin = (line.top_pct < _FURNITURE_TOP_PCT
-                     or line.bottom_pct > _FURNITURE_BOTTOM_PCT)
-        return in_margin and (bool(_FURNITURE_RE.search(line.text))
-                              or line.text in repeated)
-
-    # 기호·구두점만 남은 줄은 헤딩 후보에서 빼는 것으로 끝내면 본문으로 떨어져
-    # 임베딩·BM25·프롬프트에 잡음으로 들어간다. 의미가 없으므로 여기서 버린다.
-    return [line for line in lines
-            if not is_furniture(line)
-            and (line.is_table or not _SYMBOLS_ONLY_RE.match(line.text))]
-
-
-def _pdf_sections(file_path: str | Path) -> list[_Section]:
-    """PDF를 (heading_path, 시작 page, 본문, 줄별 page) 섹션 목록으로 — 글자 크기로 헤딩 판정.
-
-    DOCX와 달리 PDF엔 구조 태그가 없어 조판에 기대는 휴리스틱이다:
-      본문 크기 = 가장 많이 쓰인 글자 크기, 그보다 **큰** 줄을 헤딩으로 본다.
-      크기 종류를 큰 순으로 정렬해 1,2,3… 레벨로 매긴다.
-    크기 차이가 없는 문서(전부 같은 크기, 스캔본 등)는 헤딩 0개 → heading_path=[]로
-    폴백한다 (조판이 달라도 손해는 없게).
-
-    투표 전에 인쇄 부산물을 빼고(_drop_furniture), 표는 본문으로 고정하며(is_table),
-    기호만으로 된 줄은 헤딩 후보에서 뺀다 — 셋 다 #137에서 실문서로 확인된 결함이다.
-    """
-    lines = _drop_furniture(_pdf_lines(file_path))
-    if not lines:
-        return []
-
-    # 본문 크기 = 글자 수 기준 최빈 크기 (줄 수가 아니라 분량 기준이라 제목에 안 휘둘린다).
-    # 표 줄은 세지 않는다 — 표는 정의상 본문이고, 표 안의 큰 글자가 투표에 끼면
-    # 산문 본문 크기를 밀어낸다.
-    weight: dict[float, int] = {}
-    for line in lines:
-        if not line.is_table:
-            weight[line.size] = weight.get(line.size, 0) + len(line.text)
-    if not weight:                       # 표만 있는 문서 — 헤딩 없이 본문으로 둔다
-        body = '\n'.join(line.text for line in lines)
-        pages = [line.page for line in lines for _ in line.text.split('\n')]
-        return [_Section([], lines[0].page, body, pages)]
-    body_size = max(weight, key=lambda size: weight[size])
-
-    # 본문보다 큰 크기들 → 큰 순으로 레벨 부여
-    level_of = {size: level for level, size in
-                enumerate(sorted((s for s in weight if s > body_size), reverse=True), start=1)}
-
     sections: list[_Section] = []
     stack: list[str] = []
     buf: list[str] = []
     buf_pages: list[int | None] = []
-    orphans: list[str] = []      # 본문 없이 교체된 헤딩 — 다음 섹션 본문에 되살린다
-    start_page = lines[0].page
+    orphans: list[str] = []
+    start_page: int | None = items[0][0] if items else None
+    last_page: int | None = start_page
 
-    def add(text: str, page: int) -> None:
-        """본문 줄 추가. 표 markdown은 여러 줄이라 page도 그 줄 수만큼 채운다
-        (line_pages와 body.split('\n')의 1:1 대응이 깨지면 결함 6 수정이 무의미해진다)."""
+    def add(text: str, page: int | None) -> None:
         buf.append(text)
         buf_pages.extend([page] * (text.count('\n') + 1))
 
@@ -325,39 +174,217 @@ def _pdf_sections(file_path: str | Path) -> list[_Section]:
         buf_pages.clear()
         return True
 
-    def is_heading(line: _Line) -> bool:
-        return (not line.is_table
-                and line.size in level_of
-                and not _SYMBOLS_ONLY_RE.match(line.text))
-
-    for line in lines:
-        if is_heading(line):
-            level = level_of[line.size]
+    for page, text, level in items:
+        if page is not None:
+            last_page = page
+        if level is not None:
             produced = flush()
             removed = stack[level - 1:]
-            # 같은 레벨 헤딩을 덮어쓰기 전에, 본문을 한 번도 못 만든 것은 붙잡아 둔다.
-            # del stack[level-1:]이 직전 동일 레벨 헤딩의 자리를 지우기 때문에
-            # '본문 없는 헤딩 + 같은 레벨 헤딩' 연속열은 흔적 없이 소멸했다 (#137).
-            # (부모→자식처럼 레벨이 깊어지는 경우는 스택 뒤에 붙으므로 원래 안전하다 —
-            #  _docx_sections docstring의 "정보 손실은 없다"는 그 경우에만 맞다.)
             if not produced and removed:
                 orphans.extend(removed)
             del stack[level - 1:]
-            stack.append(line.text)
+            stack.append(text)
         else:
             # 섹션의 page는 '첫 본문 줄'의 페이지다 — 헤딩이 페이지 끝에 걸리면
             # 본문은 다음 쪽에서 시작하고, 인용은 본문이 있는 쪽을 가리켜야 맞다.
             if not buf:
-                start_page = line.page
+                start_page = page
                 for orphan in orphans:
-                    add(orphan, line.page)
+                    add(orphan, page)
                 orphans.clear()
-            add(line.text, line.page)
+            add(text, page)
     if orphans and not buf:            # 문서 끝에 남은 것도 버리지 않는다
+        start_page = last_page
         for orphan in orphans:
-            add(orphan, lines[-1].page)
+            add(orphan, last_page)
     flush()
     return sections
+
+
+# ── PDF 경로 ① docling — 기본 ────────────────────────────────────────────────────
+
+_DOCLING_LOCK = threading.Lock()
+_docling_converter = None
+_docling_semaphore: threading.Semaphore | None = None
+
+
+def _docling_runtime():
+    """프로세스당 1회: 변환기(모델 로딩)와 변환 동시성 세마포어.
+
+    모델은 한 번만 올린다 — 첫 호출 4.7초·+165MB, 이후 쪽당 0.3초(#143 실측). 상주 RSS는
+    0.35~0.85GB 밴드에서 진동하고 누수가 없다(21건 연속). 세마포어는 arq `max_jobs`(10)와 별개로
+    **변환만** 직렬화한다 — chunk_file은 to_thread로 돌아 잡이 겹치면 변환도 겹쳐 메모리가
+    배수로 난다. 임베딩 I/O는 max_jobs대로 계속 겹치게 둔다.
+    """
+    global _docling_converter, _docling_semaphore
+    with _DOCLING_LOCK:
+        if _docling_converter is None:
+            from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
+            from docling.datamodel.base_models import InputFormat
+            from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
+            from docling.datamodel.settings import settings as docling_settings
+            from docling.document_converter import DocumentConverter, PdfFormatOption
+
+            docling_settings.perf.page_batch_size = settings.docling_page_batch_size
+            opts = PdfPipelineOptions(artifacts_path=settings.docling_artifacts_path)
+            opts.do_ocr = settings.docling_do_ocr
+            opts.do_table_structure = True
+            opts.table_structure_options.mode = (TableFormerMode.FAST if settings.docling_table_mode == 'fast'
+                                                 else TableFormerMode.ACCURATE)
+            opts.table_structure_options.do_cell_matching = settings.docling_do_cell_matching
+            opts.document_timeout = settings.docling_document_timeout_seconds
+            opts.accelerator_options = AcceleratorOptions(
+                num_threads=settings.docling_num_threads,
+                device=AcceleratorDevice(settings.docling_device))
+            _docling_converter = DocumentConverter(
+                format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)})
+            _docling_semaphore = threading.Semaphore(settings.docling_max_concurrency)
+    return _docling_converter, _docling_semaphore
+
+
+def _docling_norm(text: str) -> str:
+    """docling 텍스트의 NBSP(\\xa0)를 보통 공백으로. 표 셀·헤딩에 섞여 들어와 검색 토큰을 깨뜨린다."""
+    return re.sub(r'[  ]+', ' ', text).strip()
+
+
+def _docling_table_markdown(item, doc) -> str | None:
+    """docling 표 → markdown. 헤더는 dataframe 컬럼, 빈 셀은 ''로 자리를 지킨다(xlsx와 같은 규약)."""
+    df = item.export_to_dataframe(doc)
+    if df.shape[1] == 0:
+        return None
+    header = [_docling_norm(str(c)) for c in df.columns]
+    rows = [[_docling_norm('' if v is None else str(v)) for v in row] for row in df.itertuples(index=False)]
+    return to_markdown_table(header, rows)
+
+
+def _docling_elements(doc):
+    """docling 문서 → (label, text, page, table_markdown) 튜플 흐름. 읽기 순서.
+
+    _sections_from_docling_elements가 소비한다. 둘로 나눈 이유: 매핑 규칙(헤딩 층·표·그림)을
+    docling 없이 튜플만으로 단위 테스트하기 위해서다 — 모델 다운로드가 필요한 테스트와 분리.
+    """
+    for element, _depth in doc.iterate_items():
+        label = element.label.value if hasattr(element.label, 'value') else str(element.label)
+        page = element.prov[0].page_no if getattr(element, 'prov', None) else None
+        if label == 'table':
+            yield label, '', page, _docling_table_markdown(element, doc)
+        else:
+            text = getattr(element, 'text', '') or ''
+            # 목록 항목의 번호·글머리('2.1', '-', '(1)')는 text에서 떼어 marker에 둔다. 빠뜨리면
+            # '2.1 얼리버드 할인율 상향'이 '얼리버드 할인율 상향'으로 색인된다(모의 코퍼스 33건 대조에서
+            # 발견). docling의 export_to_markdown과 같은 방식으로 다시 붙인다.
+            marker = getattr(element, 'marker', '') or ''
+            if label == 'list_item' and marker:
+                text = f'{marker} {text}'
+            yield label, text, page, None
+
+
+def _sections_from_docling_elements(elements) -> list[_Section]:
+    """(label, text, page, table_markdown) 흐름 → _Section. 헤딩 층 복원 규칙의 정의점.
+
+    docling은 장·조를 구분하지 않으므로(_CHAPTER_RE 참조) 여기서 층을 만든다:
+      첫 헤딩 = 문서 제목(L1) / '제 N 장' = L2 / 그 외 헤딩 = L3 (장이 아직 없으면 L2).
+    그러면 _pack_sections의 joinable(공통 조상 깊이 ≥2)이 현행과 같이 동작해 같은 장 아래
+    조항끼리 묶인다. 이 규칙 없이 두면 26쪽 규정이 73→170청크로 갈렸다(#143 실측).
+    표는 markdown 그대로, 그림은 _PICTURE_PLACEHOLDER, 나머지 텍스트 요소는 본문 줄.
+    """
+    items: list[_Item] = []
+    seen_title = False
+    seen_chapter = False
+    for label, text, page, table_markdown in elements:
+        if label == 'section_header':
+            text = _docling_norm(text)
+            if not text:
+                continue
+            if not seen_title:
+                level, seen_title = 1, True
+            elif _CHAPTER_RE.match(text):
+                level, seen_chapter = 2, True
+            else:
+                level = 3 if seen_chapter else 2
+            items.append((page, text, level))
+        elif label == 'table':
+            if table_markdown:
+                items.append((page, table_markdown, None))
+        elif label == 'picture':
+            items.append((page, _PICTURE_PLACEHOLDER, None))
+        else:
+            text = _docling_norm(text)
+            if text:
+                items.append((page, text, None))
+    return _build_sections(items)
+
+
+def _docling_sections(file_path: str | Path) -> list[_Section]:
+    """PDF → docling(레이아웃 ML + TableFormer) → _Section. PDF 인제스션의 기본 경로 (#143).
+
+    pdfplumber 휴리스틱(#141)이 손으로 막던 것을 레이아웃 모델이 구조적으로 대신한다:
+      - 인쇄 헤더·URL 푸터는 page_header/page_footer로 분류돼 iterate_items()에 나오지 않는다 (결함 1)
+      - 제목이 폰트 혼용으로 쪼개지지 않는다 (결함 2)
+      - 표는 셀 구조로 나와 빈 셀·병합 셀이 보존된다 (결함 5)
+    임계 상수가 0개다. 헤딩 층 복원은 _sections_from_docling_elements가 한다.
+
+    실패(예외·타임아웃)는 그대로 올린다 — pdfplumber 폴백 없음. 저품질 색인을 조용히 만들지 않는다
+    (strict-grounded). 호출부(index_pending_document)가 failed로 기록한다.
+    이미지 도표는 못 읽는다 — _PICTURE_PLACEHOLDER 자리표시를 남긴다 (#144).
+    """
+    converter, semaphore = _docling_runtime()
+    with semaphore:
+        result = converter.convert(str(file_path), max_num_pages=settings.docling_max_num_pages,
+                                   raises_on_error=True)
+    return _sections_from_docling_elements(_docling_elements(result.document))
+
+
+# ── PDF 경로 ② pdfplumber — 비상 스위치 (docling_enabled=False) ─────────────────
+
+@dataclass
+class _Line:
+    """pdfplumber 줄 하나 — 헤딩 판정에 크기가 필요해 함께 나른다."""
+    page: int
+    text: str
+    size: float                 # 줄의 최대 글자 크기
+
+
+def _pdf_lines(file_path: str | Path) -> list[_Line]:
+    """PDF를 (page, 줄, 최대 글자크기)로. extract_text()는 크기를 버리므로 extract_text_lines()."""
+    out: list[_Line] = []
+    with pdfplumber.open(str(file_path)) as pdf:
+        for page_no, page in enumerate(pdf.pages, start=1):
+            for line in page.extract_text_lines():
+                text = (line.get('text') or '').strip()
+                if not text:
+                    continue
+                sizes = [c['size'] for c in line.get('chars', []) if c.get('size')]
+                out.append(_Line(page_no, text, round(max(sizes), 1) if sizes else 0.0))
+    return out
+
+
+def _pdfplumber_sections(file_path: str | Path) -> list[_Section]:
+    """PDF → pdfplumber 글자 크기 휴리스틱 → _Section. **비상 경로** — `docling_enabled=False`일 때만.
+
+    본문 크기 = 글자 수 기준 최빈 크기, 그보다 큰 줄이 헤딩. 크기 차이가 없으면 헤딩 0개로 폴백.
+    #137에서 확정된 결함 1(인쇄 부산물이 투표를 전복)·2(폰트 혼용으로 제목 분할)·5(표 빈 셀 소실)를
+    **이 경로는 막지 않는다** — #141의 손 수정은 docling 도입(#143)으로 제거했다. 표는 공백 구분
+    평문으로 들어가고 인쇄 헤더·URL 푸터가 본문에 섞인다. docling을 못 쓰는 상황의 임시 수단이다.
+    결함 3·6·③(번호 복원·줄별 쪽·고아 헤딩)은 _build_sections·chunk_file 단계라 여기서도 유지된다.
+    """
+    lines = _pdf_lines(file_path)
+    if not lines:
+        return []
+    weight: dict[float, int] = {}
+    for line in lines:
+        weight[line.size] = weight.get(line.size, 0) + len(line.text)
+    body_size = max(weight, key=lambda size: weight[size])
+    level_of = {size: level for level, size in
+                enumerate(sorted((s for s in weight if s > body_size), reverse=True), start=1)}
+    return _build_sections([(line.page, line.text, level_of.get(line.size)) for line in lines])
+
+
+def _pdf_sections(file_path: str | Path) -> list[_Section]:
+    """PDF 파서 디스패처 — 기본 docling, `docling_enabled=False`면 pdfplumber 비상 경로 (#143)."""
+    if settings.docling_enabled:
+        return _docling_sections(file_path)
+    return _pdfplumber_sections(file_path)
 
 
 def _docx_items(file_path: str | Path):

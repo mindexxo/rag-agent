@@ -1,4 +1,7 @@
-"""PDF 청킹 결함 6건 회귀 테스트 (#137).
+"""PDF 청킹 결함 회귀 테스트 (#137) — 결함 3·4·6, 파서 무관 후단.
+
+결함 1·2·5(인쇄 부산물·기호 제목·표 빈 셀)는 #143에서 pdfplumber 휴리스틱을 걷어내고 docling이
+구조적으로 처리하므로 tests/test_chunking_docling.py로 옮겼다.
 
 실문서 21건을 색인하고 원본과 쪽 단위로 대조해 확정한 결함들이다. 여섯 개 전부
 **기존 픽스처가 조건을 만들지 못해** 통과하고 있었다 — 합성 PDF가 단일 폰트·단일
@@ -14,69 +17,18 @@ import pytest
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
-from rag.chunking import (_pdf_tables, _restore_leading_marker,
-                          _strip_orphan_marker, chunk_file, pdf_image_area_ratio)
+from config import settings
+from rag.chunking import (_restore_leading_marker, _strip_orphan_marker, chunk_file,
+                          pdf_image_area_ratio)
+
+
+@pytest.fixture(autouse=True)
+def _pdfplumber_path(monkeypatch):
+    """이 파일은 청킹 **후단**(번호 복원·쪽 귀속·이미지 감지)을 pdfplumber 비상 경로로 검사한다.
+    docling 경로와 결함 1·2·5는 tests/test_chunking_docling.py — 모델이 필요해 설치 시에만 돈다."""
+    monkeypatch.setattr(settings, 'docling_enabled', False)
 
 W, H = A4
-
-
-def _print_furniture(c):
-    """브라우저 '인쇄 → PDF'가 상·하단 여백에 찍는 것 — 실측 위치·형태를 그대로."""
-    c.setFont('Helvetica', 8)
-    c.drawString(20, H - 20, '26. 9. 8. 오후 10:25 [총무 | 가이드] 문서 제목')
-    c.drawString(20, 18, 'https://echo.example.com/egate50/kr/eip/home/home.nsf/win_print?readform 1/1')
-
-
-class TestFurnitureVote:
-    """결함 1 — 인쇄 부산물이 최빈 글자 크기 투표를 빼앗으면 본문이 통째로 소멸한다."""
-
-    def _짧은_인쇄본(self, tmp_path):
-        # 부산물(8pt) 글자 수가 본문(9.7pt)을 이기도록 — 실측 최악 사례는 190 대 177이었다
-        p = tmp_path / 'printed.pdf'
-        c = canvas.Canvas(str(p), pagesize=A4)
-        _print_furniture(c)
-        c.setFont('Helvetica-Bold', 13)
-        c.drawString(50, H - 80, 'Software License Guide')
-        c.setFont('Helvetica', 10)
-        c.drawString(50, H - 120, 'Apply through the ECHO approval form.')
-        c.drawString(50, H - 140, 'Unused licenses must be returned.')
-        c.save()
-        return p
-
-    def test_본문이_헤딩으로_승격되지_않는다(self, tmp_path):
-        chunks = chunk_file(self._짧은_인쇄본(tmp_path))
-        body = '\n'.join(ch.text for ch in chunks)
-        assert 'ECHO approval form' in body
-        assert 'Unused licenses' in body
-
-    def test_인쇄_부산물은_본문에_남지_않는다(self, tmp_path):
-        chunks = chunk_file(self._짧은_인쇄본(tmp_path))
-        joined = '\n'.join(ch.text for ch in chunks) + '\n'.join(
-            ' '.join(ch.heading_path) for ch in chunks)
-        assert 'https://' not in joined          # URL 푸터
-        assert '오후 10:25' not in joined         # 인쇄 시각 헤더
-
-
-class TestSymbolHeading:
-    """결함 2 — 기호 조각이 같은 레벨 헤딩이 되어 진짜 제목을 덮어썼다."""
-
-    def test_기호만_있는_줄은_제목을_덮지_않는다(self, tmp_path):
-        # 실문서에선 한글과 대괄호가 다른 폰트라 베이스라인이 3pt 어긋나 줄이 갈렸다.
-        # 여기선 그 결과(같은 크기의 기호 전용 줄)를 직접 만든다.
-        p = tmp_path / 'symbol.pdf'
-        c = canvas.Canvas(str(p), pagesize=A4)
-        c.setFont('Helvetica-Bold', 13)
-        c.drawString(50, H - 80, 'Real Document Title')
-        c.drawString(50, H - 100, '[ | ]')
-        c.setFont('Helvetica', 10)
-        for i, y in enumerate(range(140, 260, 20)):
-            c.drawString(50, H - y, f'Body sentence number {i} with enough text to weigh.')
-        c.save()
-        chunks = chunk_file(p)
-        heads = [h for ch in chunks for h in ch.heading_path]
-        assert 'Real Document Title' in heads
-        assert '[ | ]' not in heads
-        assert '[ | ]' not in '\n'.join(ch.text for ch in chunks)   # 본문으로도 새지 않는다
 
 
 class TestOrphanMarker:
@@ -114,41 +66,6 @@ class TestOrphanMarker:
         body = '문장이 끝났다.\n다음 문장'
         offset = body.index('다음')
         assert _restore_leading_marker(body, offset, '다음 문장') == '다음 문장'
-
-
-class TestTableStructure:
-    """결함 5 — 빈 셀이 사라져 표시의 열 위치가 소실됐다(유실 0인데 의미 반전)."""
-
-    def _격자표(self, tmp_path, rows):
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
-        from reportlab.lib import colors
-        p = tmp_path / 'grid.pdf'
-        table = Table(rows)
-        table.setStyle(TableStyle([('GRID', (0, 0), (-1, -1), 0.5, colors.black)]))
-        SimpleDocTemplate(str(p), pagesize=A4).build([table])
-        return p
-
-    def test_빈_셀이_자리를_지킨다(self, tmp_path):
-        p = self._격자표(tmp_path, [
-            ['Part', 'Free', 'Company', 'Personal'],
-            ['Board', '2y', 'O', ''],
-            ['Water', 'none', '', 'O'],
-        ])
-        body = '\n'.join(ch.text for ch in chunk_file(p))
-        assert '| Board | 2y | O |  |' in body
-        assert '| Water | none |  | O |' in body     # 빈 셀을 지우면 두 줄이 같아진다
-
-    def test_산문은_표로_바뀌지_않는다(self, tmp_path):
-        # 조항형 규정의 본문 테두리가 격자로 오인돼 산문이 표로 둔갑했다
-        # (실측: 노사협의회 규정 19줄이 `| 문장 |  |  |` 꼴이 되고 조항 번호가 잘렸다)
-        p = self._격자표(tmp_path, [
-            ['제 5조 (구성) 협의회는 노사를 대표하는 위원 각 4명으로 구성한다.', '', ''],
-            ['① 사용자를 대표하는 위원은 대표이사와 대표이사가 위촉하는 자로 한다.', '', ''],
-            ['② 근로자를 대표하는 위원은 근로자가 선출한다.', '', ''],
-        ])
-        import pdfplumber
-        with pdfplumber.open(p) as pdf:
-            assert _pdf_tables(pdf.pages[0]) == []      # 표로 인정하지 않는다
 
 
 class TestChunkPage:

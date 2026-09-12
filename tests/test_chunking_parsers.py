@@ -8,6 +8,14 @@ from pathlib import Path
 import pytest
 
 from rag.chunking import _docx_text, _md_sections, _pdf_pages, chunk_file
+from config import settings
+
+
+@pytest.fixture(autouse=True)
+def _pdfplumber_path(monkeypatch):
+    """PDF 케이스는 pdfplumber **비상 경로**(docling_enabled=False)를 검사한다 — 이 파일은 형식 분기와
+    파서 계약이 대상이고 모델 의존이 없어야 한다. docling 경로는 tests/test_chunking_docling.py."""
+    monkeypatch.setattr(settings, 'docling_enabled', False)
 
 CORPUS = Path(__file__).resolve().parent.parent / 'sample_docs' / 'corpus_v2'
 

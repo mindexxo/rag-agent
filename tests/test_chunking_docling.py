@@ -9,8 +9,8 @@
 import pytest
 
 from config import settings
-from rag.chunking import (_PICTURE_PLACEHOLDER, _docling_norm, _sections_from_docling_elements,
-                          chunk_file)
+from rag.chunking import (_PICTURE_PLACEHOLDER, _docling_elements, _docling_norm,
+                          _sections_from_docling_elements, chunk_file)
 
 
 def _h(text, page=1):
@@ -78,6 +78,21 @@ class TestElementMapping:
     def test_NBSP_정규화(self):
         assert _docling_norm('■ 신청\xa0절차') == '■ 신청 절차'
         assert _docling_norm('\xa0\xa0개인부담\xa0') == '개인부담'
+
+    def test_목록_항목은_번호와_글머리를_text에_되붙인다(self):
+        # docling ListItem은 '2.1'·'-' 같은 marker를 text에서 뗀다. 안 붙이면 소항목 번호가 색인에서 사라진다.
+        from types import SimpleNamespace as NS
+        def el(label, text, marker=None):
+            return NS(label=NS(value=label), text=text, marker=marker, prov=[NS(page_no=1)])
+        doc = NS(iterate_items=lambda: [
+            (el('section_header', '2. 주요 개정 내용'), 0),
+            (el('list_item', '얼리버드 할인율 상향', '2.1'), 1),
+            (el('list_item', '정가의 15%로 상향한다.', '-'), 2),
+            (el('list_item', '마커 없는 이어지는 줄', ''), 2),
+            (el('text', '본문', None), 0),
+        ])
+        assert [t for _, t, _, _ in _docling_elements(doc)] == [
+            '2. 주요 개정 내용', '2.1 얼리버드 할인율 상향', '- 정가의 15%로 상향한다.', '마커 없는 이어지는 줄', '본문']
 
     def test_빈_헤딩과_빈_텍스트는_건너뛴다(self):
         secs = _sections_from_docling_elements([_h('제목'), _h('\xa0'), _t(''), _t('본문')])

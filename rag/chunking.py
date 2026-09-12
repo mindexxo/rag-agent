@@ -269,7 +269,14 @@ def _docling_elements(doc):
         if label == 'table':
             yield label, '', page, _docling_table_markdown(element, doc)
         else:
-            yield label, getattr(element, 'text', '') or '', page, None
+            text = getattr(element, 'text', '') or ''
+            # 목록 항목의 번호·글머리('2.1', '-', '(1)')는 text에서 떼어 marker에 둔다. 빠뜨리면
+            # '2.1 얼리버드 할인율 상향'이 '얼리버드 할인율 상향'으로 색인된다(모의 코퍼스 33건 대조에서
+            # 발견). docling의 export_to_markdown과 같은 방식으로 다시 붙인다.
+            marker = getattr(element, 'marker', '') or ''
+            if label == 'list_item' and marker:
+                text = f'{marker} {text}'
+            yield label, text, page, None
 
 
 def _sections_from_docling_elements(elements) -> list[_Section]:

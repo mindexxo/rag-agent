@@ -26,7 +26,7 @@ from collections import defaultdict
 from sqlalchemy import delete, select, update
 
 from database import AsyncSessionLocal
-from rag.models import Chunk, Document, Folder
+from rag.models import Document, Folder
 from text_norm import nfc
 
 V2_TENANTS = ["adererror", "aromanica", "goodpeople", "harim", "homeplus", "summers"]
@@ -104,16 +104,23 @@ async def main() -> None:
 
         plan: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
         for t in tenants:
-            rows = (await session.execute(
-                select(Document, Chunk.heading_path, Chunk.text)
-                .outerjoin(Chunk, (Chunk.document_id == Document.id) & (Chunk.chunk_index == 0))
+            docs = (await session.execute(
+                select(Document)
                 .where(Document.tenant_id == t)
                 .where(Document.is_active.is_(True))
                 .where(Document.status == "ready")
                 .order_by(Document.filename)
-            )).all()
-            if not rows:
+            )).scalars().all()
+            if not docs:
                 continue
+            # 첫 청크(chunk_index 0)의 헤딩·본문 — 청크는 색인에만 있다(#139). 없으면 None.
+            from rag import opensearch
+            first = await opensearch.fetch_chunk_map(
+                [opensearch.chunk_os_id(document_id=d.id, chunk_index=0) for d in docs])
+            rows = []
+            for d in docs:
+                c = first.get(opensearch.chunk_os_id(document_id=d.id, chunk_index=0))
+                rows.append((d, c.heading_path if c else None, c.text if c else None))
 
             folder_ids = {}
             for key, (name, desc) in FOLDERS.items():

@@ -4,7 +4,7 @@ from arq import cron
 from arq.connections import RedisSettings
 from config import settings
 from database import AsyncSessionLocal
-from rag import cache, outbox
+from rag import cache, opensearch, outbox
 # 도메인 스윕과 아래 cron 래퍼가 같은 이름이라 별칭 — cron_jobs엔 래퍼가 등록돼야 한다
 from rag.turn_state import sweep_stale_generating as _sweep_generating
 
@@ -13,6 +13,16 @@ logger = logging.getLogger(__name__)
 
 async def ping(ctx):
     return "pong"
+
+
+async def startup(ctx):
+    """검색 인덱스 보장(#139) — 워커가 웹보다 먼저 뜨는 배포에서 첫 drain이 없는 인덱스에
+    색인하면 동적 매핑(knn_vector 아님)으로 굳는다. 엔진에 못 붙으면 기동 실패가 맞다."""
+    await opensearch.ensure_index()
+
+
+async def shutdown(ctx):
+    await opensearch.close_client()
 
 async def sweep_stale_cache(ctx):
     """미히트 캐시 청소(#16) — cache_retention_days(90일) 지난 row 삭제. 일 1회면 충분."""
@@ -51,6 +61,8 @@ async def drain_search_index_outbox(ctx):
 
 class WorkerSettings:
     functions = [ping]                  # 인제스션은 cron drain이 outbox에서 꺼내 처리한다 (#139)
+    on_startup = startup
+    on_shutdown = shutdown
     cron_jobs = [
         cron(sweep_stale_cache, hour=19, minute=30),   # arq는 UTC — 19:30 UTC = KST 새벽 4:30
         # 1분 주기 — status='generating' 부분 인덱스(schema.sql #46)가 스캔을 받친다.

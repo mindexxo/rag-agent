@@ -72,7 +72,9 @@ async def verify() -> bool:
     from rag.retriever import retrieve
     from sqlalchemy import func, select
 
-    from rag.models import Chunk, Document
+    from config import settings
+    from rag import opensearch
+    from rag.models import Document
 
     ok = True
     async with AsyncSessionLocal() as session:
@@ -81,9 +83,8 @@ async def verify() -> bool:
                 select(func.count()).select_from(Document)
                 .where(Document.tenant_id == tenant).where(Document.status == 'ready')
             )).scalar()
-            n_chunks = (await session.execute(
-                select(func.count()).select_from(Chunk).where(Chunk.tenant_id == tenant)
-            )).scalar()
+            n_chunks = (await opensearch.client().count(index=settings.opensearch_index, body={
+                "query": {"term": {"tenant_id": tenant}}}))["count"]     # 청크는 색인에만 (#139)
             print(f'{tenant}: ready {n_docs}문서 / {n_chunks}청크')
 
         print('\n── 격리 카나리아 (실 임베딩 검색) ──')

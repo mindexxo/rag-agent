@@ -3,6 +3,8 @@
 실제 쿼리 흐름(fake_llm)으로 데이터를 만들고 /kms/stats가 맞게 세는지 검증.
 """
 import pytest
+
+from tests.conftest import sync_faq
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
@@ -19,7 +21,7 @@ async def _ask(client, query: str, user: str | None = None):
 
 @pytest.mark.asyncio
 async def test_씨앗_저장_user_id_latency_cache_kind(client, tenant_id, fake_llm, pass_gate):
-    await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})
+    await sync_faq((await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})).json()['id'])
     await _ask(client, '환불 기간 알려줘', user='agent-kim')          # 생성 경로
     await _ask(client, '환불 기간 알려줘', user='agent-lee')          # semantic 캐시 히트 (즉시 경로)
 
@@ -43,7 +45,7 @@ async def test_씨앗_저장_user_id_latency_cache_kind(client, tenant_id, fake_
 
 @pytest.mark.asyncio
 async def test_stats_집계_정확성(client, tenant_id, fake_llm, pass_gate):
-    await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})
+    await sync_faq((await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})).json()['id'])
     fake_llm.answer = f'7일 이내 처리됩니다. {citation_tail([1])}'   # 출처 꼬리 인용 (#56)
     await _ask(client, '환불 기간 알려줘', user='agent-kim')     # 답변 1 (생성)
     await _ask(client, '환불 기간 알려줘', user='agent-kim')     # 답변 2 (캐시)
@@ -79,7 +81,7 @@ async def test_레거시_intent_NULL_거절은_답변률을_왜곡하지_않는�
     분모만 intent를 거르고 분자를 안 거르면, 레거시 행이 분자에만 들어가
     근거미확인율>1 → 답변률이 음수가 된다 (셀프 검증에서 발견된 실버그).
     """
-    await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})
+    await sync_faq((await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})).json()['id'])
     fake_llm.answer = f'7일 이내 처리됩니다. {citation_tail([1])}'
     await _ask(client, '환불 기간 알려줘', user='agent-kim')     # 신규 정상 답변 1
 
@@ -168,7 +170,7 @@ async def test_비표준_거절문구도_ungrounded로_집계된다(client, tena
     → 옛 is_refusal은 '제공된 문서에서 확인할 수 없'을 못 찾아 False였다.
     → 인용 0건이므로 새 판정은 True. 이 전환의 실질 이득이 정확히 이것이다.
     """
-    await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})
+    await sync_faq((await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})).json()['id'])
     fake_llm.answer = f'해외 배송은 제공되지 않습니다. {citation_tail([])}'
     await _ask(client, '해외 배송 되나요?', user='agent-kim')
 
@@ -222,7 +224,7 @@ async def test_문구가_거절이어도_인용이_있으면_ungrounded가_아�
     citations=[]로 덮었다. 그 절을 지웠으므로 이제 인용이 살아남는다 — 의도된 변경이라
     회귀로 오인하지 않게 고정한다.
     """
-    await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})
+    await sync_faq((await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})).json()['id'])
     fake_llm.answer = f'해당 내용은 제공된 문서에서 확인할 수 없습니다. {citation_tail([1])}'
     await _ask(client, '환불 기간 알려줘', user='agent-kim')
 

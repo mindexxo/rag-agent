@@ -1,21 +1,18 @@
-"""OpenSearch 백엔드 계약 (#139) — DB·OpenSearch 없이 도는 순수 테스트.
+"""OpenSearch 매핑·질의 조립 계약 (#139) — DB·OpenSearch 없이 도는 순수 테스트.
 
-여기서 지키는 것은 **변인 격리의 전제**다. A/B의 결론은 "검색 계층만 다르다"는 전제 위에
-서는데, 그 전제는 값 몇 개가 PG와 같아야 성립한다. 그 값들이 조용히 어긋나면 측정은
-계속 돌면서 틀린 답을 낸다 — 그래서 코드로 묶는다.
+매핑은 색인 생성 시점에 굳고(ensure_index) 바꾸면 재색인이다. 여기 묶는 값들이 조용히 어긋나면
+검색은 계속 돌면서 틀린 답을 낸다 — 그래서 코드로 고정한다.
 
-  1. BM25 k1·b가 rag.lexical의 기본값과 같다        (Lucene 기본 k1=1.2 함정)
-  2. dense 차원·HNSW 파라미터가 schema.sql과 같다   (pgvector 인덱스와 동일 조건)
-  3. 어휘 입력 텍스트 조립이 운영과 같다             (문서=프리픽스 / FAQ=원문)
-  4. Nori 질의에 2.18 결함 회피 플래그가 붙어 있다   (조용히 사라지면 500이 돌아온다)
-  5. 게이트 신호 환산이 실측값과 같다                (틀리면 no_evidence 판정이 조용히 어긋난다)
-  6. 검색 백엔드 기본값이 pg다                       (실험 경로가 실수로 운영이 되지 않게)
-  7. 필터가 엔진에서 걸린다                          (PG로 걸러내면 post-filter가 되어 후보가 깎인다)
-  8. searchable 비정규화가 PG 조건과 같은 답을 낸다  (두 벌이 갈라지면 필터가 어긋난다)
-  9. build_doc는 PG 벡터 없이도 명시 벡터로 색인하고, 둘 다 없으면 크게 실패한다
- 10. chunk_os_id는 결정적이고 문서·청크 간 충돌이 없으며 20비트 상한을 강제한다
+  1. BM25 k1·b 상수가 매핑의 similarity와 같다       (Lucene 기본 k1=1.2 함정)
+  2. dense 차원·HNSW 파라미터가 상수와 같다           (A/B 때 pgvector와 맞춘 값 유지)
+  3. 어휘 입력 텍스트 조립이 임베딩 입력과 같다       (문서=프리픽스 / FAQ=원문)
+  4. Nori 질의에 2.18 결함 회피 플래그가 붙어 있다    (조용히 사라지면 500이 돌아온다)
+  5. 게이트 신호 환산이 실측값과 같다                 (틀리면 no_evidence 판정이 조용히 어긋난다)
+  6. 필터가 엔진에서 걸린다                           (검색 후 걸러내면 post-filter가 되어 후보가 깎인다)
+  7. searchable 판정이 조건표대로다                   (문서 활성·ready·토글·폴더 / FAQ 활성)
+  8. build_doc는 청크에 실린 벡터로 색인하고, 없으면 크게 실패한다
+  9. chunk_os_id는 결정적이고 문서·청크 간 충돌이 없으며 20비트 상한을 강제한다
 """
-import inspect
 import re
 
 import pytest
@@ -28,11 +25,9 @@ from rag.index_text import build_index_text
 SCHEMA = Path(__file__).resolve().parent.parent / "schema.sql"
 
 
-def test_bm25_파라미터가_운영_정의점과_같다():
-    """Lucene 기본 k1은 1.2다 — 맞춰두지 않으면 파라미터 차이를 구현 차이로 오독한다."""
-    sig = inspect.signature(lexical.bm25_rank).parameters
-    assert B.BM25_K1 == sig["k1"].default
-    assert B.BM25_B == sig["b"].default
+def test_bm25_파라미터가_매핑에_그대로_들어간다():
+    """Lucene 기본 k1은 1.2다 — 상수(1.5·0.75, #135 앱 BM25 계승)가 매핑에 박혀 있어야 한다."""
+    assert (B.BM25_K1, B.BM25_B) == (1.5, 0.75)
     sim = B.MAPPING["settings"]["index"]["similarity"]["bm25_kms"]
     assert (sim["type"], sim["k1"], sim["b"]) == ("BM25", B.BM25_K1, B.BM25_B)
 
@@ -92,17 +87,6 @@ def test_nori_질의에_2_18_결함_회피가_붙어_있다():
     assert clause["match"][B.NORI_FIELD]["auto_generate_synonyms_phrase_query"] is False
 
 
-def test_융합_가중치는_합이_1이어야_한다():
-    """2.18 normalization-processor 계약. 어긋난 채 측정되면 융합 축이 조용히 무의미해진다.
-
-    코루틴이라 asyncio.run으로 깨운다 — assert가 첫 await 앞이라 클라이언트는 안 쓰인다."""
-    import asyncio
-
-    import pytest
-    with pytest.raises(AssertionError):
-        asyncio.run(B.ensure_pipeline(None, weights=(0.7, 0.7)))
-
-
 def test_게이트_신호_환산이_실측과_같다():
     """OpenSearch cosinesimil 점수 → pgvector cosine_distance = 2 - 2*score.
 
@@ -118,19 +102,12 @@ def test_게이트_신호_환산이_실측과_같다():
         assert abs(B.score_to_cosine_distance(score) - pg_distance) < 2e-6, score
 
 
-def test_검색_백엔드_기본값은_pg다():
-    """실험 경로(#139)가 실수로 운영이 되지 않게. 운영 전환 선결 조건은 아직 없다 —
-    색인 동기화·BM25 통계 스코프(config.py의 search_backend 주석)."""
-    from config import Settings
-    assert Settings(database_url="postgresql+asyncpg://x/y").search_backend == "pg"
-
-
 def test_필터는_엔진에서_걸린다():
     """테넌트·검색가능 둘 다 엔진 필터여야 한다.
 
     검색 후 PG로 걸러내면 상위 k를 뽑은 뒤 빼는 post-filter가 되어 후보가 조용히 깎인다
-    (rag/retriever.py:57-67이 pg 경로에서 겪고 있는 그 함정). 실무 표준 구성에서는 필터에
-    쓰는 메타를 엔진에 비정규화해 두는 것이 그 대가다.
+    (구 PG 경로가 겪던 함정). 실무 표준 구성에서는 필터에 쓰는 메타를 엔진에 비정규화해
+    두는 것이 그 대가다.
     """
     terms = B.tenant_filter('t1')['bool']['filter']
     assert {'term': {'tenant_id': 't1'}} in terms
@@ -141,9 +118,9 @@ def test_필터는_엔진에서_걸린다():
     assert props['folder_id']['type'] == 'long'    # 폴더 단위 fan-out update의 필터 키
 
 
-def test_searchable_비정규화가_PG_조건과_같다():
-    """rag/retriever._searchable_condition()을 파이썬으로 옮긴 것 — 두 벌이 갈라지면
-    엔진 필터와 PG 필터가 다른 답을 낸다. 조건을 바꿀 때 함께 고치라는 계약을 고정한다."""
+def test_searchable_판정이_조건표대로다():
+    """검색 가능 판정의 정의점(effective_searchable) — 문서: 활성+ready+검색토글+(미분류 or 폴더 on),
+    FAQ: 활성. 색인 시 계산해 넣는 플래그라 조건이 바뀌면 전량 META 갱신이 따라야 한다."""
     ok = dict(is_faq=False, doc_is_active=True, doc_status='ready', doc_is_searchable=True)
     assert B.effective_searchable(**ok, folder_is_searchable=None) is True   # 미분류 문서
     assert B.effective_searchable(**ok, folder_is_searchable=True) is True
@@ -165,7 +142,7 @@ def test_엔진이_돌려준_청크에_인용_메타가_다_실린다():
 
 
 class _Chunk:
-    """색인 대상 청크의 최소 형태 — PG 행 대신. dense 속성이 아예 없는 상태(컬럼 DROP 세계)를 만들 수 있다."""
+    """색인 대상 청크의 최소 형태(_ParsedChunk 모양). dense 속성이 없는 상태도 만들 수 있다."""
 
     def __init__(self, cid=1, text='반품은 7일 이내', dense=None, has_dense=True):
         self.id, self.text = cid, text
@@ -175,27 +152,24 @@ class _Chunk:
             self.dense = dense
 
 
-def test_명시_벡터가_PG값을_이긴다():
-    """인제스션이 방금 계산한 임베딩을 넘기면 PG를 경유하지 않는다."""
-    doc = B.build_doc(_Chunk(dense=[0.1] * 1024), '정책.pdf', 2, dense=[0.9] * 1024)
-    assert doc['dense'][0] == pytest.approx(0.9)
+def test_벡터는_청크에_실려_온_값으로_색인된다():
+    doc = B.build_doc(_Chunk(dense=[0.5] * 1024), '정책.pdf', 2)
+    assert len(doc['dense']) == 1024 and doc['dense'][0] == pytest.approx(0.5)
+    assert doc['chunk_id'] == 1 and doc['filename'] == '정책.pdf' and doc['version'] == 2
 
 
-def test_PG에_벡터가_없어도_명시로_색인된다():
-    doc = B.build_doc(_Chunk(has_dense=False), '정책.pdf', 2, dense=[0.5] * 1024)
-    assert len(doc['dense']) == 1024 and doc['chunk_id'] == 1 and doc['filename'] == '정책.pdf'
-
-
-def test_벡터가_아예_없으면_크게_실패한다():
+def test_벡터가_없으면_크게_실패한다():
     """조용히 벡터 없는 문서를 색인하면 kNN에 안 잡히는 유령이 된다."""
     with pytest.raises(ValueError, match='벡터가 없다'):
         B.build_doc(_Chunk(has_dense=False), '정책.pdf', 2)
+    with pytest.raises(ValueError, match='벡터가 없다'):
+        B.build_doc(_Chunk(dense=None), '정책.pdf', 2)
 
 
-def test_어휘_필드는_PG_컬럼과_무관하다():
-    """lex_tsv를 PG에서 버려도 엔진 어휘 필드는 본문에서 다시 만들어진다."""
-    ch = _Chunk(has_dense=False)
-    doc = B.build_doc(ch, '정책.pdf', 2, dense=[0.5] * 1024)
+def test_어휘_필드는_본문에서_만든다():
+    """Nori·bigram 필드는 lex_text(본문+프리픽스)에서 색인 시점에 조립된다."""
+    ch = _Chunk(dense=[0.5] * 1024)
+    doc = B.build_doc(ch, '정책.pdf', 2)
     expected = B.lex_text(ch.text, '정책.pdf', ch.heading_path)
     assert doc[B.NORI_FIELD] == expected
     assert doc[B.LEX_BIGRAM_FIELD] == ' '.join(lexical.bigrams(expected))

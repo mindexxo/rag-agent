@@ -11,8 +11,8 @@ from database import AsyncSessionLocal
 from rag import cache
 from rag import outbox
 from rag.models import SearchIndexOutbox
-from tests.conftest import ingest
-from rag.models import AnswerCache as AnswerCacheRow, Chunk, Document
+from tests.conftest import indexed_chunk_texts, ingest
+from rag.models import AnswerCache as AnswerCacheRow, Document
 
 
 async def _upload(client, filename: str, content: bytes, mime='text/markdown') -> dict:
@@ -27,10 +27,7 @@ async def _get_doc(doc_id: int) -> Document:
 
 
 async def _chunk_texts(doc_id: int) -> list[str]:
-    async with AsyncSessionLocal() as session:
-        return list((await session.execute(
-            select(Chunk.text).where(Chunk.document_id == doc_id)
-        )).scalars().all())
+    return await indexed_chunk_texts(doc_id)        # 청크는 색인에만 있다(#139)
 
 
 MD = '# 환불 정책\n\n## 1. 기간\n\n단순변심 반품은 14일 이내 신청한다.\n'.encode()
@@ -179,8 +176,9 @@ async def test_supersede는_타_테넌트_같은_파일명을_건드리지_않�
         from sqlalchemy import delete as sa_delete
 
         from rag.models import AnswerCache as ACRow
+        from rag import opensearch
+        await opensearch._delete_by_terms('tenant_id', [other])
         async with AsyncSessionLocal() as session:
-            await session.execute(sa_delete(Chunk).where(Chunk.tenant_id == other))
             await session.execute(sa_delete(ACRow).where(ACRow.tenant_id == other))
             await session.execute(sa_delete(Document).where(Document.tenant_id == other))
             await session.commit()
@@ -197,19 +195,16 @@ async def test_이미_처리된_문서의_대기열_행은_무해하게_done된�
     await ingest(body['document_id'])
     doc = await _get_doc(body['document_id'])
     assert doc.status == 'ready'
+    before = await _chunk_texts(doc.id)
     async with AsyncSessionLocal() as s:
-        n_before = (await s.execute(select(func.count()).select_from(Chunk)
-                                    .where(Chunk.document_id == doc.id))).scalar()
         outbox.enqueue(s, tenant_id, outbox.INDEX_DOCUMENT, document_id=doc.id)   # 중복 등재
         await s.commit()
 
     r = await ingest(body['document_id'])
     assert r == {'done': 1, 'failed': 0}
     async with AsyncSessionLocal() as s:
-        n_after = (await s.execute(select(func.count()).select_from(Chunk)
-                                   .where(Chunk.document_id == doc.id))).scalar()
         left = await outbox.pending_row_ids(s, document_id=doc.id)
-    assert n_after == n_before                                   # 재색인 안 함 (유니크 위반도 없음)
+    assert await _chunk_texts(doc.id) == before                  # 재색인 안 함
     assert left == []                                            # 행은 done
 
 
@@ -227,6 +222,7 @@ async def test_소프트_삭제_청크와_캐시_제거_row_보존(client, tenan
     doc = await _get_doc(body['document_id'])
     assert doc is not None                                       # row 보존 (과거 인용 다운로드용)
     assert doc.status == 'deleted' and doc.is_active is False
+    await ingest(body['document_id'])                                     # DROP_DOCUMENTS 행 처리 — 그 전엔 가이드대로 아직 보인다
     assert await _chunk_texts(body['document_id']) == []                  # 검색 인덱스에서 제거
     async with AsyncSessionLocal() as session:
         rows = (await session.execute(

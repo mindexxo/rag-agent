@@ -3,7 +3,7 @@
 - folders        : 1단 폴더 (검색 참조 제어 전용 그룹)
 - documents      : 업로드된 원본 문서 (filename + version 단위)
 - faqs           : FAQ 항목 (검색 편입은 chunks로)
-- chunks         : 검색 단위 (dense 임베딩 F99 + 어휘 채널 lex_tsv/lex_len #135)
+- chunks         : (구) PG 검색 인덱스 — #139 OpenSearch 도입으로 읽기·쓰기 모두 없음. 아래 Chunk 참조
 - answer_cache   : LLM 응답 영속 캐시 (semantic 매칭 + 문서 단위 무효화)
 - conversations  : 멀티턴 대화 세션
 - messages       : 대화 내 한 턴 (user/assistant)
@@ -138,7 +138,12 @@ class SearchIndexOutbox(Base):
 
 
 class Chunk(Base):
-    """검색 단위 (검색 인덱스). 출처는 document 또는 faq 정확히 하나 — DDL의 CHECK가 강제."""
+    """(구) PG 검색 인덱스 행 — **런타임은 더 이상 읽지도 쓰지도 않는다** (#139, 2026-09-12).
+
+    청크(본문·메타·벡터·어휘 필드)는 OpenSearch에만 있다(rag/opensearch.py). 이 모델이 남아 있는
+    이유는 테이블이 아직 있기 때문이다 — 제거 순서는 schema.sql 하단(OS 스냅샷·복구 리허설 뒤
+    DROP TABLE). 새 코드에서 참조하지 마라. 출처는 document 또는 faq 정확히 하나 — DDL의 CHECK.
+    """
     __tablename__ = "chunks"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)

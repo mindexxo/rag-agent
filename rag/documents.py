@@ -6,15 +6,15 @@ import mimetypes
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import ARRAY, Text, cast, delete, func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import AsyncSessionLocal
-from rag import cache, lexical, opensearch, outbox
+from rag import cache, opensearch, outbox
 from rag.chunking import chunk_file, pdf_image_area_ratio
 from rag.embeddings import embed_texts
 from rag.index_text import build_index_text
-from rag.models import Chunk, Document, Folder
+from rag.models import Document, Folder
 
 # 이미지 면적이 이 비율을 넘으면 인제스션에서 경고를 남긴다 (#137 결함 4).
 # 실측(실문서 21건): 도표가 이미지인 3건이 21.1% / 4.4% / 0.7%, 나머지 18건 0%.
@@ -55,7 +55,7 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
 
     세션 셋으로 나눈 이유는 그대로다: 무거운 파싱·임베딩 동안 DB 커넥션을 물지 않는다.
       ① 짧은 읽기   처리 대상 확인 + 파싱·색인에 필요한 값만 (커넥션 즉시 반납)
-      ② DB 없이     파싱·청킹·임베딩 → (엔진 구성) 색인 + 구버전 엔진 삭제
+      ② DB 없이     파싱·청킹·임베딩 → 엔진 색인 + 구버전 엔진 삭제
       ③ 짧은 쓰기   유일한 커밋
     """
     # ── ① 짧은 읽기 ──
@@ -100,21 +100,19 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
     index_texts = [build_index_text(c.text, filename, c.heading_path) for c in chunks]
     embeddings = await embed_texts(index_texts)
 
-    indexed_searchable = None
-    if opensearch.enabled():
-        # searchable은 PG의 **현재** 상태(pending·inactive)가 아니라 **아래 ③이 만들 상태**
-        # (ready·active)로 계산한다 — 켜진 채로 바로 넣어 "켜기" 단계를 없애기 위함이다.
-        # 문서 검색토글·폴더 토글은 PG 값을 그대로 쓴다.
-        indexed_searchable = opensearch.effective_searchable(
-            is_faq=False, doc_is_active=True, doc_status='ready',
-            doc_is_searchable=doc_searchable, folder_is_searchable=folder_searchable)
-        await opensearch.index_parsed_document(
-            document_id=document_id, tenant_id=tenant_id, filename=filename, version=version,
-            folder_id=folder_id, folder_name=folder_name, folder_description=folder_desc,
-            searchable=indexed_searchable, chunks=chunks, embeddings=embeddings)
-        # 신버전이 이미 켜져 있으니 구버전을 지워도 빈 창이 없다.
-        if old_active_ids:
-            await opensearch.drop_documents_now(old_active_ids)
+    # searchable은 PG의 **현재** 상태(pending·inactive)가 아니라 **아래 ③이 만들 상태**
+    # (ready·active)로 계산한다 — 켜진 채로 바로 넣어 "켜기" 단계를 없애기 위함이다.
+    # 문서 검색토글·폴더 토글은 PG 값을 그대로 쓴다.
+    indexed_searchable = opensearch.effective_searchable(
+        is_faq=False, doc_is_active=True, doc_status='ready',
+        doc_is_searchable=doc_searchable, folder_is_searchable=folder_searchable)
+    await opensearch.index_parsed_document(
+        document_id=document_id, tenant_id=tenant_id, filename=filename, version=version,
+        folder_id=folder_id, folder_name=folder_name, folder_description=folder_desc,
+        searchable=indexed_searchable, chunks=chunks, embeddings=embeddings)
+    # 신버전이 이미 켜져 있으니 구버전을 지워도 빈 창이 없다.
+    if old_active_ids:
+        await opensearch.drop_documents_now(old_active_ids)
 
     # ── ③ 유일한 커밋 ──
     async with AsyncSessionLocal() as session:
@@ -128,29 +126,13 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
                 await session.commit()
             return
 
-        if opensearch.pg_stores_chunks():
-            # PG가 색인인 구성 — 청크 행 + 파생 컬럼(dense·lex)을 여기서 쓴다. 이 커밋이 곧 색인이다.
-            for chunk, embedding, text in zip(chunks, embeddings, index_texts):
-                toks = lexical.bigrams(text)
-                derived = {
-                    'dense': embedding.dense,
-                    'lex_tsv': func.array_to_tsvector(
-                        cast(lexical.tsvector_lexemes(toks), ARRAY(Text))),
-                    'lex_len': len(toks),
-                }
-                session.add(Chunk(
-                    document_id=doc.id, tenant_id=doc.tenant_id, chunk_index=chunk.chunk_index,
-                    text=chunk.text, page=chunk.page, heading_path=chunk.heading_path,
-                    meta=chunk.meta or {}, **derived,
-                ))
-
+        # 청크 행은 PG에 쓰지 않는다 — 검색·본문·메타 전부 엔진이 든다(#139). 이 커밋은
+        # 문서 상태(ready·active·supersede)와 대기열 행만 확정한다.
         # supersede — ①에서 읽은 같은 집합. 옛 active off를 먼저 반영해 유니크 위반을 피한다.
         if old_active_ids:
             await session.execute(
                 update(Document).where(Document.id.in_(old_active_ids))
                 .values(is_active=False, status='deleted'))
-            if opensearch.pg_stores_chunks():
-                await session.execute(delete(Chunk).where(Chunk.document_id.in_(old_active_ids)))
             await session.flush()
 
         doc.status = 'ready'
@@ -168,20 +150,19 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         for old_id in old_active_ids:
             await cache.invalidate_source(session, tenant_id, old_id)
 
-        if indexed_searchable is not None:
-            # ②가 도는 사이(초~분) 문서 검색토글·폴더 토글·폴더 이동이 있었을 수 있다. 그 META 행은
-            # 이미 색인된 청크만 갱신하므로(이 문서는 그때 엔진에 없었다) 여기서 ① 시점 값으로 넣은
-            # 것이 낡은 채 남는다 — reconcile은 id 집합만 보고 메타 드리프트는 못 잡는다(리뷰 지적).
-            # 최신 PG 상태로 다시 계산해 어긋나면 META 행을 **이 커밋에** 얹어 다음 회차가 맞춘다.
-            f_on = None
-            if doc.folder_id is not None:
-                f_on = (await session.execute(
-                    select(Folder.is_searchable).where(Folder.id == doc.folder_id))).scalar()
-            now_searchable = opensearch.effective_searchable(
-                is_faq=False, doc_is_active=True, doc_status='ready',
-                doc_is_searchable=doc.is_searchable, folder_is_searchable=f_on)
-            if now_searchable != indexed_searchable or doc.folder_id != folder_id:
-                outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=[document_id])
+        # ②가 도는 사이(초~분) 문서 검색토글·폴더 토글·폴더 이동이 있었을 수 있다. 그 META 행은
+        # 이미 색인된 청크만 갱신하므로(이 문서는 그때 엔진에 없었다) 여기서 ① 시점 값으로 넣은
+        # 것이 낡은 채 남는다 — reconcile은 id 집합만 보고 메타 드리프트는 못 잡는다(리뷰 지적).
+        # 최신 PG 상태로 다시 계산해 어긋나면 META 행을 **이 커밋에** 얹어 다음 회차가 맞춘다.
+        f_on = None
+        if doc.folder_id is not None:
+            f_on = (await session.execute(
+                select(Folder.is_searchable).where(Folder.id == doc.folder_id))).scalar()
+        now_searchable = opensearch.effective_searchable(
+            is_faq=False, doc_is_active=True, doc_status='ready',
+            doc_is_searchable=doc.is_searchable, folder_is_searchable=f_on)
+        if now_searchable != indexed_searchable or doc.folder_id != folder_id:
+            outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=[document_id])
 
         if outbox_row_id is not None:
             await outbox.mark_done(session, outbox_row_id)   # ready와 같은 커밋 — 정의점 rag/outbox.py

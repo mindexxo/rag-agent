@@ -7,18 +7,21 @@ import pytest
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from tests.conftest import FakeLlm
+from tests.conftest import FakeLlm, faq_doc, sync_faq
 from rag import cache
-from rag.models import AnswerCache as AnswerCacheRow, Chunk, Faq
+from rag.models import AnswerCache as AnswerCacheRow, Faq
 from rag.retriever import retrieve_candidates
 
 
 async def _create_faq(client, question='환불 기간은?', answer='7일 이내 처리됩니다.') -> int:
+    """등록 + 대기열 drain — 라우터는 색인을 직접 하지 않으므로(#139) 검색 상태를 보려면 drain이 필요하다."""
     res = await client.post('/kms/faqs', json={
         'question': question, 'variants': ['돈 언제 돌려받아요'], 'answer': answer,
     })
     assert res.status_code == 200, res.text
-    return res.json()['id']
+    faq_id = res.json()['id']
+    await sync_faq(faq_id)
+    return faq_id
 
 
 async def _candidate_faq_ids(tenant_id: str) -> set[int]:
@@ -35,12 +38,9 @@ async def test_내용_수정시_청크_재임베딩_여전히_1개(client, tenan
     res = await client.patch(f'/kms/faqs/{faq_id}', json={'question': '환불은 며칠 걸리나요?'})
     assert res.status_code == 200
 
-    async with AsyncSessionLocal() as session:
-        chunks = (await session.execute(
-            select(Chunk).where(Chunk.faq_id == faq_id)
-        )).scalars().all()
-        assert len(chunks) == 1                              # 재인덱싱은 삭제 후 재삽입 — 늘어나면 안 됨
-        assert chunks[0].text.startswith('Q: 환불은 며칠 걸리나요?')
+    assert await sync_faq(faq_id) == {'done': 1, 'failed': 0}   # INDEX_FAQ 재색인 행 하나
+    chunk = await faq_doc(faq_id)                                 # id가 결정적이라 늘어날 수 없다 — 덮어쓴다
+    assert chunk is not None and chunk['text'].startswith('Q: 환불은 며칠 걸리나요?')
 
 
 @pytest.mark.asyncio
@@ -52,11 +52,9 @@ async def test_variants만_수정해도_재임베딩(client, tenant_id):
     res = await client.patch(f'/kms/faqs/{faq_id}', json={'variants': ['새로 추가한 구어체 질문']})
     assert res.status_code == 200
 
-    async with AsyncSessionLocal() as session:
-        chunk = (await session.execute(
-            select(Chunk).where(Chunk.faq_id == faq_id)
-        )).scalar_one()
-        assert '(유사 질문: 새로 추가한 구어체 질문)' in chunk.text
+    await sync_faq(faq_id)
+    chunk = await faq_doc(faq_id)
+    assert chunk is not None and '(유사 질문: 새로 추가한 구어체 질문)' in chunk['text']
 
 
 @pytest.mark.asyncio
@@ -100,9 +98,12 @@ async def test_is_active_토글_검색_제외와_복귀(client, tenant_id):
     assert faq_id in await _candidate_faq_ids(tenant_id)     # 등록 직후 검색 편입
 
     await client.patch(f'/kms/faqs/{faq_id}', json={'is_active': False})
+    assert faq_id in await _candidate_faq_ids(tenant_id)      # drain 전 — 제품 가이드대로 아직 보인다(최대 1~5분)
+    await sync_faq(faq_id)                                    # META_FAQS 부분 갱신
     assert faq_id not in await _candidate_faq_ids(tenant_id)  # off → 검색 제외
 
     await client.patch(f'/kms/faqs/{faq_id}', json={'is_active': True})
+    await sync_faq(faq_id)
     assert faq_id in await _candidate_faq_ids(tenant_id)     # on → 복귀
 
 
@@ -136,12 +137,10 @@ async def test_삭제시_청크_cascade와_캐시_무효화(client, tenant_id, f
     res = await client.delete(f'/kms/faqs/{faq_id}')
     assert res.status_code == 204
 
+    await sync_faq(faq_id)                                   # DROP_FAQS
+    assert await faq_doc(faq_id) is None                     # 색인에서 제거됨
     async with AsyncSessionLocal() as session:
         assert (await session.get(Faq, faq_id)) is None
-        chunks = (await session.execute(
-            select(Chunk).where(Chunk.faq_id == faq_id)
-        )).scalars().all()
-        assert chunks == []                                  # FK CASCADE
         rows = (await session.execute(
             select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
         )).scalars().all()

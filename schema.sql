@@ -87,7 +87,10 @@ CREATE TABLE IF NOT EXISTS faqs (
 );
 CREATE INDEX IF NOT EXISTS idx_faqs_tenant ON faqs (tenant_id);
 
--- ---------- 청크 (검색 인덱스 — 출처: document 또는 faq 정확히 하나) ----------
+-- ---------- (구) 청크 — PG 검색 인덱스였던 것 ----------
+-- #139(2026-09-12) OpenSearch 도입으로 **런타임은 이 테이블을 읽지도 쓰지도 않는다.** 청크(본문·메타·
+-- 벡터·어휘 필드)는 OpenSearch에만 있다(rag/opensearch.py). DDL은 기존 DB에 테이블이 남아 있어
+-- 두는 것이고, 제거 절차는 하단 "#139 마이그레이션". 새 코드에서 참조하지 마라(rag/models.py Chunk).
 CREATE TABLE IF NOT EXISTS chunks (
     id            BIGSERIAL PRIMARY KEY,
     document_id   BIGINT       REFERENCES documents(id) ON DELETE CASCADE,   -- 문서 출처 (F3부터 nullable)
@@ -111,13 +114,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_tenant_doc
 CREATE INDEX IF NOT EXISTS idx_chunks_dense_hnsw
     ON chunks USING hnsw (dense vector_cosine_ops)
     WITH (m = 16, ef_construction = 64);
--- 어휘 채널 FTS 회수용 (#135) — retriever._search_lexical의 @@ 매칭과 df 계산이 탄다
-CREATE INDEX IF NOT EXISTS idx_chunks_lex_gin ON chunks USING gin (lex_tsv);
--- 기존 DB 반영(#135, 추가형 — 재구축 불필요):
---   ALTER TABLE chunks ADD COLUMN IF NOT EXISTS lex_tsv TSVECTOR;
---   ALTER TABLE chunks ADD COLUMN IF NOT EXISTS lex_len INTEGER;
---   CREATE INDEX IF NOT EXISTS idx_chunks_lex_gin ON chunks USING gin (lex_tsv);
--- 이후 기존 청크 백필(임베딩 재계산 없음·TEI 불필요): python -m eval.backfill_lexical --all
+CREATE INDEX IF NOT EXISTS idx_chunks_lex_gin ON chunks USING gin (lex_tsv);   -- (구) #135 FTS 회수용
 
 -- ---------- LLM 응답 캐시 ----------
 -- 기존 DB 반영(#56): 인용 방식 전환(인라인 라벨 → 출처 꼬리)으로 옛 캐시 행(라벨 박힌
@@ -257,24 +254,23 @@ CREATE TABLE IF NOT EXISTS tenant_quotas (
 -- UPDATE tenant_quotas SET concurrency_limit = 5 WHERE concurrency_limit = 10;
 -- UPDATE tenant_quotas SET user_concurrency  = 1 WHERE user_concurrency  = 10;
 
--- ── #139 OpenSearch 채택 시 마이그레이션 (아직 실행하지 않음) ─────────────────
--- 검색을 OpenSearch가 맡으면(search_backend=opensearch) 인제스션이 PG에 청크 행을 쓰지 않으므로
--- 기존 청크의 검색용 파생 컬럼은 남아만 있는 데이터가 된다. 사유·순서는 config.py의
--- search_backend 주석("PG chunks.dense의 처분")이 정본이다.
--- **순서를 지켜라** — ②와 ③ 사이를 건너뛰면 벡터의 백업 없는 유일 저장소가 생긴다.
+-- ── #139 마이그레이션 — (구) chunks 테이블 제거 (아직 실행하지 않음) ─────────────
+-- OpenSearch 도입 확정(2026-09-12)으로 인제스션은 PG에 청크를 쓰지 않고 검색도 PG를 읽지 않는다.
+-- 남아 있는 chunks 행·벡터·인덱스는 죽은 데이터다(실측 컬럼 3.4MB + HNSW 6.5MB, 868청크 기준 —
+-- 수십만 청크면 GB 단위가 되고 백업·WAL로 증폭된다). **순서를 지켜라** — ①을 건너뛰면 청크의
+-- 백업 없는 유일 저장소(OpenSearch 단일 노드)가 생긴다.
 --
---   ① NOT NULL 해제 — 엔진 구성은 청크 행 자체를 안 쓰므로 운영에 필수는 아니고, ③ 컬럼 DROP의 전 단계
---      ALTER TABLE chunks ALTER COLUMN dense DROP NOT NULL;
+--   ① OpenSearch 스냅샷 리포지터리 설정 + **복구 리허설 1회** (이슈 #139 결정 코멘트의 전제조건)
 --
---   ② 검색을 안 하므로 인덱스 제거 (순수 이득 — 실측 HNSW 6.5MB + GIN, 868청크 기준)
+--   ② 인덱스 제거 (순수 이득 — 아무 경로도 안 탄다)
 --      DROP INDEX IF EXISTS idx_chunks_dense_hnsw;
 --      DROP INDEX IF EXISTS idx_chunks_lex_gin;
 --
---   ③ OpenSearch 스냅샷 설정 + **복구 리허설을 마친 뒤** 컬럼 제거
---      ALTER TABLE chunks DROP COLUMN dense, DROP COLUMN lex_tsv, DROP COLUMN lex_len;
+--   ③ 테이블 제거 + rag/models.py의 Chunk·이 파일의 CREATE TABLE chunks 블록 삭제
+--      DROP TABLE IF EXISTS chunks;
 --
--- 되돌리려면 컬럼을 다시 만들고 **전량 재임베딩**해야 한다(chunks.text는 남아 있으므로
--- 가능하다 — rag/opensearch._rows_to_docs가 같은 조립으로 재임베딩하는 경로다).
+-- 되돌리기는 없다 — 복구는 OpenSearch 스냅샷이거나, 원본 파일(documents.blob_path) 재인제스션이다
+-- (eval.os_reconcile이 색인에 없는 ready 문서를 pending으로 되돌려 대기열에 넣는다).
 -- answer_cache.query_embedding은 이 정리의 대상이 아니다 — 의미캐시 자체가 쓰는 값이다.
 
 -- ── #139 outbox — 색인 작업 대기열 (트랜잭셔널 outbox) ────────────────────────

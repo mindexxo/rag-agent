@@ -7,7 +7,6 @@
 """
 from pathlib import Path
 
-from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 이 파일(config.py)이 앱 루트에 있으므로, 그 디렉터리가 프로젝트 루트.
@@ -105,55 +104,28 @@ class Settings(BaseSettings):
 
     # reranker (F99: TEI /rerank, cross-encoder 재정렬). on/off 토글 한 줄.
     rerank_enabled: bool = True                       # False면 dense-only 순서 그대로 (리랭크 skip). .env로 오버라이드 가능
-    # 하이브리드 어휘 채널(#135): FTS(bigram tsvector) 회수 → 앱 BM25 재점수 → dense 미포함
-    # 상위를 리랭커 풀에 주입. 현행 모의 코퍼스 실측은 이득 0(주입 상방 0/450, 토크나이저
-    # bigram·kiwi 둘 다 — #133 A/B)이지만 실코퍼스(상품코드·고유명 분포) 대비 정식 채널로
-    # 켠다(사용자 결정). 통계(df·N·avgdl)는 질의 시 계산 — 테넌트 수만 청크 도달 시
-    # pg_search 설치 가능 여부 확인 후 불가면 통계 테이블 승격(이슈 #135 결정 기록).
+    # 하이브리드 어휘 채널(#135→#139): 엔진 BM25(Nori) 상위 중 dense 미포함분을 리랭커 풀에 주입.
+    # 실측(모의 450 + 인티큐브 실문서 75문항)은 주입 상방 0 — 그래도 실코퍼스의 상품코드·고유명
+    # 분포 대비 정식 채널로 켜둔다(사용자 결정). 끄면 dense-only.
     hybrid_lexical_enabled: bool = True
     hybrid_lexical_inject: int = 15                   # dense 미포함 BM25 상위 주입 수 (어블레이션 조립과 동일)
     rerank_base_url: str = "http://localhost:38890"   # TEI 리랭커 서버 (bge-reranker-v2-m3, /rerank) — 실주소는 .env
     rerank_timeout: float = 30.0
 
-    # 검색 백엔드 (#139) — 'pg' | 'opensearch'. **기본은 pg이고, 바꾸지 마라.**
-    # 'opensearch'는 "PG 단일 스택 대신 검색 엔진을 쓰면 나은가"를 실측하기 위한 실험 경로다.
-    # 현행 근거로는 이득이 0이다(eval/report_os_ablation_v1.md: kNN 구현 차이 0·BM25 구현 차이
-    # 0·토크나이저 차이 잡음). 채택/기각 판정은 실문서(#138) 대기.
+    # 검색 저장소 — OpenSearch 하나 (#139 도입 확정 2026-09-12, 사유=확장성). PG는 문서·FAQ·폴더·
+    # 대화·캐시·outbox의 정본이고, 청크(본문·메타·벡터·어휘 필드)는 엔진에만 있다. 서빙은 엔진에서
+    # 끝난다(rag/opensearch.py 상단). 기동 시 인덱스 존재를 보장한다(ensure_index) — 주소가 틀리면
+    # 거기서 죽는다: 검색 없는 서버를 조용히 띄우지 않기 위함이다.
     #
-    # **운영으로 켜기 전 남은 것** (정합 관리 3층의 현재 수준은 rag/opensearch.py 상단이 정본):
-    #  1) 색인 반영 **지연**. 모든 변경은 트랜잭셔널 outbox(rag/outbox.py)로 durable하게
-    #     기록되고 단일 워커 cron이 1분마다 처리한다 — 유실은 없지만 즉시 반영도 없다.
-    #     제품 결정: "문서 변경은 검색에 최대 1~5분 뒤 반영될 수 있다"로 가이드한다. 그 사이
-    #     삭제·비공개 문서가 인용될 수 있음을 받아들인 것이다(답변 캐시는 즉시 무효화됨).
-    #     좁히려면 워커 폴링 루프(10초)나 수동 "지금 반영" 트리거 — 구조 변경 없이 붙는다.
-    #  2) PG `chunks.dense`의 처분. 지금은 pg가 기본이라 PG의 벡터가 **정본**이고 OpenSearch
-    #     쪽이 사본이다 — 채택하면 관계가 뒤집히고, 그때 PG 벡터를 남길 근거는 약하다:
-    #     OS 스냅샷이 이미 백업이고, 재임베딩 비결정성(1.4e-4)은 검색 품질에 잡음 수준이며,
-    #     모델을 바꾸면 어차피 전량 재임베딩이다. 실측 크기는 컬럼 3.4MB + HNSW 인덱스 6.5MB
-    #     (868청크, 2026-09-10) — 수십만 청크면 GB 단위가 되고 백업·WAL로 증폭된다.
-    #     채택 시 순서: ① `idx_chunks_dense_hnsw` DROP(검색을 OS가 하므로 순수 이득)
-    #     ② OS 스냅샷 설정·복구 리허설을 마친 **뒤** 컬럼 DROP. 순서를 바꾸면 백업 없는
-    #     유일 저장소가 되는 구간이 생긴다. 채택 전에는 손대지 마라 — 이득 없이 롤백 길만 막는다.
-    #  3) BM25 통계 스코프. 단일 인덱스라 Lucene의 df가 인덱스 전체다 — 다른 테넌트의 데이터가
-    #     우리 테넌트의 idf를 움직인다(실측: 다른 세션이 실문서 211청크를 넣자 색인 대상이
-    #     602→813. 단 그 35% 증가로 표시 지표는 미동 없었다 — 리포트 참조). 앱 BM25는 통계를
-    #     테넌트 단위로 잡아 이 성질이 없다. 테넌트별 인덱스 또는 스코프 설계가 대안이다.
-    # 엔진 구성은 본문·메타도 엔진에서 읽는다 — PG를 되묻지 않는다(실무 표준). rag/opensearch.py docstring.
-    search_backend: str = "pg"
-    opensearch_url: str = "http://localhost:9200"     # 실주소는 .env (개발계 이관 시 포트 23336)
+    # 받아들인 것: 색인 반영 지연. 모든 변경은 트랜잭셔널 outbox(rag/outbox.py)로 durable하게 기록되고
+    # 단일 워커 cron이 1분마다 처리한다 — 유실은 없지만 즉시 반영도 없다. 제품 결정: "문서 변경은
+    # 검색에 최대 1~5분 뒤 반영될 수 있다"(답변 캐시는 즉시 무효화됨).
+    # 남은 것: BM25 df 스코프가 인덱스 전체(테넌트 간 idf 간섭 — 실측 표시 지표 미동). 테넌트별
+    # 인덱스가 대안. 배포는 자체 설치 단일 노드(매핑 1샤드·0레플리카)라 노드 다운 = 검색 불가 —
+    # 인제스션은 outbox가 pending으로 들고 있다가 복구 후 반영한다.
+    opensearch_url: str = "http://localhost:9200"     # 실주소는 .env
     opensearch_index: str = "kms_chunks_v1"
     opensearch_timeout: float = 30.0
-
-    # (구) `pg_vector_columns` 스위치는 제거했다(2026-09-11 리뷰). "청크 행은 두되 벡터 컬럼만
-    # 뺀다"는 중간 단계용이었는데, 엔진 구성에서는 청크 행 자체를 안 쓰고(pg_stores_chunks)
-    # pg 구성에서는 벡터가 곧 색인이라 False가 성립할 자리가 없었다 — 도달 불가한 스위치였다.
-
-    @model_validator(mode='after')
-    def _check_search_backend(self):
-        """search_backend 어휘 검증 — 오타가 런타임에 pg 폴백으로 조용히 흡수되지 않게 기동에서 끊는다."""
-        if self.search_backend not in ('pg', 'opensearch'):
-            raise ValueError(f"search_backend는 'pg'|'opensearch'만: {self.search_backend!r}")
-        return self
 
     # 컨텍스트 예산 (F100). context_window는 vLLM --max-model-len과 반드시 일치시킬 것.
     context_window: int = 30720

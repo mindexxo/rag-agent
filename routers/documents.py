@@ -22,7 +22,7 @@ from uuid import uuid4
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, Request, UploadFile, Depends, HTTPException
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy import text as sql_text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,7 +34,7 @@ from database import get_session
 from rag import cache, outbox
 from rag.chunking import extract_text
 from rag.documents import handle_upload
-from rag.models import Chunk, Document, Folder
+from rag.models import Document, Folder
 from routers.kms import get_tenant_id
 from schemas.kms import (ATTACHMENT_FILENAME_MAX, ATTACHMENT_MAX_TEXT_CHARS, DocumentExistsResponse,
                          DocumentUploadResponse, DocumentUpdateRequest, QueryAttachment)
@@ -343,8 +343,6 @@ async def delete_document(
 
     if not doc_ids:
         raise HTTPException(status_code=404, detail="document not found")
-
-    await session.execute(delete(Chunk).where(Chunk.document_id.in_(doc_ids)))
 
     for did in doc_ids:
         await cache.invalidate_source(session, tenant_id, did)

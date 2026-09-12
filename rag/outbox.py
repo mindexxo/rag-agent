@@ -22,7 +22,7 @@
   도는 회차)을 막는다. 워커를 늘리면 claim 컬럼(+ 고아 회수)이 필요하다.
   **다른 프로세스**의 drain(테스트 `ingest`, eval 스크립트가 워커 cron과 동시에)은 이 잠금이
   못 막는다 — SELECT에 행 잠금이 없어 같은 pending 행을 둘이 뽑을 수 있다. 결과는 멱등으로
-  수렴하지만(pg 구성이면 Chunk UNIQUE 위반으로 한쪽이 실패→재시도), 그래서 테스트·eval은
+  수렴하지만(같은 _id upsert라 두 번 색인해도 같다), 그래서 테스트·eval은
   `row_ids`로 자기 문서의 행만 처리한다. 개발계에서 워커를 띄운 채 eval을 돌리면 이 경합이 실재한다.
 - 인라인(커밋 직후 즉시 처리) → 안 한다. 삭제·토글·FAQ 수정도 cron까지 최대 1분(재시도 포함
   1~5분) 뒤 검색에 반영된다. **제품 결정**: "문서 변경은 검색에 최대 1~5분 뒤 반영될 수 있다"로
@@ -72,14 +72,7 @@ _drain_lock = asyncio.Lock()   # cron 겹침 방지 — 단일 워커 전제(모
 
 
 def enqueue(session, tenant_id: str, op: str, **payload):
-    """대기열 등재 — **commit하지 않는다.** 호출부의 트랜잭션에 얹히는 것이 요점이다.
-
-    INDEX_DOCUMENT는 백엔드와 무관하게 항상 등재한다 — 인제스션 경로가 이것 하나다
-    (pg 백엔드면 핸들러가 PG에 청크를 쓰고, 엔진 백엔드면 엔진에 색인한다). 나머지 연산은
-    엔진 구성에서만 의미가 있다(pg 백엔드는 PG 자체가 색인이라 동기화할 대상이 없다).
-    """
-    if op != INDEX_DOCUMENT and not opensearch.enabled():
-        return None
+    """대기열 등재 — **commit하지 않는다.** 호출부의 트랜잭션에 얹히는 것이 요점이다."""
     row = SearchIndexOutbox(tenant_id=tenant_id, op=op, payload=payload, status=PENDING)
     session.add(row)
     return row
@@ -183,11 +176,28 @@ async def drain_once(limit: int = BATCH, *, row_ids: list[int] | None = None) ->
             return await drain(session, limit, row_ids=row_ids)
 
 
-async def pending_row_ids(session, *, document_id: int) -> list[int]:
-    """문서 하나의 pending INDEX_DOCUMENT 행 id — 테스트·eval이 row_ids로 넘길 값."""
-    return list((await session.execute(
-        select(SearchIndexOutbox.id)
-        .where(SearchIndexOutbox.status == PENDING)
-        .where(SearchIndexOutbox.op == INDEX_DOCUMENT)
-        .where(SearchIndexOutbox.payload['document_id'].as_integer() == document_id)
-    )).scalars().all())
+async def pending_row_ids(session, *, document_id: int | None = None,
+                          faq_id: int | None = None) -> list[int]:
+    """한 문서 또는 한 FAQ에 걸린 pending 행 id — 테스트·eval이 row_ids로 넘길 값.
+
+    document_id: 그 문서를 가리키는 INDEX_DOCUMENT(payload.document_id)·DROP/META_DOCUMENTS
+    (payload.document_ids 배열) 행 전부. faq_id: INDEX_FAQ(payload.faq_id)·META/DROP_FAQS
+    (payload.faq_ids 배열) 행 전부 — 라우터 한 요청이 어느 op를 남겼든 같은 호출로 반영할 수 있게.
+    둘 중 하나만 넘긴다.
+    """
+    from sqlalchemy import or_
+    assert (document_id is None) != (faq_id is None), 'document_id 또는 faq_id 하나만'
+    stmt = (select(SearchIndexOutbox.id)
+            .where(SearchIndexOutbox.status == PENDING)
+            .order_by(SearchIndexOutbox.id))
+    if document_id is not None:
+        stmt = stmt.where(or_(
+            SearchIndexOutbox.payload['document_id'].as_integer() == document_id,
+            SearchIndexOutbox.payload['document_ids'].contains([document_id]),   # JSONB @> '[id]'
+        ))
+    else:
+        stmt = stmt.where(or_(
+            SearchIndexOutbox.payload['faq_id'].as_integer() == faq_id,
+            SearchIndexOutbox.payload['faq_ids'].contains([faq_id]),
+        ))
+    return list((await session.execute(stmt)).scalars().all())

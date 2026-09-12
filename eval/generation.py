@@ -22,7 +22,6 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from sqlalchemy import select
 
 from config import settings
 from database import AsyncSessionLocal
@@ -31,7 +30,6 @@ from rag.citation_labels import sources_from_chunks
 from rag.citation_tail import TailSplitter, resolve_citations
 from rag.conversation import (build_prior_turns, condense_query,
                               trim_messages_for_condense)
-from rag.models import Chunk, Document
 from rag.retriever import retrieve_candidates, RetrievedChunk
 from rag.embeddings import embed_texts_sync
 from rag.llm_schemas import is_schema_rejected
@@ -92,19 +90,16 @@ SMOKE = int(os.getenv("SMOKE", "0")) or None   # 스모크셋 크기 (0/미설�
 # ===== 컨텍스트 구성 =================================================
 
 async def oracle_context(session, chunk_ids: list[int]) -> list[RetrievedChunk]:
-    """gold 정답 청크 id들을 RetrievedChunk로 (LLM 컨텍스트 주입용)."""
+    """gold 정답 청크 id들을 RetrievedChunk로 (LLM 컨텍스트 주입용).
+
+    id는 색인 chunk_id다(resolve_gold가 색인에서 푼다 — #139). 본문·메타도 색인에서 읽는다;
+    session은 호출부 호환용으로 받기만 한다.
+    """
     if not chunk_ids:
         return []
-    rows = await session.execute(
-        select(Chunk, Document.filename, Document.version)
-        .join(Document, Chunk.document_id == Document.id)
-        .where(Chunk.id.in_(chunk_ids))
-    )
-    return [
-        RetrievedChunk(chunk_id=c.id, document_id=c.document_id, text=c.text,
-                       heading_path=c.heading_path, page=c.page, filename=fn, version=v)
-        for c, fn, v in rows.all()
-    ]
+    from rag import opensearch
+    chunk_map = await opensearch.fetch_chunk_map(chunk_ids)
+    return [chunk_map[cid] for cid in chunk_ids if cid in chunk_map]
 
 
 async def retrieved_context(session, tenant: str, query: str) -> list[RetrievedChunk]:

@@ -15,11 +15,11 @@
 - **0층(leaf, 다른 `rag/` 모듈을 안 씀)**: `config.py`, `rag/models.py`, `rag/tokens.py`,
   `rag/prompt_texts.py`, `rag/llm.py`, `rag/embeddings.py`, `rag/chunking.py`,
   `rag/index_text.py`, `rag/lexical.py`, `rag/limiter.py`, `rag/otel.py`, `rag/metrics.py`,
-  `rag/opensearch.py`(톱레벨은 `config`만 — 다른 `rag/` 참조는 전부 함수 안 지연 import)
+  `rag/faq_indexing.py`, `rag/opensearch.py`(톱레벨은 `config`만 — 다른 `rag/` 참조는 전부 함수 안 지연 import)
 - **중간층(조합)**: `rag/citation_labels.py`, `rag/clients.py`, `rag/llm_schemas.py`,
   `rag/turn_state.py`, `rag/cache.py`, `rag/reranker.py`, `rag/retriever.py`,
   `rag/stream_resume.py`, `rag/cancellation.py`, `rag/citation_tail.py`, `rag/documents.py`,
-  `rag/prompts.py`, `rag/conversation.py`, `rag/guardrail.py`, `rag/faq_indexing.py`, `rag/outbox.py`
+  `rag/prompts.py`, `rag/conversation.py`, `rag/guardrail.py`, `rag/outbox.py`
 - **조립점**: `rag/service.py` — 한 턴의 수명(prepare → generate → finalize)을 조율한다.
 - **진입점**(아무도 이들을 import하지 않는다): `rag/streaming.py`(SSE),
   `rag/worker.py`(arq 백그라운드), `routers/*.py`(HTTP), `main.py`(FastAPI 부트스트랩 전용).
@@ -30,9 +30,9 @@
 
 **함수 안 지연 import은 순환 회피용이며 의도된 것이다 — 톱레벨로 끌어올리지 마라.**
 이걸 하는 모듈: `chunking`(→xlsx_chunking), `embeddings`·`limiter`(→clients),
-`reranker`(→clients, embeddings), `retriever`(→reranker, opensearch), `stream_resume`(→clients, streaming),
+`reranker`(→clients, embeddings), `retriever`(→reranker), `stream_resume`(→clients, streaming),
 `opensearch`(→embeddings, faq_indexing, index_text, lexical, models, retriever, outbox — 검색
-백엔드가 인제스션·검색 양쪽에서 불려 톱레벨로 올리면 순환), `outbox`(→documents, metrics).
+저장소가 인제스션·검색 양쪽에서 불려 톱레벨로 올리면 순환), `outbox`(→documents).
 개수는 적지 않는다 — 정확한 목록은 `grep -rn "^\s\+from rag" rag/`로 뽑는다(톱레벨 import는
 줄 시작이 들여쓰기 없음이라 이렇게 구분된다).
 
@@ -40,12 +40,14 @@
 
 - 서버: `uvicorn main:app --reload --port 8000`
 - 워커(문서 업로드·정리 작업 시 필요): `arq rag.worker.WorkerSettings`
-- 테스트: `pytest` — 전체 약 4분(DB·Redis 필수, LLM·임베딩은 fake로 대체).
+- OpenSearch(검색 저장소 — 청크는 여기에만 있다 #139): 로컬은 `docker compose -f docker-compose.opensearch.yml up -d`.
+  없으면 서버·워커가 기동에서 죽고(`ensure_index`), 테스트도 첫 픽스처에서 죽는다.
+- 테스트: `pytest` — 전체 약 5분(DB·Redis·**OpenSearch** 필수, LLM·임베딩은 fake로 대체).
   DB 없이 순수 로직만 몇 초 만에 돌리려면 `pytest tests/test_service_pure.py tests/test_prompts.py
   tests/test_turn_status_contract.py tests/test_docs_freshness.py`.
   (건수는 적지 않는다 — 테스트를 추가할 때마다 어긋나고, 린터가 잡아주지 못하는 종류다.)
 - eval: `python -m eval.run_all --intent --condense --refusal --cache --other --retrieval --ragas`
-  축마다 의존이 다르다 — `--retrieval`은 DB+TEI, `--cache`는 임베딩·리랭커(TEI)+DB+LLM
+  축마다 의존이 다르다 — `--retrieval`은 DB+OpenSearch+TEI, `--cache`는 임베딩·리랭커(TEI)+DB+LLM
   (검색이 rerank를 태우고, 히트 판정이 LLM 재사용 심사를 거친다 #113),
   `--refusal`은 DB+LLM+TEI(`prepare()`가 검색을 태우므로 TEI가 필요하다 — 실수하기 쉽다),
   `--other`는 DB+LLM(OTHER 라우팅은 검색을 건너뛴다), `--intent`·`--condense`는 LLM.
@@ -54,8 +56,9 @@
 ## 환경변수
 
 우선순위: OS 환경변수 > `.env`(gitignore, 로컬 전용) > `.env.dev`(커밋됨, 개발계 공용).
-없으면 무엇이 죽는지: `DATABASE_URL`→기동 즉시 실패, Redis→limiter·cancellation·스트림 재개,
-vLLM→인텐트·질의재작성·생성·캐시 재사용 판정, TEI→인덱싱·검색·캐시.
+없으면 무엇이 죽는지: `DATABASE_URL`→기동 즉시 실패, `OPENSEARCH_URL`→기동 즉시 실패(검색·인제스션의
+저장소), Redis→limiter·cancellation·스트림 재개, vLLM→인텐트·질의재작성·생성·캐시 재사용 판정,
+TEI→인덱싱·검색·캐시.
 **비밀값은 이 파일에 적지 않는다** — `config.py`의 필드명만 참조하라.
 
 ## 이름이 비슷해서 헷갈리는 것 — 절대 동일시하지 말 것
@@ -103,7 +106,7 @@ vLLM→인텐트·질의재작성·생성·캐시 재사용 판정, TEI→인덱
 
 **모든 측정 축이 읽는 파일은 `eval/gold_set_v2.jsonl` 하나뿐이다**(no_evidence 58 / trap 50).
 예외 하나: 사내 실문서 골드는 원문 발췌라 공개 저장소에 올리지 않고 gitignore된 eval/gold_private 디렉터리에
-두며, `eval/generation.py`의 `load_gold`가 정본과 병합한다 — 현재 이걸 읽는 축은 `eval/_hybrid_ablation.py` 하나다.
+두며, `eval/generation.py`의 `load_gold`가 정본과 병합한다 — 검색축 `eval/retrieval_v2.py`가 이걸 읽는다.
 테넌트별 분할 `eval/gold_v2/*.jsonl`은 구축용 초안이며 어느 측정 축도 읽지 않는다 —
 읽는 것은 `eval/validate_gold_v2.py` 하나다. 그래서 둘은 어긋날 수 있고 실제로 어긋나 있다
 (#88 실측 15건, 전부 `expected_docs`·`expected_chunks`. 추가로 #95의 고난도 90행과 trap `must_not_contain` 백필은 **정본에만 있다** — 분할본에는 없는 것이 정상이다). **gold를 고칠 때는 정본을 고쳐라.**

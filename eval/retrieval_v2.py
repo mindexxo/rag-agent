@@ -156,4 +156,10 @@ async def main() -> None:
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    async def _run():
+        try:
+            await main()
+        finally:
+            from rag import opensearch
+            await opensearch.close_client()      # aiohttp 세션 미종료 경고 방지
+    asyncio.run(_run())

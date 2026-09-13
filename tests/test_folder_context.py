@@ -11,7 +11,7 @@ import pytest
 
 from rag.index_text import build_index_text
 from rag.reranker import _rerank_text
-from rag.retriever import RetrievedChunk
+from rag.retrieval_types import RetrievedChunk
 
 
 def _chunk(**kw) -> RetrievedChunk:

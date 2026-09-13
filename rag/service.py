@@ -37,7 +37,8 @@ from rag.prompt_texts import BLOCKED_INPUT_ANSWER, NO_EVIDENCE_ANSWER, SMALLTALK
 from rag.prompts import (build_chat_prompt, build_citation_constraint,
                          build_knowledge_generation_prompt, build_other_system_prompt,
                          build_other_user_message)
-from rag.retriever import RetrievalResult, retrieve, RetrievedChunk
+from rag.retriever import retrieve
+from rag.retrieval_types import RetrievalResult, RetrievedChunk
 
 from schemas.kms import SourceCitation, QueryAttachment
 from typing import Literal

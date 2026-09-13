@@ -281,7 +281,9 @@ async def fetch_chunk_map(ids: list[int]) -> dict:
     검색가능 필터는 이미 엔진에서 걸렸다(tenant_filter) — 여기서 다시 걸지 않는다.
     mget으로 한 번에 읽는다. 색인에 없는 id는 조용히 빠진다(호출부가 순서대로 재조립한다).
     """
-    from rag.retriever import RetrievedChunk    # 지연 import — 순환 회피
+    # 자료형은 0층 leaf(rag/retrieval_types.py)라 순환이 없다 — 이 모듈을 0층으로 유지하려는
+    # 규율 때문에 아직 함수 안에 있을 뿐이다(#146 분리에서 톱레벨로 올라간다).
+    from rag.retrieval_types import RetrievedChunk
     if not ids:
         return {}
     resp = await client().mget(index=settings.opensearch_index,

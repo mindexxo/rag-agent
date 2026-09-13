@@ -9,7 +9,8 @@ DB·TEI 없이 도는 순수 테스트. retrieve_candidates에서 분해해 나�
 """
 import pytest
 
-from rag.retriever import RetrievedChunk, _rank_multi, _rrf_fuse
+from rag.retriever import _rank_multi, _rrf_fuse
+from rag.retrieval_types import RetrievedChunk
 
 
 def _chunk(chunk_id: int) -> RetrievedChunk:

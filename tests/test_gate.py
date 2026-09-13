@@ -2,7 +2,8 @@
 
 strict-grounded의 핵심 분기: 후보 없음 / 거리 초과 / 정상.
 """
-from rag.retriever import RetrievalCandidates, RetrievedChunk, _keep_single_table, apply_gate
+from rag.retriever import _keep_single_table, apply_gate
+from rag.retrieval_types import RetrievalCandidates, RetrievedChunk
 
 
 def _chunk(**kw) -> RetrievedChunk:

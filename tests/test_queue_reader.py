@@ -9,7 +9,7 @@ import asyncio
 import pytest
 
 from config import settings
-from rag.retriever import RetrievalResult
+from rag.retrieval_types import RetrievalResult
 from rag.service import PreparedRag
 from rag.streaming import queue_reader
 from tests.conftest import sse_events

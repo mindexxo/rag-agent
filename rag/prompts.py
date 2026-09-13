@@ -18,7 +18,7 @@ from rag.prompt_texts import (
     _OTHER_SYSTEM_PROMPT_TEMPLATE,
     _SYSTEM_PROMPT_TEMPLATE,
 )
-from rag.retriever import RetrievedChunk
+from rag.retrieval_types import RetrievedChunk
 
 
 def _resolve_domain_hint(domain_hint: str | None) -> str:

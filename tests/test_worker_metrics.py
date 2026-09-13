@@ -22,7 +22,7 @@ def index_calls(monkeypatch):
     async def _noop():
         calls.append(1)
 
-    monkeypatch.setattr(worker.opensearch, 'ensure_index_soft', _noop)
+    monkeypatch.setattr(worker.os_client, 'ensure_index_soft', _noop)
     return calls
 
 

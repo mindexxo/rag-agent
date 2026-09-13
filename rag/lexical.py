@@ -10,7 +10,7 @@ bigram 필드는 대조군·실험용이지만, 토크나이저가 코드 한 �
 통째, 단독에선 오분할)·사전 관리 비용이 있어 bigram 확정.
 
 (구) PG FTS용 tsquery 이스케이프·앱 BM25 산식은 #139 OpenSearch 도입으로 제거했다 —
-BM25는 엔진(Lucene, k1·b는 rag/opensearch.py 매핑)이 계산한다.
+BM25는 엔진(Lucene, k1·b는 rag/os_client.py 매핑)이 계산한다.
 """
 
 

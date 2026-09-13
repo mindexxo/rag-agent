@@ -16,7 +16,7 @@ from sqlalchemy import select
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import opensearch
+from rag import opensearch, os_client
 from rag.models import Document, Faq
 
 
@@ -59,7 +59,7 @@ async def _run() -> None:
     try:
         await main()
     finally:
-        await opensearch.close_client()      # aiohttp 세션 미종료 경고 방지
+        await os_client.close_client()      # aiohttp 세션 미종료 경고 방지
 
 
 if __name__ == '__main__':

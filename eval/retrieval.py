@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import opensearch
+from rag import os_client
 from rag.models import Document
 from rag.retriever import apply_gate, retrieve_candidates
 
@@ -35,7 +35,7 @@ class Resolved:
 
 async def _indexed_chunks(document_id: int) -> list[tuple[int, list[str], str]]:
     """문서의 색인 청크 (chunk_id, heading_path, text). 청크는 OpenSearch에만 있다(#139)."""
-    resp = await opensearch.client().search(index=settings.opensearch_index, body={
+    resp = await os_client.client().search(index=settings.opensearch_index, body={
         "size": 10000,                        # 문서 하나의 청크 수 상한으로 충분 (실문서 최대 86)
         "_source": ["chunk_id", "heading_path", "text"],
         "query": {"term": {"document_id": document_id}},

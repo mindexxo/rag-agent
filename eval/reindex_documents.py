@@ -28,7 +28,7 @@ from sqlalchemy import select
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import cache, opensearch, outbox
+from rag import cache, os_client, outbox
 from rag.models import Document
 
 
@@ -51,7 +51,7 @@ async def _targets(tenant_id: str | None) -> list[tuple[int, str, str, int]]:
 
         out = []
         for doc in docs:
-            n = (await opensearch.client().count(index=settings.opensearch_index, body={
+            n = (await os_client.client().count(index=settings.opensearch_index, body={
                 "query": {"term": {"document_id": doc.id}}}))["count"]
             out.append((doc.id, doc.tenant_id, doc.filename, n))
         return out

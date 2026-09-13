@@ -18,6 +18,7 @@ import re
 import pytest
 
 from rag import opensearch as B
+from rag import os_client as C
 from rag import lexical
 from rag.index_text import build_index_text
 
@@ -26,11 +27,11 @@ from rag.index_text import build_index_text
 def test_bm25_hnsw_파라미터는_엔진_기본값을_쓴다():
     """k1·b·m·ef_construction·ef_search를 매핑에 박지 않는다 — A/B 때 pgvector와 맞춘 값(k1 1.5, ef 64/40)은
     도입 판정용이었고, 도입 후엔 표준 기본값으로 간다(사용자 결정). 누가 다시 박으면 여기서 걸린다."""
-    settings_ = B.MAPPING["settings"]["index"]
+    settings_ = C.MAPPING["settings"]["index"]
     assert "similarity" not in settings_
     assert not any(k.startswith("knn.algo_param") for k in settings_)
-    props = B.MAPPING["mappings"]["properties"]
-    for field in (B.NORI_FIELD, B.LEX_BIGRAM_FIELD):
+    props = C.MAPPING["mappings"]["properties"]
+    for field in (C.NORI_FIELD, C.LEX_BIGRAM_FIELD):
         assert props[field]["type"] == "text" and "similarity" not in props[field], field
     assert "parameters" not in props["dense"]["method"]
 
@@ -38,8 +39,8 @@ def test_bm25_hnsw_파라미터는_엔진_기본값을_쓴다():
 def test_dense_필드는_임베딩_차원과_lucene_cosinesimil로_고정된다():
     """차원이 어긋나면 색인이 통째로 실패하고, engine·space_type이 바뀌면 거리 환산(score_to_cosine_distance)이
     틀어져 게이트 신호가 조용히 어긋난다. HNSW 파라미터는 기본값(별도 테스트)."""
-    dense = B.MAPPING["mappings"]["properties"]["dense"]
-    assert dense["type"] == "knn_vector" and dense["dimension"] == B.DIM == 1024
+    dense = C.MAPPING["mappings"]["properties"]["dense"]
+    assert dense["type"] == "knn_vector" and dense["dimension"] == C.DIM == 1024
     assert dense["method"]["name"] == "hnsw"
     assert dense["method"]["engine"] == "lucene"           # cosinesimil 지원 + 필터를 kNN 탐색 단계에서 처리
     assert dense["method"]["space_type"] == "cosinesimil"
@@ -57,9 +58,9 @@ def test_어휘_입력_조립이_운영과_같다():
 def test_bigram_필드는_공백만_자른다():
     """analyzer로 bigram을 재현하지 않는다는 설계가 매핑에 남아 있는지 — 이게 바뀌면
     1글자 어절 보존이 깨져 bigram 대조군이 대조군이 아니게 된다(rag/lexical.py:24-38)."""
-    props = B.MAPPING["mappings"]["properties"]
-    analyzer = props[B.LEX_BIGRAM_FIELD]["analyzer"]
-    assert B.MAPPING["settings"]["analysis"]["analyzer"][analyzer]["tokenizer"] == "whitespace"
+    props = C.MAPPING["mappings"]["properties"]
+    analyzer = props[C.LEX_BIGRAM_FIELD]["analyzer"]
+    assert C.MAPPING["settings"]["analysis"]["analyzer"][analyzer]["tokenizer"] == "whitespace"
     # 1글자 어절이 살아남는 것이 이 설계의 요점 — 정의점 함수로 확인
     assert lexical.bigrams("가 나다") == ["가", "나다"]
 
@@ -67,8 +68,8 @@ def test_bigram_필드는_공백만_자른다():
 def test_nori_질의에_2_18_결함_회피가_붙어_있다():
     """auto_generate_synonyms_phrase_query=False가 빠지면 hybrid+nori가 500으로 죽는다
     (실측 47/450 — rag/opensearch.py의 lex_clause docstring). 조용히 사라지지 않게 묶는다."""
-    clause = B.lex_clause(B.NORI_FIELD, "적립금 얼마")
-    assert clause["match"][B.NORI_FIELD]["auto_generate_synonyms_phrase_query"] is False
+    clause = B.lex_clause(C.NORI_FIELD, "적립금 얼마")
+    assert clause["match"][C.NORI_FIELD]["auto_generate_synonyms_phrase_query"] is False
 
 
 def test_게이트_신호_환산이_실측과_같다():
@@ -97,7 +98,7 @@ def test_필터는_엔진에서_걸린다():
     assert {'term': {'tenant_id': 't1'}} in terms
     assert {'term': {'searchable': True}} in terms
     # 매핑에도 필드가 있어야 실제로 걸린다
-    props = B.MAPPING['mappings']['properties']
+    props = C.MAPPING['mappings']['properties']
     assert props['searchable']['type'] == 'boolean'
     assert props['folder_id']['type'] == 'long'    # 폴더 단위 fan-out update의 필터 키
 
@@ -119,7 +120,7 @@ def test_searchable_판정이_조건표대로다():
 def test_엔진이_돌려준_청크에_인용_메타가_다_실린다():
     """PG를 되묻지 않으므로 RetrievedChunk의 모든 필드가 _source에 있어야 한다.
     하나라도 빠지면 인용 표시나 리랭커 입력이 조용히 비어버린다."""
-    props = B.MAPPING['mappings']['properties']
+    props = C.MAPPING['mappings']['properties']
     for f in ('chunk_id', 'document_id', 'faq_id', 'text', 'heading_path', 'page',
               'filename', 'version', 'is_table', 'folder_name', 'folder_description'):
         assert f in props, f
@@ -155,8 +156,8 @@ def test_어휘_필드는_본문에서_만든다():
     ch = _Chunk(dense=[0.5] * 1024)
     doc = B.build_doc(ch, '정책.pdf', 2)
     expected = B.lex_text(ch.text, '정책.pdf', ch.heading_path)
-    assert doc[B.NORI_FIELD] == expected
-    assert doc[B.LEX_BIGRAM_FIELD] == ' '.join(lexical.bigrams(expected))
+    assert doc[C.NORI_FIELD] == expected
+    assert doc[C.LEX_BIGRAM_FIELD] == ' '.join(lexical.bigrams(expected))
 
 
 def test_chunk_os_id는_결정적이고_충돌이_없다():
@@ -192,9 +193,9 @@ async def test_엔진에_못_붙으면_ensure_index가_예외를_올린다(monke
     class _Client:
         indices = _Indices()
 
-    monkeypatch.setattr(B, 'client', lambda: _Client())
+    monkeypatch.setattr(C, 'client', lambda: _Client())
     with pytest.raises(ConnectionError):
-        await B.ensure_index()
+        await C.ensure_index()
 
 
 @pytest.mark.asyncio
@@ -216,11 +217,11 @@ async def test_이미_있는_인덱스는_건드리지_않고_경합의_already_
         def __init__(self, exists):
             self.indices = _Indices(exists)
 
-    monkeypatch.setattr(B, 'client', lambda: _Client(True))
-    await B.ensure_index()
+    monkeypatch.setattr(C, 'client', lambda: _Client(True))
+    await C.ensure_index()
     assert calls == []                                   # 있으면 create를 부르지 않는다
-    monkeypatch.setattr(B, 'client', lambda: _Client(False))
-    await B.ensure_index()                               # 웹·워커 동시 생성 경합 — 예외 아님
+    monkeypatch.setattr(C, 'client', lambda: _Client(False))
+    await C.ensure_index()                               # 웹·워커 동시 생성 경합 — 예외 아님
     assert calls == ['create']
 
 
@@ -235,9 +236,9 @@ async def test_ensure_index_soft는_못_붙어도_예외_없이_False(monkeypatc
     class _Client:
         indices = _Indices()
 
-    monkeypatch.setattr(B, 'client', lambda: _Client())
+    monkeypatch.setattr(C, 'client', lambda: _Client())
     import logging
-    with caplog.at_level(logging.ERROR, logger='rag.opensearch'):
-        assert await B.ensure_index_soft() is False
+    with caplog.at_level(logging.ERROR, logger='rag.os_client'):
+        assert await C.ensure_index_soft() is False
     assert any('연결 실패' in r.getMessage() for r in caplog.records)
 

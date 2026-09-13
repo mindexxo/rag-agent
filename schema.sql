@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS faqs (
 CREATE INDEX IF NOT EXISTS idx_faqs_tenant ON faqs (tenant_id);
 
 -- ---------- 청크: 이 DB에 없다 ----------
--- 본문·메타·벡터·어휘 필드는 OpenSearch 인덱스(rag/opensearch.py MAPPING)에만 있다(#139).
+-- 본문·메타·벡터·어휘 필드는 OpenSearch 인덱스(rag/os_client.py MAPPING)에만 있다(#139).
 -- 예전 PG 검색 인덱스 `chunks`는 기존 DB에 테이블만 남아 있을 수 있다 — 제거 절차는 하단 "#139 마이그레이션".
 
 -- ---------- LLM 응답 캐시 ----------

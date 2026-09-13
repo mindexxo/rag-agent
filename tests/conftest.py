@@ -120,18 +120,18 @@ async def sync_faq(faq_id: int) -> dict:
 async def faq_doc(faq_id: int) -> dict | None:
     """FAQ 청크의 색인 문서(_source). 없으면 None — 청크는 OpenSearch에만 있다(#139)."""
     from config import settings
-    from rag import opensearch
-    resp = await opensearch.client().get(index=settings.opensearch_index,
-                                         id=str(opensearch.chunk_os_id(faq_id=faq_id)),
-                                         ignore=404)
+    from rag import opensearch, os_client
+    resp = await os_client.client().get(index=settings.opensearch_index,
+                                        id=str(opensearch.chunk_os_id(faq_id=faq_id)),
+                                        ignore=404)
     return resp.get('_source') if resp.get('found') else None
 
 
 async def indexed_chunk_texts(document_id: int) -> list[str]:
     """문서의 색인 청크 본문들(chunk_index 순). PG `chunks`는 더 쓰지 않는다(#139)."""
     from config import settings
-    from rag import opensearch
-    resp = await opensearch.client().search(index=settings.opensearch_index, body={
+    from rag import os_client
+    resp = await os_client.client().search(index=settings.opensearch_index, body={
         'size': 1000, '_source': ['chunk_id', 'text'],
         'query': {'term': {'document_id': document_id}},
         'sort': [{'chunk_id': 'asc'}],
@@ -353,8 +353,8 @@ async def _loop_hygiene():
     await clients.http_async.aclose()
     clients.http_async = httpx.AsyncClient()
     # OpenSearch 클라이언트(aiohttp)도 루프에 묶인다 — 닫고 비워 다음 테스트가 새로 만들게 (#139)
-    from rag import opensearch
-    await opensearch.close_client()
+    from rag import os_client
+    await os_client.close_client()
 
 
 async def purge_tenant(t: str) -> None:
@@ -366,9 +366,9 @@ async def purge_tenant(t: str) -> None:
     from sqlalchemy import delete
 
     from database import AsyncSessionLocal
-    from rag import opensearch
+    from rag import opensearch, os_client
 
-    await opensearch.ensure_index()
+    await os_client.ensure_index()
     await opensearch._delete_by_terms('tenant_id', [t])
     from rag.models import (
         AnswerCache as AnswerCacheRow,
@@ -399,8 +399,8 @@ async def _ensure_search_index() -> None:
     """검색 인덱스는 테스트 스위트의 전제다(#139 — 청크는 OpenSearch에만 있다). 픽스처 **시작**에서
     보장한다 — 정리(purge_tenant)에서만 부르면 첫 테스트가 없는 인덱스에 색인하다 404로 죽는다(실측).
     엔진이 안 떠 있으면 여기서 바로 실패한다 — 조용히 PG만으로 도는 척하지 않는다."""
-    from rag import opensearch
-    await opensearch.ensure_index()
+    from rag import os_client
+    await os_client.ensure_index()
 
 
 @pytest_asyncio.fixture

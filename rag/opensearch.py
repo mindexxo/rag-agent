@@ -17,7 +17,7 @@
 
 ## 파라미터의 출처
 
-도입 판정 A/B(`eval/report_os_ablation_v1~v3.md`)에서 PG 하이브리드와 변인을 맞추려 잡은 값을
+도입 판정 A/B(이슈 #139·PR #140 본문에 요약, 리포트 파일은 git 이력 `75d81db` 이전)에서 PG 하이브리드와 변인을 맞추려 잡은 값을
 그대로 쓴다 — 바꿀 근거가 없어서다. HNSW `m=16`·`ef_construction=64`·`ef_search=40`,
 BM25 `k1=1.5`·`b=0.75`(Lucene 기본 1.2 아님), 거리 환산 `cosine_distance = 2 - 2*score`
 (`cosinesimil` 점수가 (1+cos)/2 — pgvector와 소수점 6자리까지 일치 실측). bigram 토큰은 analyzer로

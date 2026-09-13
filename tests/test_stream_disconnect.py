@@ -17,7 +17,7 @@ from database import AsyncSessionLocal
 from rag.models import Message
 from rag.service import PreparedRag, RagService
 from rag.streaming import _run_generation
-from rag.retriever import RetrievalResult
+from rag.retrieval_types import RetrievalResult
 from rag import limiter, otel
 from tests.conftest import register_faq
 

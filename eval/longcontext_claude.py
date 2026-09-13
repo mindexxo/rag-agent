@@ -71,10 +71,10 @@ async def load_corpus(session, tenant: str) -> str:
     # 청크는 색인에만 있다(#139) — 테넌트의 searchable 청크를 전부 읽어 문서별로 모은다.
     # chunk_id = document_id<<20 | chunk_index(FAQ는 음수)라 id 오름차순이 곧 문서·청크 순이다.
     from config import settings
-    from rag import opensearch
-    resp = await opensearch.client().search(index=settings.opensearch_index, body={
+    from rag import os_client, os_search
+    resp = await os_client.client().search(index=settings.opensearch_index, body={
         "size": 10000, "_source": ["chunk_id", "document_id", "faq_id", "text"],
-        "query": opensearch.tenant_filter(tenant), "sort": [{"chunk_id": "asc"}],
+        "query": os_search.tenant_filter(tenant), "sort": [{"chunk_id": "asc"}],
     })
     hits = [h["_source"] for h in resp["hits"]["hits"]]
 

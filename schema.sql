@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS faqs (
 CREATE INDEX IF NOT EXISTS idx_faqs_tenant ON faqs (tenant_id);
 
 -- ---------- 청크: 이 DB에 없다 ----------
--- 본문·메타·벡터·어휘 필드는 OpenSearch 인덱스(rag/opensearch.py MAPPING)에만 있다(#139).
+-- 본문·메타·벡터·어휘 필드는 OpenSearch 인덱스(rag/os_client.py MAPPING)에만 있다(#139).
 -- 예전 PG 검색 인덱스 `chunks`는 기존 DB에 테이블만 남아 있을 수 있다 — 제거 절차는 하단 "#139 마이그레이션".
 
 -- ---------- LLM 응답 캐시 ----------
@@ -244,7 +244,7 @@ CREATE TABLE IF NOT EXISTS tenant_quotas (
 --   ③ DROP TABLE IF EXISTS chunks;
 --
 -- 되돌리기는 없다 — 복구는 OpenSearch 스냅샷이거나, 원본 파일(documents.blob_path) 재인제스션이다
--- (eval.os_reconcile --apply가 색인에 없는 ready 문서·FAQ를 대기열에 넣는다).
+-- (rag.os_reconcile --apply가 색인에 없는 ready 문서·FAQ를 대기열에 넣는다).
 -- answer_cache.query_embedding은 이 정리의 대상이 아니다 — 의미캐시 자체가 쓰는 값이다.
 
 -- ── #139 outbox — 색인 작업 대기열 (트랜잭셔널 outbox) ────────────────────────

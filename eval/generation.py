@@ -30,7 +30,8 @@ from rag.citation_labels import sources_from_chunks
 from rag.citation_tail import TailSplitter, resolve_citations
 from rag.conversation import (build_prior_turns, condense_query,
                               trim_messages_for_condense)
-from rag.retriever import retrieve_candidates, RetrievedChunk
+from rag.retriever import retrieve_candidates
+from rag.retrieval_types import RetrievedChunk
 from rag.embeddings import embed_texts_sync
 from rag.llm_schemas import is_schema_rejected
 from rag.prompts import build_citation_constraint, build_knowledge_generation_prompt
@@ -97,8 +98,8 @@ async def oracle_context(session, chunk_ids: list[int]) -> list[RetrievedChunk]:
     """
     if not chunk_ids:
         return []
-    from rag import opensearch
-    chunk_map = await opensearch.fetch_chunk_map(chunk_ids)
+    from rag import os_search
+    chunk_map = await os_search.fetch_chunk_map(chunk_ids)
     return [chunk_map[cid] for cid in chunk_ids if cid in chunk_map]
 
 

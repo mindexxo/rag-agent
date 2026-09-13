@@ -15,11 +15,13 @@
 - **0층(leaf, 다른 `rag/` 모듈을 안 씀)**: `config.py`, `rag/models.py`, `rag/tokens.py`,
   `rag/prompt_texts.py`, `rag/llm.py`, `rag/embeddings.py`, `rag/chunking.py`,
   `rag/index_text.py`, `rag/lexical.py`, `rag/limiter.py`, `rag/otel.py`, `rag/metrics.py`,
-  `rag/faq_indexing.py`, `rag/opensearch.py`(톱레벨은 `config`만 — 다른 `rag/` 참조는 전부 함수 안 지연 import)
+  `rag/faq_indexing.py`, `rag/retrieval_types.py`, `rag/os_client.py`(톱레벨은 `config`만 —
+  `opensearchpy`는 `client()` 안에서 지연 import한다: 매핑 상수만 보는 테스트가 그 패키지 없이도 import할 수 있게)
 - **중간층(조합)**: `rag/citation_labels.py`, `rag/clients.py`, `rag/llm_schemas.py`,
   `rag/turn_state.py`, `rag/cache.py`, `rag/reranker.py`, `rag/retriever.py`,
   `rag/stream_resume.py`, `rag/cancellation.py`, `rag/citation_tail.py`, `rag/documents.py`,
-  `rag/prompts.py`, `rag/conversation.py`, `rag/guardrail.py`, `rag/outbox.py`
+  `rag/prompts.py`, `rag/conversation.py`, `rag/guardrail.py`, `rag/outbox.py`,
+  `rag/os_search.py`, `rag/os_index.py`, `rag/os_reconcile.py`
 - **조립점**: `rag/service.py` — 한 턴의 수명(prepare → generate → finalize)을 조율한다.
 - **진입점**(아무도 이들을 import하지 않는다): `rag/streaming.py`(SSE),
   `rag/worker.py`(arq 백그라운드), `routers/*.py`(HTTP), `main.py`(FastAPI 부트스트랩 전용).
@@ -31,8 +33,12 @@
 **함수 안 지연 import은 순환 회피용이며 의도된 것이다 — 톱레벨로 끌어올리지 마라.**
 이걸 하는 모듈: `chunking`(→xlsx_chunking), `embeddings`·`limiter`(→clients),
 `reranker`(→clients, embeddings), `retriever`(→reranker), `stream_resume`(→clients, streaming),
-`opensearch`(→embeddings, faq_indexing, index_text, lexical, models, retriever, outbox — 검색
-저장소가 인제스션·검색 양쪽에서 불려 톱레벨로 올리면 순환), `outbox`(→documents).
+`outbox`(→documents).
+
+검색 저장소(`os_*` 4모듈)에는 **지연 import가 없다**(#146). 구 rag/opensearch.py는 19~21곳을
+함수 안에 두고 있었는데, 그중 진짜 순환은 둘뿐이었다 — `retriever`(자료형)와 `outbox`(재등재).
+자료형을 `retrieval_types.py`로 빼고 재동기화를 `os_reconcile.py`로 떼자 둘 다 사라졌고, 나머지는
+애초에 "한 파일을 0층으로 유지한다"는 자기 규율이었을 뿐이라 톱레벨로 올라갔다.
 개수는 적지 않는다 — 정확한 목록은 `grep -rn "^\s\+from rag" rag/`로 뽑는다(톱레벨 import는
 줄 시작이 들여쓰기 없음이라 이렇게 구분된다).
 
@@ -43,6 +49,8 @@
 - OpenSearch(검색 저장소 — 청크는 여기에만 있다 #139): `.env.dev` 기본은 개발계(worker20) 인덱스. 로컬 컨테이너를
   쓰려면 `docker compose -f docker-compose.opensearch.yml up -d` 후 `.env`에서 `OPENSEARCH_URL` 오버라이드.
   못 붙어도 서버·워커는 기동되지만(ERROR 로그) 검색·색인이 안 되고, 테스트는 첫 픽스처에서 죽는다.
+- 색인 정합 복구: `python -m rag.os_reconcile`(대조만) / `--apply`(재등재·삭제). `eval/`이 아니라
+  `rag/` 아래인 이유는 도커 이미지가 `eval/`을 빼기 때문이다 — 운영 복구 명령은 운영 이미지 안에 있어야 한다(#146).
 - 테스트: `pytest` — 전체 약 5분(DB·Redis·**OpenSearch** 필수, LLM·임베딩은 fake로 대체).
   DB 없이 순수 로직만 몇 초 만에 돌리려면 `pytest tests/test_service_pure.py tests/test_prompts.py
   tests/test_turn_status_contract.py tests/test_docs_freshness.py`.

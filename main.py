@@ -16,7 +16,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
 
 from config import settings
-from rag import cancellation, opensearch
+from rag import cancellation, os_client
 from rag.otel import init_tracing
 from routers.conversations import router as conversation_router
 from routers.documents import router as document_router
@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
     검색 인덱스 보장(#139): 엔진에 못 붙어도 기동은 한다(ensure_index_soft — ERROR 로그). 로컬 개발에서
     OpenSearch 없이도 앱을 띄울 수 있게 한 사용자 결정(2026-09-13). 그 상태의 검색 요청은 요청 단위로 실패한다.
     """
-    await opensearch.ensure_index_soft()
+    await os_client.ensure_index_soft()
     subscriber = asyncio.create_task(cancellation.subscribe_forever())
     try:
         yield
@@ -51,7 +51,7 @@ async def lifespan(app: FastAPI):
         subscriber.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await subscriber
-        await opensearch.close_client()
+        await os_client.close_client()
 
 
 app = FastAPI(lifespan=lifespan)

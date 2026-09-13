@@ -5,7 +5,7 @@ from arq.connections import RedisSettings
 from prometheus_client import start_http_server
 from config import settings
 from database import AsyncSessionLocal
-from rag import cache, opensearch, outbox
+from rag import cache, os_client, outbox
 # 도메인 스윕과 아래 cron 래퍼가 같은 이름이라 별칭 — cron_jobs엔 래퍼가 등록돼야 한다
 from rag.turn_state import sweep_stale_generating as _sweep_generating
 
@@ -49,11 +49,11 @@ async def startup(ctx):
     색인하면 동적 매핑(knn_vector 아님)으로 굳는다. 엔진에 못 붙어도 기동은 한다(ensure_index_soft) —
     그동안 drain은 회차마다 실패해 attempts만 쌓이고, 엔진이 돌아오면 다음 회차가 반영한다."""
     _start_metrics_server()
-    await opensearch.ensure_index_soft()
+    await os_client.ensure_index_soft()
 
 
 async def shutdown(ctx):
-    await opensearch.close_client()
+    await os_client.close_client()
 
 async def sweep_stale_cache(ctx):
     """미히트 캐시 청소(#16) — cache_retention_days(90일) 지난 row 삭제. 일 1회면 충분."""

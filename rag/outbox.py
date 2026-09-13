@@ -7,7 +7,7 @@
 원자적이라는 것 — 그게 이 패턴의 전부다. 등재는 `session.add` 한 줄이라 네트워크도 await도 없다.
 
 이전 방식(커밋 후 직접 호출, arq 잡 등록)은 그 사이에 프로세스가 죽거나 Redis가 순단하면
-색인이 조용히 낡았다. 색인이 서빙의 정본인 구성(rag/opensearch.py)에서 그 누락은 곧
+색인이 조용히 낡았다. 색인이 서빙의 정본인 구성(rag/os_search.py의 fetch_chunk_map)에서 그 누락은 곧
 낡은 답변이고, 상담 답변은 고객에게 나간 뒤에야 알게 되므로 되돌릴 수 없다.
 
 ## 처리 — 단일 워커, cron 1분, 폴링
@@ -34,7 +34,7 @@
 
 ## 멱등성이 전제다
 
-모든 연산이 멱등이다: 색인은 `_id=chunk_id` upsert(chunk_id가 결정적 — opensearch.chunk_os_id),
+모든 연산이 멱등이다: 색인은 `_id=chunk_id` upsert(chunk_id가 결정적 — os_index.chunk_os_id),
 삭제는 없는 것을 지워도 무해, 메타 갱신은 같은 값을 덮어쓸 뿐이다. 그래서 겹쳐 두 번 처리해도
 결과가 같고, "처리했는데 done 찍기 전에 죽는" 경우도 다음 회차가 한 번 더 할 뿐이다.
 **at-least-once**를 택한 것이다 — exactly-once는 분산 트랜잭션이 필요하고 멱등 연산에서는 값이 없다.
@@ -50,7 +50,7 @@ import logging
 from sqlalchemy import select, update
 
 from database import AsyncSessionLocal
-from rag import opensearch
+from rag import os_client, os_index
 from rag.metrics import SEARCH_INDEX_SYNC_TOTAL
 from rag.models import Document, SearchIndexOutbox
 
@@ -90,15 +90,15 @@ async def _apply(session, op: str, payload: dict, row_id: int) -> None:
         from rag.documents import index_pending_document   # 지연 import — documents가 이 모듈을 import
         await index_pending_document(payload['document_id'], outbox_row_id=row_id)
     elif op == DROP_DOCUMENTS:
-        await opensearch.drop_documents_now(payload['document_ids'])
+        await os_index.drop_documents_now(payload['document_ids'])
     elif op == META_DOCUMENTS:
-        await opensearch.sync_meta_documents_now(session, payload['document_ids'])
+        await os_index.sync_meta_documents_now(session, payload['document_ids'])
     elif op == INDEX_FAQ:
-        await opensearch.index_faq_chunks(session, payload['faq_id'])
+        await os_index.index_faq_chunks(session, payload['faq_id'])
     elif op == DROP_FAQS:
-        await opensearch.drop_faqs_now(payload['faq_ids'])
+        await os_index.drop_faqs_now(payload['faq_ids'])
     elif op == META_FAQS:
-        await opensearch.sync_meta_faqs_now(session, payload['faq_ids'])
+        await os_index.sync_meta_faqs_now(session, payload['faq_ids'])
     else:
         raise ValueError(f'알 수 없는 outbox op: {op!r}')
 
@@ -173,7 +173,7 @@ async def drain_once(limit: int = BATCH, *, row_ids: list[int] | None = None) ->
         return {'done': 0, 'failed': 0, 'skipped': True}
     # 기동 시 엔진에 못 붙었을 수 있다(ensure_index_soft) — 색인 전에 인덱스를 다시 보장한다.
     # 없는 인덱스에 bulk하면 동적 매핑으로 굳으므로, 실패하면 이 회차는 건너뛴다(행은 pending 그대로).
-    if not await opensearch.ensure_index_soft():
+    if not await os_client.ensure_index_soft():
         return {'done': 0, 'failed': 0, 'skipped': True}
     async with _drain_lock:
         async with AsyncSessionLocal() as session:

@@ -360,9 +360,8 @@ async def _loop_hygiene():
 async def purge_tenant(t: str) -> None:
     """해당 tenant의 전 테이블 데이터 + 검색 인덱스 문서 + Redis 키 정리 (fixture·다중 테넌트 테스트 공용).
 
-    검색 인덱스는 테스트 스위트의 전제다(#139 — 청크는 OpenSearch에만 있다): 없으면 여기서
-    만든다(ensure_index). 엔진이 안 떠 있으면 첫 픽스처에서 바로 실패한다 — 조용히 PG만으로
-    도는 척하지 않는다. 테넌트 문서는 운영 삭제 경로(_delete_by_terms)로 지운다.
+    테넌트의 색인 문서는 운영 삭제 경로(_delete_by_terms)로 지운다(인덱스 보장은 픽스처 시작의
+    _ensure_search_index — 직접 부르는 호출자를 위해 여기서도 한 번 더 보장).
     """
     from sqlalchemy import delete
 
@@ -373,7 +372,6 @@ async def purge_tenant(t: str) -> None:
     await opensearch._delete_by_terms('tenant_id', [t])
     from rag.models import (
         AnswerCache as AnswerCacheRow,
-        Chunk,
         Conversation,
         Document,
         Faq,
@@ -385,7 +383,7 @@ async def purge_tenant(t: str) -> None:
     async with AsyncSessionLocal() as session:
         # FK 순서: 자식(청크·메시지) 먼저. outbox 행(done/failed 포함)도 테넌트 단위로 지운다 —
         # 운영은 행을 보존하지만(이력) 테스트의 랜덤 테넌트 행이 공유 DB에 쌓일 이유는 없다 (#139).
-        for model in (Chunk, Message, Conversation, AnswerCacheRow,
+        for model in (Message, Conversation, AnswerCacheRow,
                       Faq, Document, Folder, TenantQuota, SearchIndexOutbox):
             await session.execute(delete(model).where(model.tenant_id == t))
         await session.commit()
@@ -397,9 +395,18 @@ async def purge_tenant(t: str) -> None:
         await clients.shared_redis.delete(*keys)
 
 
+async def _ensure_search_index() -> None:
+    """검색 인덱스는 테스트 스위트의 전제다(#139 — 청크는 OpenSearch에만 있다). 픽스처 **시작**에서
+    보장한다 — 정리(purge_tenant)에서만 부르면 첫 테스트가 없는 인덱스에 색인하다 404로 죽는다(실측).
+    엔진이 안 떠 있으면 여기서 바로 실패한다 — 조용히 PG만으로 도는 척하지 않는다."""
+    from rag import opensearch
+    await opensearch.ensure_index()
+
+
 @pytest_asyncio.fixture
 async def tenant_id(_loop_hygiene):
     """랜덤 tenant + 테스트 후 정리. _loop_hygiene 의존으로 정리가 커넥션 정리보다 먼저."""
+    await _ensure_search_index()
     t = str(uuid.uuid4())
     yield t
     await purge_tenant(t)
@@ -408,6 +415,7 @@ async def tenant_id(_loop_hygiene):
 @pytest_asyncio.fixture
 async def other_tenant_id(_loop_hygiene):
     """교차 테넌트 시나리오용 두 번째 tenant (정리 포함)."""
+    await _ensure_search_index()
     t = str(uuid.uuid4())
     yield t
     await purge_tenant(t)

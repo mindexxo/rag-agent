@@ -62,6 +62,9 @@ async def test_같은_파일명_재업로드는_엎어치기(client, tenant_id, 
 
     v2 = await _upload(client, '환불정책.md', MD.replace(b'14', b'30'))
     assert v2['document_id'] != v1['document_id'] and v2['version'] == 2
+    # 빈 창 없음(E2E #6): v2가 처리되기 전엔 v1이 그대로 검색된다 — 옛 청크를 먼저 지우지 않는다.
+    assert (await _get_doc(v1['document_id'])).is_active is True
+    assert any('14일' in t for t in await _chunk_texts(v1['document_id']))
     await ingest(v2['document_id'])
 
     old, new = await _get_doc(v1['document_id']), await _get_doc(v2['document_id'])
@@ -222,7 +225,8 @@ async def test_소프트_삭제_청크와_캐시_제거_row_보존(client, tenan
     doc = await _get_doc(body['document_id'])
     assert doc is not None                                       # row 보존 (과거 인용 다운로드용)
     assert doc.status == 'deleted' and doc.is_active is False
-    await ingest(body['document_id'])                                     # DROP_DOCUMENTS 행 처리 — 그 전엔 가이드대로 아직 보인다
+    assert await _chunk_texts(body['document_id']) != []                  # drain 전 — 가이드대로 아직 색인에 있다 (E2E #4)
+    await ingest(body['document_id'])                                     # DROP_DOCUMENTS 행 처리
     assert await _chunk_texts(body['document_id']) == []                  # 검색 인덱스에서 제거
     async with AsyncSessionLocal() as session:
         rows = (await session.execute(

@@ -15,13 +15,16 @@
   끝나고 필터도 엔진에서 걸린다. 대가는 **색인이 서빙의 정본**이라는 것 — 색인이 낡으면
   낡은 텍스트·메타가 인용된다. 그 대가를 쓰기 경로가 갚는다(아래 "색인 쓰기 경로 — 정합 관리").
 
-## 파라미터의 출처
+## 파라미터 — OpenSearch 기본값
 
-도입 판정 A/B(이슈 #139·PR #140 본문에 요약, 리포트 파일은 git 이력 `75d81db` 이전)에서 PG 하이브리드와 변인을 맞추려 잡은 값을
-그대로 쓴다 — 바꿀 근거가 없어서다. HNSW `m=16`·`ef_construction=64`·`ef_search=40`,
-BM25 `k1=1.5`·`b=0.75`(Lucene 기본 1.2 아님), 거리 환산 `cosine_distance = 2 - 2*score`
-(`cosinesimil` 점수가 (1+cos)/2 — pgvector와 소수점 6자리까지 일치 실측). bigram 토큰은 analyzer로
-재현하지 않는다(`LEX_BIGRAM_FIELD` 주석).
+HNSW(m·ef_construction·ef_search)와 BM25(k1=1.2·b=0.75)는 **엔진 기본값을 그대로 쓴다** — 매핑에 명시하지
+않는다(사용자 결정 2026-09-13: 표준/기본값으로). 도입 판정 A/B 때는 변인 격리를 위해 pgvector·앱 BM25와
+맞춘 값(m=16/ef_construction=64/ef_search=40, k1=1.5)을 썼는데(이슈 #139·PR #140 본문), 도입이 끝난 뒤엔
+그 값을 유지할 이유가 없다. 현 규모(1천 청크대)는 정확 탐색 구간이라 HNSW 파라미터는 리콜에 관여하지 않고,
+k1 차이는 리랭커 뒤에서 흡수된다 — 재측정은 배포 후 전 축 eval에서.
+
+거리 환산 `cosine_distance = 2 - 2*score`(`cosinesimil` 점수가 (1+cos)/2 — pgvector와 소수점 6자리까지 일치
+실측)는 그대로다. bigram 토큰은 analyzer로 재현하지 않는다(`LEX_BIGRAM_FIELD` 주석).
 
 ## 알려진 잔차
 
@@ -35,11 +38,7 @@ BM25 `k1=1.5`·`b=0.75`(Lucene 기본 1.2 아님), 거리 환산 `cosine_distanc
 from config import settings
 
 DIM = 1024              # 임베딩 모델 차원 (rag/embeddings.py)
-HNSW_M = 16             # A/B 때 pgvector HNSW와 맞춘 값 — 모듈 docstring "파라미터의 출처"
-HNSW_EF_CONSTRUCTION = 64
-HNSW_EF_SEARCH = 40     # (OpenSearch 기본은 100 — A/B 때 pgvector 기본 40에 맞춘 값)
-BM25_K1 = 1.5           # #135 앱 BM25에서 계승 (Lucene 기본 1.2 아님)
-BM25_B = 0.75
+# HNSW·BM25 파라미터는 엔진 기본값 — 모듈 docstring "파라미터 — OpenSearch 기본값".
 
 NORI_FIELD = "index_text_nori"
 LEX_BIGRAM_FIELD = "lex_bigram"
@@ -50,14 +49,10 @@ MAPPING = {
             "number_of_shards": 1,      # 샤드를 늘리면 df가 샤드별로 갈려 BM25 점수가 흔들린다.
             "number_of_replicas": 0,    # 배포는 자체 설치 단일 노드(#139 결정) — 레플리카 둘 곳이 없다.
             "knn": True,
-            # OpenSearch 기본은 100 — A/B 때 pgvector 기본 40에 맞춘 값을 유지한다.
-            # **현 규모에서는 이 값이 쓰이지도 않는다**: index.knn.advanced.approximate_threshold
+            # ef_search·BM25 similarity는 명시하지 않는다 — 엔진 기본값(ef_search 100, BM25 k1=1.2 b=0.75).
+            # **현 규모에서는 ef_search가 쓰이지도 않는다**: index.knn.advanced.approximate_threshold
             # (기본 15000) 미만이면 HNSW를 건너뛰고 정확 탐색한다. 청크가 1만5천을 넘으면
             # ef_search가 리콜을 좌우하기 시작한다 — 그때 재측정.
-            "knn.algo_param.ef_search": HNSW_EF_SEARCH,
-            "similarity": {
-                "bm25_kms": {"type": "BM25", "k1": BM25_K1, "b": BM25_B},
-            },
         },
         "analysis": {
             "tokenizer": {
@@ -112,7 +107,7 @@ MAPPING = {
             "text": {"type": "text", "index": False},
             # 질의할 때는 반드시 lex_clause()를 쓴다 — 기본 match로 질의하면 2.18 hybrid가
             # 500으로 죽는다(실측 47/450). 사유·실측치는 lex_clause docstring.
-            NORI_FIELD: {"type": "text", "analyzer": "nori_ko", "similarity": "bm25_kms"},
+            NORI_FIELD: {"type": "text", "analyzer": "nori_ko"},
             LEX_BIGRAM_FIELD: {
                 # rag.lexical.bigrams()의 출력을 공백으로 이어 붙인 문자열이 들어온다.
                 # analyzer로 재현하지 않는 이유: bigrams()는 어절 내 문자 bigram이면서
@@ -122,7 +117,6 @@ MAPPING = {
                 # 자른다. 운영 어휘 채널은 Nori 필드를 쓴다 — 이 필드는 실험·대조군용이다.
                 "type": "text",
                 "analyzer": "pretokenized",
-                "similarity": "bm25_kms",
             },
             "dense": {
                 "type": "knn_vector",
@@ -131,7 +125,7 @@ MAPPING = {
                     "name": "hnsw",
                     "engine": "lucene",       # cosinesimil 지원 + 필터를 kNN 탐색 단계에서 처리
                     "space_type": "cosinesimil",
-                    "parameters": {"m": HNSW_M, "ef_construction": HNSW_EF_CONSTRUCTION},
+                    # m·ef_construction 미명시 = 엔진 기본값 (모듈 docstring)
                 },
             },
         },
@@ -643,9 +637,23 @@ async def sync_meta_faqs_now(session, faq_ids) -> int:
     return n
 
 
-async def reconcile(session) -> dict:
-    """PG↔OS 문서 단위 재동기화 — 안전판. `python -m eval.os_reconcile`이 부른다.
+def _tenant_term(tenant_id):
+    return {"term": {"tenant_id": tenant_id}} if tenant_id else {"match_all": {}}
 
+
+async def _indexed_parent_ids(field: str, tenant_id) -> set[int]:
+    """색인에 있는 부모 id 집합(document_id 또는 faq_id) — terms 집계. 반드시 PG보다 **먼저** 읽는다."""
+    agg = await client().search(index=settings.opensearch_index, body={
+        "size": 0, "query": _tenant_term(tenant_id),
+        "aggs": {"p": {"terms": {"field": field, "size": 65536}}}})
+    return {int(b["key"]) for b in agg["aggregations"]["p"]["buckets"]}
+
+
+async def reconcile(session, tenant_id: str | None = None) -> dict:
+    """PG↔OS **문서** 단위 재동기화 — 안전판. `python -m eval.os_reconcile`이 부른다.
+
+    tenant_id를 주면 그 테넌트만 본다 — 공유 DB에서 한 테넌트를 손볼 때, 그리고 테스트가
+    남의 문서를 pending으로 되돌리지 않게. 없으면 전체.
     반환: {'pg': ready 문서 수, 'os': 색인 문서 수, 'indexed': 재등재 수, 'deleted': 삭제 청크 수}.
     PG에 청크가 없으므로 "ready 문서가 색인에도 있는가"만 본다 — 청크 수준 드리프트(일부 누락)는
     못 잡고 outbox의 문서 단위 원자성에 의존한다.
@@ -654,37 +662,61 @@ async def reconcile(session) -> dict:
     새 문서는 pg_docs에만 있어 'missing'으로 판정돼 재등재된다 — 이미 있는 것을 다시 넣는
     무해한 방향이다. 반대 순서면 os_docs에만 있어 'extra'로 판정돼 **방금 색인된 청크를 지운다.**
     """
-    from sqlalchemy import select
+    from sqlalchemy import select, update
 
+    from rag import outbox
     from rag.models import Document
 
-    os_client = client()
-    agg = await os_client.search(index=settings.opensearch_index, body={
-        "size": 0,
-        "aggs": {"d": {"terms": {"field": "document_id", "size": 65536}}}})
-    os_docs = {int(b["key"]) for b in agg["aggregations"]["d"]["buckets"]}
-
-    pg_docs = set((await session.execute(
-        select(Document.id).where(Document.status == 'ready'))).scalars().all())
+    os_docs = await _indexed_parent_ids("document_id", tenant_id)
+    stmt = select(Document.id, Document.tenant_id).where(Document.status == 'ready')
+    if tenant_id:
+        stmt = stmt.where(Document.tenant_id == tenant_id)
+    pg_rows = (await session.execute(stmt)).all()
+    pg_docs = {did for did, _ in pg_rows}
+    tenant_of = dict(pg_rows)
 
     missing, extra = pg_docs - os_docs, os_docs - pg_docs
-    indexed = 0
     # 색인에 없는 ready 문서는 pending으로 되돌려 대기열에 넣는다 — 재파싱·재임베딩·ready 승격은
     # 인제스션 핸들러 한 곳(rag/documents.index_pending_document)이 맡는다. 두 벌을 두지 않는다.
     if missing:
-        from sqlalchemy import update
-
-        from rag import outbox
-        from rag.models import Document as D
-        await session.execute(update(D).where(D.id.in_(list(missing))).values(status='pending'))
+        await session.execute(update(Document).where(Document.id.in_(list(missing))).values(status='pending'))
         for did in sorted(missing):
-            tenant = (await session.execute(select(D.tenant_id).where(D.id == did))).scalar()
-            outbox.enqueue(session, tenant, outbox.INDEX_DOCUMENT, document_id=did)
+            outbox.enqueue(session, tenant_of[did], outbox.INDEX_DOCUMENT, document_id=did)
         await session.commit()
-        indexed = len(missing)          # 실제 색인은 다음 drain이 한다 — 여기선 재등재 건수
     deleted = await _delete_by_terms('document_id', sorted(extra)) if extra else 0
-    return {'pg': len(pg_docs), 'os': len(os_docs), 'indexed': indexed, 'deleted': deleted,
+    return {'pg': len(pg_docs), 'os': len(os_docs), 'indexed': len(missing), 'deleted': deleted,
             'unit': 'document'}
+
+
+async def reconcile_faqs(session, tenant_id: str | None = None) -> dict:
+    """PG↔OS **FAQ** 단위 재동기화 — reconcile()의 FAQ 짝. 순서 계약 동일(OS 먼저).
+
+    FAQ는 활성 여부와 무관하게 전부 색인 대상이다(비활성은 searchable=False로 들어간다 —
+    effective_searchable). 그래서 PG의 모든 FAQ 행과 대조한다. 누락은 INDEX_FAQ 행으로 등재
+    (워커가 재임베딩·색인), 잉여(PG에 없는 faq_id)는 색인에서 지운다.
+    반환: {'pg': FAQ 수, 'os': 색인 FAQ 수, 'indexed': 재등재 수, 'deleted': 삭제 청크 수}.
+    """
+    from sqlalchemy import select
+
+    from rag import outbox
+    from rag.models import Faq
+
+    os_faqs = await _indexed_parent_ids("faq_id", tenant_id)
+    stmt = select(Faq.id, Faq.tenant_id)
+    if tenant_id:
+        stmt = stmt.where(Faq.tenant_id == tenant_id)
+    pg_rows = (await session.execute(stmt)).all()
+    pg_faqs = {fid for fid, _ in pg_rows}
+    tenant_of = dict(pg_rows)
+
+    missing, extra = pg_faqs - os_faqs, os_faqs - pg_faqs
+    if missing:
+        for fid in sorted(missing):
+            outbox.enqueue(session, tenant_of[fid], outbox.INDEX_FAQ, faq_id=fid)
+        await session.commit()
+    deleted = await _delete_by_terms('faq_id', sorted(extra)) if extra else 0
+    return {'pg': len(pg_faqs), 'os': len(os_faqs), 'indexed': len(missing), 'deleted': deleted,
+            'unit': 'faq'}
 
 
 async def ensure_index() -> None:

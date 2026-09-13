@@ -3,7 +3,7 @@
 - folders        : 1단 폴더 (검색 참조 제어 전용 그룹)
 - documents      : 업로드된 원본 문서 (filename + version 단위)
 - faqs           : FAQ 항목 (검색 편입은 chunks로)
-- chunks         : (구) PG 검색 인덱스 — #139 OpenSearch 도입으로 읽기·쓰기 모두 없음. 아래 Chunk 참조
+- (청크는 PG에 없다 — 본문·메타·벡터·어휘 필드는 OpenSearch에만, rag/opensearch.py. #139)
 - answer_cache   : LLM 응답 영속 캐시 (semantic 매칭 + 문서 단위 무효화)
 - conversations  : 멀티턴 대화 세션
 - messages       : 대화 내 한 턴 (user/assistant)
@@ -30,7 +30,6 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 from pgvector.sqlalchemy import Vector
-from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy import (
     ARRAY,
     BigInteger,
@@ -99,7 +98,7 @@ class Document(Base):
 
 
 class Faq(Base):
-    """FAQ 항목 (F3 전용 저장). 검색 편입은 chunks에 항목당 청크 1개로 (faq_indexing)."""
+    """FAQ 항목 (F3 전용 저장). 검색 편입은 색인에 항목당 청크 1개로 (outbox INDEX_FAQ → opensearch.index_faq_chunks)."""
     __tablename__ = "faqs"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -136,34 +135,6 @@ class SearchIndexOutbox(Base):
     attempts: Mapped[int] = mapped_column(default=0, server_default="0")
     last_error: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-
-
-class Chunk(Base):
-    """(구) PG 검색 인덱스 행 — **런타임은 더 이상 읽지도 쓰지도 않는다** (#139, 2026-09-12).
-
-    청크(본문·메타·벡터·어휘 필드)는 OpenSearch에만 있다(rag/opensearch.py). 이 모델이 남아 있는
-    이유는 테이블이 아직 있기 때문이다 — 제거 순서는 schema.sql 하단(OS 스냅샷·복구 리허설 뒤
-    DROP TABLE). 새 코드에서 참조하지 마라. 출처는 document 또는 faq 정확히 하나 — DDL의 CHECK.
-    """
-    __tablename__ = "chunks"
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    document_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("documents.id", ondelete="CASCADE"))  # 문서 출처 (F3부터 nullable)
-    faq_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("faqs.id", ondelete="CASCADE"))            # FAQ 출처 — 항목당 1청크 (부분 유니크)
-    tenant_id: Mapped[str]                                                                                # 비정규화 (필터 성능)
-    chunk_index: Mapped[int]                                                                              # 문서 내 청크 순서 (0부터)
-    text: Mapped[str]                                                                                     # 청크 본문 원문 (prefix 없음 — 인용·프롬프트가 쓰는 값)
-    token_count: Mapped[int | None]                                                                       # 토큰 수
-    page: Mapped[int | None]                                                                              # 원 페이지 번호 (PDF만, DOCX는 NULL)
-    heading_path: Mapped[list[str]] = mapped_column(ARRAY(Text), server_default="{}")                     # 헤딩 계층 경로 ["3. 배송지연", "3.2 지급기준"]
-    meta: Mapped[dict] = mapped_column("metadata", JSONB, server_default="{}")                            # 자유 키-값 확장 영역 (DB 컬럼명은 metadata)
-    dense: Mapped[Any] = mapped_column(Vector(1024))                                                      # BGE-M3 dense 임베딩 (1024차원)
-    lex_tsv: Mapped[Any] = mapped_column(TSVECTOR, nullable=True)                                         # 어휘 채널(#135): bigram 토큰 집합 (입력=임베딩과 동일 index_text) — GIN은 schema.sql
-    lex_len: Mapped[int | None]                                                                           # 위 토큰 총수(dl) — BM25 길이 정규화용 (token_count와 별개: 그건 LLM 토큰 자리)
-
-    __table_args__ = (
-        UniqueConstraint("document_id", "chunk_index"),
-    )
 
 
 class AnswerCache(Base):

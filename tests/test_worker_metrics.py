@@ -45,9 +45,24 @@ async def test_포트가_0이면_서버를_안_띄운다(monkeypatch, index_call
 
 
 @pytest.mark.asyncio
+async def test_바인드_주소는_설정을_따른다(monkeypatch, index_calls):
+    # 브리지 네트워크 컨테이너에서는 루프백에 리슨하면 호스트에서 못 긁는다(config.py 주석) —
+    # 주소가 설정에서 오지 않으면 그 배포에서 지표가 조용히 사라진다.
+    seen = {}
+    monkeypatch.setattr(settings, 'worker_metrics_port', 9999)
+    monkeypatch.setattr(settings, 'worker_metrics_host', '0.0.0.0')
+    monkeypatch.setattr(worker, 'start_http_server', lambda port, addr: seen.update(port=port, addr=addr))
+
+    await worker.startup({})
+
+    assert seen == {'port': 9999, 'addr': '0.0.0.0'}
+
+
+@pytest.mark.asyncio
 async def test_포트를_주면_루프백에_지표를_연다(monkeypatch, index_calls):
     port = _free_port()
     monkeypatch.setattr(settings, 'worker_metrics_port', port)
+    monkeypatch.setattr(settings, 'worker_metrics_host', '127.0.0.1')
 
     await worker.startup({})
 

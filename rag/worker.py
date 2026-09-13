@@ -31,14 +31,15 @@ def _start_metrics_server() -> None:
     port = settings.worker_metrics_port
     if not port:
         return
+    host = settings.worker_metrics_host
     try:
-        # 127.0.0.1 바인딩 — 같은 호스트의 프로메테우스만 접근한다(사내망에도 안 열린다).
         # 데몬 스레드 1개가 뜬다 — 이벤트 루프와 무관하게 동작하므로 잡 처리를 막지 않는다.
-        start_http_server(port, addr='127.0.0.1')
+        # 바인드 주소를 설정으로 뺀 이유는 config.py 주석 참조(브리지 네트워크에서 루프백은 안 닿는다).
+        start_http_server(port, addr=host)
     except OSError as exc:
-        logger.error('워커 지표 서버 기동 실패 (포트 %d) — 색인은 계속한다: %s', port, exc)
+        logger.error('워커 지표 서버 기동 실패 (%s:%d) — 색인은 계속한다: %s', host, port, exc)
     else:
-        logger.info('워커 지표 서버 기동 — 127.0.0.1:%d/metrics', port)
+        logger.info('워커 지표 서버 기동 — %s:%d/metrics', host, port)
 
 
 async def startup(ctx):

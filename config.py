@@ -102,6 +102,11 @@ class Settings(BaseSettings):
     # **Linux에서만 값이 나온다** — ProcessCollector가 /proc를 읽으므로 macOS에선 조용히 빈 값이다.
     # 기본 0인 이유: 로컬에서 워커를 여러 개 띄울 때 포트 충돌을 기본 동작으로 만들지 않기 위해서다.
     worker_metrics_port: int = 0
+    # 바인드 주소. 기본 루프백은 **호스트 네트워크로 띄운 워커**에만 맞다 —
+    # 브리지 네트워크 컨테이너에서 루프백에 리슨하면 컨테이너 안에서만 닿아, 포트를 published해도
+    # 호스트의 프로메테우스가 못 긁는다(도커 프록시는 컨테이너 IP로 붙는다). 그 구성에서는
+    # 0.0.0.0으로 열고 노출 차단은 compose의 published 주소(127.0.0.1:PORT:PORT)에 맡긴다.
+    worker_metrics_host: str = "127.0.0.1"
 
     # 질의 재작성 의미 확장(#5). on이면 '멀티턴에서만' condense 자리 1콜로 멀티쿼리(재작성 1 +
     # 어휘 변형 2)를 뽑아 검색 — rerank on이면 쿼리별 채점 max-pool 정렬, rerank off/실패면 RRF 폴백.

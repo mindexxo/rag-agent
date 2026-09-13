@@ -167,3 +167,19 @@ class TestRealConversion:
         from rag.chunking import _docling_runtime
         a, sem_a = _docling_runtime(); b, sem_b = _docling_runtime()
         assert a is b and sem_a is sem_b
+
+    def test_메모리_설정이_파이프라인에_실제로_전달된다(self):
+        # 조용히 무시되는 설정을 잡기 위한 테스트다. docling_page_batch_size가 정확히 그랬다 —
+        # 값은 들어가는데 2.126의 기본 파이프라인이 그 필드를 읽지 않아 아무 효과가 없었고,
+        # 그 사실이 개발계 OOM으로 드러나기 전까지 아무도 몰랐다(#151).
+        # PdfPipelineOptions는 pydantic 모델이라 필드명이 바뀌면 대입 자체가 실패한다 —
+        # docling 업그레이드 때 이 테스트가 먼저 깨진다.
+        from docling.datamodel.base_models import InputFormat
+        from rag.chunking import _docling_runtime
+
+        converter, _ = _docling_runtime()
+        opts = converter.format_to_options[InputFormat.PDF].pipeline_options
+        assert opts.layout_batch_size == settings.docling_layout_batch_size
+        assert opts.queue_max_size == settings.docling_queue_max_size
+        assert opts.accelerator_options.num_threads == settings.docling_num_threads
+        assert opts.do_ocr is settings.docling_do_ocr

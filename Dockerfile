@@ -11,7 +11,22 @@ WORKDIR /app
 
 # 의존성 먼저 복사·설치 (코드만 바뀔 때 이 레이어 캐시 재사용 → 재빌드 빠름)
 COPY requirements.txt .
-RUN pip install --upgrade pip && pip install -r requirements.txt
+# 한 레이어로 묶는다 — uninstall한 파일이 아래 레이어에 남으면 지운 의미가 없다.
+#
+# ① CPU 전용 torch: linux/x86_64의 PyPI 기본 휠은 CUDA 빌드라 그대로 두면 nvidia-* 3.2GB가
+#    따라 들어오고(이미지 6.8GB) import torch만으로 515MB를 먹는다. 앱은 GPU 장비에 올리지
+#    않으므로(docling_device=cpu) 전부 쓰이지 않는 무게다. CPU 휠은 233MB.
+# ② headless opencv: docling==2.126.0 → docling-slim[standard] → rapidocr → opencv-python(GUI)
+#    사슬로 **OCR을 껐는데도** OCR 엔진과 GUI opencv가 딸려온다. 그 opencv는 libGL/libxcb를
+#    링크하는데 slim 베이스엔 없어서 import cv2가 실패하고 PDF 인제스션이 전부 깨진다
+#    (2026-09-13 개발계 실측). 시스템 라이브러리를 까는 방법(+215MB)도 되지만, 쓰지도 않는
+#    OCR 엔진을 빼고 headless로 바꾸는 쪽이 이미지도 작고 의존도 정직하다.
+#    OCR을 도입하게 되면(#144) 이 줄을 다시 판단한다.
+RUN pip install --upgrade pip \
+    && pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip uninstall -y rapidocr opencv-python \
+    && pip install --no-cache-dir opencv-python-headless
 
 # 애플리케이션 코드 복사
 COPY . .

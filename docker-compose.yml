@@ -30,9 +30,11 @@ services:
     #   docker inspect -f '{{.State.OOMKilled}}' <컨테이너>
     # 상한 없이 죽으면 arq 잡이 통째로 사라지고(max_tries=1) 문서가 pending에 고착했다가
     # DOC_STALE_SECONDS(900초) 뒤 lazy 스윕이 failed로만 바꾼다 — 원인이 아무 데도 안 남는다.
-    # 1.5g 근거: docling 실측 RSS 0.35~0.85GB(#143, macOS) + 파이썬·앱 베이스.
-    # **Linux 실측 후 조정한다** — WORKER_METRICS_PORT로 노출되는 process_resident_memory_bytes가 그 근거다.
-    mem_limit: 1.5g
+    # 2.5g 근거: **리눅스 컨테이너 실측**(2026-09-13) — 변환 피크 1,797MB·상주 1,399MB
+    # (CPU torch + headless opencv + layout_batch_size=1 기준). 39% 여유.
+    # 앞선 1.5g는 macOS에서 샘플링한 RSS에 기댄 값이었고 실제로 OOM(exit 137)을 냈다.
+    # 재조정 근거는 WORKER_METRICS_PORT로 노출되는 process_resident_memory_bytes다.
+    mem_limit: 2.5g
     depends_on:
       - web                               # web 빌드가 이미지를 먼저 만들도록 순서만 보장
     command: ["arq", "rag.worker.WorkerSettings"]

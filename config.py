@@ -178,14 +178,25 @@ class Settings(BaseSettings):
     docling_do_cell_matching: bool = False    # 7월 설정 계승 — 켜면 한글 표 셀의 공백이 뭉친다 ("편도 3,000원")
     docling_device: str = "cpu"               # 'auto'는 서버에서 GPU/MPS 탐색을 시도한다. 앱은 GPU 장비에 안 올린다
     docling_num_threads: int = 4              # 워커 vCPU 수에 맞춤. 공식 실측: 4→16스레드에 쪽당 1.67→1.09초
-    docling_page_batch_size: int = 4          # **메모리 상한의 실질 결정자.** 쪽 수가 아니라 이 값이 피크를 정한다
-                                              # (26쪽 문서 579MB < 1쪽 문서 844MB 실측). 밴드 0.35~0.85GB
+    # 메모리 노브 — **리눅스 컨테이너 실측 기준**(2026-09-13). 이전 주석은 macOS에서 샘플링한
+    # RSS(0.35~0.85GB)에 기대 있었고 피크가 아니었다. 같은 문서를 ru_maxrss 피크로 다시 재면
+    # 맥 1,708MB / 리눅스 2,641MB다 — 눈금은 배포 대상(리눅스 x86_64)에서만 의미가 있다.
+    # (docling_page_batch_size는 제거했다 — 2.126의 기본 StandardPdfPipeline은 스레드 구조로
+    #  재작성돼 그 값을 읽지 않는다. 읽는 것은 옛 LegacyStandardPdfPipeline뿐이고, 디버그 로그로
+    #  해당 코드가 한 번도 실행되지 않음을 확인했다.)
+    docling_layout_batch_size: int = 1         # 레이아웃 모델에 한 번에 넣는 쪽 수. 기본 4 → 1로 내리면
+                                               # 피크 2,270~2,486MB → 1,779~1,843MB(3회 반복 재현).
+                                               # 산출물은 sha256까지 동일하고 오히려 0.5~1.2초 빠르다.
+                                               # 맥에서는 효과가 편차 내로 묻힌다 — 플랫폼 의존적이다.
+    docling_queue_max_size: int = 4            # 스테이지 간 큐 길이(기본 100). 긴 문서에서 처리 대기 쪽이
+                                               # 쌓이는 상한 — layout_batch와 함께 내려야 효과가 있다
     docling_max_concurrency: int = 1          # **arq max_jobs(10)와 별개인 변환 동시 상한.** chunk_file은 to_thread라
                                               # 잡 10개가 겹치면 변환도 10개 겹쳐 메모리가 10배 난다. 세마포어로 막는다.
                                               # 임베딩 I/O는 max_jobs가 계속 겹치게 둔다 — 변환만 직렬화
     docling_document_timeout_seconds: float = 300.0   # 사슬: 이 값 < arq job_timeout 600 < DOC_STALE_SECONDS 900.
                                               # 600 안에서 임베딩 몫을 남긴다. 실측 최대 26쪽 6초라 50배 여유
-    docling_max_num_pages: int = 300          # 병적 입력 가드. 파일 크기 상한은 라우터(DOC_MAX_FILE_BYTES 10MB)가
+    docling_max_num_pages: int = 300          # 병적 입력 가드. **초과분을 자르는 게 아니라 문서를 거부한다**
+                                              # (ConversionError → failed, 2026-09-13 실측). 파일 크기 상한은 라우터(DOC_MAX_FILE_BYTES 10MB)가
                                               # 업로드 시점에 이미 막으므로 여기선 쪽 수만. 10MB 텍스트 PDF ≈ 100~200쪽
     docling_artifacts_path: str | None = None # 모델 가중치 디렉터리. None이면 첫 변환 때 HF에서 내려받는다 —
                                               # NCP VM은 외부망 확인 필요. 이미지에 미리 굽고 경로를 주는 쪽이 안전

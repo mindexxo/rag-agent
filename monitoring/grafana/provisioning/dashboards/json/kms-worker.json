@@ -2,7 +2,7 @@
   "uid": "kms-worker",
   "title": "KMS 워커 (인제스션 — docling)",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": {
     "from": "now-6h",
@@ -165,6 +165,123 @@
         }
       ],
       "description": "0으로 떨어지면 워커가 죽었거나 지표 포트가 안 열린 것이다(WORKER_METRICS_PORT). 워커가 죽으면 문서 인제스션과 고착 턴 회수가 함께 멈춘다 — 채팅은 계속 된다."
+    },
+    {
+      "id": 5,
+      "title": "문서 1건 인제스션 소요 p95 (단계별)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum(rate(kms_index_duration_seconds_bucket[30m])) by (le, stage))",
+          "legendFormat": "{{stage}}"
+        }
+      ],
+      "description": "parse가 docling 구간이다 — #143·#151 변경의 직접적인 눈금. total은 커밋까지 포함하며 여기에 cron 대기 최대 1분이 더 붙는다(업로드 후 검색될 때까지 = total + 대기). 네 단계 모두 성공 건만 기록되므로 분모가 같다. 기준 실측(2026-09-13, 리눅스): 12쪽 PDF parse 약 9~14초, 3쪽 약 3초. rate 창이 30m인 이유는 인제스션이 드문드문 일어나서다 — 5m로 좁히면 대부분 빈다."
+    },
+    {
+      "id": 6,
+      "title": "형식별 parse p95",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum(rate(kms_index_duration_seconds_bucket{stage=\"parse\"}[30m])) by (le, ext))",
+          "legendFormat": "{{ext}}"
+        }
+      ],
+      "description": "PDF만 레이아웃 ML(docling)을 타서 초 단위이고 md·txt는 밀리초다 — 섞어 보면 p95가 무의미해서 나눠 둔다. pdf만 갑자기 뛰면 파서 설정(docling_layout_batch_size)이나 문서 쪽 수를 의심한다."
+    },
+    {
+      "id": 7,
+      "title": "인제스션 최종 실패율 (%)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "100 * sum(rate(kms_index_total{result=\"failed\"}[1h])) / clamp_min(sum(rate(kms_index_total{result=~\"ok|failed\"}[1h])), 0.0000001)",
+          "legendFormat": "최종 실패율"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(kms_index_total{result=\"retry\"}[1h])) * 3600",
+          "legendFormat": "retry (건/시간)"
+        }
+      ],
+      "description": "**재시도는 분모에서 뺀다** — 한 문서가 5번 재시도되면 kms_search_index_sync_total은 error를 5 세지만 실패한 문서는 1건이다. 실패율 = failed / (ok + failed). retry만 늘고 failed가 안 느는 상태는 '재시도로 버티는 중'이고, failed가 되기 전에 잡을 수 있는 유일한 신호다. failed가 오르면 그 문서는 FE에 실패로 보인다."
     }
   ]
 }

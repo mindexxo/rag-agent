@@ -95,11 +95,16 @@ CREATE INDEX IF NOT EXISTS idx_faqs_tenant ON faqs (tenant_id);
 -- 기존 DB 반영(#56): 인용 방식 전환(인라인 라벨 → 출처 꼬리)으로 옛 캐시 행(라벨 박힌
 -- answer·후보 전체 sources)은 새 계약과 혼재 불가 — 배포 시 1회 실행:
 --   TRUNCATE answer_cache;   -- 재생성 가능한 데이터라 안전
+-- 기존 DB 반영 (2026-09-13, #153 — 재사용 판정기에 원문 쿼리 추가):
+--   ALTER TABLE answer_cache ADD COLUMN IF NOT EXISTS original_query TEXT;
+-- NULL 허용이 의도다. 도입 전 행은 원문을 복원할 방법이 없고, 판정기는 NULL을 '(없음)'으로
+-- 받아 현행과 같은 판정을 낸다(실측) — 즉 기존 행의 동작이 바뀌지 않는다. TRUNCATE 불필요.
 CREATE TABLE IF NOT EXISTS answer_cache (
     id               BIGSERIAL PRIMARY KEY,
     tenant_id        TEXT         NOT NULL,
     cache_key        TEXT         NOT NULL,
-    query_text       TEXT         NOT NULL,
+    query_text       TEXT         NOT NULL,       -- 재작성문(standalone). cache_key·임베딩의 기준
+    original_query   TEXT,                        -- 사용자가 친 원문(#153). 판정기 입력 전용 — 키·임베딩에 안 섞는다
     query_embedding  VECTOR(1024) NOT NULL,
     answer           TEXT         NOT NULL,
     sources          JSONB        NOT NULL,

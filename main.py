@@ -40,9 +40,10 @@ async def lifespan(app: FastAPI):
     subscribe_forever를 부르는 얇은 배선만 두고, 테스트는 그 함수를 직접 띄워 검증한다
     (인덱스 보장은 tests/conftest.purge_tenant가 대신 부른다).
 
-    검색 인덱스 보장(#139): 엔진에 못 붙으면 여기서 죽는다 — 검색 없는 서버를 조용히 띄우지 않는다.
+    검색 인덱스 보장(#139): 엔진에 못 붙어도 기동은 한다(ensure_index_soft — ERROR 로그). 로컬 개발에서
+    OpenSearch 없이도 앱을 띄울 수 있게 한 사용자 결정(2026-09-13). 그 상태의 검색 요청은 요청 단위로 실패한다.
     """
-    await opensearch.ensure_index()
+    await opensearch.ensure_index_soft()
     subscriber = asyncio.create_task(cancellation.subscribe_forever())
     try:
         yield

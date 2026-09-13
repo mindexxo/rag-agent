@@ -40,8 +40,9 @@
 
 - 서버: `uvicorn main:app --reload --port 8000`
 - 워커(문서 업로드·정리 작업 시 필요): `arq rag.worker.WorkerSettings`
-- OpenSearch(검색 저장소 — 청크는 여기에만 있다 #139): 로컬은 `docker compose -f docker-compose.opensearch.yml up -d`.
-  없으면 서버·워커가 기동에서 죽고(`ensure_index`), 테스트도 첫 픽스처에서 죽는다.
+- OpenSearch(검색 저장소 — 청크는 여기에만 있다 #139): `.env.dev` 기본은 개발계(worker20) 인덱스. 로컬 컨테이너를
+  쓰려면 `docker compose -f docker-compose.opensearch.yml up -d` 후 `.env`에서 `OPENSEARCH_URL` 오버라이드.
+  못 붙어도 서버·워커는 기동되지만(ERROR 로그) 검색·색인이 안 되고, 테스트는 첫 픽스처에서 죽는다.
 - 테스트: `pytest` — 전체 약 5분(DB·Redis·**OpenSearch** 필수, LLM·임베딩은 fake로 대체).
   DB 없이 순수 로직만 몇 초 만에 돌리려면 `pytest tests/test_service_pure.py tests/test_prompts.py
   tests/test_turn_status_contract.py tests/test_docs_freshness.py`.
@@ -56,8 +57,8 @@
 ## 환경변수
 
 우선순위: OS 환경변수 > `.env`(gitignore, 로컬 전용) > `.env.dev`(커밋됨, 개발계 공용).
-없으면 무엇이 죽는지: `DATABASE_URL`→기동 즉시 실패, `OPENSEARCH_URL`→기동 즉시 실패(검색·인제스션의
-저장소), Redis→limiter·cancellation·스트림 재개, vLLM→인텐트·질의재작성·생성·캐시 재사용 판정,
+없으면 무엇이 죽는지: `DATABASE_URL`→기동 즉시 실패, `OPENSEARCH_URL`(연결 불가)→기동은 되지만 검색·색인이
+호출 시점에 실패(ERROR 로그), Redis→limiter·cancellation·스트림 재개, vLLM→인텐트·질의재작성·생성·캐시 재사용 판정,
 TEI→인덱싱·검색·캐시.
 **비밀값은 이 파일에 적지 않는다** — `config.py`의 필드명만 참조하라.
 

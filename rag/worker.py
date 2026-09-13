@@ -17,8 +17,9 @@ async def ping(ctx):
 
 async def startup(ctx):
     """검색 인덱스 보장(#139) — 워커가 웹보다 먼저 뜨는 배포에서 첫 drain이 없는 인덱스에
-    색인하면 동적 매핑(knn_vector 아님)으로 굳는다. 엔진에 못 붙으면 기동 실패가 맞다."""
-    await opensearch.ensure_index()
+    색인하면 동적 매핑(knn_vector 아님)으로 굳는다. 엔진에 못 붙어도 기동은 한다(ensure_index_soft) —
+    그동안 drain은 회차마다 실패해 attempts만 쌓이고, 엔진이 돌아오면 다음 회차가 반영한다."""
+    await opensearch.ensure_index_soft()
 
 
 async def shutdown(ctx):

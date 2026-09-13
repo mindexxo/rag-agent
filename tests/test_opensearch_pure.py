@@ -223,3 +223,21 @@ async def test_이미_있는_인덱스는_건드리지_않고_경합의_already_
     await B.ensure_index()                               # 웹·워커 동시 생성 경합 — 예외 아님
     assert calls == ['create']
 
+
+@pytest.mark.asyncio
+async def test_ensure_index_soft는_못_붙어도_예외_없이_False(monkeypatch, caplog):
+    """기동 경로(main lifespan·worker startup·drain)는 이걸 쓴다 — 로컬 개발에서 OpenSearch 없이도 앱이 뜨게
+    (사용자 결정 2026-09-13). 실패는 삼키지 않고 ERROR 로그로 남긴다."""
+    class _Indices:
+        async def exists(self, *a, **k):
+            raise ConnectionError('Cannot connect to host 10.1.32.20:23338')
+
+    class _Client:
+        indices = _Indices()
+
+    monkeypatch.setattr(B, 'client', lambda: _Client())
+    import logging
+    with caplog.at_level(logging.ERROR, logger='rag.opensearch'):
+        assert await B.ensure_index_soft() is False
+    assert any('연결 실패' in r.getMessage() for r in caplog.records)
+

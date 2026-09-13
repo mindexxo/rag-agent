@@ -35,6 +35,8 @@ k1 차이는 리랭커 뒤에서 흡수된다 — 재측정은 배포 후 전 �
 4. **정확 탐색 구간**: `approximate_threshold`(15000) 미만이면 HNSW를 건너뛰고 정확 탐색한다 —
    지금 규모(1천 청크대)는 ANN 근사가 아직 없다.
 """
+import logging
+
 from config import settings
 
 DIM = 1024              # 임베딩 모델 차원 (rag/embeddings.py)
@@ -720,10 +722,10 @@ async def reconcile_faqs(session, tenant_id: str | None = None) -> dict:
 
 
 async def ensure_index() -> None:
-    """인덱스가 없으면 MAPPING으로 만든다 — 기동(main lifespan·worker on_startup)과 테스트가 부른다.
+    """인덱스가 없으면 MAPPING으로 만든다 — 테스트(conftest)와 ensure_index_soft가 부른다.
 
     있으면 건드리지 않는다: 매핑 변경은 재색인이 따르는 별도 절차다(새 인덱스 + 전량 재색인).
-    엔진에 못 붙으면 예외를 올린다 — 검색 없는 서버를 조용히 띄우지 않기 위함이다(config 주석).
+    엔진에 못 붙으면 예외를 올린다(엄격 판). 기동 경로는 ensure_index_soft를 쓴다.
     두 프로세스(웹·워커)가 동시에 만들면 한쪽이 already-exists를 받는다 — 그건 성공으로 본다.
     """
     os_client = client()
@@ -734,3 +736,22 @@ async def ensure_index() -> None:
     except Exception as e:                       # noqa: BLE001 — 경합의 already-exists만 삼킨다
         if 'resource_already_exists_exception' not in str(e):
             raise
+
+
+async def ensure_index_soft() -> bool:
+    """기동용 — 엔진에 못 붙어도 **프로세스는 뜬다**(사용자 결정 2026-09-13: 로컬 개발 시 OpenSearch가
+    없거나 개발계에 못 붙어도 앱은 기동돼야 한다). 실패는 ERROR 로그로 남기고 False를 돌려준다.
+
+    그 상태에서 검색(`/kms/query`)·색인(outbox drain)은 호출 시점에 ConnectionError로 실패한다 —
+    검색은 요청 단위 오류, 색인은 outbox attempts에 쌓여 엔진이 돌아오면 다음 회차가 반영한다(멱등).
+    인덱스가 없는 채로 색인 요청이 먼저 오는 경우는 없다: bulk 전에 이 함수가 성공한 적이 없다면
+    엔진 자체에 못 붙는 상태이고, 붙는 순간 다음 기동 또는 drain 회차의 ensure_index가 만든다.
+    """
+    try:
+        await ensure_index()
+        return True
+    except Exception as e:                       # noqa: BLE001 — 기동을 막지 않는 것이 목적
+        logging.getLogger(__name__).error(
+            '검색 저장소(OpenSearch) 연결 실패 — 검색·색인이 동작하지 않는 상태로 기동한다. url=%s: %s',
+            settings.opensearch_url, e)
+        return False

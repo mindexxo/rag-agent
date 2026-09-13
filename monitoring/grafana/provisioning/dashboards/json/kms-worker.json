@@ -1,0 +1,170 @@
+{
+  "uid": "kms-worker",
+  "title": "KMS 워커 (인제스션 — docling)",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "워커 메모리 (RSS) — mem_limit 2.5GB 대비",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "process_resident_memory_bytes{job=\"kms_worker\"}",
+          "legendFormat": "RSS"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "2684354560.0",
+          "legendFormat": "mem_limit 2.5GB"
+        }
+      ],
+      "description": "docling 변환(#143)이 컨테이너 상한 안에 머무는지 보는 창. 실측(2026-09-13, 리눅스): 유휴 ~230MB, 변환 후 상주 ~1.4GB, 10건 연속 업로드 시 최대 1.59GB. 상한에 닿으면 커널이 워커만 죽이고 잡이 유실된다 — 문서가 pending에 고착했다가 900초 뒤 failed로만 바뀌므로, 이 그래프가 유일한 사전 신호다."
+    },
+    {
+      "id": 2,
+      "title": "상한 사용률 (%)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 85
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "100 * process_resident_memory_bytes{job=\"kms_worker\"} / 2684354560.0",
+          "legendFormat": "사용률"
+        }
+      ],
+      "description": "85%를 꾸준히 넘으면 mem_limit을 올리거나 docling_layout_batch_size를 재검토한다."
+    },
+    {
+      "id": 3,
+      "title": "워커 CPU (코어)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(process_cpu_seconds_total{job=\"kms_worker\"}[5m])",
+          "legendFormat": "CPU"
+        }
+      ],
+      "description": "변환 중에만 올라가는 것이 정상이다 — 유휴에도 높으면 cron(1분 주기 스윕·드레인)이 헛돌고 있다는 뜻. docling_num_threads(4)가 상한."
+    },
+    {
+      "id": 4,
+      "title": "워커 생존 (up)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "max": 1,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "up{job=\"kms_worker\"}",
+          "legendFormat": "up"
+        }
+      ],
+      "description": "0으로 떨어지면 워커가 죽었거나 지표 포트가 안 열린 것이다(WORKER_METRICS_PORT). 워커가 죽으면 문서 인제스션과 고착 턴 회수가 함께 멈춘다 — 채팅은 계속 된다."
+    }
+  ]
+}

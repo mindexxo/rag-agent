@@ -1,0 +1,87 @@
+"""PG↔OpenSearch 재동기화 — 안전판. 문서 단위(reconcile)·FAQ 단위(reconcile_faqs). #146에서 분리.
+
+PG에 청크가 없으므로 "PG의 ready 문서(모든 FAQ)가 색인에도 있는가"만 본다 — 청크 수준 드리프트(일부 청크
+누락)는 못 잡고 outbox의 문서 단위 원자성(rag/outbox.py)에 의존한다. 진입점은 `python -m eval.os_reconcile`.
+
+**읽는 순서가 계약이다: OpenSearch 먼저, PG 나중.** 두 스냅샷 사이에 인제스션이 끼면 새 문서는 PG 쪽에만
+있어 'missing'으로 판정돼 재등재된다 — 이미 있는 것을 다시 넣는 무해한 방향. 반대 순서면 색인 쪽에만
+있어 'extra'로 판정돼 **방금 색인된 청크를 지운다.**
+"""
+from sqlalchemy import select, update
+
+from config import settings
+from rag import outbox
+from rag.models import Document, Faq
+from rag.os_client import client
+from rag.os_index import _delete_by_terms
+
+def _tenant_term(tenant_id):
+    return {"term": {"tenant_id": tenant_id}} if tenant_id else {"match_all": {}}
+
+
+async def _indexed_parent_ids(field: str, tenant_id) -> set[int]:
+    """색인에 있는 부모 id 집합(document_id 또는 faq_id) — terms 집계. 반드시 PG보다 **먼저** 읽는다."""
+    agg = await client().search(index=settings.opensearch_index, body={
+        "size": 0, "query": _tenant_term(tenant_id),
+        "aggs": {"p": {"terms": {"field": field, "size": 65536}}}})
+    return {int(b["key"]) for b in agg["aggregations"]["p"]["buckets"]}
+
+
+async def reconcile(session, tenant_id: str | None = None) -> dict:
+    """PG↔OS **문서** 단위 재동기화 — 안전판. `python -m eval.os_reconcile`이 부른다.
+
+    tenant_id를 주면 그 테넌트만 본다 — 공유 DB에서 한 테넌트를 손볼 때, 그리고 테스트가
+    남의 문서를 pending으로 되돌리지 않게. 없으면 전체.
+    반환: {'pg': ready 문서 수, 'os': 색인 문서 수, 'indexed': 재등재 수, 'deleted': 삭제 청크 수}.
+    PG에 청크가 없으므로 "ready 문서가 색인에도 있는가"만 본다 — 청크 수준 드리프트(일부 누락)는
+    못 잡고 outbox의 문서 단위 원자성에 의존한다.
+
+    **읽는 순서가 계약이다: OpenSearch 먼저, PG 나중.** 두 스냅샷 사이에 인제스션이 끼면
+    새 문서는 pg_docs에만 있어 'missing'으로 판정돼 재등재된다 — 이미 있는 것을 다시 넣는
+    무해한 방향이다. 반대 순서면 os_docs에만 있어 'extra'로 판정돼 **방금 색인된 청크를 지운다.**
+    """
+    os_docs = await _indexed_parent_ids("document_id", tenant_id)
+    stmt = select(Document.id, Document.tenant_id).where(Document.status == 'ready')
+    if tenant_id:
+        stmt = stmt.where(Document.tenant_id == tenant_id)
+    pg_rows = (await session.execute(stmt)).all()
+    pg_docs = {did for did, _ in pg_rows}
+    tenant_of = dict(pg_rows)
+
+    missing, extra = pg_docs - os_docs, os_docs - pg_docs
+    # 색인에 없는 ready 문서는 pending으로 되돌려 대기열에 넣는다 — 재파싱·재임베딩·ready 승격은
+    # 인제스션 핸들러 한 곳(rag/documents.index_pending_document)이 맡는다. 두 벌을 두지 않는다.
+    if missing:
+        await session.execute(update(Document).where(Document.id.in_(list(missing))).values(status='pending'))
+        for did in sorted(missing):
+            outbox.enqueue(session, tenant_of[did], outbox.INDEX_DOCUMENT, document_id=did)
+        await session.commit()
+    deleted = await _delete_by_terms('document_id', sorted(extra)) if extra else 0
+    return {'pg': len(pg_docs), 'os': len(os_docs), 'indexed': len(missing), 'deleted': deleted,
+            'unit': 'document'}
+
+
+async def reconcile_faqs(session, tenant_id: str | None = None) -> dict:
+    """PG↔OS **FAQ** 단위 재동기화 — reconcile()의 FAQ 짝. 순서 계약 동일(OS 먼저).
+
+    FAQ는 활성 여부와 무관하게 전부 색인 대상이다(비활성은 searchable=False로 들어간다 —
+    effective_searchable). 그래서 PG의 모든 FAQ 행과 대조한다. 누락은 INDEX_FAQ 행으로 등재
+    (워커가 재임베딩·색인), 잉여(PG에 없는 faq_id)는 색인에서 지운다.
+    반환: {'pg': FAQ 수, 'os': 색인 FAQ 수, 'indexed': 재등재 수, 'deleted': 삭제 청크 수}.
+    """
+    os_faqs = await _indexed_parent_ids("faq_id", tenant_id)
+    stmt = select(Faq.id, Faq.tenant_id)
+    if tenant_id:
+        stmt = stmt.where(Faq.tenant_id == tenant_id)
+    pg_rows = (await session.execute(stmt)).all()
+    pg_faqs = {fid for fid, _ in pg_rows}
+    tenant_of = dict(pg_rows)
+
+    missing, extra = pg_faqs - os_faqs, os_faqs - pg_faqs
+    if missing:
+        for fid in sorted(missing):
+            outbox.enqueue(session, tenant_of[fid], outbox.INDEX_FAQ, faq_id=fid)
+        await session.commit()
+    deleted = await _delete_by_terms('faq_id', sorted(extra)) if extra else 0
+    return {'pg': len(pg_faqs), 'os': len(os_faqs), 'indexed': len(missing), 'deleted': deleted,
+            'unit': 'faq'}

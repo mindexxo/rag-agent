@@ -29,7 +29,7 @@ def _rerank_text(chunk) -> str:
 
     FAQ 청크는 제외한다 — 본문이 'Q: 질문 / A: 답' 형태로 이미 자기설명적이고,
     heading_path가 질문 그 자체라(rag/faq_indexing) 붙이면 질문만 두 번 들어간다.
-    인제스션(opensearch.index_faq_chunks)도 FAQ 임베딩엔 prefix를 붙이지 않으므로 형태가 맞는다.
+    인제스션(os_index.index_faq_chunks)도 FAQ 임베딩엔 prefix를 붙이지 않으므로 형태가 맞는다.
     """
     if chunk.faq_id:
         return chunk.text

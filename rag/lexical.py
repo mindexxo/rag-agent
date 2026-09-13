@@ -1,6 +1,6 @@
 """어절 내 문자 bigram 토크나이저 — 어휘 필드의 **정의점**. 0층 leaf (다른 rag 모듈을 안 씀).
 
-색인 시 `rag/opensearch.build_doc`이 이 함수로 `lex_bigram` 필드를 만든다(공백 결합 문자열,
+색인 시 `rag/os_index.build_doc`이 이 함수로 `lex_bigram` 필드를 만든다(공백 결합 문자열,
 엔진은 공백으로만 다시 자른다 — 매핑 주석). 운영 어휘 채널은 엔진의 Nori 필드를 쓰고
 bigram 필드는 대조군·실험용이지만, 토크나이저가 코드 한 곳에 있어야 색인문과 질의문이
 같은 방식으로 잘린다.
@@ -10,7 +10,7 @@ bigram 필드는 대조군·실험용이지만, 토크나이저가 코드 한 �
 통째, 단독에선 오분할)·사전 관리 비용이 있어 bigram 확정.
 
 (구) PG FTS용 tsquery 이스케이프·앱 BM25 산식은 #139 OpenSearch 도입으로 제거했다 —
-BM25는 엔진(Lucene, k1·b는 rag/opensearch.py 매핑)이 계산한다.
+BM25는 엔진(Lucene, k1·b는 엔진 기본값 — rag/os_client.py MAPPING)이 계산한다.
 """
 
 

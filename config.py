@@ -114,7 +114,7 @@ class Settings(BaseSettings):
 
     # 검색 저장소 — OpenSearch 하나 (#139 도입 확정 2026-09-12, 사유=확장성). PG는 문서·FAQ·폴더·
     # 대화·캐시·outbox의 정본이고, 청크(본문·메타·벡터·어휘 필드)는 엔진에만 있다. 서빙은 엔진에서
-    # 끝난다(rag/opensearch.py 상단). 기동 시 인덱스 존재를 보장한다(ensure_index_soft) — 엔진에 못 붙어도
+    # 끝난다(rag/os_search.py·rag/os_index.py 상단). 기동 시 인덱스 존재를 보장한다(ensure_index_soft) — 엔진에 못 붙어도
     # 프로세스는 뜨고 ERROR 로그를 남긴다(로컬 개발 편의, 사용자 결정). 그 상태에서 검색·색인은 호출 시점에 실패한다.
     #
     # 받아들인 것: 색인 반영 지연. 모든 변경은 트랜잭셔널 outbox(rag/outbox.py)로 durable하게 기록되고

@@ -15,9 +15,10 @@
 - **0층(leaf, 다른 `rag/` 모듈을 안 씀)**: `config.py`, `rag/models.py`, `rag/tokens.py`,
   `rag/prompt_texts.py`, `rag/llm.py`, `rag/embeddings.py`, `rag/chunking.py`,
   `rag/index_text.py`, `rag/lexical.py`, `rag/limiter.py`, `rag/otel.py`, `rag/metrics.py`,
-  `rag/faq_indexing.py`, `rag/opensearch.py`(톱레벨은 `config`만 — 다른 `rag/` 참조는 전부 함수 안 지연 import)
+  `rag/faq_indexing.py`, `rag/retrieval_types.py`, `rag/os_client.py`(톱레벨은 `config`만 — 연결·매핑)
 - **중간층(조합)**: `rag/citation_labels.py`, `rag/clients.py`, `rag/llm_schemas.py`,
-  `rag/turn_state.py`, `rag/cache.py`, `rag/reranker.py`, `rag/retriever.py`,
+  `rag/turn_state.py`, `rag/cache.py`, `rag/reranker.py`, `rag/os_search.py`, `rag/os_index.py`,
+  `rag/os_reconcile.py`, `rag/retriever.py`,
   `rag/stream_resume.py`, `rag/cancellation.py`, `rag/citation_tail.py`, `rag/documents.py`,
   `rag/prompts.py`, `rag/conversation.py`, `rag/guardrail.py`, `rag/outbox.py`
 - **조립점**: `rag/service.py` — 한 턴의 수명(prepare → generate → finalize)을 조율한다.
@@ -31,8 +32,8 @@
 **함수 안 지연 import은 순환 회피용이며 의도된 것이다 — 톱레벨로 끌어올리지 마라.**
 이걸 하는 모듈: `chunking`(→xlsx_chunking), `embeddings`·`limiter`(→clients),
 `reranker`(→clients, embeddings), `retriever`(→reranker), `stream_resume`(→clients, streaming),
-`opensearch`(→embeddings, faq_indexing, index_text, lexical, models, retriever, outbox — 검색
-저장소가 인제스션·검색 양쪽에서 불려 톱레벨로 올리면 순환), `outbox`(→documents).
+`outbox`(→documents). **OpenSearch 계열(`os_client`·`os_search`·`os_index`·`os_reconcile`)은 지연 import가
+없다** — #146에서 4모듈로 나누고 자료형을 `retrieval_types`로 빼 순환의 뿌리를 없앴다.
 개수는 적지 않는다 — 정확한 목록은 `grep -rn "^\s\+from rag" rag/`로 뽑는다(톱레벨 import는
 줄 시작이 들여쓰기 없음이라 이렇게 구분된다).
 

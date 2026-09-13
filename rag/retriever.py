@@ -4,10 +4,10 @@
 
     query (+ 확장 변형, #5 Multi-Query)
       -> embed_texts                 쿼리 전체를 배치 1회로 임베딩
-      -> opensearch.search_dense_per_query   쿼리별 kNN top-N (cosine distance 환산)
+      -> os_search.search_dense_per_query   쿼리별 kNN top-N (cosine distance 환산)
       -> (단일: distance 순 그대로 / 멀티: _rank_multi 로 RRF 융합)
-      -> opensearch.search_lexical           BM25(Nori) 후보를 dense 뒤에 주입 (#135, 플래그)
-      -> opensearch.fetch_chunk_map          본문·메타 mget 1회 — 엔진이 서빙 정본 (#139)
+      -> os_search.search_lexical           BM25(Nori) 후보를 dense 뒤에 주입 (#135, 플래그)
+      -> os_search.fetch_chunk_map          본문·메타 mget 1회 — 엔진이 서빙 정본 (#139)
       -> rerank / rerank_maxpool     cross-encoder 재정렬 (rag.reranker, settings.rerank_enabled)
       -> [:top_n]                    두 경로 공통 — 슬라이스는 항상 리랭크 뒤다
       -> _keep_single_table          표는 한 시트만 (F1a)
@@ -33,76 +33,18 @@ gate 전/후·threshold sweep 을 본다. 운영 /kms/query 는 retrieve() wrapp
 LLM 호출 없음. Stage D의 RagService가 이 결과를 받아 답변 생성 또는
 "확인 불가" 응답으로 분기.
 """
-from dataclasses import dataclass, field
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from rag import opensearch, otel
+from rag import os_search, otel
 from rag.embeddings import embed_texts
+from rag.retrieval_types import RetrievalCandidates, RetrievalResult, RetrievedChunk  # 정의점은 retrieval_types (#146)
 
 DEFAULT_TOP_N = 20      # 후보 수 — retrieve_candidates 기본값과 retrieve() 호출부의 단일 출처
                         # (평가가 Recall@N을 보려면 최종 top_k보다 넓어야 한다)
 GATE_DISABLED = float("inf")   # 거리 게이트를 끈 상태에 붙인 이름 — retrieve()의 운영 기본값.
                                # 사유는 retrieve() 인자 주석 참조. eval은 이 상수를 쓰지 않고
                                # 자기 임계값을 apply_gate에 직접 넘긴다 (threshold sweep).
-
-
-# ===== 결과 자료형 ==================================================
-
-@dataclass
-class RetrievedChunk:
-    """검색 결과 1건. RagService가 인용 메타 + LLM 컨텍스트 구성에 사용."""
-    chunk_id: int
-    document_id: int | None         # 부모 문서 id (FAQ 청크는 None)
-    text: str                       # 청크 본문 — LLM 컨텍스트로 전달
-    heading_path: list[str]         # 인용 표시용 ["3. 보상", "3.2 지급기준"]
-    page: int | None                # PDF 페이지 (있으면)
-    filename: str                   # FAQ 청크는 'FAQ' — 컨텍스트 라벨·인용 표기가 이 값을 따름
-    version: int
-    faq_id: int | None = None       # FAQ 출처면 항목 id (캐시 키·인용 분기용)
-    is_table: bool = False          # F1a: xlsx 표 청크 여부 ('한 시트만' 필터용)
-    folder_name: str | None = None          # 소속 폴더 (미분류·FAQ는 None)
-    folder_description: str | None = None   # 폴더 '참조 설명' — 리랭커 입력에만 사용 (임베딩엔 미포함)
-
-# 아래 두 자료형이 함께 실어 나르는 필드 — 검색 "결과"가 아니라 입력의 파생물이다 (#50).
-#
-# 원본 쿼리(queries[0])의 dense 벡터. 한 턴 안에서 같은 문자열을 검색·캐시 조회·캐시 저장이
-# 각자 임베딩해 TEI를 3번 때리고 있었고, TEI가 호출마다 비결정적(실측 1.4e-4)이라 세 벡터가
-# 서로 미세하게 달랐다 — "한 턴 = 하나의 쿼리 벡터"라는 불변식이 코드로 보장되지 않았다.
-# 여기 담아 rag/cache.py가 재사용하게 만든다. 재사용이 안전한 근거는 cache.get_semantic 참조.
-#
-# 확장 변형(index 1+)은 담지 않는다 — 검색·RRF 융합 전용이고 캐시 키와 무관하다.
-# repr=False: 1024차원 float가 예외 트레이스백·로그에 통째로 새는 것을 막는다.
-
-@dataclass
-class RetrievalResult:
-    """검색 최종 결과. no_evidence=True면 LLM 호출 건너뜀."""
-    chunks: list[RetrievedChunk]    # top-K 결과 (no_evidence여도 비어있지 않을 수 있음)
-    no_evidence: bool               # True면 근거 부족으로 판정
-    reason: str | None              # 'no_results' (아예 빈 결과) |
-                                    # 'low_similarity' (top-1 거리 임계값 초과) |
-                                    # None (정상)
-    # 원본 쿼리 dense 벡터 — 판정과 무관한 pass-through (#50, 사유는 위 주석 블록)
-    query_embedding: list[float] | None = field(default=None, repr=False)
-
-@dataclass
-class RetrievalCandidates:
-    """게이트 적용 전 후보 묶음. 평가 스크립트가 이 단계를 직접 들여다봄.
-
-    - chunks: 최종 정렬 순 top_n 후보 (리랭크 on이면 리랭크 후 순서)
-    - top_dense_distance: 원본 쿼리의 top-1 dense distance — 근거 게이트의 유일한 입력 신호.
-                          후보 없으면 999.0 (기존 'no_results' 분기와 동일 의미)
-                          **운영은 게이트가 꺼져 있어(GATE_DISABLED) 이 값을 쓰지 않는다.**
-                          실사용처는 eval의 threshold sweep(eval/gate.py·retrieval.py)뿐이다.
-                          리랭크·표 필터와 무관하게 산정되므로, 이 신호가 가리키는 청크가
-                          최종 chunks에 없을 수도 있다 (sweep 해석 시 주의).
-    - query_embedding: 원본 쿼리 dense 벡터 (#50). retrieve()가 RetrievalResult로 그대로
-                       옮긴다 — 사유는 위 주석 블록 참조.
-    """
-    chunks: list[RetrievedChunk]
-    top_dense_distance: float
-    query_embedding: list[float] | None = field(default=None, repr=False)
 
 
 # ===== RRF (Reciprocal Rank Fusion) =================================
@@ -131,25 +73,25 @@ def _rrf_fuse(
 
 # ===== 단계별 함수 ==================================================
 #
-# 후보 회수·본문 조회는 rag/opensearch.py가 정의점이다. 아래 세 얇은 함수는 이 모듈의
+# 후보 회수·본문 조회는 rag/os_search.py가 정의점이다. 아래 세 얇은 함수는 이 모듈의
 # 단계 이름을 유지하기 위한 것이다 — 테스트·eval이 이 이름으로 monkeypatch·호출한다.
 # `session`은 받지 않는다: 검색은 DB를 읽지 않는다(모듈 docstring).
 
 
 async def _dense_candidates(tenant_id: str, q_embs: list, candidates_per_branch: int):
     """쿼리별 dense top-N. (쿼리별 id 리스트, 원본 쿼리의 (id, distance)) — 계약은 opensearch 참조."""
-    return await opensearch.search_dense_per_query(tenant_id, q_embs, candidates_per_branch)
+    return await os_search.search_dense_per_query(tenant_id, q_embs, candidates_per_branch)
 
 
 async def _lexical_candidates(tenant_id: str, query: str, limit: int) -> list[int]:
     """어휘 채널 (#135) — BM25(Nori) 상위 limit개의 id. dense가 놓친 어휘 일치(상품코드·고유명)를
     리랭커 풀에 주입하는 용도. 최종 순위는 리랭커가 정하므로 무관 후보는 걸러진다."""
-    return await opensearch.search_lexical(tenant_id, query, limit)
+    return await os_search.search_lexical(tenant_id, query, limit)
 
 
 async def _chunk_map(ids: list[int]) -> dict[int, RetrievedChunk]:
     """id → RetrievedChunk. 엔진 _source에서 만든다 — 왕복 1회, PG를 되묻지 않는다(실무 표준)."""
-    return await opensearch.fetch_chunk_map(ids)
+    return await os_search.fetch_chunk_map(ids)
 
 
 def _rank_multi(per_query_ids: list[list[int]]) -> list[int]:

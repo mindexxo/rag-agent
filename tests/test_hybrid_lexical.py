@@ -15,7 +15,7 @@ BM25 채점은 실제 OpenSearch(Nori)가 한다 — 청크는 PG가 아니라 �
 import pytest
 
 from database import AsyncSessionLocal
-from rag import opensearch
+from rag import os_index, os_search
 from rag.chunking import ChunkData as ParsedChunk
 from rag.models import Document
 from rag.retriever import retrieve_candidates
@@ -44,11 +44,11 @@ async def _seed(tenant_id: str) -> dict[str, int]:
     }
     chunks = [ParsedChunk(chunk_index=i, text=t, page=1, heading_path=[], meta={})
               for i, t in enumerate(texts.values())]
-    await opensearch.index_parsed_document(
+    await os_index.index_parsed_document(
         document_id=doc_id, tenant_id=tenant_id, filename='정책.pdf', version=1,
         folder_id=None, folder_name=None, folder_description=None, searchable=True,
         chunks=chunks, embeddings=[_Emb(c.text) for c in chunks])
-    return {k: opensearch.chunk_os_id(document_id=doc_id, chunk_index=i)
+    return {k: os_index.chunk_os_id(document_id=doc_id, chunk_index=i)
             for i, k in enumerate(texts)}
 
 
@@ -58,7 +58,7 @@ QUERY = 'KMS-SEC-001 재심사 절차가 어떻게 되나요'
 @pytest.mark.asyncio
 async def test_lexical은_어휘_일치를_1위로(tenant_id, fake_embed):
     ids = await _seed(tenant_id)
-    got = await opensearch.search_lexical(tenant_id, QUERY, 10)
+    got = await os_search.search_lexical(tenant_id, QUERY, 10)
     assert got and got[0] == ids['target']
 
 
@@ -66,7 +66,7 @@ async def test_lexical은_어휘_일치를_1위로(tenant_id, fake_embed):
 async def test_lexical_테넌트_격리(tenant_id, fake_embed):
     import uuid
     await _seed(tenant_id)
-    assert await opensearch.search_lexical(str(uuid.uuid4()), 'KMS-SEC-001 재심사', 10) == []
+    assert await os_search.search_lexical(str(uuid.uuid4()), 'KMS-SEC-001 재심사', 10) == []
 
 
 @pytest.mark.asyncio
@@ -126,15 +126,15 @@ async def test_적대_토큰_질의가_엔진에서_죽지_않는다(tenant_id, 
         doc_id = doc.id
     text = "HP-CS-011 모델의 don't 옵션과 C:\\경로 설정"
     ch = ParsedChunk(chunk_index=0, text=text, page=1, heading_path=[], meta={})
-    await opensearch.index_parsed_document(
+    await os_index.index_parsed_document(
         document_id=doc_id, tenant_id=tenant_id, filename=doc.filename, version=1,
         folder_id=None, folder_name=None, folder_description=None, searchable=True,
         chunks=[ch], embeddings=[_Emb(text)])
-    target = opensearch.chunk_os_id(document_id=doc_id, chunk_index=0)
+    target = os_index.chunk_os_id(document_id=doc_id, chunk_index=0)
     for q in ("HP-CS-011 설정", "don't 옵션", "C:\\경로"):
-        got = await opensearch.search_lexical(tenant_id, q, 5)      # 예외 없이 돌아야 한다
+        got = await os_search.search_lexical(tenant_id, q, 5)      # 예외 없이 돌아야 한다
         assert isinstance(got, list), q
-    assert target in await opensearch.search_lexical(tenant_id, "HP-CS-011 설정", 5)
+    assert target in await os_search.search_lexical(tenant_id, "HP-CS-011 설정", 5)
 
 
 @pytest.mark.asyncio
@@ -153,5 +153,5 @@ async def test_faq_색인이_어휘_채널에_잡힌다(tenant_id, fake_embed):
         ids = await outbox.pending_row_ids(s, faq_id=faq_id)
     r = await outbox.drain_once(row_ids=ids)
     assert r['done'] == 1 and r['failed'] == 0
-    got = await opensearch.search_lexical(tenant_id, 'RF 회원카드 발급', 5)
-    assert opensearch.chunk_os_id(faq_id=faq_id) in got
+    got = await os_search.search_lexical(tenant_id, 'RF 회원카드 발급', 5)
+    assert os_index.chunk_os_id(faq_id=faq_id) in got

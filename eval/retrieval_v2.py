@@ -160,6 +160,6 @@ if __name__ == '__main__':
         try:
             await main()
         finally:
-            from rag import opensearch
-            await opensearch.close_client()      # aiohttp 세션 미종료 경고 방지
+            from rag import os_client
+            await os_client.close_client()      # aiohttp 세션 미종료 경고 방지
     asyncio.run(_run())

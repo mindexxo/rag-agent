@@ -10,7 +10,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import AsyncSessionLocal
-from rag import cache, opensearch, outbox
+from rag import cache, os_index, outbox
 from rag.chunking import chunk_file, pdf_image_area_ratio
 from rag.embeddings import embed_texts
 from rag.index_text import build_index_text
@@ -103,16 +103,16 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
     # searchable은 PG의 **현재** 상태(pending·inactive)가 아니라 **아래 ③이 만들 상태**
     # (ready·active)로 계산한다 — 켜진 채로 바로 넣어 "켜기" 단계를 없애기 위함이다.
     # 문서 검색토글·폴더 토글은 PG 값을 그대로 쓴다.
-    indexed_searchable = opensearch.effective_searchable(
+    indexed_searchable = os_index.effective_searchable(
         is_faq=False, doc_is_active=True, doc_status='ready',
         doc_is_searchable=doc_searchable, folder_is_searchable=folder_searchable)
-    await opensearch.index_parsed_document(
+    await os_index.index_parsed_document(
         document_id=document_id, tenant_id=tenant_id, filename=filename, version=version,
         folder_id=folder_id, folder_name=folder_name, folder_description=folder_desc,
         searchable=indexed_searchable, chunks=chunks, embeddings=embeddings)
     # 신버전이 이미 켜져 있으니 구버전을 지워도 빈 창이 없다.
     if old_active_ids:
-        await opensearch.drop_documents_now(old_active_ids)
+        await os_index.drop_documents_now(old_active_ids)
 
     # ── ③ 유일한 커밋 ──
     async with AsyncSessionLocal() as session:
@@ -158,7 +158,7 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         if doc.folder_id is not None:
             f_on = (await session.execute(
                 select(Folder.is_searchable).where(Folder.id == doc.folder_id))).scalar()
-        now_searchable = opensearch.effective_searchable(
+        now_searchable = os_index.effective_searchable(
             is_faq=False, doc_is_active=True, doc_status='ready',
             doc_is_searchable=doc.is_searchable, folder_is_searchable=f_on)
         if now_searchable != indexed_searchable or doc.folder_id != folder_id:

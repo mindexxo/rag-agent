@@ -3,7 +3,7 @@
 - folders        : 1단 폴더 (검색 참조 제어 전용 그룹)
 - documents      : 업로드된 원본 문서 (filename + version 단위)
 - faqs           : FAQ 항목 (검색 편입은 chunks로)
-- (청크는 PG에 없다 — 본문·메타·벡터·어휘 필드는 OpenSearch에만, rag/opensearch.py. #139)
+- (청크는 PG에 없다 — 본문·메타·벡터·어휘 필드는 OpenSearch에만, rag/os_client.py MAPPING. #139)
 - answer_cache   : LLM 응답 영속 캐시 (semantic 매칭 + 문서 단위 무효화)
 - conversations  : 멀티턴 대화 세션
 - messages       : 대화 내 한 턴 (user/assistant)
@@ -22,7 +22,7 @@
    (예: `update(Document).where(Document.id.in_(<스코프된 doc_ids>))`).
 3. `messages.tenant_id`는 필터 성능용 비정규화 컬럼이다. 부모와의 일치를 DB가 보장하지
    않으므로(FK는 부모 id에만 걸림) 삽입 시 부모의 tenant_id를 그대로 넣는다.
-   검색 청크의 격리는 PG 밖이다 — OpenSearch 질의마다 `tenant_filter()`가 건다(rag/opensearch.py).
+   검색 청크의 격리는 PG 밖이다 — OpenSearch 질의마다 `tenant_filter()`가 건다(rag/os_search.py).
 4. 누락 검출은 통합 테스트가 담당한다 — tests/test_tenant_isolation.py(ORM 읽기),
    tests/test_integration_isolation.py(검색 후보·대화·폴더). 표면이 늘면 여기에 케이스를 추가한다.
 """
@@ -98,7 +98,7 @@ class Document(Base):
 
 
 class Faq(Base):
-    """FAQ 항목 (F3 전용 저장). 검색 편입은 색인에 항목당 청크 1개로 (outbox INDEX_FAQ → opensearch.index_faq_chunks)."""
+    """FAQ 항목 (F3 전용 저장). 검색 편입은 색인에 항목당 청크 1개로 (outbox INDEX_FAQ → os_index.index_faq_chunks)."""
     __tablename__ = "faqs"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)

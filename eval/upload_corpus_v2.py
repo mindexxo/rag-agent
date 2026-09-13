@@ -73,7 +73,7 @@ async def verify() -> bool:
     from sqlalchemy import func, select
 
     from config import settings
-    from rag import opensearch
+    from rag import os_client
     from rag.models import Document
 
     ok = True
@@ -83,7 +83,7 @@ async def verify() -> bool:
                 select(func.count()).select_from(Document)
                 .where(Document.tenant_id == tenant).where(Document.status == 'ready')
             )).scalar()
-            n_chunks = (await opensearch.client().count(index=settings.opensearch_index, body={
+            n_chunks = (await os_client.client().count(index=settings.opensearch_index, body={
                 "query": {"term": {"tenant_id": tenant}}}))["count"]     # 청크는 색인에만 (#139)
             print(f'{tenant}: ready {n_docs}문서 / {n_chunks}청크')
 

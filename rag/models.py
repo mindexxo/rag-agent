@@ -98,7 +98,7 @@ class Document(Base):
 
 
 class Faq(Base):
-    """FAQ 항목 (F3 전용 저장). 검색 편입은 색인에 항목당 청크 1개로 (outbox INDEX_FAQ → opensearch.index_faq_chunks)."""
+    """FAQ 항목 (F3 전용 저장). 검색 편입은 색인에 항목당 청크 1개로 (outbox INDEX_FAQ → os_index.index_faq_chunks)."""
     __tablename__ = "faqs"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)

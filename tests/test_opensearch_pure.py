@@ -19,6 +19,7 @@ import pytest
 
 from rag import opensearch as B
 from rag import os_client as C
+from rag import os_index as I
 from rag import lexical
 from rag.index_text import build_index_text
 
@@ -49,10 +50,10 @@ def test_dense_필드는_임베딩_차원과_lucene_cosinesimil로_고정된다(
 def test_어휘_입력_조립이_운영과_같다():
     """문서는 '파일명>헤딩' 프리픽스, FAQ는 원문 — 인제스션·운영 어휘 채널과 동일 비대칭."""
     text, fn, hp = "반품은 7일 이내", "환불반품정책.pdf", ["2. 반품", "2.1 기한"]
-    assert B.lex_text(text, fn, hp) == build_index_text(text, fn, hp)
-    assert B.lex_text(text, None, None) == text          # FAQ — 프리픽스 없음
+    assert I.lex_text(text, fn, hp) == build_index_text(text, fn, hp)
+    assert I.lex_text(text, None, None) == text          # FAQ — 프리픽스 없음
     # 폴더 설명은 들어가지 않는다 (리랭커 전용, rag/index_text.py docstring)
-    assert "폴더" not in B.lex_text(text, fn, hp)
+    assert "폴더" not in I.lex_text(text, fn, hp)
 
 
 def test_bigram_필드는_공백만_자른다():
@@ -107,14 +108,14 @@ def test_searchable_판정이_조건표대로다():
     """검색 가능 판정의 정의점(effective_searchable) — 문서: 활성+ready+검색토글+(미분류 or 폴더 on),
     FAQ: 활성. 색인 시 계산해 넣는 플래그라 조건이 바뀌면 전량 META 갱신이 따라야 한다."""
     ok = dict(is_faq=False, doc_is_active=True, doc_status='ready', doc_is_searchable=True)
-    assert B.effective_searchable(**ok, folder_is_searchable=None) is True   # 미분류 문서
-    assert B.effective_searchable(**ok, folder_is_searchable=True) is True
-    assert B.effective_searchable(**ok, folder_is_searchable=False) is False  # 폴더 off
-    assert B.effective_searchable(**{**ok, 'doc_is_active': False}) is False
-    assert B.effective_searchable(**{**ok, 'doc_status': 'deleted'}) is False
-    assert B.effective_searchable(**{**ok, 'doc_is_searchable': False}) is False
-    assert B.effective_searchable(is_faq=True, faq_is_active=True) is True
-    assert B.effective_searchable(is_faq=True, faq_is_active=False) is False
+    assert I.effective_searchable(**ok, folder_is_searchable=None) is True   # 미분류 문서
+    assert I.effective_searchable(**ok, folder_is_searchable=True) is True
+    assert I.effective_searchable(**ok, folder_is_searchable=False) is False  # 폴더 off
+    assert I.effective_searchable(**{**ok, 'doc_is_active': False}) is False
+    assert I.effective_searchable(**{**ok, 'doc_status': 'deleted'}) is False
+    assert I.effective_searchable(**{**ok, 'doc_is_searchable': False}) is False
+    assert I.effective_searchable(is_faq=True, faq_is_active=True) is True
+    assert I.effective_searchable(is_faq=True, faq_is_active=False) is False
 
 
 def test_엔진이_돌려준_청크에_인용_메타가_다_실린다():
@@ -138,7 +139,7 @@ class _Chunk:
 
 
 def test_벡터는_청크에_실려_온_값으로_색인된다():
-    doc = B.build_doc(_Chunk(dense=[0.5] * 1024), '정책.pdf', 2)
+    doc = I.build_doc(_Chunk(dense=[0.5] * 1024), '정책.pdf', 2)
     assert len(doc['dense']) == 1024 and doc['dense'][0] == pytest.approx(0.5)
     assert doc['chunk_id'] == 1 and doc['filename'] == '정책.pdf' and doc['version'] == 2
 
@@ -146,16 +147,16 @@ def test_벡터는_청크에_실려_온_값으로_색인된다():
 def test_벡터가_없으면_크게_실패한다():
     """조용히 벡터 없는 문서를 색인하면 kNN에 안 잡히는 유령이 된다."""
     with pytest.raises(ValueError, match='벡터가 없다'):
-        B.build_doc(_Chunk(has_dense=False), '정책.pdf', 2)
+        I.build_doc(_Chunk(has_dense=False), '정책.pdf', 2)
     with pytest.raises(ValueError, match='벡터가 없다'):
-        B.build_doc(_Chunk(dense=None), '정책.pdf', 2)
+        I.build_doc(_Chunk(dense=None), '정책.pdf', 2)
 
 
 def test_어휘_필드는_본문에서_만든다():
     """Nori·bigram 필드는 lex_text(본문+프리픽스)에서 색인 시점에 조립된다."""
     ch = _Chunk(dense=[0.5] * 1024)
-    doc = B.build_doc(ch, '정책.pdf', 2)
-    expected = B.lex_text(ch.text, '정책.pdf', ch.heading_path)
+    doc = I.build_doc(ch, '정책.pdf', 2)
+    expected = I.lex_text(ch.text, '정책.pdf', ch.heading_path)
     assert doc[C.NORI_FIELD] == expected
     assert doc[C.LEX_BIGRAM_FIELD] == ' '.join(lexical.bigrams(expected))
 
@@ -163,7 +164,7 @@ def test_어휘_필드는_본문에서_만든다():
 def test_chunk_os_id는_결정적이고_충돌이_없다():
     """PG 시퀀스 없이 (부모 id, chunk_index)로 만드는 id — 재색인이 같은 _id로 덮여 멱등하려면
     결정적이어야 하고, 문서·청크 조합마다 달라야 한다."""
-    f = B.chunk_os_id
+    f = I.chunk_os_id
     assert f(document_id=1008, chunk_index=3) == f(document_id=1008, chunk_index=3)
     ids = {f(document_id=d, chunk_index=i) for d in (1, 2, 1008, 99999) for i in (0, 1, 7, 500)}
     assert len(ids) == 16
@@ -177,9 +178,9 @@ def test_chunk_os_id는_결정적이고_충돌이_없다():
 def test_chunk_os_id는_20비트_상한을_강제한다():
     """상한을 넘으면 상위 비트(문서 id 몫)를 침범해 다른 문서의 청크와 같은 id가 된다 —
     조용히 덮어쓰지 않고 크게 실패해야 한다."""
-    assert B.chunk_os_id(document_id=5, chunk_index=(1 << 20) - 1) > 0
+    assert I.chunk_os_id(document_id=5, chunk_index=(1 << 20) - 1) > 0
     with pytest.raises(ValueError, match='20비트'):
-        B.chunk_os_id(document_id=5, chunk_index=1 << 20)
+        I.chunk_os_id(document_id=5, chunk_index=1 << 20)
 
 
 @pytest.mark.asyncio

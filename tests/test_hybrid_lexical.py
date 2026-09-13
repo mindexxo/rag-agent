@@ -15,7 +15,7 @@ BM25 채점은 실제 OpenSearch(Nori)가 한다 — 청크는 PG가 아니라 �
 import pytest
 
 from database import AsyncSessionLocal
-from rag import opensearch
+from rag import opensearch, os_index
 from rag.chunking import ChunkData as ParsedChunk
 from rag.models import Document
 from rag.retriever import retrieve_candidates
@@ -44,11 +44,11 @@ async def _seed(tenant_id: str) -> dict[str, int]:
     }
     chunks = [ParsedChunk(chunk_index=i, text=t, page=1, heading_path=[], meta={})
               for i, t in enumerate(texts.values())]
-    await opensearch.index_parsed_document(
+    await os_index.index_parsed_document(
         document_id=doc_id, tenant_id=tenant_id, filename='정책.pdf', version=1,
         folder_id=None, folder_name=None, folder_description=None, searchable=True,
         chunks=chunks, embeddings=[_Emb(c.text) for c in chunks])
-    return {k: opensearch.chunk_os_id(document_id=doc_id, chunk_index=i)
+    return {k: os_index.chunk_os_id(document_id=doc_id, chunk_index=i)
             for i, k in enumerate(texts)}
 
 
@@ -126,11 +126,11 @@ async def test_적대_토큰_질의가_엔진에서_죽지_않는다(tenant_id, 
         doc_id = doc.id
     text = "HP-CS-011 모델의 don't 옵션과 C:\\경로 설정"
     ch = ParsedChunk(chunk_index=0, text=text, page=1, heading_path=[], meta={})
-    await opensearch.index_parsed_document(
+    await os_index.index_parsed_document(
         document_id=doc_id, tenant_id=tenant_id, filename=doc.filename, version=1,
         folder_id=None, folder_name=None, folder_description=None, searchable=True,
         chunks=[ch], embeddings=[_Emb(text)])
-    target = opensearch.chunk_os_id(document_id=doc_id, chunk_index=0)
+    target = os_index.chunk_os_id(document_id=doc_id, chunk_index=0)
     for q in ("HP-CS-011 설정", "don't 옵션", "C:\\경로"):
         got = await opensearch.search_lexical(tenant_id, q, 5)      # 예외 없이 돌아야 한다
         assert isinstance(got, list), q
@@ -154,4 +154,4 @@ async def test_faq_색인이_어휘_채널에_잡힌다(tenant_id, fake_embed):
     r = await outbox.drain_once(row_ids=ids)
     assert r['done'] == 1 and r['failed'] == 0
     got = await opensearch.search_lexical(tenant_id, 'RF 회원카드 발급', 5)
-    assert opensearch.chunk_os_id(faq_id=faq_id) in got
+    assert os_index.chunk_os_id(faq_id=faq_id) in got

@@ -305,7 +305,7 @@ async def update_document(
 
     # 외부 색인의 비정규화 메타 갱신을 같은 트랜잭션에 적재 (#139) — 검색가능·폴더 값이
     # 청크 문서마다 복사돼 있어 fan-out이 필요하다. **재색인이 아니라 부분 갱신**이다
-    # (재색인은 벡터 없는 구성에서 재임베딩을 부른다 — rag/opensearch._update_meta).
+    # (재색인은 벡터 없는 구성에서 재임베딩을 부른다 — rag/os_index.py의 _update_meta).
     outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=[doc.id])
     await session.commit()
     return _to_response(doc)

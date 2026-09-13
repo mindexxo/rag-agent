@@ -120,9 +120,9 @@ async def sync_faq(faq_id: int) -> dict:
 async def faq_doc(faq_id: int) -> dict | None:
     """FAQ 청크의 색인 문서(_source). 없으면 None — 청크는 OpenSearch에만 있다(#139)."""
     from config import settings
-    from rag import opensearch, os_client
+    from rag import os_client, os_index
     resp = await os_client.client().get(index=settings.opensearch_index,
-                                        id=str(opensearch.chunk_os_id(faq_id=faq_id)),
+                                        id=str(os_index.chunk_os_id(faq_id=faq_id)),
                                         ignore=404)
     return resp.get('_source') if resp.get('found') else None
 
@@ -192,12 +192,14 @@ def fake_embed(monkeypatch):
     import rag.cache
     import rag.documents
     import rag.embeddings
+    import rag.os_index
     import rag.retriever
     from config import settings
 
-    # rag.opensearch.index_faq_chunks는 함수 안에서 `from rag.embeddings import embed_texts`를
-    # 하므로 원본 모듈 속성을 패치하면 먹는다. documents·retriever는 톱레벨 바인딩이라 개별 패치.
+    # 톱레벨로 이름을 당겨온 모듈은 개별 패치가 필요하다 — 원본 모듈 속성만 바꾸면 그 바인딩은
+    # 옛 함수를 계속 가리킨다(조용히 실제 TEI를 때린다). os_index는 index_faq_chunks가 쓴다(#146).
     monkeypatch.setattr(rag.embeddings, 'embed_texts', _texts)
+    monkeypatch.setattr(rag.os_index, 'embed_texts', _texts)
     monkeypatch.setattr(rag.documents, 'embed_texts', _texts)
     monkeypatch.setattr(rag.retriever, 'embed_texts', _texts)   # 쿼리 확장(#5)으로 배치 임베딩 전환
     monkeypatch.setattr(rag.cache, 'embed_query', _query)
@@ -366,10 +368,10 @@ async def purge_tenant(t: str) -> None:
     from sqlalchemy import delete
 
     from database import AsyncSessionLocal
-    from rag import opensearch, os_client
+    from rag import os_client, os_index
 
     await os_client.ensure_index()
-    await opensearch._delete_by_terms('tenant_id', [t])
+    await os_index._delete_by_terms('tenant_id', [t])
     from rag.models import (
         AnswerCache as AnswerCacheRow,
         Conversation,

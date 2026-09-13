@@ -34,7 +34,7 @@
 
 ## 멱등성이 전제다
 
-모든 연산이 멱등이다: 색인은 `_id=chunk_id` upsert(chunk_id가 결정적 — opensearch.chunk_os_id),
+모든 연산이 멱등이다: 색인은 `_id=chunk_id` upsert(chunk_id가 결정적 — os_index.chunk_os_id),
 삭제는 없는 것을 지워도 무해, 메타 갱신은 같은 값을 덮어쓸 뿐이다. 그래서 겹쳐 두 번 처리해도
 결과가 같고, "처리했는데 done 찍기 전에 죽는" 경우도 다음 회차가 한 번 더 할 뿐이다.
 **at-least-once**를 택한 것이다 — exactly-once는 분산 트랜잭션이 필요하고 멱등 연산에서는 값이 없다.
@@ -50,7 +50,7 @@ import logging
 from sqlalchemy import select, update
 
 from database import AsyncSessionLocal
-from rag import opensearch, os_client
+from rag import os_client, os_index
 from rag.metrics import SEARCH_INDEX_SYNC_TOTAL
 from rag.models import Document, SearchIndexOutbox
 
@@ -90,15 +90,15 @@ async def _apply(session, op: str, payload: dict, row_id: int) -> None:
         from rag.documents import index_pending_document   # 지연 import — documents가 이 모듈을 import
         await index_pending_document(payload['document_id'], outbox_row_id=row_id)
     elif op == DROP_DOCUMENTS:
-        await opensearch.drop_documents_now(payload['document_ids'])
+        await os_index.drop_documents_now(payload['document_ids'])
     elif op == META_DOCUMENTS:
-        await opensearch.sync_meta_documents_now(session, payload['document_ids'])
+        await os_index.sync_meta_documents_now(session, payload['document_ids'])
     elif op == INDEX_FAQ:
-        await opensearch.index_faq_chunks(session, payload['faq_id'])
+        await os_index.index_faq_chunks(session, payload['faq_id'])
     elif op == DROP_FAQS:
-        await opensearch.drop_faqs_now(payload['faq_ids'])
+        await os_index.drop_faqs_now(payload['faq_ids'])
     elif op == META_FAQS:
-        await opensearch.sync_meta_faqs_now(session, payload['faq_ids'])
+        await os_index.sync_meta_faqs_now(session, payload['faq_ids'])
     else:
         raise ValueError(f'알 수 없는 outbox op: {op!r}')
 

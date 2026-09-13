@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from rag import opensearch, outbox
+from rag import opensearch, os_index, outbox
 from rag.models import Document, SearchIndexOutbox
 from rag.retriever import retrieve_candidates
 from tests.conftest import faq_doc, indexed_chunk_texts, ingest, sync_faq
@@ -96,7 +96,7 @@ async def test_색인_일시_실패는_attempts를_남기고_다음_회차에_�
     doc_id = body['document_id']
 
     import rag.documents as rd
-    real = rd.opensearch.index_parsed_document
+    real = rd.os_index.index_parsed_document
     calls = {'n': 0}
 
     async def _flaky(**kw):
@@ -105,7 +105,7 @@ async def test_색인_일시_실패는_attempts를_남기고_다음_회차에_�
             raise ConnectionError('Cannot connect to host localhost:9200')
         return await real(**kw)
 
-    monkeypatch.setattr(rd.opensearch, 'index_parsed_document', _flaky)
+    monkeypatch.setattr(rd.os_index, 'index_parsed_document', _flaky)
     assert await ingest(doc_id) == {'done': 0, 'failed': 1}
     doc = await _doc(doc_id)
     assert doc.status == 'pending'                          # failed 아님 — MAX_ATTEMPTS(5) 전
@@ -128,15 +128,15 @@ async def test_reconcile은_사라진_ready_문서를_재등재하고_유령_청
     doc_id = body['document_id']
     await ingest(doc_id)
     # 누락 재현: 색인에서만 지운다(스냅샷 복구 뒤 유실 등). PG는 ready 그대로.
-    await opensearch._delete_by_terms('document_id', [doc_id])
+    await os_index._delete_by_terms('document_id', [doc_id])
     assert await indexed_chunk_texts(doc_id) == []
     # 잉여 재현: PG에 없는 document_id의 청크를 이 테넌트로 넣는다.
-    ghost = opensearch.build_doc(
-        opensearch._ParsedChunk(cid=opensearch.chunk_os_id(document_id=999_999_001, chunk_index=0),
+    ghost = os_index.build_doc(
+        os_index._ParsedChunk(cid=os_index.chunk_os_id(document_id=999_999_001, chunk_index=0),
                                 tenant_id=tenant_id, document_id=999_999_001, faq_id=None,
                                 text='유령', heading_path=[], page=None, meta={}, dense=[0.01] * 1024),
         '유령.md', 1, searchable=True)
-    await opensearch.bulk_index([ghost])
+    await os_index.bulk_index([ghost])
 
     async with AsyncSessionLocal() as s:
         r = await opensearch.reconcile(s, tenant_id)        # 테넌트 스코프 — 남의 문서는 건드리지 않는다
@@ -157,13 +157,13 @@ async def test_reconcile_faqs는_사라진_FAQ를_재등재하고_유령을_지�
     faq_id = res.json()['id']
     await sync_faq(faq_id)
     assert await faq_doc(faq_id)
-    await opensearch._delete_by_terms('faq_id', [faq_id])
-    ghost = opensearch.build_doc(
-        opensearch._ParsedChunk(cid=opensearch.chunk_os_id(faq_id=999_999_002), tenant_id=tenant_id,
+    await os_index._delete_by_terms('faq_id', [faq_id])
+    ghost = os_index.build_doc(
+        os_index._ParsedChunk(cid=os_index.chunk_os_id(faq_id=999_999_002), tenant_id=tenant_id,
                                 document_id=None, faq_id=999_999_002, text='Q: 유령 A: 유령',
                                 heading_path=['유령'], page=None, meta={}, dense=[0.01] * 1024),
         None, None, searchable=True)
-    await opensearch.bulk_index([ghost])
+    await os_index.bulk_index([ghost])
 
     async with AsyncSessionLocal() as s:
         r = await opensearch.reconcile_faqs(s, tenant_id)

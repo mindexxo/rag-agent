@@ -2,7 +2,7 @@
 
 0층 leaf다(`dataclasses`만 쓴다). `rag/retriever.py`에서 뽑아낸 것은(#146) 검색 엔진 쪽과
 조합 쪽이 **같은 자료형을 공유하면서도 서로를 import하지 않게** 하기 위해서다: 분리 전에는
-엔진 쪽(구 `rag/opensearch.py`)이 `RetrievedChunk`를 만들려고 `rag/retriever.py`를 되돌아
+엔진 쪽(구 rag/opensearch.py)이 `RetrievedChunk`를 만들려고 `rag/retriever.py`를 되돌아
 가리켜야 했고(retriever가 엔진 모듈을 톱레벨로 물고 있었다), 그 순환을 함수 안 지연 import로
 피하고 있었다. 자료형이 여기 있으면 엔진 쪽과 `rag/retriever.py` 둘 다 톱레벨에서 그냥 가져온다.
 

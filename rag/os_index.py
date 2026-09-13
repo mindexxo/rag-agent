@@ -1,4 +1,4 @@
-"""OpenSearch 색인 쓰기 — 인제스션·삭제·메타 갱신의 **정의점** (#146, 구 `rag/opensearch.py`에서 분리).
+"""OpenSearch 색인 쓰기 — 인제스션·삭제·메타 갱신의 **정의점** (#146, 구 rag/opensearch.py에서 분리).
 
 파싱·임베딩 결과를 청크 문서로 조립해 넣고(`build_doc` → `index_parsed_document`·
 `index_parsed_faq`), 삭제(`drop_*_now`)와 메타 부분 갱신(`sync_meta_*_now`)까지 이 파일이 든다.

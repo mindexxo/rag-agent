@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from rag import opensearch, os_index, outbox
+from rag import os_index, os_reconcile, outbox
 from rag.models import Document, SearchIndexOutbox
 from rag.retriever import retrieve_candidates
 from tests.conftest import faq_doc, indexed_chunk_texts, ingest, sync_faq
@@ -139,7 +139,7 @@ async def test_reconcile은_사라진_ready_문서를_재등재하고_유령_청
     await os_index.bulk_index([ghost])
 
     async with AsyncSessionLocal() as s:
-        r = await opensearch.reconcile(s, tenant_id)        # 테넌트 스코프 — 남의 문서는 건드리지 않는다
+        r = await os_reconcile.reconcile(s, tenant_id)        # 테넌트 스코프 — 남의 문서는 건드리지 않는다
     assert r['indexed'] == 1 and r['deleted'] == 1 and r['unit'] == 'document'
     assert (await _doc(doc_id)).status == 'pending'         # 재등재 = pending 되돌림 + INDEX 행
     assert await indexed_chunk_texts(999_999_001) == []
@@ -148,7 +148,7 @@ async def test_reconcile은_사라진_ready_문서를_재등재하고_유령_청
     assert (await _doc(doc_id)).status == 'ready'
     assert await indexed_chunk_texts(doc_id)
     async with AsyncSessionLocal() as s:
-        assert (await opensearch.reconcile(s, tenant_id))['indexed'] == 0
+        assert (await os_reconcile.reconcile(s, tenant_id))['indexed'] == 0
 
 
 @pytest.mark.asyncio
@@ -166,7 +166,7 @@ async def test_reconcile_faqs는_사라진_FAQ를_재등재하고_유령을_지�
     await os_index.bulk_index([ghost])
 
     async with AsyncSessionLocal() as s:
-        r = await opensearch.reconcile_faqs(s, tenant_id)
+        r = await os_reconcile.reconcile_faqs(s, tenant_id)
     assert r['indexed'] == 1 and r['deleted'] == 1 and r['unit'] == 'faq'
     assert await faq_doc(999_999_002) is None
     assert await sync_faq(faq_id) == {'done': 1, 'failed': 0}

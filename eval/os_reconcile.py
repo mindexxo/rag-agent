@@ -1,4 +1,4 @@
-"""PG↔OpenSearch 재동기화 — `rag.opensearch.reconcile`(문서)·`reconcile_faqs`(FAQ)의 실행 진입점.
+"""PG↔OpenSearch 재동기화 — `rag.os_reconcile`의 reconcile(문서)·reconcile_faqs(FAQ) 실행 진입점.
 
     python -m eval.os_reconcile                     # 대조만 (dry-run) — 누락·잉여 수 출력, 변경 없음
     python -m eval.os_reconcile --apply             # 누락 → 대기열 등재(문서는 pending으로 되돌림), 잉여 → 색인에서 삭제
@@ -7,7 +7,7 @@
 언제 쓰나: outbox가 failed로 확정한 문서를 사람이 고친 뒤, 엔진 스냅샷 복구 뒤, **첫 배포 후 색인 채우기**
 (PG에 있는 문서·FAQ 전부가 누락으로 잡혀 등재된다 — 워커가 분당 50건씩 처리), 또는 "색인이 낡았다"는 의심이
 들 때. 청크 수준 드리프트(일부 청크 누락)는 잡지 못한다 — 문서 단위 색인은 한 커밋으로 끝나므로 그 경우는
-outbox 원자성이 막는다(rag/opensearch.py "정합 관리").
+outbox 원자성이 막는다(rag/outbox.py가 정의점).
 """
 import argparse
 import asyncio
@@ -16,14 +16,14 @@ from sqlalchemy import select
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import opensearch, os_client
+from rag import os_client, os_reconcile
 from rag.models import Document, Faq
 
 
 async def _diff(session, tenant_id):
     """reconcile과 같은 순서(OS 먼저)로 문서·FAQ 두 집합의 차이를 읽기만 한다."""
-    os_docs = await opensearch._indexed_parent_ids("document_id", tenant_id)
-    os_faqs = await opensearch._indexed_parent_ids("faq_id", tenant_id)
+    os_docs = await os_reconcile._indexed_parent_ids("document_id", tenant_id)
+    os_faqs = await os_reconcile._indexed_parent_ids("faq_id", tenant_id)
     d = select(Document.id).where(Document.status == 'ready')
     f = select(Faq.id)
     if tenant_id:
@@ -48,9 +48,9 @@ async def main() -> None:
             print(f"FAQ  잉여                       {len(fx)}건: {sorted(fx)[:20]}")
             print("변경 없음 — 반영하려면 --apply")
             return
-        r = await opensearch.reconcile(session, args.tenant)
+        r = await os_reconcile.reconcile(session, args.tenant)
         print(f"문서: PG ready {r['pg']} · OS {r['os']} · 재등재 {r['indexed']} · 삭제 청크 {r['deleted']}")
-        r = await opensearch.reconcile_faqs(session, args.tenant)
+        r = await os_reconcile.reconcile_faqs(session, args.tenant)
         print(f"FAQ : PG {r['pg']} · OS {r['os']} · 재등재 {r['indexed']} · 삭제 청크 {r['deleted']}")
         print("재등재분은 워커 cron(1분, 회차당 50행)이 처리한다 — 즉시 반영이 필요하면 drain_once를 부를 것")
 

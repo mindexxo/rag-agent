@@ -1,4 +1,4 @@
-"""OpenSearch 질의 조립·후보 회수 — 검색 경로의 **정의점** (#146, 구 `rag/opensearch.py`에서 분리).
+"""OpenSearch 질의 조립·후보 회수 — 검색 경로의 **정의점** (#146, 구 rag/opensearch.py에서 분리).
 
 왕복은 셋뿐이다: dense kNN(`search_dense_per_query`) · BM25(Nori) 어휘 채널(`search_lexical`) ·
 본문 mget(`fetch_chunk_map`). 그 위(멀티쿼리 RRF·리랭커·표 필터·top_n·게이트)는 엔진과 무관한

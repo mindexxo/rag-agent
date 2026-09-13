@@ -1,11 +1,20 @@
-"""PG↔OpenSearch 재동기화 — 안전판. (#146 분리 진행 중: 연결·매핑 `rag/os_client.py`,
-색인 쓰기 `rag/os_index.py`, 질의 조립·후보 회수 `rag/os_search.py`. 남은 재동기화가
-제 파일로 나가면 이 파일은 사라진다.)
+"""PG↔OpenSearch 재동기화 — 안전판 (#146, 구 rag/opensearch.py에서 분리).
 
 PG에 청크가 없으므로 문서·FAQ **단위**로만 대조한다 — 청크 일부 누락은 못 잡고 outbox의
-문서 단위 원자성에 의존한다.
+문서 단위 원자성(문서 하나를 색인한 뒤 한 커밋)에 의존한다.
+
+**읽는 순서가 계약이다: OpenSearch 먼저, PG 나중.** 두 스냅샷 사이에 인제스션이 끼면 새 문서는
+PG에만 있어 'missing'으로 판정돼 재등재된다 — 이미 있는 것을 다시 넣는 무해한 방향이다.
+반대 순서면 색인에만 있어 'extra'로 판정돼 **방금 색인된 청크를 지운다.**
+
+평상시 정합은 이 파일이 아니라 트랜잭셔널 outbox가 지킨다(`rag/outbox.py`가 정의점) — 여기는
+그게 놓친 것을 줍는 안전판이고, 실행 진입점은 `eval/os_reconcile.py`다.
 """
+from sqlalchemy import select, update
+
 from config import settings
+from rag import outbox
+from rag.models import Document, Faq
 from rag.os_client import client
 from rag.os_index import _delete_by_terms
 
@@ -35,10 +44,6 @@ async def reconcile(session, tenant_id: str | None = None) -> dict:
     새 문서는 pg_docs에만 있어 'missing'으로 판정돼 재등재된다 — 이미 있는 것을 다시 넣는
     무해한 방향이다. 반대 순서면 os_docs에만 있어 'extra'로 판정돼 **방금 색인된 청크를 지운다.**
     """
-    from sqlalchemy import select, update
-
-    from rag import outbox
-    from rag.models import Document
 
     os_docs = await _indexed_parent_ids("document_id", tenant_id)
     stmt = select(Document.id, Document.tenant_id).where(Document.status == 'ready')
@@ -69,10 +74,6 @@ async def reconcile_faqs(session, tenant_id: str | None = None) -> dict:
     (워커가 재임베딩·색인), 잉여(PG에 없는 faq_id)는 색인에서 지운다.
     반환: {'pg': FAQ 수, 'os': 색인 FAQ 수, 'indexed': 재등재 수, 'deleted': 삭제 청크 수}.
     """
-    from sqlalchemy import select
-
-    from rag import outbox
-    from rag.models import Faq
 
     os_faqs = await _indexed_parent_ids("faq_id", tenant_id)
     stmt = select(Faq.id, Faq.tenant_id)

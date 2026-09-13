@@ -3,7 +3,7 @@
 - folders        : 1단 폴더 (검색 참조 제어 전용 그룹)
 - documents      : 업로드된 원본 문서 (filename + version 단위)
 - faqs           : FAQ 항목 (검색 편입은 chunks로)
-- (청크는 PG에 없다 — 본문·메타·벡터·어휘 필드는 OpenSearch에만, rag/opensearch.py. #139)
+- (청크는 PG에 없다 — 본문·메타·벡터·어휘 필드는 OpenSearch에만 — 매핑은 rag/os_client.py. #139)
 - answer_cache   : LLM 응답 영속 캐시 (semantic 매칭 + 문서 단위 무효화)
 - conversations  : 멀티턴 대화 세션
 - messages       : 대화 내 한 턴 (user/assistant)

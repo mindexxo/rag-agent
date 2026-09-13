@@ -15,11 +15,13 @@
 - **0층(leaf, 다른 `rag/` 모듈을 안 씀)**: `config.py`, `rag/models.py`, `rag/tokens.py`,
   `rag/prompt_texts.py`, `rag/llm.py`, `rag/embeddings.py`, `rag/chunking.py`,
   `rag/index_text.py`, `rag/lexical.py`, `rag/limiter.py`, `rag/otel.py`, `rag/metrics.py`,
-  `rag/faq_indexing.py`, `rag/opensearch.py`(톱레벨은 `config`만 — 다른 `rag/` 참조는 전부 함수 안 지연 import)
+  `rag/faq_indexing.py`, `rag/retrieval_types.py`, `rag/os_client.py`(톱레벨은 `config`만 —
+  `opensearchpy`는 `client()` 안에서 지연 import한다: 매핑 상수만 보는 테스트가 그 패키지 없이도 import할 수 있게)
 - **중간층(조합)**: `rag/citation_labels.py`, `rag/clients.py`, `rag/llm_schemas.py`,
   `rag/turn_state.py`, `rag/cache.py`, `rag/reranker.py`, `rag/retriever.py`,
   `rag/stream_resume.py`, `rag/cancellation.py`, `rag/citation_tail.py`, `rag/documents.py`,
-  `rag/prompts.py`, `rag/conversation.py`, `rag/guardrail.py`, `rag/outbox.py`
+  `rag/prompts.py`, `rag/conversation.py`, `rag/guardrail.py`, `rag/outbox.py`,
+  `rag/os_search.py`, `rag/os_index.py`, `rag/os_reconcile.py`
 - **조립점**: `rag/service.py` — 한 턴의 수명(prepare → generate → finalize)을 조율한다.
 - **진입점**(아무도 이들을 import하지 않는다): `rag/streaming.py`(SSE),
   `rag/worker.py`(arq 백그라운드), `routers/*.py`(HTTP), `main.py`(FastAPI 부트스트랩 전용).
@@ -31,8 +33,12 @@
 **함수 안 지연 import은 순환 회피용이며 의도된 것이다 — 톱레벨로 끌어올리지 마라.**
 이걸 하는 모듈: `chunking`(→xlsx_chunking), `embeddings`·`limiter`(→clients),
 `reranker`(→clients, embeddings), `retriever`(→reranker), `stream_resume`(→clients, streaming),
-`opensearch`(→embeddings, faq_indexing, index_text, lexical, models, retriever, outbox — 검색
-저장소가 인제스션·검색 양쪽에서 불려 톱레벨로 올리면 순환), `outbox`(→documents).
+`outbox`(→documents).
+
+검색 저장소(`os_*` 4모듈)에는 **지연 import가 없다**(#146). 구 rag/opensearch.py는 19~21곳을
+함수 안에 두고 있었는데, 그중 진짜 순환은 둘뿐이었다 — `retriever`(자료형)와 `outbox`(재등재).
+자료형을 `retrieval_types.py`로 빼고 재동기화를 `os_reconcile.py`로 떼자 둘 다 사라졌고, 나머지는
+애초에 "한 파일을 0층으로 유지한다"는 자기 규율이었을 뿐이라 톱레벨로 올라갔다.
 개수는 적지 않는다 — 정확한 목록은 `grep -rn "^\s\+from rag" rag/`로 뽑는다(톱레벨 import는
 줄 시작이 들여쓰기 없음이라 이렇게 구분된다).
 

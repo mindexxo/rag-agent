@@ -24,6 +24,15 @@ services:
     env_file: .env.dev
     network_mode: host
     restart: unless-stopped
+    # 메모리 상한 (#151). 상한이 없으면 docling 변환(#143)이 호스트 메모리를 끝까지 먹고,
+    # 호스트 OOM killer가 워커가 아닌 다른 컨테이너를 고를 수도 있다. 상한을 주면 커널이
+    # 이 컨테이너만 죽이고 restart 정책이 되살리며, 죽은 사실이 플래그로 남는다:
+    #   docker inspect -f '{{.State.OOMKilled}}' <컨테이너>
+    # 상한 없이 죽으면 arq 잡이 통째로 사라지고(max_tries=1) 문서가 pending에 고착했다가
+    # DOC_STALE_SECONDS(900초) 뒤 lazy 스윕이 failed로만 바꾼다 — 원인이 아무 데도 안 남는다.
+    # 1.5g 근거: docling 실측 RSS 0.35~0.85GB(#143, macOS) + 파이썬·앱 베이스.
+    # **Linux 실측 후 조정한다** — WORKER_METRICS_PORT로 노출되는 process_resident_memory_bytes가 그 근거다.
+    mem_limit: 1.5g
     depends_on:
       - web                               # web 빌드가 이미지를 먼저 만들도록 순서만 보장
     command: ["arq", "rag.worker.WorkerSettings"]

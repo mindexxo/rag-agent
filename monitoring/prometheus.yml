@@ -10,6 +10,12 @@ scrape_configs:
   - job_name: kms_app
     static_configs: [{targets: ['localhost:8000']}]
 
+  # 워커(arq) 자체 /metrics (#151) — 웹과 별도 프로세스라 타깃이 따로다.
+  # 핵심은 process_resident_memory_bytes: docling 변환(#143)이 컨테이너 mem_limit(1.5g) 안에
+  # 머무는지 보는 유일한 수단이다. 워커가 WORKER_METRICS_PORT를 안 받으면 이 타깃은 down이다.
+  - job_name: kms_worker
+    static_configs: [{targets: ['localhost:23339']}]
+
   # vLLM (worker15) — TTFT·e2e 히스토그램, kv_cache_usage_perc, prefix_cache_*, running/waiting
   - job_name: vllm
     static_configs: [{targets: ['10.1.32.15:18888']}]

@@ -95,6 +95,14 @@ class Settings(BaseSettings):
     otel_endpoint: str = ""
     otel_text_limit: int = 500        # 스팬에 담는 청크 본문·답변 절단 길이 (질문·재작성은 전문)
 
+    # 워커 프로세스 지표 (#151). arq에는 HTTP 서버가 없어 웹의 /metrics(main.py)가 워커를 못 덮는다 —
+    # 값을 주면 워커가 startup에서 그 포트로 자기 /metrics를 연다(0이면 안 연다).
+    # 핵심은 prometheus_client 기본 ProcessCollector의 process_resident_memory_bytes다:
+    # docling 변환(#143)이 컨테이너 mem_limit 안에 머무는지 보는 유일한 수단.
+    # **Linux에서만 값이 나온다** — ProcessCollector가 /proc를 읽으므로 macOS에선 조용히 빈 값이다.
+    # 기본 0인 이유: 로컬에서 워커를 여러 개 띄울 때 포트 충돌을 기본 동작으로 만들지 않기 위해서다.
+    worker_metrics_port: int = 0
+
     # 질의 재작성 의미 확장(#5). on이면 '멀티턴에서만' condense 자리 1콜로 멀티쿼리(재작성 1 +
     # 어휘 변형 2)를 뽑아 검색 — rerank on이면 쿼리별 채점 max-pool 정렬, rerank off/실패면 RRF 폴백.
     # 단일턴은 on이어도 현행 경로 그대로(LLM 스킵) — 단일턴 확장은 실측상 손실이라 게이트(service).

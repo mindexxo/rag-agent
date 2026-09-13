@@ -3,6 +3,7 @@
 """
 import asyncio
 import mimetypes
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from rag import cache, os_index, outbox
 from rag.chunking import chunk_file, pdf_image_area_ratio
 from rag.embeddings import embed_texts
 from rag.index_text import build_index_text
+from rag.metrics import INDEX_DURATION_SECONDS, INDEX_TOTAL, ext_label
 from rag.models import Document, Folder
 
 # 이미지 면적이 이 비율을 넘으면 인제스션에서 경고를 남긴다 (#137 결함 4).
@@ -88,6 +90,11 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         )).scalars().all())
 
     # ── ② 무거운 계산 — DB 세션 없음 ──
+    # 단계별 소요를 지표로 남긴다 (#151). 워커에는 이것 말고 "한 건이 얼마나 걸리나"를 볼 방법이
+    # 없다 — 로그는 남지 않고, drain의 cron 소요는 배치 전체라 건당으로 나눌 수 없다.
+    # 성공한 건만 기록된다: 실패는 kms_search_index_sync_total{result="error"}가 이미 센다.
+    _ext = ext_label(filename)
+    _t_start = time.monotonic()
     # 청킹은 동기 CPU 작업(pdfplumber·python-docx·openpyxl)이라 스레드로 보낸다 — 이벤트
     # 루프에서 돌리면 PDF 하나에 100~200ms(실문서는 초 단위) 동안 워커가 멈춘다.
     # to_thread(stdlib)를 쓴다 — 이 모듈은 라우터도 import하므로 starlette를 들이지 않는다.
@@ -95,10 +102,16 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
     image_ratio = await asyncio.to_thread(pdf_image_area_ratio, blob_path)   # #137 결함 4 경고용
     if not chunks:      # 빈 파일·텍스트레이어 없는 PDF → ready 승격 대신 실패 (유령 ready 방지)
         raise ValueError('추출된 텍스트가 없습니다 (빈 파일이거나 파싱 결과가 비어 있음)')
+    # 네 단계가 같은 분모(성공한 문서)를 갖도록 실패 분기 뒤에서 기록한다 — 단계별 p95를
+    # 나란히 읽으려면 분모가 같아야 한다.
+    INDEX_DURATION_SECONDS.labels(stage='parse', ext=_ext).observe(time.monotonic() - _t_start)
+    _t_parse_done = time.monotonic()
     # 임베딩 입력에만 '파일명 > 헤딩' 컨텍스트를 얹는다 (저장되는 chunk.text는 원문 유지).
     # 리랭커·어휘 채널·엔진 색인이 같은 조립을 쓴다 — 세 소비자가 같은 형태를 본다.
     index_texts = [build_index_text(c.text, filename, c.heading_path) for c in chunks]
     embeddings = await embed_texts(index_texts)
+    INDEX_DURATION_SECONDS.labels(stage='embed', ext=_ext).observe(time.monotonic() - _t_parse_done)
+    _t_embed_done = time.monotonic()
 
     # searchable은 PG의 **현재** 상태(pending·inactive)가 아니라 **아래 ③이 만들 상태**
     # (ready·active)로 계산한다 — 켜진 채로 바로 넣어 "켜기" 단계를 없애기 위함이다.
@@ -113,6 +126,7 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
     # 신버전이 이미 켜져 있으니 구버전을 지워도 빈 창이 없다.
     if old_active_ids:
         await os_index.drop_documents_now(old_active_ids)
+    INDEX_DURATION_SECONDS.labels(stage='index', ext=_ext).observe(time.monotonic() - _t_embed_done)
 
     # ── ③ 유일한 커밋 ──
     async with AsyncSessionLocal() as session:
@@ -167,6 +181,10 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         if outbox_row_id is not None:
             await outbox.mark_done(session, outbox_row_id)   # ready와 같은 커밋 — 정의점 rag/outbox.py
         await session.commit()
+    # total은 ③ 커밋까지 포함한다 — 사용자가 체감하는 "업로드 후 검색될 때까지"에 가장 가깝다
+    # (여기에 cron 대기 최대 1분이 더 붙는다, rag/worker.py drain 주석).
+    INDEX_DURATION_SECONDS.labels(stage='total', ext=_ext).observe(time.monotonic() - _t_start)
+    INDEX_TOTAL.labels(ext=_ext, result='ok').inc()   # 실패 쪽은 outbox.drain이 센다(재시도/확정 구분)
 
 
 async def handle_upload(

@@ -51,7 +51,7 @@ from sqlalchemy import select, update
 
 from database import AsyncSessionLocal
 from rag import os_client, os_index
-from rag.metrics import SEARCH_INDEX_SYNC_TOTAL
+from rag.metrics import INDEX_TOTAL, SEARCH_INDEX_SYNC_TOTAL, ext_label
 from rag.models import Document, SearchIndexOutbox
 
 logger = logging.getLogger(__name__)
@@ -157,6 +157,15 @@ async def drain(session, limit: int = BATCH, *, row_ids: list[int] | None = None
                         .values(status='failed', status_reason=f'색인 {attempts}회 실패: {err}'[:500]))
             await session.commit()
             SEARCH_INDEX_SYNC_TOTAL.labels(op=op, result='error').inc()
+            if op == INDEX_DOCUMENT:
+                # 문서 단위 결과를 따로 센다 (#151). 위 카운터는 재시도 단위라 실패율의 분모가
+                # 못 된다. ext는 실패 경로에서만 한 번 더 읽는다 — 드문 경로라 비용이 무의미하고,
+                # "PDF만 실패한다" 같은 패턴은 이 라벨이 없으면 보이지 않는다.
+                fname = (await session.execute(
+                    select(Document.filename)
+                    .where(Document.id == (payload or {}).get('document_id')))).scalar()
+                INDEX_TOTAL.labels(ext=ext_label(fname or ''),
+                                   result='failed' if terminal else 'retry').inc()
             failed += 1
             logger.warning('outbox 반영 실패 (op=%s id=%s attempts=%d%s): %s',
                            op, row_id, attempts, ' → failed 확정' if terminal else '', e)

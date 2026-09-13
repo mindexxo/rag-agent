@@ -22,7 +22,7 @@
    (예: `update(Document).where(Document.id.in_(<스코프된 doc_ids>))`).
 3. `messages.tenant_id`는 필터 성능용 비정규화 컬럼이다. 부모와의 일치를 DB가 보장하지
    않으므로(FK는 부모 id에만 걸림) 삽입 시 부모의 tenant_id를 그대로 넣는다.
-   검색 청크의 격리는 PG 밖이다 — OpenSearch 질의마다 `tenant_filter()`가 건다(rag/opensearch.py).
+   검색 청크의 격리는 PG 밖이다 — OpenSearch 질의마다 `tenant_filter()`가 건다(rag/os_search.py).
 4. 누락 검출은 통합 테스트가 담당한다 — tests/test_tenant_isolation.py(ORM 읽기),
    tests/test_integration_isolation.py(검색 후보·대화·폴더). 표면이 늘면 여기에 케이스를 추가한다.
 """

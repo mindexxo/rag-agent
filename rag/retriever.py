@@ -4,10 +4,10 @@
 
     query (+ 확장 변형, #5 Multi-Query)
       -> embed_texts                 쿼리 전체를 배치 1회로 임베딩
-      -> opensearch.search_dense_per_query   쿼리별 kNN top-N (cosine distance 환산)
+      -> os_search.search_dense_per_query   쿼리별 kNN top-N (cosine distance 환산)
       -> (단일: distance 순 그대로 / 멀티: _rank_multi 로 RRF 융합)
-      -> opensearch.search_lexical           BM25(Nori) 후보를 dense 뒤에 주입 (#135, 플래그)
-      -> opensearch.fetch_chunk_map          본문·메타 mget 1회 — 엔진이 서빙 정본 (#139)
+      -> os_search.search_lexical           BM25(Nori) 후보를 dense 뒤에 주입 (#135, 플래그)
+      -> os_search.fetch_chunk_map          본문·메타 mget 1회 — 엔진이 서빙 정본 (#139)
       -> rerank / rerank_maxpool     cross-encoder 재정렬 (rag.reranker, settings.rerank_enabled)
       -> [:top_n]                    두 경로 공통 — 슬라이스는 항상 리랭크 뒤다
       -> _keep_single_table          표는 한 시트만 (F1a)
@@ -36,7 +36,7 @@ LLM 호출 없음. Stage D의 RagService가 이 결과를 받아 답변 생성 �
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from rag import opensearch, otel
+from rag import os_search, otel
 from rag.embeddings import embed_texts
 from rag.retrieval_types import RetrievalCandidates, RetrievalResult, RetrievedChunk
 
@@ -73,25 +73,25 @@ def _rrf_fuse(
 
 # ===== 단계별 함수 ==================================================
 #
-# 후보 회수·본문 조회는 rag/opensearch.py가 정의점이다. 아래 세 얇은 함수는 이 모듈의
+# 후보 회수·본문 조회는 rag/os_search.py가 정의점이다. 아래 세 얇은 함수는 이 모듈의
 # 단계 이름을 유지하기 위한 것이다 — 테스트·eval이 이 이름으로 monkeypatch·호출한다.
 # `session`은 받지 않는다: 검색은 DB를 읽지 않는다(모듈 docstring).
 
 
 async def _dense_candidates(tenant_id: str, q_embs: list, candidates_per_branch: int):
     """쿼리별 dense top-N. (쿼리별 id 리스트, 원본 쿼리의 (id, distance)) — 계약은 opensearch 참조."""
-    return await opensearch.search_dense_per_query(tenant_id, q_embs, candidates_per_branch)
+    return await os_search.search_dense_per_query(tenant_id, q_embs, candidates_per_branch)
 
 
 async def _lexical_candidates(tenant_id: str, query: str, limit: int) -> list[int]:
     """어휘 채널 (#135) — BM25(Nori) 상위 limit개의 id. dense가 놓친 어휘 일치(상품코드·고유명)를
     리랭커 풀에 주입하는 용도. 최종 순위는 리랭커가 정하므로 무관 후보는 걸러진다."""
-    return await opensearch.search_lexical(tenant_id, query, limit)
+    return await os_search.search_lexical(tenant_id, query, limit)
 
 
 async def _chunk_map(ids: list[int]) -> dict[int, RetrievedChunk]:
     """id → RetrievedChunk. 엔진 _source에서 만든다 — 왕복 1회, PG를 되묻지 않는다(실무 표준)."""
-    return await opensearch.fetch_chunk_map(ids)
+    return await os_search.fetch_chunk_map(ids)
 
 
 def _rank_multi(per_query_ids: list[list[int]]) -> list[int]:

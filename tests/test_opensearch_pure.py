@@ -17,7 +17,7 @@ import re
 
 import pytest
 
-from rag import opensearch as B
+from rag import os_search as S
 from rag import os_client as C
 from rag import os_index as I
 from rag import lexical
@@ -68,8 +68,8 @@ def test_bigram_필드는_공백만_자른다():
 
 def test_nori_질의에_2_18_결함_회피가_붙어_있다():
     """auto_generate_synonyms_phrase_query=False가 빠지면 hybrid+nori가 500으로 죽는다
-    (실측 47/450 — rag/opensearch.py의 lex_clause docstring). 조용히 사라지지 않게 묶는다."""
-    clause = B.lex_clause(C.NORI_FIELD, "적립금 얼마")
+    (실측 47/450 — rag/os_search.py의 lex_clause docstring). 조용히 사라지지 않게 묶는다."""
+    clause = S.lex_clause(C.NORI_FIELD, "적립금 얼마")
     assert clause["match"][C.NORI_FIELD]["auto_generate_synonyms_phrase_query"] is False
 
 
@@ -85,7 +85,7 @@ def test_게이트_신호_환산이_실측과_같다():
     for score, pg_distance in ((0.862583, 0.274834), (0.849968, 0.300063),
                                (0.842895, 0.314211), (0.842461, 0.315078),
                                (0.830557, 0.338887)):
-        assert abs(B.score_to_cosine_distance(score) - pg_distance) < 2e-6, score
+        assert abs(S.score_to_cosine_distance(score) - pg_distance) < 2e-6, score
 
 
 def test_필터는_엔진에서_걸린다():
@@ -95,7 +95,7 @@ def test_필터는_엔진에서_걸린다():
     (구 PG 경로가 겪던 함정). 실무 표준 구성에서는 필터에 쓰는 메타를 엔진에 비정규화해
     두는 것이 그 대가다.
     """
-    terms = B.tenant_filter('t1')['bool']['filter']
+    terms = S.tenant_filter('t1')['bool']['filter']
     assert {'term': {'tenant_id': 't1'}} in terms
     assert {'term': {'searchable': True}} in terms
     # 매핑에도 필드가 있어야 실제로 걸린다

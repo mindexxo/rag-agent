@@ -98,8 +98,8 @@ async def oracle_context(session, chunk_ids: list[int]) -> list[RetrievedChunk]:
     """
     if not chunk_ids:
         return []
-    from rag import opensearch
-    chunk_map = await opensearch.fetch_chunk_map(chunk_ids)
+    from rag import os_search
+    chunk_map = await os_search.fetch_chunk_map(chunk_ids)
     return [chunk_map[cid] for cid in chunk_ids if cid in chunk_map]
 
 

@@ -114,8 +114,8 @@ async def main() -> None:
             if not docs:
                 continue
             # 첫 청크(chunk_index 0)의 헤딩·본문 — 청크는 색인에만 있다(#139). 없으면 None.
-            from rag import opensearch, os_index
-            first = await opensearch.fetch_chunk_map(
+            from rag import os_index, os_search
+            first = await os_search.fetch_chunk_map(
                 [os_index.chunk_os_id(document_id=d.id, chunk_index=0) for d in docs])
             rows = []
             for d in docs:

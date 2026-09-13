@@ -171,6 +171,10 @@ async def drain_once(limit: int = BATCH, *, row_ids: list[int] | None = None) ->
     """
     if _drain_lock.locked():
         return {'done': 0, 'failed': 0, 'skipped': True}
+    # 기동 시 엔진에 못 붙었을 수 있다(ensure_index_soft) — 색인 전에 인덱스를 다시 보장한다.
+    # 없는 인덱스에 bulk하면 동적 매핑으로 굳으므로, 실패하면 이 회차는 건너뛴다(행은 pending 그대로).
+    if not await opensearch.ensure_index_soft():
+        return {'done': 0, 'failed': 0, 'skipped': True}
     async with _drain_lock:
         async with AsyncSessionLocal() as session:
             return await drain(session, limit, row_ids=row_ids)

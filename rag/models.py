@@ -145,7 +145,8 @@ class AnswerCache(Base):
     tenant_id: Mapped[str]
     cache_key: Mapped[str]                                                    # standalone query 정규화 해시 — 조회 키가 아니라 upsert 충돌 대상 (exact 계층 제거 #16)
     query_text: Mapped[str]                                                   # 저장된 standalone query 원문
-    query_embedding: Mapped[Any] = mapped_column(Vector(1024))                # 의미 캐시(semantic match)용 임베딩
+    original_query: Mapped[str | None]                                        # 저장 당시 사용자가 친 원문(#153) — 재사용 판정기 입력 전용. 도입 전 행은 NULL(복원 불가), 판정기가 '(없음)'으로 받아 현행과 동일 판정
+    query_embedding: Mapped[Any] = mapped_column(Vector(1024))                # 의미 캐시(semantic match)용 임베딩 — 기준은 query_text다 (original_query는 임베딩·cache_key에 안 섞는다)
     answer: Mapped[str]                                                       # 저장된 LLM 답변
     sources: Mapped[Any] = mapped_column(JSONB)                               # 인용 청크 메타 [{doc_id, chunk_id, page, ...}]
     source_doc_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger))      # 답변이 의존한 문서 ID들 (무효화 키)

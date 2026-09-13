@@ -2,6 +2,7 @@ import logging
 
 from arq import cron
 from arq.connections import RedisSettings
+from prometheus_client import start_http_server
 from config import settings
 from database import AsyncSessionLocal
 from rag import cache, os_client, outbox
@@ -15,10 +16,39 @@ async def ping(ctx):
     return "pong"
 
 
+def _start_metrics_server() -> None:
+    """워커 프로세스 지표를 루프백에 노출한다 (#151). worker_metrics_port가 0이면 아무것도 안 한다.
+
+    arq에는 HTTP 서버가 없어 웹의 /metrics(main.py)가 워커를 덮지 못한다 — 이 함수가 워커
+    메모리를 보는 유일한 수단이다. 값은 prometheus_client 기본 레지스트리가 알아서 채운다
+    (ProcessCollector → process_resident_memory_bytes·process_cpu_seconds_total). 따라서
+    docling 변환 중 RSS가 컨테이너 mem_limit(docker-compose.yml) 안에 머무는지를 여기서 본다.
+    **Linux에서만 값이 나온다** — ProcessCollector가 /proc를 읽으므로 macOS에선 조용히 빈 값이다.
+
+    기동 실패(포트 점유 등)는 로그만 남기고 넘어간다 — 관측 장치가 색인을 멈추게 하지 않는다
+    (바로 아래 ensure_index_soft와 같은 원칙). 실패는 프로메테우스 타깃 down으로도 드러난다.
+    """
+    port = settings.worker_metrics_port
+    if not port:
+        return
+    host = settings.worker_metrics_host
+    try:
+        # 데몬 스레드 1개가 뜬다 — 이벤트 루프와 무관하게 동작하므로 잡 처리를 막지 않는다.
+        # 바인드 주소를 설정으로 뺀 이유는 config.py 주석 참조(브리지 네트워크에서 루프백은 안 닿는다).
+        start_http_server(port, addr=host)
+    except OSError as exc:
+        logger.error('워커 지표 서버 기동 실패 (%s:%d) — 색인은 계속한다: %s', host, port, exc)
+    else:
+        logger.info('워커 지표 서버 기동 — %s:%d/metrics', host, port)
+
+
 async def startup(ctx):
-    """검색 인덱스 보장(#139) — 워커가 웹보다 먼저 뜨는 배포에서 첫 drain이 없는 인덱스에
+    """워커 지표 노출(#151) + 검색 인덱스 보장(#139).
+
+    인덱스 보장: 워커가 웹보다 먼저 뜨는 배포에서 첫 drain이 없는 인덱스에
     색인하면 동적 매핑(knn_vector 아님)으로 굳는다. 엔진에 못 붙어도 기동은 한다(ensure_index_soft) —
     그동안 drain은 회차마다 실패해 attempts만 쌓이고, 엔진이 돌아오면 다음 회차가 반영한다."""
+    _start_metrics_server()
     await os_client.ensure_index_soft()
 
 

@@ -101,13 +101,16 @@ async def compute() -> dict:
             similarity = _cosine(v1, v2)
             # 1. q1의 doc집합으로 캐시에 심는다 (답변은 더미 — 히트 여부만 관심)
             ids1 = await _docids(session, p["tenant"], p["q1"])
+            # 원문(#153)은 질문 자체를 넣는다 — 이 셋의 q1·q2는 자족 단일턴 질의이고,
+            # 운영에서 단일턴은 condense를 건너뛰어 원문==재작성문이기 때문이다(service._prepare_knowledge).
             await cache.save_answer(session, EVAL_TENANT, p["q1"], "더미 답변", [], ids1,
-                                    query_embedding=v1)
+                                    query_embedding=v1, original_query=p["q1"])
             await session.commit()
             # 2. q2로 조회 — 히트하나?
             ids2 = await _docids(session, p["tenant"], p["q2"])
             hit = await cache.get_semantic(session, EVAL_TENANT, p["q2"], ids2,
-                                           query_embedding=v2, llm=llm) is not None
+                                           query_embedding=v2, llm=llm,
+                                           original_query=p["q2"]) is not None
             await _clear(session)     # 다음 쌍 오염 방지
             rows.append({**p, "hit": hit, "ok": hit == p["should_hit"],
                          "similarity": round(similarity, 4),

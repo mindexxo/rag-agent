@@ -8,6 +8,7 @@
 from rag.citation_labels import (TAIL_END, TAIL_START, attachment_display,
                                  source_display, sources_from_chunks)
 from rag.prompt_texts import (
+    CACHE_REUSE_JUDGE_NO_ORIGINAL,
     CACHE_REUSE_JUDGE_SYSTEM,
     CACHE_REUSE_JUDGE_USER_TEMPLATE,
     DEFAULT_DOMAIN_HINT,
@@ -222,12 +223,23 @@ def build_knowledge_generation_prompt(
     )
 
 
-def build_cache_reuse_judge_messages(cached_query: str, new_query: str) -> list[dict]:
-    """캐시 재사용 판정(#113) 메시지 — cache._verify_reuse가 쓴다."""
+def build_cache_reuse_judge_messages(
+        cached_query: str, new_query: str,
+        cached_original: str | None = None, new_original: str | None = None,
+) -> list[dict]:
+    """캐시 재사용 판정(#113) 메시지 — cache._verify_reuse가 쓴다.
+
+    cached_query/new_query는 재작성문(standalone), *_original은 사용자가 친 원문(#153).
+    원문이 None이면 '(없음)'이 들어가고 판정은 현행과 같아진다 — 도입 전 캐시 행이 이 경로다.
+    """
     return [
         {'role': 'system', 'content': CACHE_REUSE_JUDGE_SYSTEM},
         {'role': 'user', 'content': (CACHE_REUSE_JUDGE_USER_TEMPLATE
+                                     .replace('__CACHED_ORIGINAL__',
+                                              cached_original or CACHE_REUSE_JUDGE_NO_ORIGINAL)
                                      .replace('__CACHED_QUERY__', cached_query)
+                                     .replace('__NEW_ORIGINAL__',
+                                              new_original or CACHE_REUSE_JUDGE_NO_ORIGINAL)
                                      .replace('__NEW_QUERY__', new_query))},
     ]
 

@@ -49,5 +49,12 @@ async def main() -> None:
             print("재등재분은 워커 cron(1분)이 다시 색인한다 — 즉시 반영이 필요하면 drain_once를 부를 것")
 
 
+async def _run() -> None:
+    try:
+        await main()
+    finally:
+        await opensearch.close_client()      # aiohttp 세션 미종료 경고 방지
+
+
 if __name__ == '__main__':
-    asyncio.run(main())
+    asyncio.run(_run())

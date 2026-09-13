@@ -14,11 +14,10 @@ from collections import defaultdict
 from pathlib import Path
 
 from database import AsyncSessionLocal
-from eval.generation import HARD_TYPES, row_tenant
+from eval.generation import HARD_TYPES, load_gold, row_tenant
 from eval.retrieval import resolve_gold, score_one
 from rag.retriever import retrieve_candidates
 
-GOLD = Path(__file__).resolve().parent / 'gold_set_v2.jsonl'
 TYPES = {'single_fact', 'paraphrase', 'rare_lexical', 'multi_doc'} | HARD_TYPES
 METRICS = ['recall_at_5', 'recall_at_20', 'hit_at_1', 'mrr']
 
@@ -81,7 +80,7 @@ async def compute(expand: bool = False) -> dict:
     바뀐 첫 실행을 '회귀'가 아니라 '비교 불가'로 처리한다 (#95에서 고난도 90행이 전체
     평균에 편입되며 필요해짐 — absence_rate의 judge_prompt_version과 같은 메커니즘).
     """
-    gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+    gold = load_gold()          # 정본 + eval/gold_private (인티큐브 실문서 골드 — gitignore)
     target = [g for g in gold if g['type'] in TYPES]
 
     # 1단계(expand만): LLM 선병렬 — vLLM 연속 배칭 활용 (#18). DB 접근 없어 gather 안전
@@ -157,4 +156,10 @@ async def main() -> None:
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    async def _run():
+        try:
+            await main()
+        finally:
+            from rag import opensearch
+            await opensearch.close_client()      # aiohttp 세션 미종료 경고 방지
+    asyncio.run(_run())

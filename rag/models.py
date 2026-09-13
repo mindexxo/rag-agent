@@ -3,7 +3,7 @@
 - folders        : 1단 폴더 (검색 참조 제어 전용 그룹)
 - documents      : 업로드된 원본 문서 (filename + version 단위)
 - faqs           : FAQ 항목 (검색 편입은 chunks로)
-- chunks         : 검색 단위 (dense 임베딩 F99 + 어휘 채널 lex_tsv/lex_len #135)
+- (청크는 PG에 없다 — 본문·메타·벡터·어휘 필드는 OpenSearch에만, rag/opensearch.py. #139)
 - answer_cache   : LLM 응답 영속 캐시 (semantic 매칭 + 문서 단위 무효화)
 - conversations  : 멀티턴 대화 세션
 - messages       : 대화 내 한 턴 (user/assistant)
@@ -15,13 +15,14 @@
 이 프로젝트는 **RLS를 사용하지 않는다.** 격리의 유일한 방어선은 쿼리의 WHERE 절이다.
 
 1. 멀티테넌트 테이블을 읽는 모든 쿼리에 `.where(Model.tenant_id == tenant_id)`를 직접 쓴다.
-   래퍼 유틸을 두지 않는 이유: 실제 쿼리 상당수가 join·컬럼 지정(`select(Chunk.id, distance)`)·
+   래퍼 유틸을 두지 않는 이유: 실제 쿼리 상당수가 join·컬럼 지정(`select(Document.id, Document.filename)`)·
    집계(`select(func.count())`) 형태라 `select(Model)`을 감싸는 헬퍼가 절반도 덮지 못하고,
    반쯤 적용된 유틸은 "안 썼으니 격리가 빠졌나?"라는 오독을 만든다. 손 WHERE로 일관시킨다.
 2. UPDATE/DELETE는 대상 id를 **tenant 스코프 조회로 먼저 확정**한 뒤 그 id로 실행한다
-   (예: `delete(Chunk).where(Chunk.document_id.in_(<스코프된 doc_ids>))`).
-3. `chunks.tenant_id`·`messages.tenant_id`는 필터 성능용 비정규화 컬럼이다. 부모와의 일치를
-   DB가 보장하지 않으므로(FK는 부모 id에만 걸림) 삽입 시 부모의 tenant_id를 그대로 넣는다.
+   (예: `update(Document).where(Document.id.in_(<스코프된 doc_ids>))`).
+3. `messages.tenant_id`는 필터 성능용 비정규화 컬럼이다. 부모와의 일치를 DB가 보장하지
+   않으므로(FK는 부모 id에만 걸림) 삽입 시 부모의 tenant_id를 그대로 넣는다.
+   검색 청크의 격리는 PG 밖이다 — OpenSearch 질의마다 `tenant_filter()`가 건다(rag/opensearch.py).
 4. 누락 검출은 통합 테스트가 담당한다 — tests/test_tenant_isolation.py(ORM 읽기),
    tests/test_integration_isolation.py(검색 후보·대화·폴더). 표면이 늘면 여기에 케이스를 추가한다.
 """
@@ -29,7 +30,6 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 from pgvector.sqlalchemy import Vector
-from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy import (
     ARRAY,
     BigInteger,
@@ -98,7 +98,7 @@ class Document(Base):
 
 
 class Faq(Base):
-    """FAQ 항목 (F3 전용 저장). 검색 편입은 chunks에 항목당 청크 1개로 (faq_indexing)."""
+    """FAQ 항목 (F3 전용 저장). 검색 편입은 색인에 항목당 청크 1개로 (outbox INDEX_FAQ → opensearch.index_faq_chunks)."""
     __tablename__ = "faqs"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -111,27 +111,30 @@ class Faq(Base):
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
 
-class Chunk(Base):
-    """검색 단위 (검색 인덱스). 출처는 document 또는 faq 정확히 하나 — DDL의 CHECK가 강제."""
-    __tablename__ = "chunks"
+
+class SearchIndexOutbox(Base):
+    """색인 작업 대기열 (#139 트랜잭셔널 outbox). 어휘·처리 규약의 정의점은 rag/outbox.py.
+
+    **행을 PG 변경과 같은 트랜잭션에 쓴다** — 그것이 이 패턴의 전부다. 커밋이 성공하면
+    색인에 할 일이 반드시 기록돼 있고, 롤백되면 그 일도 함께 사라진다.
+
+    단일 워커가 1분 주기로 pending을 id 순으로 처리한다. 성공하면 done, 실패는 attempts에
+    쌓여 MAX_ATTEMPTS를 넘으면 failed(INDEX_DOCUMENT면 문서도 failed). 행은 지우지 않는다 —
+    done/failed 행이 이력이자 관측 지점이다.
+
+    연산은 전부 멱등이다(색인=_id upsert, 삭제=없는 것 지워도 무해, 메타=덮어쓰기) — 재시도가
+    겹쳐도 결과가 같다. at-least-once.
+    """
+    __tablename__ = "search_index_outbox"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    document_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("documents.id", ondelete="CASCADE"))  # 문서 출처 (F3부터 nullable)
-    faq_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("faqs.id", ondelete="CASCADE"))            # FAQ 출처 — 항목당 1청크 (부분 유니크)
-    tenant_id: Mapped[str]                                                                                # 비정규화 (필터 성능)
-    chunk_index: Mapped[int]                                                                              # 문서 내 청크 순서 (0부터)
-    text: Mapped[str]                                                                                     # 청크 본문 원문 (prefix 없음 — 인용·프롬프트가 쓰는 값)
-    token_count: Mapped[int | None]                                                                       # 토큰 수
-    page: Mapped[int | None]                                                                              # 원 페이지 번호 (PDF만, DOCX는 NULL)
-    heading_path: Mapped[list[str]] = mapped_column(ARRAY(Text), server_default="{}")                     # 헤딩 계층 경로 ["3. 배송지연", "3.2 지급기준"]
-    meta: Mapped[dict] = mapped_column("metadata", JSONB, server_default="{}")                            # 자유 키-값 확장 영역 (DB 컬럼명은 metadata)
-    dense: Mapped[Any] = mapped_column(Vector(1024))                                                      # BGE-M3 dense 임베딩 (1024차원)
-    lex_tsv: Mapped[Any] = mapped_column(TSVECTOR, nullable=True)                                         # 어휘 채널(#135): bigram 토큰 집합 (입력=임베딩과 동일 index_text) — GIN은 schema.sql
-    lex_len: Mapped[int | None]                                                                           # 위 토큰 총수(dl) — BM25 길이 정규화용 (token_count와 별개: 그건 LLM 토큰 자리)
-
-    __table_args__ = (
-        UniqueConstraint("document_id", "chunk_index"),
-    )
+    tenant_id: Mapped[str]
+    op: Mapped[str]                        # 어휘의 정의점은 rag/outbox.py (INDEX_DOCUMENT 등 상수)
+    payload: Mapped[Any] = mapped_column(JSONB, default=dict)   # id만 — 처리 시점에 PG 최신값을 읽는다
+    status: Mapped[str] = mapped_column(default='pending', server_default='pending')  # pending|done|failed
+    attempts: Mapped[int] = mapped_column(default=0, server_default="0")
+    last_error: Mapped[str | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
 class AnswerCache(Base):

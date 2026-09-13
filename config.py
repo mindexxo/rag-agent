@@ -104,15 +104,28 @@ class Settings(BaseSettings):
 
     # reranker (F99: TEI /rerank, cross-encoder 재정렬). on/off 토글 한 줄.
     rerank_enabled: bool = True                       # False면 dense-only 순서 그대로 (리랭크 skip). .env로 오버라이드 가능
-    # 하이브리드 어휘 채널(#135): FTS(bigram tsvector) 회수 → 앱 BM25 재점수 → dense 미포함
-    # 상위를 리랭커 풀에 주입. 현행 모의 코퍼스 실측은 이득 0(주입 상방 0/450, 토크나이저
-    # bigram·kiwi 둘 다 — #133 A/B)이지만 실코퍼스(상품코드·고유명 분포) 대비 정식 채널로
-    # 켠다(사용자 결정). 통계(df·N·avgdl)는 질의 시 계산 — 테넌트 수만 청크 도달 시
-    # pg_search 설치 가능 여부 확인 후 불가면 통계 테이블 승격(이슈 #135 결정 기록).
+    # 하이브리드 어휘 채널(#135→#139): 엔진 BM25(Nori) 상위 중 dense 미포함분을 리랭커 풀에 주입.
+    # 실측(모의 450 + 인티큐브 실문서 75문항)은 주입 상방 0 — 그래도 실코퍼스의 상품코드·고유명
+    # 분포 대비 정식 채널로 켜둔다(사용자 결정). 끄면 dense-only.
     hybrid_lexical_enabled: bool = True
     hybrid_lexical_inject: int = 15                   # dense 미포함 BM25 상위 주입 수 (어블레이션 조립과 동일)
     rerank_base_url: str = "http://localhost:38890"   # TEI 리랭커 서버 (bge-reranker-v2-m3, /rerank) — 실주소는 .env
     rerank_timeout: float = 30.0
+
+    # 검색 저장소 — OpenSearch 하나 (#139 도입 확정 2026-09-12, 사유=확장성). PG는 문서·FAQ·폴더·
+    # 대화·캐시·outbox의 정본이고, 청크(본문·메타·벡터·어휘 필드)는 엔진에만 있다. 서빙은 엔진에서
+    # 끝난다(rag/opensearch.py 상단). 기동 시 인덱스 존재를 보장한다(ensure_index) — 주소가 틀리면
+    # 거기서 죽는다: 검색 없는 서버를 조용히 띄우지 않기 위함이다.
+    #
+    # 받아들인 것: 색인 반영 지연. 모든 변경은 트랜잭셔널 outbox(rag/outbox.py)로 durable하게 기록되고
+    # 단일 워커 cron이 1분마다 처리한다 — 유실은 없지만 즉시 반영도 없다. 제품 결정: "문서 변경은
+    # 검색에 최대 1~5분 뒤 반영될 수 있다"(답변 캐시는 즉시 무효화됨).
+    # 남은 것: BM25 df 스코프가 인덱스 전체(테넌트 간 idf 간섭 — 실측 표시 지표 미동). 테넌트별
+    # 인덱스가 대안. 배포는 자체 설치 단일 노드(매핑 1샤드·0레플리카)라 노드 다운 = 검색 불가 —
+    # 인제스션은 outbox가 pending으로 들고 있다가 복구 후 반영한다.
+    opensearch_url: str = "http://localhost:9200"     # 실주소는 .env
+    opensearch_index: str = "kms_chunks_v1"
+    opensearch_timeout: float = 30.0
 
     # 컨텍스트 예산 (F100). context_window는 vLLM --max-model-len과 반드시 일치시킬 것.
     context_window: int = 30720

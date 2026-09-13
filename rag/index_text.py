@@ -7,8 +7,8 @@
 임베딩(인제스션)·리랭커(검색 시)·어휘 BM25(#135)가 **같은 형태**를 보도록 조립을 이 한 곳으로 모은다.
 - 임베딩: rag/documents.py(워커)
 - 리랭커: rag/reranker.py
-- 어휘 채널: rag/documents.py(lex_tsv 토큰화)·rag/retriever.py(_search_lexical의 tf 재계산)·
-  eval/backfill_lexical.py — FAQ 청크는 셋 다 프리픽스 없이 원문(인제스션과 동일 비대칭)
+- 어휘 필드(Nori·bigram): rag/opensearch.py의 lex_text — FAQ 청크는 프리픽스 없이 원문
+  (임베딩과 동일 비대칭)
 
 **예외 — 폴더 설명(2026-08-05)**: `folder`는 리랭커에만 전달한다. 두 가지 이유다.
 1) 폴더 내 **모든** 청크에 같은 문자열이 붙어, 임베딩에 넣으면 그 청크들의 벡터가 서로

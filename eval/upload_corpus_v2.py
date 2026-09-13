@@ -30,7 +30,8 @@ CANARIES = [
 
 async def upload_all() -> None:
     from main import app
-    from rag.documents import index_pending_document
+    from rag import outbox
+    from database import AsyncSessionLocal
 
     total = 0
     for tenant in TENANTS:
@@ -51,8 +52,10 @@ async def upload_all() -> None:
                     continue
                 body = res.json()
                 if body['status'] == 'pending':
-                    await index_pending_document(body['document_id'])
-                    from database import AsyncSessionLocal
+                    # 이 문서의 대기열 행만 처리 (#139 outbox) — 공유 DB의 남의 행은 건드리지 않는다
+                    async with AsyncSessionLocal() as s:
+                        ids = await outbox.pending_row_ids(s, document_id=body['document_id'])
+                    await outbox.drain_once(row_ids=ids)
                     from rag.models import Document
                     async with AsyncSessionLocal() as s:
                         doc = await s.get(Document, body['document_id'])
@@ -69,7 +72,9 @@ async def verify() -> bool:
     from rag.retriever import retrieve
     from sqlalchemy import func, select
 
-    from rag.models import Chunk, Document
+    from config import settings
+    from rag import opensearch
+    from rag.models import Document
 
     ok = True
     async with AsyncSessionLocal() as session:
@@ -78,9 +83,8 @@ async def verify() -> bool:
                 select(func.count()).select_from(Document)
                 .where(Document.tenant_id == tenant).where(Document.status == 'ready')
             )).scalar()
-            n_chunks = (await session.execute(
-                select(func.count()).select_from(Chunk).where(Chunk.tenant_id == tenant)
-            )).scalar()
+            n_chunks = (await opensearch.client().count(index=settings.opensearch_index, body={
+                "query": {"term": {"tenant_id": tenant}}}))["count"]     # 청크는 색인에만 (#139)
             print(f'{tenant}: ready {n_docs}문서 / {n_chunks}청크')
 
         print('\n── 격리 카나리아 (실 임베딩 검색) ──')

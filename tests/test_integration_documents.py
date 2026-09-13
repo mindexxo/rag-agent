@@ -1,16 +1,18 @@
 """D-4: 문서 수명주기 통합 테스트.
 
-업로드(API)→인덱싱(잡 함수 직접 await — 워커 프로세스 없이 잡 로직 검증)→
-버전 엎어치기(supersede)→dedupe→실패 경로(failed 기록)→소프트 삭제.
-arq 큐는 가짜로 치환해 enqueue 여부만 기록한다 (큐 배달 자체는 arq 라이브러리 몫).
+업로드(API)→인덱싱(그 문서의 outbox 행만 drain — 워커 프로세스 없이 핸들러 경로 검증)→
+버전 엎어치기(supersede)→dedupe→실패 경로(drain이 failed 확정)→소프트 삭제.
+업로드는 arq를 만지지 않는다 — 문서와 색인 대기열 행이 같은 트랜잭션에 커밋된다 (#139 outbox).
 """
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from database import AsyncSessionLocal
 from rag import cache
-from rag.documents import index_pending_document
-from rag.models import AnswerCache as AnswerCacheRow, Chunk, Document
+from rag import outbox
+from rag.models import SearchIndexOutbox
+from tests.conftest import indexed_chunk_texts, ingest
+from rag.models import AnswerCache as AnswerCacheRow, Document
 
 
 async def _upload(client, filename: str, content: bytes, mime='text/markdown') -> dict:
@@ -25,10 +27,7 @@ async def _get_doc(doc_id: int) -> Document:
 
 
 async def _chunk_texts(doc_id: int) -> list[str]:
-    async with AsyncSessionLocal() as session:
-        return list((await session.execute(
-            select(Chunk.text).where(Chunk.document_id == doc_id)
-        )).scalars().all())
+    return await indexed_chunk_texts(doc_id)        # 청크는 색인에만 있다(#139)
 
 
 MD = '# 환불 정책\n\n## 1. 기간\n\n단순변심 반품은 14일 이내 신청한다.\n'.encode()
@@ -38,9 +37,11 @@ MD = '# 환불 정책\n\n## 1. 기간\n\n단순변심 반품은 14일 이내 신
 async def test_업로드_인덱싱_ready_승격(client, tenant_id, fake_queue, blob_tmp):
     body = await _upload(client, '환불정책.md', MD)
     assert body['status'] == 'pending'                       # 업로드 직후
-    assert fake_queue == [('index_document', body['document_id'])]    # 잡 등록됨
+    async with AsyncSessionLocal() as s:                                 # 대기열 행이 문서와 함께 커밋됨 (#139)
+        rows = await outbox.pending_row_ids(s, document_id=body['document_id'])
+    assert len(rows) == 1
 
-    await index_pending_document(body['document_id'])                 # 워커 잡 직접 실행
+    await ingest(body['document_id'])                 # 워커 잡 직접 실행
 
     doc = await _get_doc(body['document_id'])
     assert doc.status == 'ready' and doc.is_active is True
@@ -52,7 +53,7 @@ async def test_업로드_인덱싱_ready_승격(client, tenant_id, fake_queue, b
 @pytest.mark.asyncio
 async def test_같은_파일명_재업로드는_엎어치기(client, tenant_id, fake_queue, blob_tmp, fake_embed):
     v1 = await _upload(client, '환불정책.md', MD)
-    await index_pending_document(v1['document_id'])
+    await ingest(v1['document_id'])
 
     # v1을 근거로 만든 캐시가 있다고 가정
     async with AsyncSessionLocal() as session:
@@ -61,7 +62,10 @@ async def test_같은_파일명_재업로드는_엎어치기(client, tenant_id, 
 
     v2 = await _upload(client, '환불정책.md', MD.replace(b'14', b'30'))
     assert v2['document_id'] != v1['document_id'] and v2['version'] == 2
-    await index_pending_document(v2['document_id'])
+    # 빈 창 없음(E2E #6): v2가 처리되기 전엔 v1이 그대로 검색된다 — 옛 청크를 먼저 지우지 않는다.
+    assert (await _get_doc(v1['document_id'])).is_active is True
+    assert any('14일' in t for t in await _chunk_texts(v1['document_id']))
+    await ingest(v2['document_id'])
 
     old, new = await _get_doc(v1['document_id']), await _get_doc(v2['document_id'])
     assert new.status == 'ready' and new.is_active is True
@@ -83,13 +87,13 @@ async def test_같은_내용_재업로드도_새_버전(client, tenant_id, fake_
     ("같은 이름이면 물어보고, 확인하면 대체"라는 단일 규칙을 유지하기 위한 선택)
     """
     v1 = await _upload(client, '환불정책.md', MD)
-    await index_pending_document(v1['document_id'])
-    n_jobs = len(fake_queue)
+    await ingest(v1['document_id'])
 
     again = await _upload(client, '환불정책.md', MD)             # 내용까지 동일
     assert again['document_id'] != v1['document_id']             # 재사용하지 않는다
     assert again['version'] == v1['version'] + 1
-    assert len(fake_queue) == n_jobs + 1                         # 인덱싱 재실행
+    async with AsyncSessionLocal() as s:                         # 인덱싱이 다시 대기열에 오른다 (#139)
+        assert len(await outbox.pending_row_ids(s, document_id=again['document_id'])) == 1
 
 
 @pytest.mark.asyncio
@@ -102,26 +106,36 @@ async def test_인덱싱_예외시_failed_기록(client, tenant_id, fake_queue, 
         raise RuntimeError('임베딩 서버 폭발')
 
     monkeypatch.setattr(rd, 'embed_texts', _boom)
-    await index_pending_document(body['document_id'])                     # 예외를 삼키고 failed 기록해야 함
+    monkeypatch.setattr(outbox, 'MAX_ATTEMPTS', 1)     # 운영은 5회 — 테스트는 한 번에 확정
+    r = await ingest(body['document_id'])              # 핸들러는 예외를 올리고, drain이 failed를 찍는다 (#139)
+    assert r == {'done': 0, 'failed': 1}
 
     doc = await _get_doc(body['document_id'])
     assert doc.status == 'failed'
-    assert '임베딩 서버 폭발' in doc.status_reason               # pending 고착 방지 (P1-5a)
+    assert '임베딩 서버 폭발' in doc.status_reason               # 재업로드 판단 근거가 남는다
+    async with AsyncSessionLocal() as s:
+        row = (await s.execute(select(SearchIndexOutbox)
+                               .where(SearchIndexOutbox.payload['document_id'].as_integer()
+                                      == body['document_id']))).scalars().one()
+    assert row.status == 'failed' and row.attempts == 1
 
 
 @pytest.mark.asyncio
-async def test_빈_파일은_failed_유령_ready_방지(client, tenant_id, fake_queue, blob_tmp):
+async def test_빈_파일은_failed_유령_ready_방지(client, tenant_id, fake_queue, blob_tmp, monkeypatch):
+    monkeypatch.setattr(outbox, 'MAX_ATTEMPTS', 1)
     body = await _upload(client, '빈문서.md', b'')
-    await index_pending_document(body['document_id'])
+    r = await ingest(body['document_id'])                        # 핸들러가 ValueError → drain이 failed 확정
+    assert r['failed'] == 1
     doc = await _get_doc(body['document_id'])
     assert doc.status == 'failed'                                # 청크 0개 → ready 승격 금지 (C2)
+    assert '추출된 텍스트가 없습니다' in doc.status_reason
 
 
 @pytest.mark.asyncio
 async def test_cp949_txt_안깨지고_인덱싱(client, tenant_id, fake_queue, blob_tmp):
     content = '배송비는 삼천원입니다. 도서산간은 오천원 추가.'.encode('cp949')
     body = await _upload(client, '공지.txt', content, mime='text/plain')
-    await index_pending_document(body['document_id'])
+    await ingest(body['document_id'])
 
     doc = await _get_doc(body['document_id'])
     assert doc.status == 'ready'
@@ -152,11 +166,11 @@ async def test_supersede는_타_테넌트_같은_파일명을_건드리지_않�
                                      base_url='http://testserver',
                                      headers={'X-Tenant-Id': other}) as other_client:
             b_doc = await _upload(other_client, '환불정책.md', MD.replace(b'14', b'99'))
-        await index_pending_document(b_doc['document_id'])
+        await ingest(b_doc['document_id'])
 
         # 테넌트 A가 같은 파일명 업로드 → 인덱싱 (supersede 실행)
         a_doc = await _upload(client, '환불정책.md', MD)
-        await index_pending_document(a_doc['document_id'])
+        await ingest(a_doc['document_id'])
 
         b_after = await _get_doc(b_doc['document_id'])
         assert b_after.status == 'ready' and b_after.is_active is True   # B는 무사해야 함
@@ -165,32 +179,42 @@ async def test_supersede는_타_테넌트_같은_파일명을_건드리지_않�
         from sqlalchemy import delete as sa_delete
 
         from rag.models import AnswerCache as ACRow
+        from rag import opensearch
+        await opensearch._delete_by_terms('tenant_id', [other])
         async with AsyncSessionLocal() as session:
-            await session.execute(sa_delete(Chunk).where(Chunk.tenant_id == other))
             await session.execute(sa_delete(ACRow).where(ACRow.tenant_id == other))
             await session.execute(sa_delete(Document).where(Document.tenant_id == other))
             await session.commit()
 
 
 @pytest.mark.asyncio
-async def test_enqueue_실패시_failed_기록(client, tenant_id, blob_tmp, monkeypatch):
-    """P1-4 수정 검증 — 큐 등록 실패가 pending 영구 고착으로 남지 않는다 (뮤테이션 생존자 C 킬)."""
-    import routers.documents as rd
-
-    async def _broken_pool(*a, **kw):
-        raise ConnectionError('Redis 순단')
-
-    monkeypatch.setattr(rd, 'create_pool', _broken_pool)
+async def test_이미_처리된_문서의_대기열_행은_무해하게_done된다(client, tenant_id, fake_queue, blob_tmp):
+    """(구 P1-4 "큐 등록 실패→failed" 테스트를 대체) #139 outbox 전환으로 업로드는 Redis를 만지지
+    않는다 — 대기열 행이 문서와 같은 트랜잭션에 커밋되므로 그 실패 모드 자체가 사라졌다.
+    대신 at-least-once의 전제를 고정한다: 이미 ready인 문서에 INDEX_DOCUMENT 행이 또 있어도
+    (재시도 겹침·수동 재등재) 핸들러는 다시 색인하지 않고 행만 done으로 넘긴다.
+    """
     body = await _upload(client, '환불정책.md', MD)
+    await ingest(body['document_id'])
+    doc = await _get_doc(body['document_id'])
+    assert doc.status == 'ready'
+    before = await _chunk_texts(doc.id)
+    async with AsyncSessionLocal() as s:
+        outbox.enqueue(s, tenant_id, outbox.INDEX_DOCUMENT, document_id=doc.id)   # 중복 등재
+        await s.commit()
 
-    assert body['status'] == 'failed'
-    assert '큐 등록 실패' in body['status_reason']
+    r = await ingest(body['document_id'])
+    assert r == {'done': 1, 'failed': 0}
+    async with AsyncSessionLocal() as s:
+        left = await outbox.pending_row_ids(s, document_id=doc.id)
+    assert await _chunk_texts(doc.id) == before                  # 재색인 안 함
+    assert left == []                                            # 행은 done
 
 
 @pytest.mark.asyncio
 async def test_소프트_삭제_청크와_캐시_제거_row_보존(client, tenant_id, fake_queue, blob_tmp, fake_embed):
     body = await _upload(client, '환불정책.md', MD)
-    await index_pending_document(body['document_id'])
+    await ingest(body['document_id'])
     async with AsyncSessionLocal() as session:
         await cache.save_answer(session, tenant_id, '반품 기간', '14일', [], [body['document_id']])
         await session.commit()
@@ -201,6 +225,8 @@ async def test_소프트_삭제_청크와_캐시_제거_row_보존(client, tenan
     doc = await _get_doc(body['document_id'])
     assert doc is not None                                       # row 보존 (과거 인용 다운로드용)
     assert doc.status == 'deleted' and doc.is_active is False
+    assert await _chunk_texts(body['document_id']) != []                  # drain 전 — 가이드대로 아직 색인에 있다 (E2E #4)
+    await ingest(body['document_id'])                                     # DROP_DOCUMENTS 행 처리
     assert await _chunk_texts(body['document_id']) == []                  # 검색 인덱스에서 제거
     async with AsyncSessionLocal() as session:
         rows = (await session.execute(
@@ -222,7 +248,7 @@ async def test_exists_없는_파일명은_false(client, tenant_id, fake_queue, b
 @pytest.mark.asyncio
 async def test_exists_기존_문서는_현재_버전을_알려준다(client, tenant_id, fake_queue, blob_tmp):
     v1 = await _upload(client, '환불정책.md', MD)
-    await index_pending_document(v1['document_id'])
+    await ingest(v1['document_id'])
 
     body = (await client.get('/kms/documents/exists', params={'filename': '환불정책.md'})).json()
     assert body['exists'] is True
@@ -234,9 +260,9 @@ async def test_exists_기존_문서는_현재_버전을_알려준다(client, ten
 @pytest.mark.asyncio
 async def test_exists_는_최신_버전을_본다(client, tenant_id, fake_queue, blob_tmp):
     v1 = await _upload(client, '환불정책.md', MD)
-    await index_pending_document(v1['document_id'])
+    await ingest(v1['document_id'])
     v2 = await _upload(client, '환불정책.md', MD.replace(b'14', b'30'))
-    await index_pending_document(v2['document_id'])
+    await ingest(v2['document_id'])
 
     body = (await client.get('/kms/documents/exists', params={'filename': '환불정책.md'})).json()
     assert body['document_id'] == v2['document_id']  # supersede된 v1이 아니라 살아 있는 v2
@@ -247,7 +273,7 @@ async def test_exists_는_최신_버전을_본다(client, tenant_id, fake_queue,
 async def test_exists_는_완전일치만_본다(client, tenant_id, fake_queue, blob_tmp):
     """정책: 대소문자·공백 구분. supersede 기준과 동일해야 한다."""
     v1 = await _upload(client, '환불정책.md', MD)
-    await index_pending_document(v1['document_id'])
+    await ingest(v1['document_id'])
 
     for other in ('환불정책.MD', '환불정책 .md', '환불정책_최종.md'):
         body = (await client.get('/kms/documents/exists', params={'filename': other})).json()
@@ -257,7 +283,7 @@ async def test_exists_는_완전일치만_본다(client, tenant_id, fake_queue, 
 @pytest.mark.asyncio
 async def test_exists_는_테넌트_격리(client, tenant_id, fake_queue, blob_tmp):
     v1 = await _upload(client, '환불정책.md', MD)
-    await index_pending_document(v1['document_id'])
+    await ingest(v1['document_id'])
 
     res = await client.get('/kms/documents/exists', params={'filename': '환불정책.md'},
                            headers={'X-Tenant-Id': 'other-tenant'})
@@ -284,7 +310,7 @@ async def test_expect_version_0_은_없는_이름에서_통과(client, tenant_id
 async def test_expect_version_0_인데_이미_있으면_409(client, tenant_id, fake_queue, blob_tmp):
     """'별도 문서로 등록' 경로 — 고른 이름이 그 사이 선점됐다."""
     v1 = await _upload(client, '환불정책(1).md', MD)
-    await index_pending_document(v1['document_id'])
+    await ingest(v1['document_id'])
 
     res = await _post(client, '환불정책(1).md', MD, expect_version=0)
     assert res.status_code == 409
@@ -297,7 +323,7 @@ async def test_expect_version_0_인데_이미_있으면_409(client, tenant_id, f
 @pytest.mark.asyncio
 async def test_expect_version_일치하면_대체된다(client, tenant_id, fake_queue, blob_tmp, fake_embed):
     v1 = await _upload(client, '환불정책.md', MD)
-    await index_pending_document(v1['document_id'])
+    await ingest(v1['document_id'])
 
     res = await _post(client, '환불정책.md', MD.replace(b'14', b'30'), expect_version=1)
     assert res.status_code == 200 and res.json()['version'] == 2
@@ -307,9 +333,9 @@ async def test_expect_version_일치하면_대체된다(client, tenant_id, fake_
 async def test_expect_version_어긋나면_409(client, tenant_id, fake_queue, blob_tmp, fake_embed):
     """화면에서 v1을 봤지만 그 사이 남이 v2를 올렸다 → 조용히 대체하지 않고 409."""
     v1 = await _upload(client, '환불정책.md', MD)
-    await index_pending_document(v1['document_id'])
+    await ingest(v1['document_id'])
     v2 = await _upload(client, '환불정책.md', MD.replace(b'14', b'30'))
-    await index_pending_document(v2['document_id'])
+    await ingest(v2['document_id'])
 
     res = await _post(client, '환불정책.md', MD, expect_version=1)
     assert res.status_code == 409
@@ -320,7 +346,7 @@ async def test_expect_version_어긋나면_409(client, tenant_id, fake_queue, bl
 async def test_expect_version_미전송이면_검사하지_않는다(client, tenant_id, fake_queue, blob_tmp, fake_embed):
     """하위호환 — 구버전 FE는 파라미터 없이 부르고, 그 경우 기존처럼 대체된다."""
     v1 = await _upload(client, '환불정책.md', MD)
-    await index_pending_document(v1['document_id'])
+    await ingest(v1['document_id'])
 
     res = await _post(client, '환불정책.md', MD)
     assert res.status_code == 200 and res.json()['version'] == 2
@@ -330,7 +356,7 @@ async def test_expect_version_미전송이면_검사하지_않는다(client, ten
 async def test_expect_version_판정은_exists와_같은_기준(client, tenant_id, fake_queue, blob_tmp, fake_embed):
     """소프트 삭제된 이름은 '없음'(0)으로 본다 — exists가 그렇게 답하므로 기준이 같아야 한다."""
     v1 = await _upload(client, '환불정책.md', MD)
-    await index_pending_document(v1['document_id'])
+    await ingest(v1['document_id'])
     assert (await client.delete(f"/kms/documents/{v1['document_id']}")).status_code == 204
 
     assert (await client.get('/kms/documents/exists',
@@ -354,11 +380,18 @@ async def test_expect_version_은_테넌트별로_판정(client, tenant_id, othe
 async def test_409면_blob이_남지_않는다(client, tenant_id, fake_queue, blob_tmp):
     """blob은 insert 전에 쓰므로, 409로 빠질 때 지우지 않으면 참조 없는 파일이 쌓인다."""
     v1 = await _upload(client, '환불정책.md', MD)
-    await index_pending_document(v1['document_id'])
+    await ingest(v1['document_id'])
     before = sorted((blob_tmp / tenant_id).iterdir())
 
     assert (await _post(client, '환불정책.md', MD, expect_version=0)).status_code == 409
     assert sorted((blob_tmp / tenant_id).iterdir()) == before
+    # 대기열 행도 문서와 같은 트랜잭션이라 409 롤백에 함께 사라져야 한다 (#139 outbox 원자성).
+    # v1의 행은 ingest로 done이 됐으니 pending은 0이어야 한다.
+    async with AsyncSessionLocal() as s:
+        pending = (await s.execute(select(func.count()).select_from(SearchIndexOutbox)
+                                   .where(SearchIndexOutbox.tenant_id == tenant_id)
+                                   .where(SearchIndexOutbox.status == 'pending'))).scalar()
+    assert pending == 0
 
 
 @pytest.mark.asyncio
@@ -369,7 +402,7 @@ async def test_동시_삽입은_유니크_인덱스가_막고_409(client, tenant
     이전에는 이 위반이 그대로 터져 500이었다.
     """
     v1 = await _upload(client, '환불정책.md', MD)
-    await index_pending_document(v1['document_id'])
+    await ingest(v1['document_id'])
 
     import routers.documents as rd
     real = rd.handle_upload

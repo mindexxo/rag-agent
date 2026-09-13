@@ -4,10 +4,9 @@ from arq import cron
 from arq.connections import RedisSettings
 from config import settings
 from database import AsyncSessionLocal
-from rag import cache
+from rag import cache, opensearch, outbox
 # 도메인 스윕과 아래 cron 래퍼가 같은 이름이라 별칭 — cron_jobs엔 래퍼가 등록돼야 한다
 from rag.turn_state import sweep_stale_generating as _sweep_generating
-from rag.documents import index_pending_document
 
 logger = logging.getLogger(__name__)
 
@@ -15,10 +14,15 @@ logger = logging.getLogger(__name__)
 async def ping(ctx):
     return "pong"
 
-async def index_document(ctx, document_id: int):
-    # 세션·트랜잭션 관리는 index_pending_document 내부가 담당
-    # (무거운 청킹·임베딩을 트랜잭션 밖에서 하기 위해 세션을 3분할로 연다)
-    await index_pending_document(document_id)
+
+async def startup(ctx):
+    """검색 인덱스 보장(#139) — 워커가 웹보다 먼저 뜨는 배포에서 첫 drain이 없는 인덱스에
+    색인하면 동적 매핑(knn_vector 아님)으로 굳는다. 엔진에 못 붙으면 기동 실패가 맞다."""
+    await opensearch.ensure_index()
+
+
+async def shutdown(ctx):
+    await opensearch.close_client()
 
 async def sweep_stale_cache(ctx):
     """미히트 캐시 청소(#16) — cache_retention_days(90일) 지난 row 삭제. 일 1회면 충분."""
@@ -42,8 +46,23 @@ async def sweep_stale_generating(ctx):
     if swept:
         logger.info('고착 generating %d행을 failed로 정리', swept)
 
+async def drain_search_index_outbox(ctx):
+    """색인 작업 대기열 드레인 (#139 outbox) — 1분 주기. **인제스션을 포함한 모든 색인 작업의
+    유일한 처리 경로다.** 업로드·삭제·토글·FAQ 변경은 라우터가 같은 트랜잭션에 행을 남기고,
+    여기서 id 순으로 처리한다. arq 잡 등록(index_document)은 이것으로 대체됐다.
+
+    단일 워커 전제 — 이전 회차가 아직 돌고 있으면(대량 인제스션) drain_once가 즉시 빠진다.
+    검색 반영 지연은 최대 1분 + 재시도 — "문서 변경은 1~5분 뒤 반영될 수 있다"가 제품 가이드다.
+    """
+    r = await outbox.drain_once()
+    if r.get('done') or r.get('failed'):
+        logger.info('색인 대기열: 반영 %d · 실패 %d', r['done'], r['failed'])
+
+
 class WorkerSettings:
-    functions = [ping, index_document]  # 워커가 처리할 함수 등록
+    functions = [ping]                  # 인제스션은 cron drain이 outbox에서 꺼내 처리한다 (#139)
+    on_startup = startup
+    on_shutdown = shutdown
     cron_jobs = [
         cron(sweep_stale_cache, hour=19, minute=30),   # arq는 UTC — 19:30 UTC = KST 새벽 4:30
         # 1분 주기 — status='generating' 부분 인덱스(schema.sql #46)가 스캔을 받친다.
@@ -55,8 +74,10 @@ class WorkerSettings:
         # 정상 요청이 먼저 failed로 선고되고 완주 시 done으로 덮여 좀비 플립이 난다.
         # 반면 주기는 순수 지연이라 줄여도 그 위험이 없다. 최악 ~800초 → ~560초.
         cron(sweep_stale_generating, minute=set(range(0, 60, 1))),
+        # 1분 주기 — arq cron의 최소 단위. 색인 작업의 유일한 처리 경로다(인라인 없음).
+        cron(drain_search_index_outbox, minute=set(range(0, 60, 1))),
     ]
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     max_jobs = 10       # 한 워커가 동시 진행하는 잡 수 (asyncio 코루틴 동시성, 스레드 아님). arq 기본값과 동일 — 명시.
     job_timeout = 600   # 대형 문서 임베딩 여유 (기본 300 초과 시 CancelledError로 pending 고착하던 것 완화)
-    max_tries = 1       # 실패는 즉시 failed 기록 → 무한/낭비 재시도 방지 (타임아웃 잡은 lazy 스윕이 정리)
+    max_tries = 1       # cron 잡 자체의 재시도 없음 — 행 단위 재시도는 outbox.attempts가 담당

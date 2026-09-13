@@ -10,7 +10,7 @@ from httpx import ASGITransport, AsyncClient
 
 from database import AsyncSessionLocal
 from rag.retriever import retrieve_candidates
-from tests.conftest import sse_meta
+from tests.conftest import sse_meta, sync_faq
 
 
 def _client_for(tenant: str) -> AsyncClient:
@@ -22,10 +22,9 @@ def _client_for(tenant: str) -> AsyncClient:
 @pytest.mark.asyncio
 async def test_검색_후보에_타_테넌트_청크가_없다(client, tenant_id, other_tenant_id, fake_embed):
     """격리의 최전선 — 후보 단계에서 새면 답변에 타사 수치가 섞인다 (corpus_v2 카나리아의 코드판)."""
-    await client.post('/kms/faqs', json={'question': 'A사 반품 기간은?', 'variants': [], 'answer': '14일'})
+    await sync_faq((await client.post('/kms/faqs', json={'question': 'A사 반품 기간은?', 'variants': [], 'answer': '14일'})).json()['id'])
     async with _client_for(other_tenant_id) as other:
-        await other.post('/kms/faqs', json={'question': 'B사 반품 기간은?', 'variants': [], 'answer': '7일'})
-
+        await sync_faq((await other.post('/kms/faqs', json={'question': 'B사 반품 기간은?', 'variants': [], 'answer': '7일'})).json()['id'])
     async with AsyncSessionLocal() as session:
         a_texts = [c.text for c in
                    (await retrieve_candidates(session, tenant_id, '반품 기간', top_n=20)).chunks]
@@ -68,7 +67,7 @@ async def test_폴더_격리(client, tenant_id, other_tenant_id):
 
 @pytest.mark.asyncio
 async def test_FAQ_목록_격리(client, tenant_id, other_tenant_id):
-    await client.post('/kms/faqs', json={'question': 'A사 전용', 'variants': [], 'answer': 'a'})
+    await sync_faq((await client.post('/kms/faqs', json={'question': 'A사 전용', 'variants': [], 'answer': 'a'})).json()['id'])
     async with _client_for(other_tenant_id) as other:
         listing = (await other.get('/kms/faqs')).json()
         assert listing == []

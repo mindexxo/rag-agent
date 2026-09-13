@@ -11,9 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
-from rag import cache
-from rag.embeddings import embed_texts
-from rag.faq_indexing import build_faq_chunk_text, reindex_faq
+from rag import cache, outbox
 from rag.models import Faq
 from routers.kms import get_tenant_id
 from schemas.kms import FaqResponse, FaqCreateRequest, FaqUpdateRequest
@@ -34,12 +32,6 @@ async def _get_faq(session: AsyncSession, tenant_id: str, faq_id: int) -> Faq:
     if faq is None:
         raise HTTPException(status_code=404, detail='FAQ not found')
     return faq
-
-
-async def _embed_chunk_text(question: str, variants: list[str], answer: str):
-    """임베딩 — async(AsyncClient) 전환으로 스레드풀 불필요, 직접 await."""
-    text = build_faq_chunk_text(question, variants, answer)
-    return (await embed_texts([text]))[0]
 
 
 @router.get('/faqs', response_model=list[FaqResponse])
@@ -68,10 +60,11 @@ async def create_faq(
         answer=request.answer.strip(),
     )
     session.add(faq)
-    await session.flush()   # id 확보 (청크 FK에 필요)
+    await session.flush()   # id 확보 (대기열 payload에 필요)
 
-    embedding = await _embed_chunk_text(faq.question, faq.variants, faq.answer)
-    await reindex_faq(session, faq, embedding)
+    # 임베딩·색인은 워커가 한다(rag/outbox.py INDEX_FAQ) — 라우터는 행만 같은 트랜잭션에 남긴다.
+    # 그래서 생성 직후 최대 1분(재시도 포함 1~5분)은 검색에 안 잡힌다 — 제품 가이드 그대로.
+    outbox.enqueue(session, tenant_id, outbox.INDEX_FAQ, faq_id=faq.id)
     await session.commit()
     return _to_response(faq)
 
@@ -110,13 +103,17 @@ async def update_faq(
         turned_off = faq.is_active and not request.is_active
         faq.is_active = request.is_active
 
-    if content_changed:
-        # 내용이 바뀌면 청크 재임베딩 + 이 항목을 근거로 만든 캐시 무효화
-        embedding = await _embed_chunk_text(faq.question, faq.variants or [], faq.answer)
-        await reindex_faq(session, faq, embedding)
     if content_changed or turned_off:
+        # 이 항목을 근거로 만든 캐시는 즉시 무효화한다 — 색인 반영(아래 outbox)은 다음 회차라
+        # 캐시까지 늦추면 낡은 답이 두 경로로 나간다.
         await cache.invalidate_source(session, tenant_id, -faq.id)   # 음수 = FAQ 네임스페이스
 
+    # 색인 반영을 같은 트랜잭션에 적재 (#139) — 내용 변경은 재임베딩·재색인(INDEX_FAQ),
+    # 활성 토글은 메타 부분 갱신(META_FAQS)이면 된다(재색인은 GPU를 태운다).
+    if content_changed:
+        outbox.enqueue(session, tenant_id, outbox.INDEX_FAQ, faq_id=faq.id)
+    elif request.is_active is not None:
+        outbox.enqueue(session, tenant_id, outbox.META_FAQS, faq_ids=[faq.id])
     await session.commit()
     return _to_response(faq)
 
@@ -131,4 +128,5 @@ async def delete_faq(
     faq = await _get_faq(session, tenant_id, faq_id)
     await cache.invalidate_source(session, tenant_id, -faq.id)
     await session.delete(faq)
+    outbox.enqueue(session, tenant_id, outbox.DROP_FAQS, faq_ids=[faq_id])   # 같은 트랜잭션 (#139)
     await session.commit()

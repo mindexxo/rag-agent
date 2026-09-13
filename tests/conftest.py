@@ -54,7 +54,9 @@ async def register_faq(client) -> int:
     res = await client.post('/kms/faqs', json={
         'question': '환불 기간은?', 'variants': [], 'answer': '7일 이내 처리됩니다.',
     })
-    return res.json()['id']
+    faq_id = res.json()['id']
+    await sync_faq(faq_id)      # 라우터는 대기열 행만 남긴다(#139) — 검색에 보이려면 drain
+    return faq_id
 
 
 async def seed_turn(tenant_id: str, question: str, answer: str, status: str = 'done',
@@ -83,28 +85,58 @@ async def seed_turn(tenant_id: str, question: str, answer: str, status: str = 'd
     return conversation_id
 
 
-class _FakePool:
-    def __init__(self, jobs: list):
-        self._jobs = jobs
-
-    async def enqueue_job(self, name: str, *args) -> None:
-        self._jobs.append((name, *args))
-
-    async def aclose(self) -> None:
-        pass
-
-
 @pytest.fixture
-def fake_queue(monkeypatch):
-    """arq enqueue를 기록만 하는 가짜로 — 실제 Redis 큐에 잡이 쌓이지 않게."""
-    jobs: list = []
+def fake_queue():
+    """(호환용 더미) 업로드가 arq 잡을 등록하던 시절의 픽스처. #139 outbox 전환으로 업로드는
+    문서와 같은 트랜잭션에 대기열 행을 남길 뿐 Redis를 만지지 않는다 — 패치할 것이 없다.
+    시그니처에 남아 있는 테스트들이 그대로 돌게 빈 리스트만 돌려준다."""
+    return []
 
-    async def _create_pool(*a, **kw):
-        return _FakePool(jobs)
 
-    import routers.documents as rd
-    monkeypatch.setattr(rd, 'create_pool', _create_pool)
-    return jobs
+async def ingest(document_id: int) -> dict:
+    """문서 하나에 걸린 outbox 행만 워커처럼 처리한다 — 업로드 뒤엔 INDEX_DOCUMENT, 삭제·토글
+    뒤엔 DROP/META_DOCUMENTS. 라우터는 색인을 직접 하지 않으므로(#139) 검색 상태를 보려면 이걸 부른다.
+
+    공유 개발계 DB에서 전체 drain을 돌리면 다른 세션의 pending 업로드까지 처리해 버리므로
+    row_ids로 한정한다. 실패 판정(attempts→failed)까지 운영과 같은 경로를 탄다.
+    """
+    from database import AsyncSessionLocal
+    from rag import outbox
+    async with AsyncSessionLocal() as s:
+        ids = await outbox.pending_row_ids(s, document_id=document_id)
+    return await outbox.drain_once(row_ids=ids)
+
+
+async def sync_faq(faq_id: int) -> dict:
+    """FAQ 하나에 걸린 대기열 행(INDEX_FAQ·META_FAQS·DROP_FAQS)만 drain — 라우터가 색인을 직접
+    하지 않으므로(#139) 등록·수정·토글·삭제 뒤 검색 상태를 보려면 이걸 불러야 한다."""
+    from database import AsyncSessionLocal
+    from rag import outbox
+    async with AsyncSessionLocal() as s:
+        ids = await outbox.pending_row_ids(s, faq_id=faq_id)
+    return await outbox.drain_once(row_ids=ids)
+
+
+async def faq_doc(faq_id: int) -> dict | None:
+    """FAQ 청크의 색인 문서(_source). 없으면 None — 청크는 OpenSearch에만 있다(#139)."""
+    from config import settings
+    from rag import opensearch
+    resp = await opensearch.client().get(index=settings.opensearch_index,
+                                         id=str(opensearch.chunk_os_id(faq_id=faq_id)),
+                                         ignore=404)
+    return resp.get('_source') if resp.get('found') else None
+
+
+async def indexed_chunk_texts(document_id: int) -> list[str]:
+    """문서의 색인 청크 본문들(chunk_index 순). PG `chunks`는 더 쓰지 않는다(#139)."""
+    from config import settings
+    from rag import opensearch
+    resp = await opensearch.client().search(index=settings.opensearch_index, body={
+        'size': 1000, '_source': ['chunk_id', 'text'],
+        'query': {'term': {'document_id': document_id}},
+        'sort': [{'chunk_id': 'asc'}],
+    })
+    return [h['_source']['text'] for h in resp['hits']['hits']]
 
 
 @pytest.fixture
@@ -159,11 +191,13 @@ def fake_embed(monkeypatch):
 
     import rag.cache
     import rag.documents
+    import rag.embeddings
     import rag.retriever
-    import routers.faqs
     from config import settings
 
-    monkeypatch.setattr(routers.faqs, 'embed_texts', _texts)
+    # rag.opensearch.index_faq_chunks는 함수 안에서 `from rag.embeddings import embed_texts`를
+    # 하므로 원본 모듈 속성을 패치하면 먹는다. documents·retriever는 톱레벨 바인딩이라 개별 패치.
+    monkeypatch.setattr(rag.embeddings, 'embed_texts', _texts)
     monkeypatch.setattr(rag.documents, 'embed_texts', _texts)
     monkeypatch.setattr(rag.retriever, 'embed_texts', _texts)   # 쿼리 확장(#5)으로 배치 임베딩 전환
     monkeypatch.setattr(rag.cache, 'embed_query', _query)
@@ -318,27 +352,39 @@ async def _loop_hygiene():
     # (호출부가 함수 안에서 지연 import하므로 모듈 속성 교체가 먹는다)
     await clients.http_async.aclose()
     clients.http_async = httpx.AsyncClient()
+    # OpenSearch 클라이언트(aiohttp)도 루프에 묶인다 — 닫고 비워 다음 테스트가 새로 만들게 (#139)
+    from rag import opensearch
+    await opensearch.close_client()
 
 
 async def purge_tenant(t: str) -> None:
-    """해당 tenant의 전 테이블 데이터 + Redis 키 정리 (fixture·다중 테넌트 테스트 공용)."""
+    """해당 tenant의 전 테이블 데이터 + 검색 인덱스 문서 + Redis 키 정리 (fixture·다중 테넌트 테스트 공용).
+
+    테넌트의 색인 문서는 운영 삭제 경로(_delete_by_terms)로 지운다(인덱스 보장은 픽스처 시작의
+    _ensure_search_index — 직접 부르는 호출자를 위해 여기서도 한 번 더 보장).
+    """
     from sqlalchemy import delete
 
     from database import AsyncSessionLocal
+    from rag import opensearch
+
+    await opensearch.ensure_index()
+    await opensearch._delete_by_terms('tenant_id', [t])
     from rag.models import (
         AnswerCache as AnswerCacheRow,
-        Chunk,
         Conversation,
         Document,
         Faq,
         Folder,
         Message,
+        SearchIndexOutbox,
         TenantQuota,
     )
     async with AsyncSessionLocal() as session:
-        # FK 순서: 자식(청크·메시지) 먼저
-        for model in (Chunk, Message, Conversation, AnswerCacheRow,
-                      Faq, Document, Folder, TenantQuota):
+        # FK 순서: 자식(청크·메시지) 먼저. outbox 행(done/failed 포함)도 테넌트 단위로 지운다 —
+        # 운영은 행을 보존하지만(이력) 테스트의 랜덤 테넌트 행이 공유 DB에 쌓일 이유는 없다 (#139).
+        for model in (Message, Conversation, AnswerCacheRow,
+                      Faq, Document, Folder, TenantQuota, SearchIndexOutbox):
             await session.execute(delete(model).where(model.tenant_id == t))
         await session.commit()
     # Redis 잔재는 리미터의 in-flight 키뿐 (kms:inflight:*) — 취소 채널은 pub/sub이라 키가 안 남는다
@@ -349,9 +395,18 @@ async def purge_tenant(t: str) -> None:
         await clients.shared_redis.delete(*keys)
 
 
+async def _ensure_search_index() -> None:
+    """검색 인덱스는 테스트 스위트의 전제다(#139 — 청크는 OpenSearch에만 있다). 픽스처 **시작**에서
+    보장한다 — 정리(purge_tenant)에서만 부르면 첫 테스트가 없는 인덱스에 색인하다 404로 죽는다(실측).
+    엔진이 안 떠 있으면 여기서 바로 실패한다 — 조용히 PG만으로 도는 척하지 않는다."""
+    from rag import opensearch
+    await opensearch.ensure_index()
+
+
 @pytest_asyncio.fixture
 async def tenant_id(_loop_hygiene):
     """랜덤 tenant + 테스트 후 정리. _loop_hygiene 의존으로 정리가 커넥션 정리보다 먼저."""
+    await _ensure_search_index()
     t = str(uuid.uuid4())
     yield t
     await purge_tenant(t)
@@ -360,6 +415,7 @@ async def tenant_id(_loop_hygiene):
 @pytest_asyncio.fixture
 async def other_tenant_id(_loop_hygiene):
     """교차 테넌트 시나리오용 두 번째 tenant (정리 포함)."""
+    await _ensure_search_index()
     t = str(uuid.uuid4())
     yield t
     await purge_tenant(t)

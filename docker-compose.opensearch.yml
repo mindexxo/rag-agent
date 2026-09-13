@@ -1,0 +1,46 @@
+# OpenSearch A/B 실험용 단일 노드 (#139) — **로컬 전용**.
+#
+# 개발계(worker20) 이관은 전환이 확정된 뒤다(사용자 결정). 그래서 이 파일은 로컬 맥에서만
+# 쓰며, **성능 축(색인 처리량·검색 지연·메모리)은 이 구성으로 재지 않는다** — 로컬 맥
+# 컨테이너 대 worker20 PG는 조건이 달라 비교가 성립하지 않는다. 이번에 재는 것은 검색 품질뿐.
+#
+# 개발계로 옮길 때 바꿀 것: 포트 9200 → 23336(기존 23333/23334/23335 규칙 이어받기),
+# 보안 플러그인 재활성(아래 DISABLE_SECURITY_PLUGIN 제거 + 인증 설정), heap 재산정.
+#
+# 사용:
+#   docker compose -f docker-compose.opensearch.yml up -d --build
+#   curl localhost:9200/_cluster/health
+#
+# 데이터는 osdata 볼륨에 영속 — 재색인이 필요하면 `python -m eval._os_index --recreate`를 쓴다
+# (`down -v`는 볼륨을 지운다. 이 컨테이너는 실험용이라 소실이 치명적이진 않지만 재색인 비용이 든다).
+services:
+  opensearch:
+    build:
+      context: .
+      dockerfile: Dockerfile.opensearch
+    image: kms-opensearch:2.18.0-nori
+    container_name: kms-opensearch-ab
+    environment:
+      - discovery.type=single-node
+      # 로컬 실험 전용 — 사내망도 아닌 개발자 장비이고, TLS·인증이 A/B 측정에 주는 정보가 없다.
+      # 개발계 이관 시 반드시 제거하고 인증을 켠다.
+      - DISABLE_SECURITY_PLUGIN=true
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      # 로컬 맥 사정에 맞춘 값. 힙은 성능 축과 함께 개발계에서 다시 잡는다.
+      - OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g
+      - bootstrap.memory_lock=true
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    ports: ["9200:9200"]
+    volumes:
+      - osdata:/usr/share/opensearch/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  osdata: {}

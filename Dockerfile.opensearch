@@ -1,0 +1,12 @@
+# OpenSearch 2.18 + analysis-nori — #139 A/B 실험용(로컬).
+#
+# 왜 2.18인가: NCP Search Engine Service가 제공하는 최상단이 2.18이다(업스트림은 3.8, 2026-08).
+# 3.x에서 좋은 수치가 나와도 운영에서 못 쓰므로 눈금을 운영 후보에 맞춘다.
+#
+# 왜 이미지 빌드로 플러그인을 굳히는가: 로컬은 재현성을 위해. 단 **NCP에서는 같은 일을
+# 노드마다 sshuser로 직접 해야 하고**(SES FAQ: `opensearch-plugin install`), 버전 업그레이드·
+# 스케일아웃마다 재설치이며 사용자 실행 행위에 대한 NCP 면책 조항이 붙는다.
+# 이 차이는 운영 비교표의 항목이다 — "관리형이라 운영 부담 0"이 아니다.
+FROM opensearchproject/opensearch:2.18.0
+
+RUN /usr/share/opensearch/bin/opensearch-plugin install --batch analysis-nori

@@ -10,8 +10,8 @@ from sqlalchemy import select
 
 from config import settings
 from database import AsyncSessionLocal
-from rag.embeddings import embed_query
-from rag.models import Document, Chunk
+from rag import opensearch
+from rag.models import Document
 from rag.retriever import apply_gate, retrieve_candidates
 
 # 게이트 임계값 sweep 후보 (max_dense_distance)
@@ -27,19 +27,32 @@ RETRIEVAL_TYPES = {"single_fact", "paraphrase", "rare_lexical", "multi_doc"}
 
 @dataclass
 class Resolved:
-    """gold의 안정 키를 현재 DB id로 변환한 결과 묶음."""
+    """gold의 안정 키를 현재 id(문서=PG id, 청크=색인 chunk_id)로 변환한 결과 묶음."""
     doc_ids: dict[str, int] = field(default_factory=dict)
     chunk_ids: dict[str, list[int]] = field(default_factory=dict)
     stale: list[str] = field(default_factory=list)
 
 
-# 안정 키 -> 현재 DB id
-async def resolve_gold(session, tenant_id, gold_rows) -> Resolved:
-    """gold set의 안정 키(filename/heading_path/snippet)를 현재 DB id로 resolve.
+async def _indexed_chunks(document_id: int) -> list[tuple[int, list[str], str]]:
+    """문서의 색인 청크 (chunk_id, heading_path, text). 청크는 OpenSearch에만 있다(#139)."""
+    resp = await opensearch.client().search(index=settings.opensearch_index, body={
+        "size": 10000,                        # 문서 하나의 청크 수 상한으로 충분 (실문서 최대 86)
+        "_source": ["chunk_id", "heading_path", "text"],
+        "query": {"term": {"document_id": document_id}},
+    })
+    return [(int(h["_source"]["chunk_id"]), list(h["_source"].get("heading_path") or []),
+             h["_source"].get("text") or "") for h in resp["hits"]["hits"]]
 
-    gold는 DB id가 아닌 내용 기준 안정 키로 정답을 적어둔다 (재인제스천마다 id가
-    바뀌므로 — §4.1). 하지만 Recall/Hit/MRR 계산은 검색 결과의 DB id와 비교해야
+
+# 안정 키 -> 현재 id
+async def resolve_gold(session, tenant_id, gold_rows) -> Resolved:
+    """gold set의 안정 키(filename/heading_path/snippet)를 현재 id로 resolve.
+
+    gold는 id가 아닌 내용 기준 안정 키로 정답을 적어둔다 (재인제스천마다 id가
+    바뀌므로 — §4.1). 하지만 Recall/Hit/MRR 계산은 검색 결과의 id와 비교해야
     하므로, 평가 본 계산 전에 안정 키 -> 현재 id 변환이 선행돼야 한다.
+    문서 id는 PG(documents), 청크 id는 검색 색인(chunk_os_id)에서 온다 — 검색기가 돌려주는
+    `RetrievedChunk.chunk_id`가 색인 id라 채점의 양변이 같은 공간이다.
 
     resolve 실패(문서 개정·청킹 변경으로 라벨이 낡음)는 조용히 0점 처리하지 않고
     stale에 모아 경보로 올린다 — "검색 실패"와 "라벨 노후"를 구분하기 위함.
@@ -67,10 +80,7 @@ async def resolve_gold(session, tenant_id, gold_rows) -> Resolved:
             if doc_id is None:
                 r.stale.append(f'{row["id"]}: doc 못찾음 {ec["filename"]}')
                 continue
-            chunk_rows = (await session.execute(
-                select(Chunk.id, Chunk.heading_path, Chunk.text)
-                .where(Chunk.document_id == doc_id)
-            )).all()
+            chunk_rows = await _indexed_chunks(doc_id)
             # snippet 포함이 정답 판정의 최종 검증자 (§4.1). heading_path는
             # 완전일치를 요구하지 않고, 여러 청크가 snippet을 포함할 때 우선순위로만 사용.
             # 매칭은 공백 무시 — PDF/DOCX 추출 텍스트는 줄바꿈·공백 위치가 원본과 다르다 (v2).
@@ -111,43 +121,6 @@ def score_one(got_ids: list[int], gold_ids: list[int], ks=(5, 20)) -> dict | Non
 
     return scores
 
-
-
-# dense-only 진단 — 리랭커·게이트 제외, dense 순위만 (임베딩 순수 비교)
-async def retrieve_dense_only(session, tenant_id, query, backend=None, top_n=20) -> list[int]:
-    """dense cosine 순위만 반환 (chunk_id 리스트).
-    backend 인자는 과거 KURE 비교(Q2 — 동률 종결)용 잔재 — 호출부 호환으로만 유지, 무시됨."""
-    q = (await embed_query(query)).dense
-    dist = Chunk.dense.cosine_distance(q).label("d")
-    stmt = (
-        select(Chunk.id.label("cid"), dist)
-        .join(Document, Chunk.document_id == Document.id)
-        .where(Chunk.tenant_id == tenant_id)
-        .where(Document.is_active.is_(True))
-        .where(Document.status == "ready")
-        .order_by(dist)
-        .limit(top_n)
-    )
-    return [r.cid for r in (await session.execute(stmt)).all()]
-
-
-async def run_dense_only(session, backend, gold_rows, resolved):
-    """dense-only 로 검색 subset 점수 산출 (게이트 없음)."""
-    rows = []
-    for row in gold_rows:
-        if row["type"] not in RETRIEVAL_TYPES:
-            continue
-        got = await retrieve_dense_only(session, TENANT, row["query"], backend, top_n=20)
-        gold_ids = resolved.chunk_ids.get(row["id"]) or []
-        if gold_ids:
-            score = score_one(got, gold_ids)
-        else:
-            # dense-only 는 chunk 단위만 — doc 폴백은 chunk_id→doc 매핑이 없어 생략
-            continue
-        if score is None:
-            continue
-        rows.append({"id": row["id"], "type": row["type"], "scores": score})
-    return rows
 
 
 # 게이트 임계값별 오거부 판정

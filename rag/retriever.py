@@ -4,10 +4,10 @@
 
     query (+ 확장 변형, #5 Multi-Query)
       -> embed_texts                 쿼리 전체를 배치 1회로 임베딩
-      -> _search_dense_per_query     쿼리별 dense top-N (cosine distance)
+      -> opensearch.search_dense_per_query   쿼리별 kNN top-N (cosine distance 환산)
       -> (단일: distance 순 그대로 / 멀티: _rank_multi 로 RRF 융합)
-      -> _search_lexical             FTS 회수 + BM25 재점수 후보를 dense 뒤에 주입 (#135, 플래그)
-      -> _fetch_chunk_map            본문·메타 IN절 1회 조회
+      -> opensearch.search_lexical           BM25(Nori) 후보를 dense 뒤에 주입 (#135, 플래그)
+      -> opensearch.fetch_chunk_map          본문·메타 mget 1회 — 엔진이 서빙 정본 (#139)
       -> rerank / rerank_maxpool     cross-encoder 재정렬 (rag.reranker, settings.rerank_enabled)
       -> [:top_n]                    두 경로 공통 — 슬라이스는 항상 리랭크 뒤다
       -> _keep_single_table          표는 한 시트만 (F1a)
@@ -24,47 +24,28 @@ dense 21~30위를 리랭커에게 보여주지 않았다 — #38에서 해소.
 gate 전/후·threshold sweep 을 본다. 운영 /kms/query 는 retrieve() wrapper
 사용 — 동작 불변.
 
+검색 저장소는 OpenSearch 하나다(#139 도입 확정). 후보 회수·본문 조회가 전부 엔진에서
+끝나고 **이 모듈은 PG를 읽지 않는다** — `session` 인자는 호출부 호환용으로 남아 있을 뿐이다
+(service·eval·tests 13곳이 넘긴다. 제거는 호출부 일괄 정리와 함께 별건). 검색 가능 여부
+(문서 활성·ready·검색토글·폴더 토글·FAQ 활성)는 색인의 `searchable` 플래그로 판정하며,
+그 플래그의 정합은 쓰기 경로(rag/outbox.py)가 책임진다.
+
 LLM 호출 없음. Stage D의 RagService가 이 결과를 받아 답변 생성 또는
 "확인 불가" 응답으로 분기.
 """
 from dataclasses import dataclass, field
 
-from sqlalchemy import and_, cast, func, or_, select
-from sqlalchemy.dialects.postgresql import TSQUERY
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from rag import lexical, otel
+from rag import opensearch, otel
 from rag.embeddings import embed_texts
-from rag.index_text import build_index_text
-from rag.models import Chunk, Document, Faq, Folder
 
 DEFAULT_TOP_N = 20      # 후보 수 — retrieve_candidates 기본값과 retrieve() 호출부의 단일 출처
                         # (평가가 Recall@N을 보려면 최종 top_k보다 넓어야 한다)
 GATE_DISABLED = float("inf")   # 거리 게이트를 끈 상태에 붙인 이름 — retrieve()의 운영 기본값.
                                # 사유는 retrieve() 인자 주석 참조. eval은 이 상수를 쓰지 않고
                                # 자기 임계값을 apply_gate에 직접 넘긴다 (threshold sweep).
-
-
-# 검색 대상 판정 — 출처별 분기 (chunks는 document/faq 다형성, F3):
-#   문서 청크: 활성 버전 + 인덱싱 완료 + 문서 on + (미분류 OR 폴더 on)
-#   FAQ 청크 : 항목 on
-#
-# 주의: 이 조건은 dense 검색의 ORDER BY/LIMIT과 함께 걸리는 **post-filter**다. HNSW가
-# ef_search(기본 40)로 뽑은 뒤 여기서 걸러내므로, 비활성 문서·검색 끔 폴더가 늘면
-# candidates_per_branch를 못 채우고 리콜이 **에러 없이** 떨어진다. 해소하려면
-# hnsw.iterative_scan + ef_search 상향이 필요한데 값 변경 = 동작 변경이라 별건(11번 축).
-def _searchable_condition():
-    return or_(
-        and_(
-            Chunk.document_id.is_not(None),
-            Document.is_active.is_(True),
-            Document.status == 'ready',
-            Document.is_searchable.is_(True),
-            or_(Document.folder_id.is_(None), Folder.is_searchable.is_(True)),
-        ),
-        and_(Chunk.faq_id.is_not(None), Faq.is_active.is_(True)),
-    )
 
 
 # ===== 결과 자료형 ==================================================
@@ -149,108 +130,26 @@ def _rrf_fuse(
 
 
 # ===== 단계별 함수 ==================================================
-
-async def _search_dense_per_query(
-    session: AsyncSession,
-    tenant_id: str,
-    q_embs: list,
-    candidates_per_branch: int,
-) -> tuple[list[list[int]], list[tuple[int, float]]]:
-    """쿼리별 dense top-N 검색. (쿼리별 id 리스트, 원본 쿼리의 (id, distance)) 반환.
-
-    두 번째 반환값은 게이트 신호 전용 — 원본 쿼리(index 0) 결과만 담는다.
-    변형 쿼리가 의미를 이탈해도 게이트 판정이 흔들리지 않게 하기 위함이다.
-
-    부수효과 없음 (DB 읽기 전용). 쿼리 수만큼 **순차** 실행한다 —
-    AsyncSession은 한 세션에 동시 쿼리를 못 보내므로 gather 금지.
-    (별도 세션을 빌리면 생성 1건당 커넥션이 늘어 풀 문제를 악화시킨다 — 3번 축 실측.)
-
-    NOTE: tenant 격리는 명시적 WHERE 절로 강제 (프로젝트 규약 — rag/models.py 참조).
-    유틸은 전체 row select에만 적합한데 여기선 id+점수만 가져오므로 직접 박음.
-    """
-    per_query_ids: list[list[int]] = []
-    dense_results: list[tuple[int, float]] = []
-    for i, q_emb in enumerate(q_embs):
-        # cosine_distance: pgvector-python이 제공하는 SQLAlchemy 헬퍼.
-        # 실제 SQL은 chunks.dense <=> :q_dense 연산자로 변환됨.
-        # 범위 [0, 2]: 0=완전 동일, 1=직각(무관), 2=정반대
-        distance = Chunk.dense.cosine_distance(q_emb.dense).label('distance')
-        # .label('distance'): SELECT 결과에 'distance' 라는 컬럼명 부여 → r.distance로 접근
-        dense_stmt = (
-            select(Chunk.id, distance)
-            .outerjoin(Document, Chunk.document_id == Document.id)   # FAQ 청크(document NULL)도 살리는 outer join
-            .outerjoin(Folder, Document.folder_id == Folder.id)
-            .outerjoin(Faq, Chunk.faq_id == Faq.id)
-            .where(Chunk.tenant_id == tenant_id)         # 격리 강제 — 변형 검색도 동일 경로
-            .where(_searchable_condition())              # 출처별 참조 판정 (문서 F2 조건 / FAQ on)
-            .order_by(distance)                          # 작은 순 = 유사한 순
-            .limit(candidates_per_branch)
-        )
-        # (await session.execute(stmt)).all() → list[Row]
-        rows = (await session.execute(dense_stmt)).all()
-        if i == 0:
-            dense_results = [(r.id, r.distance) for r in rows]
-        per_query_ids.append([r.id for r in rows])
-    return per_query_ids, dense_results
+#
+# 후보 회수·본문 조회는 rag/opensearch.py가 정의점이다. 아래 세 얇은 함수는 이 모듈의
+# 단계 이름을 유지하기 위한 것이다 — 테스트·eval이 이 이름으로 monkeypatch·호출한다.
+# `session`은 받지 않는다: 검색은 DB를 읽지 않는다(모듈 docstring).
 
 
-async def _search_lexical(
-    session: AsyncSession,
-    tenant_id: str,
-    query: str,
-    limit: int,
-) -> list[int]:
-    """어휘 채널 (#135) — FTS(bigram) 회수 → 앱 BM25 재점수 → 상위 limit개의 id.
+async def _dense_candidates(tenant_id: str, q_embs: list, candidates_per_branch: int):
+    """쿼리별 dense top-N. (쿼리별 id 리스트, 원본 쿼리의 (id, distance)) — 계약은 opensearch 참조."""
+    return await opensearch.search_dense_per_query(tenant_id, q_embs, candidates_per_branch)
 
-    dense가 놓친 어휘 일치(상품코드·고유명)를 리랭커 풀에 주입하는 용도. 최종 순위는
-    리랭커가 정하므로 무관 후보는 걸러진다. 산식·토크나이저는 rag/lexical.py가 정의점.
 
-    통계는 저장하지 않는다(#135 B안): N·avgdl은 집계 1방, df는 회수된 후보에서 센다 —
-    질의 토큰을 가진 청크는 전부 회수되므로(OR 매칭) 후보 내 df가 곧 코퍼스 df다.
-    회수가 사실상 테넌트 전 청크여도 의도다 — 현 규모(테넌트당 ~100청크)에선 전수
-    재점수가 수 ms고, 이 비용이 커지는 규모(수만 청크)가 곧 통계 테이블/pg_search 승격
-    트리거다(config 주석). BM25 입력은 임베딩과 동일 조립(문서=파일명>헤딩 프리픽스,
-    FAQ=원문) — lex_len이 그 조립의 토큰 수라 tf·dl·avgdl의 기준이 일관된다.
+async def _lexical_candidates(tenant_id: str, query: str, limit: int) -> list[int]:
+    """어휘 채널 (#135) — BM25(Nori) 상위 limit개의 id. dense가 놓친 어휘 일치(상품코드·고유명)를
+    리랭커 풀에 주입하는 용도. 최종 순위는 리랭커가 정하므로 무관 후보는 걸러진다."""
+    return await opensearch.search_lexical(tenant_id, query, limit)
 
-    백필 전 청크(lex_tsv NULL)는 이 채널에 안 잡힌다(@@가 NULL이면 거짓) — dense
-    검색은 무관하므로 리콜이 조용히 죽지 않고, 백필(eval/backfill_lexical)이 닫는다.
-    """
-    q_tokens = lexical.bigrams(query)
-    if not q_tokens:
-        return []
-    tsq = cast(lexical.tsquery_or(q_tokens), TSQUERY)
 
-    # N·avgdl — 검색 가능 + 어휘 색인된 풀 기준 (dense와 같은 searchable 정의)
-    n_docs, avgdl = (await session.execute(
-        select(func.count(), func.avg(Chunk.lex_len))
-        .outerjoin(Document, Chunk.document_id == Document.id)
-        .outerjoin(Folder, Document.folder_id == Folder.id)
-        .outerjoin(Faq, Chunk.faq_id == Faq.id)
-        .where(Chunk.tenant_id == tenant_id)          # 격리 강제 — dense 검색과 동일 경로
-        .where(_searchable_condition())
-        .where(Chunk.lex_len.is_not(None))
-    )).one()
-    if not n_docs:
-        return []
-
-    rows = (await session.execute(
-        select(Chunk.id, Chunk.text, Chunk.heading_path, Document.filename)
-        .outerjoin(Document, Chunk.document_id == Document.id)
-        .outerjoin(Folder, Document.folder_id == Folder.id)
-        .outerjoin(Faq, Chunk.faq_id == Faq.id)
-        .where(Chunk.tenant_id == tenant_id)
-        .where(_searchable_condition())
-        .where(Chunk.lex_tsv.op('@@')(tsq))
-    )).all()
-    cand_tokens = {
-        r.id: lexical.bigrams(
-            r.text if r.filename is None                 # FAQ — 프리픽스 없음 (인제스션과 동일)
-            else build_index_text(r.text, r.filename, list(r.heading_path or []))
-        )
-        for r in rows
-    }
-    ranked = lexical.bm25_rank(query, cand_tokens, int(n_docs), float(avgdl or 0.0))
-    return ranked[:limit]
+async def _chunk_map(ids: list[int]) -> dict[int, RetrievedChunk]:
+    """id → RetrievedChunk. 엔진 _source에서 만든다 — 왕복 1회, PG를 되묻지 않는다(실무 표준)."""
+    return await opensearch.fetch_chunk_map(ids)
 
 
 def _rank_multi(per_query_ids: list[list[int]]) -> list[int]:
@@ -264,39 +163,6 @@ def _rank_multi(per_query_ids: list[list[int]]) -> list[int]:
     """
     scores = _rrf_fuse(per_query_ids)
     return [cid for cid, _ in sorted(scores.items(), key=lambda x: -x[1])]
-
-
-async def _fetch_chunk_map(
-    session: AsyncSession,
-    ids: list[int],
-) -> dict[int, RetrievedChunk]:
-    """id → RetrievedChunk 본문·메타 조회. IN 절 한 번 (개별 SELECT N번 안 함).
-
-    부수효과 없음 (DB 읽기 전용). 순서는 호출부가 정한다 — 여기선 dict만 만든다.
-    FAQ 청크는 filename을 'FAQ'로 — 인용 후보 접기(sources_from_chunks)와 표시명이 이 값을 따름.
-    """
-    rows = await session.execute(
-        select(Chunk, Document.filename, Document.version, Folder.name, Folder.description)
-        .outerjoin(Document, Chunk.document_id == Document.id)   # FAQ 청크는 filename/version이 NULL로 옴
-        .outerjoin(Folder, Document.folder_id == Folder.id)      # 미분류 문서·FAQ는 폴더가 NULL로 옴
-        .where(Chunk.id.in_(ids))
-    )
-    return {
-        c.id: RetrievedChunk(
-            chunk_id=c.id,
-            document_id=c.document_id,
-            text=c.text,
-            heading_path=c.heading_path,
-            page=c.page,
-            filename=filename or 'FAQ',
-            version=ver or 1,
-            faq_id=c.faq_id,
-            is_table=bool((c.meta or {}).get('is_table')),   # F1a: xlsx 표 청크 여부
-            folder_name=fname,
-            folder_description=fdesc,
-        )
-        for c, filename, ver, fname, fdesc in rows.all()
-    }
 
 
 def _keep_single_table(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
@@ -345,7 +211,7 @@ async def retrieve_candidates(
     expanded_queries가 있으면 원본+변형을 각각 dense 검색해 union 후보를 만들고,
     쿼리별 cross-encoder 채점의 max-pool로 정렬한다 (#5). 리랭크 꺼짐/실패 시 RRF 순서 폴백.
 
-    부수효과 없음 (DB 읽기 + TEI 호출 2종뿐).
+    부수효과 없음 (엔진 읽기 + TEI 호출 2종뿐). `session`은 쓰지 않는다(모듈 docstring).
     """
     queries = [query, *(expanded_queries or [])]
 
@@ -359,8 +225,8 @@ async def retrieve_candidates(
                                           # AnswerCacheRow.query_embedding)가 list[float]를 받으므로
                                           # 하위 모듈이 rag.embeddings.Embedding을 알 필요가 없다.
 
-    per_query_ids, dense_results = await _search_dense_per_query(
-        session, tenant_id, q_embs, candidates_per_branch,
+    per_query_ids, dense_results = await _dense_candidates(
+        tenant_id, q_embs, candidates_per_branch,
     )
 
     # 분기 판정은 여기 한 곳. 아래 리랭크가 이 값을 그대로 받는다.
@@ -379,12 +245,15 @@ async def retrieve_candidates(
     # '뒤에'가 계약이다: 리랭크 꺼짐/실패 폴백에서 dense 순위가 깨지지 않아야 한다
     # (리랭크 on에선 cross-encoder가 쌍 독립 채점이라 순서 무관). 슬라이스는 여전히 리랭크 뒤.
     if settings.hybrid_lexical_enabled:
-        lex_ids = await _search_lexical(session, tenant_id, query, candidates_per_branch)
+        lex_ids = await _lexical_candidates(tenant_id, query, candidates_per_branch)
         seen = set(top_ids)
         top_ids = top_ids + [cid for cid in lex_ids if cid not in seen][:settings.hybrid_lexical_inject]
 
-    chunk_map = await _fetch_chunk_map(session, top_ids)
-    result = [chunk_map[cid] for cid in top_ids]      # 순위 순서 그대로 재배열
+    chunk_map = await _chunk_map(top_ids)
+    # 순위 순서 그대로 재배열. `if cid in chunk_map`은 필수다 — 검색과 본문 조회가 다른
+    # 호출이라 그 사이에 문서가 지워지면 mget에서 빠지고, 가드가 없으면 KeyError로 검색
+    # 전체가 죽는다.
+    result = [chunk_map[cid] for cid in top_ids if cid in chunk_map]
 
     # ----- 리랭커 재정렬 (on/off = settings.rerank_enabled) ----------
     # 호출 시점마다 settings를 읽는다 — eval/retrieval.py가 이 속성을 런타임에 켰다 껐다 한다.

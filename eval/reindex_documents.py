@@ -1,4 +1,4 @@
-"""활성 문서 재색인 CLI — 청킹·임베딩 방식이 바뀌었을 때 기존 인덱스를 새 방식으로 다시 만든다.
+"""활성 문서 재색인 CLI — 청킹·임베딩 방식이 바뀌었을 때 검색 색인(OpenSearch)을 새 방식으로 다시 만든다.
 
 배경(2026-08-03): 인덱스 입력에 '파일명 > 헤딩' 병합(rag/index_text)과 DOCX 섹션 청킹
 (rag/chunking)이 들어갔다. 둘 다 **재색인해야** 반영된다 — 기존 dense 벡터는 옛 방식으로
@@ -15,7 +15,7 @@
   - 실패한 문서는 status='failed'로 남는다 → 검색에서 빠지므로, 요약을 보고 재실행할 것.
   - blob 원본이 없으면 건드리지 않고 건너뛴다 (청크를 지운 뒤 재생성 못 하는 사태 방지).
 
-롤백: 청크는 blob에서 언제든 다시 만들 수 있는 파생 데이터다.
+롤백: 청크는 blob에서 언제든 다시 만들 수 있는 파생 데이터다(색인에만 있다 — #139).
       옛 방식으로 되돌리려면 코드를 revert한 뒤 이 스크립트를 다시 돌리면 된다.
 
 주의: 임베딩 TEI 서버(사내망)가 필요하다. 로컬에서는 ConnectTimeout으로 실패한다.
@@ -24,19 +24,19 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
+from config import settings
 from database import AsyncSessionLocal
-from rag import cache
-from rag.documents import index_pending_document
-from rag.models import Chunk, Document
+from rag import cache, opensearch, outbox
+from rag.models import Document
 
 
 async def _targets(tenant_id: str | None) -> list[tuple[int, str, str, int]]:
-    """재색인 대상 = 활성 문서 중 ready 또는 failed. (id, tenant, filename, 청크수).
+    """재색인 대상 = 활성 문서 중 ready 또는 failed. (id, tenant, filename, 색인 청크수).
 
-    failed도 포함한다 — 재색인이 중간에 실패하면 그 문서는 청크가 지워진 채 failed로 남아
-    검색에서 조용히 빠진다. 원인을 고친 뒤 같은 명령으로 복구할 수 있어야 한다.
+    failed도 포함한다 — 재색인이 중간에 실패하면 그 문서는 failed로 남아 검색에서 조용히
+    빠진다. 원인을 고친 뒤 같은 명령으로 복구할 수 있어야 한다.
     """
     async with AsyncSessionLocal() as session:
         stmt = (
@@ -51,18 +51,18 @@ async def _targets(tenant_id: str | None) -> list[tuple[int, str, str, int]]:
 
         out = []
         for doc in docs:
-            n = len((await session.execute(
-                select(Chunk.id).where(Chunk.document_id == doc.id)
-            )).scalars().all())
+            n = (await opensearch.client().count(index=settings.opensearch_index, body={
+                "query": {"term": {"document_id": doc.id}}}))["count"]
             out.append((doc.id, doc.tenant_id, doc.filename, n))
         return out
 
 
 async def reindex_one(document_id: int) -> None:
-    """문서 하나를 재색인. 기존 청크 삭제 → pending 되돌림 → 워커 로직 재사용.
+    """문서 하나를 재색인. pending 되돌림 + INDEX_DOCUMENT 등재 → 워커 로직 재사용.
 
-    index_pending_document는 청크를 insert만 하므로, 먼저 지우지 않으면
-    UNIQUE(document_id, chunk_index) 위반으로 실패한다.
+    옛 청크를 먼저 지울 필요가 없다 — 인제스션 핸들러가 색인 전에 그 문서의 청크를 지우고
+    결정적 id로 다시 넣는다(rag/opensearch.index_parsed_document). 처리 중에도 옛 청크가
+    검색에 남아 있다가 한 번에 교체된다(빈 창 없음).
     캐시도 함께 무효화한다 — 청크 경계가 바뀌면 그 문서를 근거로 만든 답이 낡은 것이 된다.
     """
     async with AsyncSessionLocal() as session:
@@ -72,12 +72,13 @@ async def reindex_one(document_id: int) -> None:
         if not Path(doc.blob_path).exists():
             raise FileNotFoundError(f'원본 없음: {doc.blob_path}')
 
-        await session.execute(delete(Chunk).where(Chunk.document_id == doc.id))
         await cache.invalidate_source(session, doc.tenant_id, doc.id)
         doc.status = 'pending'          # 워커 로직의 진입 조건
+        row = outbox.enqueue(session, doc.tenant_id, outbox.INDEX_DOCUMENT, document_id=doc.id)
         await session.commit()
 
-    await index_pending_document(document_id)   # 청킹 + 임베딩 + 청크 저장 + ready 승격
+    # 이 문서의 행만 처리 — 공유 DB의 다른 pending 업로드를 건드리지 않게 row_ids로 한정 (#139)
+    await outbox.drain_once(row_ids=[row.id])   # 청킹 + 임베딩 + 색인 + ready 승격
 
     async with AsyncSessionLocal() as session:  # 승격 확인 — 실패면 status가 failed로 남는다
         doc = await session.get(Document, document_id)

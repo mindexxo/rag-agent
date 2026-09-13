@@ -74,7 +74,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_docs_one_active_per_name
 -- 청크 임베딩에도 파일명이 prefix로 들어가므로(rag/index_text.py) 정합을 완전히 맞추려면
 -- 해당 문서 재인제스트가 이상적이다. 검색 품질 영향은 작아 각주·지표 복구는 UPDATE만으로 충분.
 
--- ---------- FAQ (F3: 전용 저장. 검색은 chunks로 통합 — 관문·원문반환 없음) ----------
+-- ---------- FAQ (F3: 전용 저장. 검색은 색인에 항목당 청크 1개 — 관문·원문반환 없음) ----------
 CREATE TABLE IF NOT EXISTS faqs (
     id         BIGSERIAL PRIMARY KEY,
     tenant_id  TEXT        NOT NULL,
@@ -87,37 +87,9 @@ CREATE TABLE IF NOT EXISTS faqs (
 );
 CREATE INDEX IF NOT EXISTS idx_faqs_tenant ON faqs (tenant_id);
 
--- ---------- 청크 (검색 인덱스 — 출처: document 또는 faq 정확히 하나) ----------
-CREATE TABLE IF NOT EXISTS chunks (
-    id            BIGSERIAL PRIMARY KEY,
-    document_id   BIGINT       REFERENCES documents(id) ON DELETE CASCADE,   -- 문서 출처 (F3부터 nullable)
-    faq_id        BIGINT       REFERENCES faqs(id) ON DELETE CASCADE,        -- FAQ 출처 (F3, 항목당 1청크)
-    tenant_id     TEXT         NOT NULL,
-    chunk_index   INTEGER      NOT NULL,
-    text          TEXT         NOT NULL,
-    token_count   INTEGER,
-    page          INTEGER,
-    heading_path  TEXT[]       NOT NULL DEFAULT '{}',
-    metadata      JSONB        NOT NULL DEFAULT '{}'::jsonb,
-    dense         VECTOR(1024) NOT NULL,
-    lex_tsv       TSVECTOR,             -- 어휘 채널(#135): 어절 내 bigram 토큰 집합 (입력=임베딩과 동일 index_text, 정의점 rag/lexical.py)
-    lex_len       INTEGER,              -- 위 토큰 총수(dl) — BM25 길이 정규화용. NULL=어휘 백필 전 (dense 검색은 무관)
-    UNIQUE (document_id, chunk_index),
-    CHECK ((document_id IS NOT NULL AND faq_id IS NULL) OR (document_id IS NULL AND faq_id IS NOT NULL))
-);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_chunks_faq ON chunks (faq_id) WHERE faq_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_chunks_tenant_doc
-    ON chunks (tenant_id, document_id);
-CREATE INDEX IF NOT EXISTS idx_chunks_dense_hnsw
-    ON chunks USING hnsw (dense vector_cosine_ops)
-    WITH (m = 16, ef_construction = 64);
--- 어휘 채널 FTS 회수용 (#135) — retriever._search_lexical의 @@ 매칭과 df 계산이 탄다
-CREATE INDEX IF NOT EXISTS idx_chunks_lex_gin ON chunks USING gin (lex_tsv);
--- 기존 DB 반영(#135, 추가형 — 재구축 불필요):
---   ALTER TABLE chunks ADD COLUMN IF NOT EXISTS lex_tsv TSVECTOR;
---   ALTER TABLE chunks ADD COLUMN IF NOT EXISTS lex_len INTEGER;
---   CREATE INDEX IF NOT EXISTS idx_chunks_lex_gin ON chunks USING gin (lex_tsv);
--- 이후 기존 청크 백필(임베딩 재계산 없음·TEI 불필요): python -m eval.backfill_lexical --all
+-- ---------- 청크: 이 DB에 없다 ----------
+-- 본문·메타·벡터·어휘 필드는 OpenSearch 인덱스(rag/opensearch.py MAPPING)에만 있다(#139).
+-- 예전 PG 검색 인덱스 `chunks`는 기존 DB에 테이블만 남아 있을 수 있다 — 제거 절차는 하단 "#139 마이그레이션".
 
 -- ---------- LLM 응답 캐시 ----------
 -- 기존 DB 반영(#56): 인용 방식 전환(인라인 라벨 → 출처 꼬리)으로 옛 캐시 행(라벨 박힌
@@ -256,3 +228,39 @@ CREATE TABLE IF NOT EXISTS tenant_quotas (
 -- ALTER TABLE tenant_quotas ALTER COLUMN user_concurrency  SET DEFAULT 1;    -- 10 → 1
 -- UPDATE tenant_quotas SET concurrency_limit = 5 WHERE concurrency_limit = 10;
 -- UPDATE tenant_quotas SET user_concurrency  = 1 WHERE user_concurrency  = 10;
+
+-- ── #139 마이그레이션 — (구) chunks 테이블 제거 (아직 실행하지 않음) ─────────────
+-- 코드에는 chunks가 더 없다(모델·DDL 모두 삭제, 2026-09-13). 기존 DB에 남은 테이블·행·벡터·인덱스는
+-- 죽은 데이터다(실측 컬럼 3.4MB + HNSW 6.5MB, 868청크 기준 — 수십만 청크면 GB 단위). **순서를 지켜라** —
+-- ①을 건너뛰면 청크의 백업 없는 유일 저장소(OpenSearch 단일 노드)가 생긴다.
+--
+--   ① OpenSearch 스냅샷 리포지터리 설정 + **복구 리허설 1회** (이슈 #139 결정 코멘트의 전제조건)
+--   ② DROP INDEX IF EXISTS idx_chunks_dense_hnsw;  DROP INDEX IF EXISTS idx_chunks_lex_gin;
+--   ③ DROP TABLE IF EXISTS chunks;
+--
+-- 되돌리기는 없다 — 복구는 OpenSearch 스냅샷이거나, 원본 파일(documents.blob_path) 재인제스션이다
+-- (eval.os_reconcile --apply가 색인에 없는 ready 문서·FAQ를 대기열에 넣는다).
+-- answer_cache.query_embedding은 이 정리의 대상이 아니다 — 의미캐시 자체가 쓰는 값이다.
+
+-- ── #139 outbox — 색인 작업 대기열 (트랜잭셔널 outbox) ────────────────────────
+-- 문서·FAQ·폴더 변경과 **같은 트랜잭션**에 "색인에 할 일"을 남긴다. 커밋되면 일이 반드시
+-- 남아 있고 롤백되면 함께 사라진다 — 커밋과 등재가 원자적이라는 것이 이 패턴의 전부다.
+-- 단일 워커가 1분 주기로 pending을 id 순으로 처리해 done으로 넘긴다(rag/outbox.py가 정의점).
+-- 행은 지우지 않는다 — done/failed가 이력이자 관측 지점이다. 보존 정리는 나중에(스케줄러).
+CREATE TABLE IF NOT EXISTS search_index_outbox (
+    id          BIGSERIAL PRIMARY KEY,
+    tenant_id   TEXT      NOT NULL,
+    op          TEXT      NOT NULL,                       -- rag/outbox.py 상수 (INDEX_DOCUMENT 등)
+    payload     JSONB     NOT NULL DEFAULT '{}'::jsonb,   -- id만 싣는다 — 처리 시점에 PG 최신값을 읽는다
+    status      TEXT      NOT NULL DEFAULT 'pending',     -- pending | done | failed
+    attempts    INTEGER   NOT NULL DEFAULT 0,
+    last_error  TEXT,
+    created_at  TIMESTAMP NOT NULL DEFAULT now()
+);
+-- 드레인은 pending만 id 순으로 읽는다 — done이 아무리 쌓여도 이 부분 인덱스만 훑는다.
+CREATE INDEX IF NOT EXISTS idx_outbox_pending ON search_index_outbox (id) WHERE status = 'pending';
+-- 기존 DB 반영 (2026-09-11, 1차 outbox → status 모델로 전환):
+--   ALTER TABLE search_index_outbox ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';
+--   ALTER TABLE search_index_outbox DROP COLUMN IF EXISTS next_attempt_at;
+--   DROP INDEX IF EXISTS idx_outbox_ready;
+--   CREATE INDEX IF NOT EXISTS idx_outbox_pending ON search_index_outbox (id) WHERE status = 'pending';

@@ -16,7 +16,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
 
 from config import settings
-from rag import cancellation
+from rag import cancellation, opensearch
 from rag.otel import init_tracing
 from routers.conversations import router as conversation_router
 from routers.documents import router as document_router
@@ -37,8 +37,12 @@ async def lifespan(app: FastAPI):
     rag/worker.py의 arq cron 몫이고 별 프로세스라 여기와 무관하다.
 
     주의: 테스트의 httpx ASGITransport는 lifespan을 호출하지 않는다(실측) — 그래서 본문은
-    subscribe_forever를 부르는 얇은 배선만 두고, 테스트는 그 함수를 직접 띄워 검증한다.
+    subscribe_forever를 부르는 얇은 배선만 두고, 테스트는 그 함수를 직접 띄워 검증한다
+    (인덱스 보장은 tests/conftest.purge_tenant가 대신 부른다).
+
+    검색 인덱스 보장(#139): 엔진에 못 붙으면 여기서 죽는다 — 검색 없는 서버를 조용히 띄우지 않는다.
     """
+    await opensearch.ensure_index()
     subscriber = asyncio.create_task(cancellation.subscribe_forever())
     try:
         yield
@@ -46,6 +50,7 @@ async def lifespan(app: FastAPI):
         subscriber.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await subscriber
+        await opensearch.close_client()
 
 
 app = FastAPI(lifespan=lifespan)

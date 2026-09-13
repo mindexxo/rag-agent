@@ -22,7 +22,6 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from sqlalchemy import select
 
 from config import settings
 from database import AsyncSessionLocal
@@ -31,7 +30,6 @@ from rag.citation_labels import sources_from_chunks
 from rag.citation_tail import TailSplitter, resolve_citations
 from rag.conversation import (build_prior_turns, condense_query,
                               trim_messages_for_condense)
-from rag.models import Chunk, Document
 from rag.retriever import retrieve_candidates, RetrievedChunk
 from rag.embeddings import embed_texts_sync
 from rag.llm_schemas import is_schema_rejected
@@ -40,9 +38,26 @@ from rag.llm import LlmClient
 from eval.retrieval import resolve_gold
 
 TENANT = "demo"                      # v1(단일 테넌트) 기본값 — v2 gold는 id 접두로 라우팅
-V2_TENANTS = {"summers", "homeplus", "adererror", "aromanica", "goodpeople", "harim"}
+V2_TENANTS = {"summers", "homeplus", "adererror", "aromanica", "goodpeople", "harim", "inticube"}
 GOLD = Path("eval/gold_set_v2.jsonl")
 GOLD_VERSION = "v2"
+# 비공개 골드(사내 실문서, #138 ③) — 정본 옆에 두되 gitignore. 파일이 없으면 정본만 읽는다.
+GOLD_PRIVATE_DIR = Path("eval/gold_private")
+
+
+def load_gold() -> list[dict]:
+    """정본 gold_set_v2 + eval/gold_private/*.jsonl(있으면)을 합쳐 돌려준다.
+
+    실문서 골드는 회사 비공개 자료의 원문 발췌를 담으므로 공개 저장소에 올리지 않는다 —
+    그래서 정본 파일에 합치지 않고 옆 디렉터리에서 병합한다. id 접두(테넌트)는 정본과 같은
+    규약(row_tenant)이라 측정 축은 구분 없이 읽는다. **정본을 읽는 다른 스크립트들은 아직
+    GOLD를 직접 읽는다** — 실문서 축이 필요해질 때 이 함수로 옮긴다.
+    """
+    rows = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+    if GOLD_PRIVATE_DIR.is_dir():
+        for f in sorted(GOLD_PRIVATE_DIR.glob("*.jsonl")):
+            rows += [json.loads(l) for l in f.read_text().splitlines() if l.strip()]
+    return rows
 
 
 def row_tenant(g: dict) -> str:
@@ -75,19 +90,16 @@ SMOKE = int(os.getenv("SMOKE", "0")) or None   # 스모크셋 크기 (0/미설�
 # ===== 컨텍스트 구성 =================================================
 
 async def oracle_context(session, chunk_ids: list[int]) -> list[RetrievedChunk]:
-    """gold 정답 청크 id들을 RetrievedChunk로 (LLM 컨텍스트 주입용)."""
+    """gold 정답 청크 id들을 RetrievedChunk로 (LLM 컨텍스트 주입용).
+
+    id는 색인 chunk_id다(resolve_gold가 색인에서 푼다 — #139). 본문·메타도 색인에서 읽는다;
+    session은 호출부 호환용으로 받기만 한다.
+    """
     if not chunk_ids:
         return []
-    rows = await session.execute(
-        select(Chunk, Document.filename, Document.version)
-        .join(Document, Chunk.document_id == Document.id)
-        .where(Chunk.id.in_(chunk_ids))
-    )
-    return [
-        RetrievedChunk(chunk_id=c.id, document_id=c.document_id, text=c.text,
-                       heading_path=c.heading_path, page=c.page, filename=fn, version=v)
-        for c, fn, v in rows.all()
-    ]
+    from rag import opensearch
+    chunk_map = await opensearch.fetch_chunk_map(chunk_ids)
+    return [chunk_map[cid] for cid in chunk_ids if cid in chunk_map]
 
 
 async def retrieved_context(session, tenant: str, query: str) -> list[RetrievedChunk]:

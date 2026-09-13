@@ -477,7 +477,11 @@ class RagService:
                 self.session, self.tenant_id, standalone_query, source_doc_ids,
                 # 검색이 방금 만든 벡터를 그대로 넘긴다 — 같은 문자열을 다시 임베딩하지 않는다 (#50)
                 query_embedding=retrieval.query_embedding,
-                llm=self._llm)   # 임계 아래 대역 후보의 재사용 판정기 (#113)
+                llm=self._llm,   # 임계 아래 대역 후보의 재사용 판정기 (#113)
+                # 판정기에만 쓰이는 원문(#153) — 키·임베딩은 standalone_query 기준 그대로다.
+                # RETRY 턴에서 query는 이미 직전 실질 질문으로 치환돼 있다("다시"가 아니다, #59)
+                # — 자리마다 다른 "다시"가 판정기에서 충돌하지 않는 이유가 이것이다.
+                original_query=query)
             if semantic_hit is not None:
                 return PreparedRag(
                     conversation_id=conversation_id,
@@ -683,6 +687,10 @@ class RagService:
             prepared.source_doc_ids,
             faq_versions=prepared.faq_versions,
             query_embedding=prepared.query_embedding,   # 검색이 만든 벡터 재사용 (#50)
+            # 이 답변을 만든 턴의 원문 — 나중 턴의 재사용 판정기가 읽는다 (#153).
+            # display_query가 아니라 original_query다: RETRY 턴이면 "다시"가 아니라
+            # 되돌린 실질 질문이 저장돼야 다음 판정이 의미를 갖는다.
+            original_query=prepared.original_query,
         )
 
 

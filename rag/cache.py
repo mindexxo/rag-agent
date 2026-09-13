@@ -47,17 +47,24 @@ class CacheHit:
     source_doc_ids: list[int]
 
 
-async def _verify_reuse(llm, cached_query: str, new_query: str) -> bool:
+async def _verify_reuse(llm, cached_query: str, new_query: str,
+                        cached_original: str | None = None,
+                        new_original: str | None = None) -> bool:
     """판정기(#113) — 캐시 후보의 재사용 가부를 LLM에 묻는다. 모든 히트의 필요조건이다.
 
     True=재사용 승인. 판정 실패(스키마 불신·호출 실패)는 False — 오판 비용 비대칭
     (잘못 승인=오답 재생, 잘못 거절=생성 1회)이라 모든 불확실성은 거절로 수렴시킨다.
-    프롬프트·검증 실측은 rag/prompt_texts.py의 CACHE_REUSE_JUDGE_* 참조 (40쌍 39/40·
-    위험 방향 0·3회 반복 흔들림 0 — 그래서 운영은 1콜).
+    프롬프트·검증 실측은 rag/prompt_texts.py의 CACHE_REUSE_JUDGE_* 참조 (40쌍 40/40·
+    위험 방향 0·5회 반복 흔들림 0 — 그래서 운영은 1콜). 재실행: eval/cache_judge_probe.py.
+
+    *_query는 재작성문, *_original은 사용자가 친 원문(#153). 원문은 판정 재료로만 쓴다 —
+    cache_key도 임베딩도 재작성문 기준 그대로다. None이면 '(없음)'이 들어가 현행과 같은
+    판정이 된다(도입 전 캐시 행의 경로).
     """
     try:
         judgment = await acomplete_validated(
-            llm, build_cache_reuse_judge_messages(cached_query, new_query), ReuseJudgment)
+            llm, build_cache_reuse_judge_messages(cached_query, new_query,
+                                                  cached_original, new_original), ReuseJudgment)
         logger.info('캐시 재사용 판정: %s — %s', judgment.same_answer, judgment.reason[:120])
         return judgment.same_answer
     except Exception:
@@ -111,6 +118,7 @@ async def get_semantic(
         current_source_doc_ids: list[int],
         query_embedding: list[float] | None = None,
         llm=None,
+        original_query: str | None = None,
 ) -> CacheHit | None:
     """Postgres semantic cache를 조회한다.
 
@@ -130,6 +138,10 @@ async def get_semantic(
 
     None이면 예전처럼 embed_query(query)로 직접 만든다. 벡터를 손에 들지 않은 호출부
     (테스트, eval/cache_eval.py)를 위한 폴백이다 — 운영 경로는 항상 벡터를 넘긴다.
+
+    original_query: 이번 턴에 사용자가 친 원문(#153). **판정기 입력으로만 쓴다** — query(재작성문)가
+    조회 키·임베딩의 기준이라는 계약은 그대로다. 원문을 넘겨도 임베딩 왕복은 늘지 않는다.
+    None이면 판정기가 '(없음)'으로 받아 현행과 같은 판정을 낸다.
 
     fail-open(#16): 캐시는 어떤 경우에도 요청을 죽이면 안 된다 — 조회 실패는 miss 취급.
     (실측 실패 모드: 임베딩 TEI 블립. 검색까지 성공한 요청이 캐시 조회에서 500 나던 문제.
@@ -174,7 +186,9 @@ async def get_semantic(
             return None
 
         # 7. 재사용 판정(#113) — 모든 히트의 필요조건. 판정 실패(예외 포함)는 miss.
-        if not await _verify_reuse(llm, cache_row.query_text, query):
+        # 원문도 함께 넘긴다(#153) — 같은 입력이 이력 차이로 다르게 재작성된 경우를 구제한다.
+        if not await _verify_reuse(llm, cache_row.query_text, query,
+                                   cache_row.original_query, original_query):
             logger.info('판정기가 캐시 재사용 거절 — miss (tenant=%s, sim=%.4f)',
                         tenant_id, similarity)
             return None
@@ -208,6 +222,7 @@ async def save_answer(
         source_doc_ids: list[int],
         faq_versions: dict[int, datetime] | None = None,
         query_embedding: list[float] | None = None,
+        original_query: str | None = None,
 ) -> None:
     """LLM 응답을 Postgres semantic cache에 저장한다.
 
@@ -219,6 +234,10 @@ async def save_answer(
 
     query_embedding: get_semantic과 같은 계약 — 있으면 재사용, None이면 embed_query 폴백.
     사유·안전성 근거는 get_semantic docstring 참조 (#50).
+
+    original_query: 이 답변을 만든 턴에 사용자가 친 원문(#153). 나중 턴의 판정기가 읽는다.
+    **cache_key·임베딩은 query(재작성문) 기준 그대로다** — 원문을 키에 섞으면 upsert 충돌
+    판정이 바뀐다. None이면 컬럼이 NULL로 남고 판정기가 '(없음)'으로 받는다.
 
     fail-open(#16): 저장 실패는 삼키고 로그만 — 이미 완성돼 클라이언트로 나간 답변이
     캐시 저장 실패 때문에 failed로 기록되던 문제 방지. 단 DB 오류로 세션이 오염된
@@ -247,6 +266,7 @@ async def save_answer(
             tenant_id=tenant_id,
             cache_key=_build_cache_digest(query),
             query_text=query,
+            original_query=original_query,
             query_embedding=query_embedding,
             answer=answer,
             sources=_sources_to_json(sources),
@@ -261,6 +281,7 @@ async def save_answer(
             index_elements=["tenant_id", "cache_key"],
             set_={
                 "query_text": query,
+                "original_query": original_query,   # 답변이 교체되면 그 턴의 원문으로 함께 교체 (#153)
                 "query_embedding": query_embedding,
                 "answer": answer,
                 "sources": _sources_to_json(sources),

@@ -10,7 +10,7 @@ starlette==1.0.0                  # fastapi 의존이지만 직접 import(SSE St
 
 # ---- 설정 / 검증 ----
 pydantic==2.12.5
-pydantic-settings==2.13.1
+pydantic-settings==2.15.0   # docling-core>=2.94가 >=2.14 요구(#143). 로컬 venv와 동일 — 2.13.1 핀은 도커 빌드에서 ResolutionImpossible
 python-dotenv==1.2.2              # .env 로드
 
 # ---- DB / 캐시 ----

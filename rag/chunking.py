@@ -211,8 +211,10 @@ _docling_semaphore: threading.Semaphore | None = None
 def _docling_runtime():
     """프로세스당 1회: 변환기(모델 로딩)와 변환 동시성 세마포어.
 
-    모델은 한 번만 올린다 — 첫 호출 4.7초·+165MB, 이후 쪽당 0.3초(#143 실측). 상주 RSS는
-    0.35~0.85GB 밴드에서 진동하고 누수가 없다(21건 연속). 세마포어는 arq `max_jobs`(10)와 별개로
+    모델은 한 번만 올린다 — 이후 쪽당 0.3초(#143 실측). **리눅스 컨테이너 실측(2026-09-13)**:
+    변환 피크 1.8GB·상주 1.4GB이고, 같은 프로세스로 12회 반복하면 4~6회차에서 평평해진다(누수 없음).
+    다만 작업 전으로 돌아오지도 않는다 — 모델이 상주하고 glibc가 해제분을 OS에 바로 반납하지 않는다.
+    컨테이너 메모리 상한(docker-compose.yml)은 이 피크 위에 잡는다. 세마포어는 arq `max_jobs`(10)와 별개로
     **변환만** 직렬화한다 — chunk_file은 to_thread로 돌아 잡이 겹치면 변환도 겹쳐 메모리가
     배수로 난다. 임베딩 I/O는 max_jobs대로 계속 겹치게 둔다.
     """
@@ -222,11 +224,13 @@ def _docling_runtime():
             from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
             from docling.datamodel.base_models import InputFormat
             from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
-            from docling.datamodel.settings import settings as docling_settings
             from docling.document_converter import DocumentConverter, PdfFormatOption
 
-            docling_settings.perf.page_batch_size = settings.docling_page_batch_size
             opts = PdfPipelineOptions(artifacts_path=settings.docling_artifacts_path)
+            # 메모리 노브 — config.py 주석 참조. docling_settings(perf.page_batch_size)는 쓰지 않는다:
+            # 2.126의 기본 파이프라인이 그 값을 읽지 않는다(옛 Legacy 경로 전용).
+            opts.layout_batch_size = settings.docling_layout_batch_size
+            opts.queue_max_size = settings.docling_queue_max_size
             opts.do_ocr = settings.docling_do_ocr
             opts.do_table_structure = True
             opts.table_structure_options.mode = (TableFormerMode.FAST if settings.docling_table_mode == 'fast'

@@ -155,7 +155,7 @@ async def _update_meta(field: str, values: list, meta: dict) -> int:
 
     conflicts=proceed: 같은 문서를 동시에 재색인 중이면 버전 충돌이 날 수 있다. 그때 전체를
     실패시키기보다 넘긴다 — 여기서 멈추면 나머지 청크가 옛 메타로 남는 쪽이 더 나쁘다.
-    놓친 것은 outbox 재시도와 `eval.os_reconcile --apply`가 잡는다.
+    놓친 것은 outbox 재시도와 `rag.os_reconcile --apply`가 잡는다.
 
     params가 None인 필드(미분류 이동의 folder_id 등)는 painless `ctx._source.x = params.x`로
     **null이 반영되고** `exists` 필터에서도 없는 것으로 본다 — 2.18.0에서 실측(2026-09-11).

@@ -11,7 +11,7 @@ prefix_cache_* 등)를 이미 직접 노출한다 — Prometheus가 그쪽을 �
                         올리지 않는다**(PG는 이미 커밋됐고, 여기서 500을 내면 OpenSearch
                         장애가 업로드 장애가 된다) — 그 대가로 실패가 조용해지므로 여기서
                         드러낸다. result='error'가 늘면 색인이 낡고 있다는 뜻이고, 복구는
-                        `python -m eval.os_reconcile --apply`다.
+                        `python -m rag.os_reconcile --apply`다.
   FINISH_REASON_TOTAL   vLLM 스트림 종료 사유. 'length'가 늘면 max_tokens에 잘렸다는 뜻 —
                         출처 꼬리까지 잘릴 위험 신호(kms.tail_truncated 스팬 속성과 같은
                         문제를 집계 축으로 본다). 완주한 스트림만 집계된다 — 취소·예외
@@ -48,6 +48,6 @@ FINISH_REASON_TOTAL = Counter(
 
 SEARCH_INDEX_SYNC_TOTAL = Counter(
     'kms_search_index_sync_total',
-    '외부 검색 색인 동기화 (#139). error가 늘면 색인이 낡는다 — eval.os_reconcile로 복구',
+    '외부 검색 색인 동기화 (#139). error가 늘면 색인이 낡는다 — rag.os_reconcile로 복구',
     labelnames=('op', 'result'),      # op=sync_documents|drop_documents|sync_faqs|drop_faqs
 )                                     # result=ok|error  (라벨 카디널리티 고정 — 규율 참조)

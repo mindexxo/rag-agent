@@ -44,7 +44,7 @@ llama-index-core==0.14.20        # 노드/스플리터 등 단독 컴포넌트�
 numpy==2.4.4
 
 # ---- 검색 저장소 (#139: 청크·벡터·어휘 색인은 OpenSearch에만 — 런타임 필수) ----
-opensearch-py==2.8.0             # rag/opensearch — 웹(검색·서빙)·워커(색인) 둘 다 기동 시 ensure_index로 붙는다
+opensearch-py==2.8.0             # rag/os_client.py — 웹(검색·서빙)·워커(색인) 둘 다 기동 시 ensure_index로 붙는다
 
 # ---- 백그라운드 워커 ----
 arq==0.28.0                      # 문서 인덱싱 잡 큐 (Redis 기반)

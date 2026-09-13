@@ -34,7 +34,7 @@ from database import AsyncSessionLocal
 from rag import os_client, outbox
 from rag.models import Document, Faq
 from rag.os_client import client
-from rag.os_index import _delete_by_terms
+from rag import os_index
 
 
 def _tenant_term(tenant_id):
@@ -79,7 +79,7 @@ async def reconcile(session, tenant_id: str | None = None) -> dict:
         for did in sorted(missing):
             outbox.enqueue(session, tenant_of[did], outbox.INDEX_DOCUMENT, document_id=did)
         await session.commit()
-    deleted = await _delete_by_terms('document_id', sorted(extra)) if extra else 0
+    deleted = await os_index.drop_documents_now(sorted(extra)) if extra else 0
     return {'pg': len(pg_docs), 'os': len(os_docs), 'indexed': len(missing), 'deleted': deleted,
             'unit': 'document'}
 
@@ -106,7 +106,7 @@ async def reconcile_faqs(session, tenant_id: str | None = None) -> dict:
         for fid in sorted(missing):
             outbox.enqueue(session, tenant_of[fid], outbox.INDEX_FAQ, faq_id=fid)
         await session.commit()
-    deleted = await _delete_by_terms('faq_id', sorted(extra)) if extra else 0
+    deleted = await os_index.drop_faqs_now(sorted(extra)) if extra else 0
     return {'pg': len(pg_faqs), 'os': len(os_faqs), 'indexed': len(missing), 'deleted': deleted,
             'unit': 'faq'}
 

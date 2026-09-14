@@ -174,7 +174,8 @@ class Settings(BaseSettings):
     docling_table_mode: str = "accurate"      # fast | accurate. accurate이 병합 셀을 한 셀로 잡는다(출장 지급표
                                               # '부회장/사장' 실측). RAM 차이 +110MB(687→796MB)라 정확도를 택한다
     docling_do_ocr: bool = False              # 켜도 텍스트 PDF 안의 그림은 못 읽는다(자리표시만) — RAM만 +200MB.
-                                              # 스캔 PDF가 들어오는 날 재검토. 그림 인식은 #144
+                                              # 스캔 PDF가 들어오는 날 재검토. 텍스트 PDF 속 그림은
+                                              # OCR이 아니라 VLM 캡션으로 읽는다(#162, 아래 vlm_caption_*)
     docling_do_cell_matching: bool = False    # 7월 설정 계승 — 켜면 한글 표 셀의 공백이 뭉친다 ("편도 3,000원")
     docling_device: str = "cpu"               # 'auto'는 서버에서 GPU/MPS 탐색을 시도한다. 앱은 GPU 장비에 안 올린다
     docling_num_threads: int = 4              # 워커 vCPU 수에 맞춤. 공식 실측: 4→16스레드에 쪽당 1.67→1.09초
@@ -200,6 +201,24 @@ class Settings(BaseSettings):
                                               # 업로드 시점에 이미 막으므로 여기선 쪽 수만. 10MB 텍스트 PDF ≈ 100~200쪽
     docling_artifacts_path: str | None = None # 모델 가중치 디렉터리. None이면 첫 변환 때 HF에서 내려받는다 —
                                               # NCP VM은 외부망 확인 필요. 이미지에 미리 굽고 경로를 주는 쪽이 안전
+
+    # 그림 캡션 — docling picture description 훅으로 그림을 사내 VLM에 보내 설명을 받아 청크에 싣는다 (#162).
+    # 대상은 **PictureItem뿐**이다. 격자가 있는 표 이미지는 docling이 TableItem으로 분류해 이 훅을
+    # 타지 않는다(실측 2026-09-14: 표 이미지 PDF → PictureItem 0·TableItem 1). 그건 별도 이슈다.
+    # VLM이 죽어도 docling이 예외를 삼킨다(실측: 닫힌 포트 조준 → 예외 없이 7.5초, 캡션 0개) —
+    # 그래서 실패 폴백(자리표시 유지)에 우리 try/except가 필요 없다. 문서는 그대로 ready로 진행한다.
+    vlm_caption_enabled: bool = True          # 그림 캡션 on/off. False면 기존대로 자리표시(<!-- image -->)만 남는다
+    vlm_caption_url: str = "http://localhost:18892/v1/chat/completions"   # **base가 아니라 전체 엔드포인트다**
+                                              # — docling이 이 값을 그대로 POST 대상으로 쓴다. 실주소는 .env
+    vlm_caption_model: str = "qwen25-vl"      # OpenAI 호환 body의 model 필드. Qwen2.5-VL-7B-Instruct(Apache 2.0)
+    vlm_caption_scale: float = 4.0            # **그림 크롭을 VLM에 보낼 때의 해상도 배수(72dpi 기준).**
+                                              # docling 기본 2.0 → 4.0. 1.0(434×60px)에서는 글자가 안 보여 VLM이
+                                              # 원문에 없는 내용을 지어냈다(3회 재현). 4.0(1736×239px)에서 원문
+                                              # 완전 일치(3회 재현). PdfPipelineOptions.images_scale과 **다른 값**이다
+                                              # — 그쪽은 캡션 품질과 무관함을 실측으로 분리 확인했다(2026-09-14)
+    vlm_caption_timeout_seconds: float = 20.0 # 요청 하나의 상한(docling 기본값 유지). 예산: 이 값 × 그림 수가
+                                              # docling_document_timeout_seconds(300)를 넘으면 문서가 failed 된다.
+                                              # 실문서는 최대 2장/문서라 여유가 크지만, 그림 많은 문서가 들어오면 재검토
 
 
 # 모듈 import가 곧 프로세스당 1회이므로 이 전역 자체가 싱글톤이다 (팩토리·캐시 불필요).

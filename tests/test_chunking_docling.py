@@ -255,3 +255,32 @@ class TestRealConversion:
         assert api.params == {'model': settings.vlm_caption_model}
         assert api.prompt == _PICTURE_CAPTION_PROMPT
         assert str(api.url) == settings.vlm_caption_url   # AnyUrl — str 캐스팅 후 비교
+
+    def test_VLM이_죽어도_예외_없이_자리표시로_끝난다(self, tmp_path, monkeypatch):
+        """캡션 실패 폴백에 우리 try/except가 없는 근거를 고정한다(#162).
+
+        docling이 API 실패를 삼키기 때문에 폴백이 공짜인데, 그건 **docling의 동작**이지 우리 계약이
+        아니다 — 업그레이드로 바뀌면 문서가 통째로 failed 된다. 그때 이 테스트가 먼저 깨지게 둔다.
+        (설정 변경이 먹으려면 컨버터 싱글턴을 비워야 한다 — 전역 캐시라 재생성이 안 된다.)
+        """
+        import rag.chunking as ch
+        from reportlab.lib.pagesizes import A4
+        from reportlab.platypus import Image as RLImage, SimpleDocTemplate
+
+        png = tmp_path / 'fig.png'
+        png.write_bytes(bytes.fromhex(          # 1×1 PNG — 내용은 무관, 그림 요소가 있으면 된다
+            '89504e470d0a1a0a0000000d494844520000000100000001080200000090'
+            '7753de0000000c4944415408d763f8cfc00000030101003c2f8e3b0000000049454e44ae426082'))
+        p = tmp_path / 'pic.pdf'
+        SimpleDocTemplate(str(p), pagesize=A4).build([RLImage(str(png), width=300, height=200)])
+
+        monkeypatch.setattr(settings, 'vlm_caption_url', 'http://127.0.0.1:1/v1/chat/completions')
+        monkeypatch.setattr(settings, 'vlm_caption_timeout_seconds', 2.0)
+        monkeypatch.setattr(ch, '_docling_converter', None)      # 싱글턴 비우기 — 바뀐 설정으로 재생성
+        monkeypatch.setattr(ch, '_docling_semaphore', None)
+        try:
+            chunks = chunk_file(p)               # 예외가 올라오면 이 줄에서 실패한다
+        finally:
+            ch._docling_converter = None         # 죽은 URL이 박힌 컨버터를 다음 테스트에 남기지 않는다
+            ch._docling_semaphore = None
+        assert ch.count_picture_placeholders(chunks) >= 1   # 캡션 대신 자리표시로 남는다

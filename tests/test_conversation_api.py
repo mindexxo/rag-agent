@@ -3,7 +3,7 @@
 실제 앱 + DB (conftest client 패턴). LLM 불필요 — 소유 검증은 prepare의
 ensure_conversation 단계(LLM 호출 전)에서 끝나므로 fake_llm 없이 404 경로 검증 가능.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
@@ -19,7 +19,7 @@ USER_B = {'X-User-Id': 'agent-b'}
 
 async def _seed(tenant_id: str, n: int, created_by: str = 'agent-a') -> list[int]:
     """대화 n개 삽입 — last_used_at을 1분 간격으로 명시해 정렬이 결정적이게."""
-    base = datetime.now()   # 모델 매핑이 naive(datetime) — aware를 넣으면 asyncpg가 거부
+    base = datetime.now(timezone.utc)
     async with AsyncSessionLocal() as s:
         convs = [Conversation(tenant_id=tenant_id, created_by=created_by, title=f'대화{i}',
                               last_used_at=base + timedelta(minutes=i)) for i in range(n)]

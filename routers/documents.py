@@ -35,7 +35,7 @@ from rag import cache, outbox
 from rag.chunking import extract_text
 from rag.documents import handle_upload
 from rag.models import Document, Folder
-from routers.kms import get_tenant_id
+from routers.kms import get_tenant_id, get_user_id
 from schemas.kms import (ATTACHMENT_FILENAME_MAX, ATTACHMENT_MAX_TEXT_CHARS, DocumentExistsResponse,
                          DocumentUploadResponse, DocumentUpdateRequest, QueryAttachment)
 from text_norm import normalize_filename
@@ -51,6 +51,8 @@ def _to_response(doc: Document, ref_count: int | None = None) -> DocumentUploadR
         is_active=doc.is_active,
         folder_id=doc.folder_id,
         is_searchable=doc.is_searchable,
+        uploaded_at=doc.uploaded_at,
+        uploaded_by=doc.uploaded_by,
         ref_count=ref_count,
     )
 
@@ -110,6 +112,10 @@ async def upload_document(
         #   N      → 현재 버전이 N이어야 함 (대체하려는 경우)
         expect_version: int | None = Form(None),
         tenant_id: str = Depends(get_tenant_id),
+        # 등록자 (#164). 헤더 미전송이면 None → uploaded_by=NULL로 남긴다.
+        # conversation의 DEFAULT_USER('test-user') 폴백을 여기선 쓰지 않는다 —
+        # 대화 스코핑 키와 달리 이 값은 문서 관리 화면의 '등록자' 컬럼에 그대로 뜬다.
+        user_id: str | None = Depends(get_user_id),
         session: AsyncSession = Depends(get_session)
 ):
     # 0. 형식·크기 게이트 (인덱싱 전에 명시적으로 막음)
@@ -149,7 +155,8 @@ async def upload_document(
     # 4. 파일 인덱싱 후 저장 (mime은 handle_upload가 blob_path에서 직접 구한다)
     try:
         doc = await handle_upload(
-            session, tenant_id, filename, blob_path, description=description
+            session, tenant_id, filename, blob_path, description=description,
+            uploaded_by=user_id,
         )
         await session.commit()
     except IntegrityError:
@@ -169,7 +176,7 @@ async def list_documents(
         tenant_id: str = Depends(get_tenant_id),
         session: AsyncSession = Depends(get_session)
 ):
-    """테넌트의 문서 목록. 최신 업로드가 위로 오도록 id 내림차순.
+    """테넌트의 문서 목록. 최신 업로드가 위로 오도록 uploaded_at 내림차순.
     supersede된 구버전(deleted)은 제외 — 죽은 행에 폴더/참조 컨트롤이 노출되는 혼란 방지."""
     # (구) 900초 pending 스윕은 제거했다 (#139). 인제스션이 outbox 행으로 durable해져
     # "오래 pending = 잡 유실"이라는 전제가 사라졌고, 대량 업로드·엔진 다운 중엔 15분 넘게
@@ -178,7 +185,9 @@ async def list_documents(
         select(Document)
         .where(Document.tenant_id == tenant_id)   # 격리 — WHERE 절 명시
         .where(Document.status != 'deleted')
-        .order_by(Document.id.desc())
+        # 화면의 기본 정렬 키가 등록일시다(#164). id.desc()와 사실상 같은 순서지만 계약을 맞춘다.
+        # id는 동률 깨기용 — uploaded_at은 트랜잭션 시작 시각이라 같은 값이 나올 수 있다.
+        .order_by(Document.uploaded_at.desc(), Document.id.desc())
     )).scalars().all()
 
     # 인용 횟수: 저장 시 확정된 실인용 목록(cited_docs)을 filename별 집계 (F5).

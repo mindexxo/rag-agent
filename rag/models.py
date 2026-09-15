@@ -33,6 +33,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
     BigInteger,
+    DateTime,
     ForeignKey,
     String,
     Text,
@@ -51,7 +52,18 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
-    pass
+    """시각 컬럼의 기본 매핑을 DDL에 맞춘다.
+
+    schema.sql의 시각 컬럼은 전부 TIMESTAMPTZ인데, `Mapped[datetime]`의 SQLAlchemy 기본은
+    TIMESTAMP **WITHOUT** TIME ZONE이다. 그대로 두면 읽기·쓰기가 어긋난다 —
+    읽기는 asyncpg가 tz를 붙여 aware로 주는데, 쓰기는 aware 값을 바인딩하면 드라이버가 거부한다.
+    그 회피로 `.replace(tzinfo=None)`이나 naive `datetime.now()`가 코드에 박혔고,
+    후자는 로컬(KST) 벽시계를 UTC인 척 저장해 9시간 어긋난 값을 조용히 만든다.
+
+    예외는 두지 않는다 — 시각 컬럼 중 혼자 TIMESTAMP였던 search_index_outbox.created_at도
+    이번에 TIMESTAMPTZ로 올렸다(#164). 기존 DB에는 ALTER가 필요하다(schema.sql 하단 주석).
+    """
+    type_annotation_map = {datetime: DateTime(timezone=True)}
 
 
 class Folder(Base):

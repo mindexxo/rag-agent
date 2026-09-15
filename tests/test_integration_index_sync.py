@@ -9,6 +9,8 @@
   4. reconcile(문서): 색인에서 사라진 ready 문서는 재등재, PG에 없는 문서 청크는 삭제  (E2E #9)
   5. reconcile(FAQ): 같은 계약                                                        (배포 체크리스트 D)
 """
+import json
+
 import pytest
 from sqlalchemy import select
 
@@ -171,3 +173,28 @@ async def test_reconcile_faqs는_사라진_FAQ를_재등재하고_유령을_지�
     assert await faq_doc(999_999_002) is None
     assert await sync_faq(faq_id) == {'done': 1, 'failed': 0}
     assert await faq_doc(faq_id)
+
+
+@pytest.mark.asyncio
+async def test_업로드_시_지정한_폴더가_색인_메타까지_간다(client, tenant_id, fake_queue, blob_tmp, fake_embed):
+    """#165: 업로드 시점 folder_id는 INDEX_DOCUMENT 경로 하나로 색인까지 간다 — PATCH가 필요 없다.
+
+    위 1번(인용 메타) 테스트는 업로드 후 PATCH로 옮기는 경로를 본다. 여기서 보는 건 그 전 단계,
+    즉 처음부터 폴더를 달고 들어온 문서가 META 부분갱신 없이도 폴더 메타를 갖느냐다.
+    """
+    folder = (await client.post('/kms/folders',
+                                json={'name': '정책', 'description': '환불·반품 규정 모음'})).json()
+    res = await client.post('/kms/documents', files={
+        'file': ('환불정책.md', MD, 'text/markdown'),
+        'document-data': ('blob', json.dumps({'folder_id': folder['id']}), 'application/json'),
+    })
+    assert res.status_code == 200, res.text
+    doc_id = res.json()['document_id']
+    await ingest(doc_id)
+
+    async with AsyncSessionLocal() as s:
+        cands = await retrieve_candidates(s, tenant_id, '반품 기간', top_n=20)
+    mine = [c for c in cands.chunks if c.document_id == doc_id]
+    assert mine, '방금 색인한 문서가 후보에 없다'
+    assert mine[0].folder_name == '정책'
+    assert mine[0].folder_description == '환불·반품 규정 모음'

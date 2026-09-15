@@ -18,12 +18,14 @@ POST /kms/documents (multipart)
   '(1)' 같은 무의미한 이름을 서버가 싸게 만들어 주면 KB 품질이 조용히 나빠진다.
 """
 import tempfile
+from typing import Annotated
 from uuid import uuid4
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, Request, UploadFile, Depends, HTTPException
 from sqlalchemy import func, select, update
 from sqlalchemy import text as sql_text
+from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
@@ -37,7 +39,8 @@ from rag.documents import handle_upload
 from rag.models import Document, Folder
 from routers.kms import get_tenant_id, get_user_id
 from schemas.kms import (ATTACHMENT_FILENAME_MAX, ATTACHMENT_MAX_TEXT_CHARS, DocumentExistsResponse,
-                         DocumentUploadResponse, DocumentUpdateRequest, QueryAttachment)
+                         DocumentUploadMetadata, DocumentUploadResponse, DocumentUpdateRequest,
+                         QueryAttachment)
 from text_norm import normalize_filename
 
 
@@ -101,10 +104,48 @@ def _version_conflict(filename: str, current_version: int) -> JSONResponse:
         },
     )
 
+async def _resolve_upload_data(document_data: UploadFile | str | None, description: str | None,
+                               expect_version: int | None) -> tuple[DocumentUploadMetadata, bool]:
+    """업로드 데이터를 확정한다 (#165). 반환: (데이터, folder_id를 실제로 보냈는지).
+
+    받는 방식이 둘이다 — 새 방식은 `document-data` 파트의 JSON 한 덩어리, 옛 방식은 평면 Form
+    필드(description·expect_version). 옛 방식은 FE 전환 전 호환용이고, 그쪽에는 folder_id가 없다.
+    둘을 섞어 보내면 **400으로 거절한다** — 한쪽을 조용히 무시하면 "분명히 보냈는데 안 먹는"
+    버그가 되고, 전환 중에 섞여 나가는 사고를 늦게 발견한다.
+
+    JSON 파트는 두 모양으로 도착한다: 브라우저가 Blob으로 실으면 filename이 붙어 UploadFile로,
+    문자열로 실으면 str로 들어온다. 어느 쪽이든 본문은 같으므로 여기서 하나로 만든다.
+    """
+    if document_data is None:
+        return DocumentUploadMetadata(description=description,
+                                      expect_version=expect_version), False
+    if description is not None or expect_version is not None:
+        raise HTTPException(
+            status_code=400,
+            detail='document-data 파트와 개별 필드(description·expect_version)를 함께 보낼 수 없습니다. 하나만 사용해 주세요.')
+    raw = (document_data if isinstance(document_data, str)
+           else (await document_data.read()).decode('utf-8', errors='replace'))
+    try:
+        meta = DocumentUploadMetadata.model_validate_json(raw)
+    except ValidationError as e:
+        first = e.errors()[0]
+        where = '.'.join(str(x) for x in first['loc']) or 'document-data'
+        raise HTTPException(status_code=422,
+                            detail=f'document-data JSON이 올바르지 않습니다 ({where}: {first["msg"]}).')
+    # null 전송과 미전송을 가르는 지점 — PATCH의 update_document와 같은 방식이다.
+    return meta, 'folder_id' in meta.model_fields_set
+
+
 @router.post('/documents', response_model=DocumentUploadResponse)
 async def upload_document(
         request: Request,
         file: UploadFile = File(...),
+        # 업로드 데이터 JSON 파트 (#165) — folder_id·description·expect_version을 한 덩어리로.
+        # ICCS의 @RequestPart("sr-data") 관례와 같은 꼴이라 이름도 그 관례를 따른다.
+        # Content-Type: application/json을 실은 파트(브라우저 Blob → UploadFile로 들어온다)와
+        # 평범한 문자열 필드를 **둘 다** 받는다 — 둘 다 실측했다.
+        document_data: Annotated[UploadFile | str | None, Form(alias='document-data')] = None,
+        # ── 아래 둘은 옛 방식(평면 Form 필드). document-data 파트가 없을 때만 쓴다 ──
         description: str | None = Form(None),   # F1a: 표 설명 (xlsx 검색 보강). 선택
         # 낙관적 잠금 (선택). exists 응답의 version을 그대로 보낸다 — 없는 이름이면 0.
         #   미전송 → 검사 없음 (기존 호출부 호환)
@@ -129,6 +170,18 @@ async def upload_document(
     if suffix not in SUPPORTED_SUFFIXES:
         raise HTTPException(status_code=400, detail=f'지원하지 않는 형식입니다: {suffix or "확장자 없음"}. 지원: PDF/DOCX/XLSX/TXT/MD')
 
+    # 0-1. 업로드 데이터 확정 + 폴더 검증 (#165).
+    #      **blob을 쓰기 전에** 한다 — 뒤에 두면 실패 경로마다 unlink를 챙겨야 한다(지금 2곳).
+    meta, folder_given = await _resolve_upload_data(document_data, description, expect_version)
+    if meta.folder_id is not None:
+        folder = (await session.execute(
+            select(Folder)
+            .where(Folder.tenant_id == tenant_id)   # 다른 테넌트 폴더 지정 차단
+            .where(Folder.id == meta.folder_id)
+        )).scalars().first()
+        if folder is None:
+            raise HTTPException(status_code=404, detail="folder not found")
+
     #1. 업로드 바이트 전체를 읽는다
     content = await file.read()
     if len(content) > DOC_MAX_FILE_BYTES:
@@ -146,17 +199,17 @@ async def upload_document(
 
     # 3. 낙관적 잠금 — 확인창에서 본 상태와 지금 DB가 같은지 본다.
     #    이 조회만으로는 조회~insert 사이 창이 남는다. 그 창은 아래 IntegrityError가 닫는다.
-    if expect_version is not None:
+    if meta.expect_version is not None:
         current = await _current_version(session, tenant_id, filename)
-        if current != expect_version:
+        if current != meta.expect_version:
             blob_path.unlink(missing_ok=True)      # 참조되지 않는 blob 남기지 않기
             return _version_conflict(filename, current)
 
     # 4. 파일 인덱싱 후 저장 (mime은 handle_upload가 blob_path에서 직접 구한다)
     try:
         doc = await handle_upload(
-            session, tenant_id, filename, blob_path, description=description,
-            uploaded_by=user_id,
+            session, tenant_id, filename, blob_path, description=meta.description,
+            uploaded_by=user_id, folder_id=meta.folder_id, folder_given=folder_given,
         )
         await session.commit()
     except IntegrityError:

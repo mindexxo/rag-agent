@@ -1,6 +1,6 @@
 """KMS API 요청/응답 스키마"""
 from datetime import datetime
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from text_norm import normalize_filename
 
@@ -75,6 +75,30 @@ class DocumentUploadResponse(BaseModel):
     # (소급해 채울 정보가 없다) — 화면은 빈 값 표시를 처리해야 한다.
     uploaded_by: str | None = None
     ref_count: int | None = None  # 답변 인용 누적 횟수 (목록 API에서만 집계 — filename 키)
+
+
+class DocumentUploadMetadata(BaseModel):
+    """업로드 데이터 (#165) — multipart의 `document-data` 파트에 JSON으로 싣는다.
+
+    파트 하나를 `Content-Type: application/json`으로 보내는 꼴이며, 사내 ICCS가
+    `@RequestPart("sr-data")`·`@RequestPart("post-data")`로 쓰는 구조와 같다.
+
+    평면 Form 필드로는 표현할 수 없는 값이 있어서 도입했다: multipart는 값이 전부 문자열이라
+    **null이 없고**, `int | None = Form(None)`에서는 빈 값과 미전송이 똑같이 None으로 들어온다.
+    JSON으로 받으면 `folder_id`의 세 경우가 자연스럽게 갈리고, 판정도 PATCH와 같은
+    `model_fields_set`을 쓴다(routers/documents.py의 update_document와 같은 방식):
+
+      {"folder_id": 7}     → 7번 폴더로
+      {"folder_id": null}  → 미분류로 (직전 버전의 폴더를 떼라)
+      {}                   → 직전 버전에서 계승 (신규 문서면 미분류)
+
+    extra='forbid' — 오타 난 필드를 조용히 삼키면 "보냈는데 안 먹는" 버그가 된다.
+    """
+    model_config = ConfigDict(extra='forbid')
+
+    folder_id: int | None = None
+    description: str | None = None        # F1a: 표 설명 (xlsx 검색 보강)
+    expect_version: int | None = None     # 낙관적 잠금 — 의미는 upload_document 참조
 
 
 class DocumentExistsResponse(BaseModel):

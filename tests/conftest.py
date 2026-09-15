@@ -215,6 +215,27 @@ def pass_gate(monkeypatch):
     monkeypatch.setattr(rt, 'apply_gate', lambda cands, max_dense_distance=0.6: (False, None))
 
 
+@pytest_asyncio.fixture
+async def relaxed_quota(tenant_id):
+    """동시 in-flight 상한을 넉넉히 준다 — 같은 사용자로 연달아 질의하는 테스트용 (#170).
+
+    사용자별 기본 상한이 1건이라(config.user_concurrency_default), 같은 X-User-Id로 연속
+    질의하면 **앞 요청의 슬롯이 아직 반납되기 전**이라 429를 맞을 수 있다. 생성 경로는 반납을
+    백그라운드 태스크로 넘기므로(routers/kms.py의 concurrency_guard — 연결이 끊겨도 태스크가
+    도는 동안 슬롯을 쥐고 있어야 한다) 응답이 끝나도 슬롯이 잠깐 남는다. 그래서 통과·실패가
+    머신 속도에 따라 갈렸다.
+
+    상한만 올릴 뿐 limiter를 무력화하지 않는다 — 실제 경로(concurrency_guard → limiter)는
+    그대로 탄다. 동시성 제한 자체를 검증하는 테스트에는 쓰지 마라.
+    """
+    from database import AsyncSessionLocal
+    from rag.models import TenantQuota
+    async with AsyncSessionLocal() as s:
+        s.add(TenantQuota(tenant_id=tenant_id, concurrency_limit=50, user_concurrency=50))
+        await s.commit()
+    yield                      # 정리는 purge_tenant가 한다 (TenantQuota 포함)
+
+
 # ── 가짜 LLM ─────────────────────────────────────────────────
 
 def _current_question(user_content: str) -> str:

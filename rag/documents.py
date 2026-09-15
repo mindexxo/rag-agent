@@ -10,7 +10,6 @@ from pathlib import Path
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import settings
 from database import AsyncSessionLocal
 from rag import cache, os_index, outbox
 from rag.chunking import chunk_file, count_picture_placeholders, pdf_image_area_ratio
@@ -163,16 +162,15 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         doc.is_active = True
         doc.char_count = sum(len(c.text) for c in chunks)
         # 도표가 이미지로 렌더된 문서를 사용자에게 알린다(#137 결함 4). 검색·인용은 정상
-        # 동작하므로 상태는 ready 그대로 둔다. 문구는 캡션 기능 on/off로 갈린다(#162) —
-        # 캡션이 켜져 있으면 "검색되지 않습니다"가 더 이상 사실이 아니다(그림은 읽히고
-        # 격자 표 이미지만 안 읽힌다).
+        # 동작하므로 상태는 ready 그대로 둔다. 문구는 #162 이후 바뀌었다 — 그림은 VLM 캡션으로
+        # 읽히므로 "검색되지 않습니다"가 더 이상 사실이 아니다. 격자 표 이미지만 여전히 안 읽힌다
+        # (docling이 TableItem으로 분류해 캡션 훅을 안 탄다).
         if image_ratio >= IMAGE_WARN_RATIO:
-            if settings.vlm_caption_enabled:
-                note = ('그림은 AI가 설명을 만들어 검색에 반영합니다. 다만 표처럼 칸이 나뉜 '
-                        '이미지는 반영되지 않고, 생성된 설명이 부정확할 수 있어 원문 확인이 필요합니다.')
-            else:
-                note = '이미지로 그려진 표·흐름도는 텍스트를 추출할 수 없어 검색되지 않습니다.'
-            doc.status_reason = (f'이미지가 쪽 면적의 {image_ratio:.0f}%를 차지합니다. {note}')[:500]
+            doc.status_reason = (
+                f'이미지가 쪽 면적의 {image_ratio:.0f}%를 차지합니다. '
+                f'그림은 AI가 설명을 만들어 검색에 반영합니다. 다만 표처럼 칸이 나뉜 이미지는 '
+                f'반영되지 않고, 생성된 설명이 부정확할 수 있어 원문 확인이 필요합니다.'
+            )[:500]
         doc.indexed_at = datetime.now(timezone.utc).replace(tzinfo=None)   # naive 컬럼 — UTC 유지
         for old_id in old_active_ids:
             await cache.invalidate_source(session, tenant_id, old_id)

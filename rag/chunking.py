@@ -66,8 +66,8 @@ _CHAPTER_RE = re.compile(r'^제\s*\d+\s*장\b')
 
 # docling 그림 요소의 자리표시. 텍스트 PDF 안에 렌더된 도표는 파서로는 못 읽는다(#137 결함 4).
 # 지우지 않고 남겨 "여기 도표가 있었다"를 알린다.
-# **캡션이 붙으면 이 자리를 캡션이 대체한다**(#162, settings.vlm_caption_enabled) — 자리표시가
-# 남아 있다는 것은 캡션이 꺼져 있거나 VLM 호출이 실패했다는 뜻이다(count_picture_placeholders).
+# **캡션이 붙으면 이 자리를 캡션이 대체한다**(#162) — 자리표시가 남아 있다는 것은 VLM 호출이
+# 실패했다는 뜻이다(count_picture_placeholders).
 _PICTURE_PLACEHOLDER = '<!-- image -->'
 
 # 그림 캡션 프롬프트(#162). **도형 어휘(박스·화살표·불릿)를 쓰지 않는다** — 하나의 프롬프트가
@@ -257,10 +257,9 @@ def _docling_runtime():
                 device=AcceleratorDevice(settings.docling_device))
             # 그림 캡션(#162). enable_remote_services를 안 켜면 do_picture_description이 설정
             # 단계에서 OperationNotAllowed로 죽는다 — VLM 다운과 달리 docling이 삼켜주지 않는
-            # 경로라 둘을 같은 값으로 묶는다. 옵션 객체는 꺼져 있어도 만든다(순수 생성, I/O 없음)
-            # — 조건 분기를 두면 이 함수의 평평한 대입 흐름이 끊긴다.
-            opts.enable_remote_services = settings.vlm_caption_enabled
-            opts.do_picture_description = settings.vlm_caption_enabled
+            # 경로라 항상 같이 켠다. VLM에 못 닿으면 캡션이 안 붙고 자리표시가 남을 뿐이다.
+            opts.enable_remote_services = True
+            opts.do_picture_description = True
             opts.picture_description_options = PictureDescriptionApiOptions(
                 url=settings.vlm_caption_url,
                 params={'model': settings.vlm_caption_model},
@@ -389,7 +388,7 @@ def _docling_sections(file_path: str | Path) -> list[_Section]:
 
     실패(예외·타임아웃)는 그대로 올린다 — pdfplumber 폴백 없음. 저품질 색인을 조용히 만들지 않는다
     (strict-grounded). 호출부(index_pending_document)가 failed로 기록한다.
-    이미지 도표는 VLM 캡션으로 읽는다 (#162, settings.vlm_caption_enabled) — 캡션이 없으면
+    이미지 도표는 VLM 캡션으로 읽는다 (#162) — VLM에 못 닿아 캡션이 없으면
     _PICTURE_PLACEHOLDER 자리표시가 남는다. 격자 표 이미지는 docling이 TableItem으로 분류해
     이 경로를 타지 않는다(별도 이슈).
     """

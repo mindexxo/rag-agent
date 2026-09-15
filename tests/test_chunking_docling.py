@@ -245,9 +245,7 @@ class TestRealConversion:
 
         converter, _ = _docling_runtime()
         opts = converter.format_to_options[InputFormat.PDF].pipeline_options
-        assert opts.do_picture_description is settings.vlm_caption_enabled
-        if not settings.vlm_caption_enabled:
-            return
+        assert opts.do_picture_description is True
         assert opts.enable_remote_services is True   # 빠지면 OperationNotAllowed로 변환 자체가 죽는다
         api = opts.picture_description_options
         assert api.scale == settings.vlm_caption_scale

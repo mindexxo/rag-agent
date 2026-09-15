@@ -24,8 +24,8 @@ prefix_cache_* 등)를 이미 직접 노출한다 — Prometheus가 그쪽을 �
                         최종 실패율 = failed / (ok + failed). retry만 느는 것은 "버티는 중" 신호다.
   INDEX_PICTURE_PLACEHOLDER_TOTAL
                         캡션이 안 붙어 자리표시로 남은 그림 수(#162). **docling이 VLM 실패를
-                        예외 없이 삼키므로 이것이 유일한 관측 창이다** — 캡션이 켜져 있는데
-                        이 값이 늘면 VLM이 죽었거나 느린 것이다. 성공한 캡션은 셀 수 없다
+                        예외 없이 삼키므로 이것이 유일한 관측 창이다** — 이 값이 늘면 VLM이
+                        죽었거나 느린 것이다. 성공한 캡션은 셀 수 없다
                         (일반 본문과 구분되지 않게 들어간다) — 성공률이 아니라 실패 신호다.
   FINISH_REASON_TOTAL   vLLM 스트림 종료 사유. 'length'가 늘면 max_tokens에 잘렸다는 뜻 —
                         출처 꼬리까지 잘릴 위험 신호(kms.tail_truncated 스팬 속성과 같은
@@ -93,7 +93,7 @@ INDEX_TOTAL = Counter(
 
 INDEX_PICTURE_PLACEHOLDER_TOTAL = Counter(
     'kms_index_picture_placeholder_total',
-    '캡션이 안 붙어 자리표시로 남은 그림 수 (#162) — vlm_caption_enabled=True인데 늘면 VLM 장애 신호',
+    '캡션이 안 붙어 자리표시로 남은 그림 수 (#162) — 늘면 VLM에 못 닿는다는 신호',
     labelnames=('ext',),
 )
 

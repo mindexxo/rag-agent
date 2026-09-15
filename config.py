@@ -207,7 +207,8 @@ class Settings(BaseSettings):
     # 타지 않는다(실측 2026-09-14: 표 이미지 PDF → PictureItem 0·TableItem 1). 그건 별도 이슈다.
     # VLM이 죽어도 docling이 예외를 삼킨다(실측: 닫힌 포트 조준 → 예외 없이 7.5초, 캡션 0개) —
     # 그래서 실패 폴백(자리표시 유지)에 우리 try/except가 필요 없다. 문서는 그대로 ready로 진행한다.
-    vlm_caption_enabled: bool = True          # 그림 캡션 on/off. False면 기존대로 자리표시(<!-- image -->)만 남는다
+    # **on/off 스위치를 두지 않는다**(사용자 결정): VLM이 없거나 못 닿으면 캡션이 안 붙을 뿐이고
+    # 그 상태가 곧 기존 동작이라, 끄는 것과 결과가 같다.
     vlm_caption_url: str = "http://localhost:18892/v1/chat/completions"   # **base가 아니라 전체 엔드포인트다**
                                               # — docling이 이 값을 그대로 POST 대상으로 쓴다. 실주소는 .env
     vlm_caption_model: str = "qwen25-vl"      # OpenAI 호환 body의 model 필드. Qwen2.5-VL-7B-Instruct(Apache 2.0)

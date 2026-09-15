@@ -236,7 +236,9 @@ def _docling_runtime():
         if _docling_converter is None:
             from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
             from docling.datamodel.base_models import InputFormat
-            from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
+            from docling.datamodel.pipeline_options import (PdfPipelineOptions,
+                                                            PictureDescriptionApiOptions,
+                                                            TableFormerMode)
             from docling.document_converter import DocumentConverter, PdfFormatOption
 
             opts = PdfPipelineOptions(artifacts_path=settings.docling_artifacts_path)
@@ -253,18 +255,18 @@ def _docling_runtime():
             opts.accelerator_options = AcceleratorOptions(
                 num_threads=settings.docling_num_threads,
                 device=AcceleratorDevice(settings.docling_device))
-            if settings.vlm_caption_enabled:
-                # 그림 캡션(#162). enable_remote_services를 빼면 설정 단계에서 OperationNotAllowed로
-                # 죽는다 — VLM 다운과 달리 docling이 삼켜주지 않는 경로라 항상 같이 켠다.
-                from docling.datamodel.pipeline_options import PictureDescriptionApiOptions
-                opts.enable_remote_services = True
-                opts.do_picture_description = True
-                opts.picture_description_options = PictureDescriptionApiOptions(
-                    url=settings.vlm_caption_url,
-                    params={'model': settings.vlm_caption_model},
-                    prompt=_PICTURE_CAPTION_PROMPT,
-                    scale=settings.vlm_caption_scale,
-                    timeout=settings.vlm_caption_timeout_seconds)
+            # 그림 캡션(#162). enable_remote_services를 안 켜면 do_picture_description이 설정
+            # 단계에서 OperationNotAllowed로 죽는다 — VLM 다운과 달리 docling이 삼켜주지 않는
+            # 경로라 둘을 같은 값으로 묶는다. 옵션 객체는 꺼져 있어도 만든다(순수 생성, I/O 없음)
+            # — 조건 분기를 두면 이 함수의 평평한 대입 흐름이 끊긴다.
+            opts.enable_remote_services = settings.vlm_caption_enabled
+            opts.do_picture_description = settings.vlm_caption_enabled
+            opts.picture_description_options = PictureDescriptionApiOptions(
+                url=settings.vlm_caption_url,
+                params={'model': settings.vlm_caption_model},
+                prompt=_PICTURE_CAPTION_PROMPT,
+                scale=settings.vlm_caption_scale,
+                timeout=settings.vlm_caption_timeout_seconds)
             _docling_converter = DocumentConverter(
                 format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)})
             _docling_semaphore = threading.Semaphore(settings.docling_max_concurrency)

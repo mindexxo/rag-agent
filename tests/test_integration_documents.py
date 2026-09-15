@@ -8,7 +8,7 @@ import json
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete as sql_delete, func, select
 
 from database import AsyncSessionLocal
 from rag import cache
@@ -609,3 +609,141 @@ async def test_신규_문서에_폴더를_안_주면_미분류(client, tenant_id
     a = await _upload(client, '환불정책.md', MD)
     b = await _upload(client, '배송정책.md', MD, extra_parts=_doc_data(description='표 설명'))
     assert a['folder_id'] is None and b['folder_id'] is None
+
+
+# ── #166 문서 일괄 변경 (PATCH /kms/documents) ────────────────
+
+async def _bulk(client, **body):
+    return await client.patch('/kms/documents', json=body)
+
+
+@pytest.mark.asyncio
+async def test_일괄_폴더이동과_참조토글(client, tenant_id, fake_queue, blob_tmp):
+    fid = await _folder(client, '규정집')
+    a = await _upload(client, '환불정책.md', MD)
+    b = await _upload(client, '배송정책.md', MD)
+
+    res = await _bulk(client, document_ids=[a['document_id'], b['document_id']],
+                      folder_id=fid, is_searchable=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert {d['document_id'] for d in body} == {a['document_id'], b['document_id']}
+    assert all(d['folder_id'] == fid and d['is_searchable'] is False for d in body)
+    assert all(d['ref_count'] is None for d in body)      # 목록 API 전용 집계
+    for d in (a, b):
+        doc = await _get_doc(d['document_id'])
+        assert doc.folder_id == fid and doc.is_searchable is False
+
+
+@pytest.mark.asyncio
+async def test_일괄_folder_id_null이면_미분류(client, tenant_id, fake_queue, blob_tmp):
+    fid = await _folder(client, '규정집')
+    a = await _upload(client, '환불정책.md', MD, extra_parts=_doc_data(folder_id=fid))
+    res = await _bulk(client, document_ids=[a['document_id']], folder_id=None)
+    assert res.status_code == 200, res.text
+    assert res.json()[0]['folder_id'] is None
+
+
+@pytest.mark.asyncio
+async def test_일괄_대상이_하나라도_어긋나면_아무것도_안_바뀐다(
+        client, tenant_id, other_tenant_id, fake_queue, blob_tmp):
+    """없는 id·다른 테넌트 id·삭제된 문서 — 셋 다 전체 거절이고, 성공분도 반영되지 않는다."""
+    fid = await _folder(client, '규정집')
+    mine = await _upload(client, '환불정책.md', MD)
+
+    # 다른 테넌트의 문서
+    other = await client.post('/kms/documents', files={'file': ('남의문서.md', MD, 'text/markdown')},
+                              headers={'X-Tenant-Id': other_tenant_id})
+    # 삭제된 문서
+    gone = await _upload(client, '지울문서.md', MD)
+    assert (await client.delete(f"/kms/documents/{gone['document_id']}")).status_code == 204
+
+    for label, bad in (('없는 id', 999999),
+                       ('다른 테넌트', other.json()['document_id']),
+                       ('삭제된 문서', gone['document_id'])):
+        res = await _bulk(client, document_ids=[mine['document_id'], bad], folder_id=fid)
+        assert res.status_code == 404, f'{label} → {res.status_code}'
+        assert (await _get_doc(mine['document_id'])).folder_id is None, f'{label}: 성공분이 반영됐다'
+
+
+@pytest.mark.asyncio
+async def test_일괄_실효참조가_꺼지는_문서만_캐시_무효화(client, tenant_id, fake_queue, blob_tmp):
+    """문서마다 현재 폴더·스위치가 달라 on→off 전이도 제각각이다 — 일괄 판정하면 안 된다.
+
+    off 폴더에 있던 문서는 이미 실효 off라 지울 캐시가 없고, on이던 문서만 무효화 대상이다.
+    """
+    off_folder = await _folder(client, '대외비')
+    assert (await client.patch(f'/kms/folders/{off_folder}',
+                               json={'is_searchable': False})).status_code == 200
+
+    on_doc = await _upload(client, '환불정책.md', MD)                                   # 미분류 = 실효 on
+    off_doc = await _upload(client, '배송정책.md', MD, extra_parts=_doc_data(folder_id=off_folder))
+
+    async with AsyncSessionLocal() as s:
+        await cache.save_answer(s, tenant_id, '질의 하나', '답1', [], [on_doc['document_id']])
+        await cache.save_answer(s, tenant_id, '질의 둘', '답2', [], [off_doc['document_id']])
+        await s.commit()
+
+    # 둘 다 문서 스위치를 끈다 — 실효 참조가 실제로 on→off로 바뀌는 건 on_doc뿐이다
+    res = await _bulk(client, document_ids=[on_doc['document_id'], off_doc['document_id']],
+                      is_searchable=False)
+    assert res.status_code == 200, res.text
+
+    async with AsyncSessionLocal() as s:
+        remain = (await s.execute(select(AnswerCacheRow.answer)
+                                  .where(AnswerCacheRow.tenant_id == tenant_id))).scalars().all()
+    assert remain == ['답2'], '이미 off였던 문서의 캐시까지 지웠거나, on이던 문서 캐시가 남았다'
+
+
+@pytest.mark.asyncio
+async def test_일괄_색인_갱신은_한_행에_담긴다(client, tenant_id, fake_queue, blob_tmp):
+    a = await _upload(client, '환불정책.md', MD)
+    b = await _upload(client, '배송정책.md', MD)
+    ids = [a['document_id'], b['document_id']]
+    async with AsyncSessionLocal() as s:      # 업로드가 만든 INDEX_DOCUMENT 행을 비우고 본다
+        await s.execute(sql_delete(SearchIndexOutbox).where(SearchIndexOutbox.tenant_id == tenant_id))
+        await s.commit()
+
+    assert (await _bulk(client, document_ids=ids, is_searchable=False)).status_code == 200
+
+    async with AsyncSessionLocal() as s:
+        rows = (await s.execute(select(SearchIndexOutbox)
+                                .where(SearchIndexOutbox.tenant_id == tenant_id))).scalars().all()
+    assert len(rows) == 1 and rows[0].op == outbox.META_DOCUMENTS
+    assert sorted(rows[0].payload['document_ids']) == sorted(ids)
+
+
+@pytest.mark.asyncio
+async def test_일괄_상한_초과는_422(client, tenant_id, fake_queue, blob_tmp):
+    res = await _bulk(client, document_ids=list(range(1, 202)), is_searchable=False)
+    assert res.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_일괄_바꿀_것이_없으면_무동작(client, tenant_id, fake_queue, blob_tmp):
+    """빈 배열이든 바꿀 필드가 없든 빈 목록 200 — 이 경로에선 id 유효성도 따지지 않는다."""
+    assert (await _bulk(client, document_ids=[], folder_id=None)).json() == []
+    assert (await _bulk(client, document_ids=[999999])).json() == []
+
+
+@pytest.mark.asyncio
+async def test_삭제된_문서는_단건_PATCH도_404(client, tenant_id, fake_queue, blob_tmp):
+    """#166: 목록에 뜨지도 않는 죽은 행의 컬럼이 조용히 바뀌던 것을 막는다."""
+    doc = await _upload(client, '환불정책.md', MD)
+    assert (await client.delete(f"/kms/documents/{doc['document_id']}")).status_code == 204
+    res = await client.patch(f"/kms/documents/{doc['document_id']}", json={'is_searchable': False})
+    assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_일괄_폴더가_없거나_남의_것이면_404(client, tenant_id, other_tenant_id,
+                                                fake_queue, blob_tmp):
+    """대상 문서는 멀쩡해도 옮길 폴더가 어긋나면 전체 거절 — 문서도 안 바뀐다."""
+    doc = await _upload(client, '환불정책.md', MD)
+    other_folder = (await client.post('/kms/folders', json={'name': '남의폴더'},
+                                      headers={'X-Tenant-Id': other_tenant_id})).json()['id']
+
+    for label, fid in (('없는 폴더', 999999), ('다른 테넌트 폴더', other_folder)):
+        res = await _bulk(client, document_ids=[doc['document_id']], folder_id=fid)
+        assert res.status_code == 404, f'{label} → {res.status_code}'
+    assert (await _get_doc(doc['document_id'])).folder_id is None

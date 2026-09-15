@@ -71,3 +71,38 @@ async def test_FAQ_목록_격리(client, tenant_id, other_tenant_id):
     async with _client_for(other_tenant_id) as other:
         listing = (await other.get('/kms/faqs')).json()
         assert listing == []
+
+
+@pytest.mark.asyncio
+async def test_문서_일괄변경_격리(client, tenant_id, other_tenant_id, fake_queue, blob_tmp):
+    """#166으로 늘어난 표면 — 요청 바디로 id 목록을 받는 첫 API라 격리를 여기에 남긴다.
+
+    이 경로가 새면 피해가 조용하다: 대상 확정이 tenant를 안 걸면 남의 문서 id가 그대로
+    outbox payload에 실리고, os_index.sync_meta_documents_now는 document_ids에 tenant 필터를
+    걸지 않으므로(호출부의 사전 스코프를 전제한다) 남의 색인 메타가 덮인다.
+    """
+    md = '# 제목\n\n본문 내용\n'.encode()
+    mine = (await client.post('/kms/documents',
+                              files={'file': ('A사문서.md', md, 'text/markdown')})).json()
+
+    async with _client_for(other_tenant_id) as other:
+        theirs = (await other.post('/kms/documents',
+                                   files={'file': ('B사문서.md', md, 'text/markdown')})).json()
+        folder = (await other.post('/kms/folders', json={'name': 'B사 폴더'})).json()
+
+        # 남의 문서를 섞어 보내면 전체가 404 — 자기 문서(theirs)도 바뀌면 안 된다
+        res = await other.patch('/kms/documents',
+                                json={'document_ids': [theirs['document_id'], mine['document_id']],
+                                      'is_searchable': False})
+        assert res.status_code == 404
+        still = (await other.get(f"/kms/documents/{theirs['document_id']}")).json()
+        assert still['is_searchable'] is True, '전체 거절인데 자기 문서가 바뀌었다'
+
+        # 남의 폴더로 자기 문서를 옮기려는 시도도 404
+        assert (await client.patch('/kms/documents',
+                                   json={'document_ids': [mine['document_id']],
+                                         'folder_id': folder['id']})).status_code == 404
+
+    # 남의 요청으로 내 문서가 바뀌지 않았다
+    after = (await client.get(f"/kms/documents/{mine['document_id']}")).json()
+    assert after['is_searchable'] is True and after['folder_id'] is None

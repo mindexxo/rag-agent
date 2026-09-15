@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS documents (
     status_reason  TEXT,
     page_count     INTEGER,
     char_count     INTEGER,
-    uploaded_by    TEXT,
+    uploaded_by    TEXT,                       -- 등록자 (#164부터 저장 — X-User-Id 미전송 시 NULL. 이전 문서는 전부 NULL)
     uploaded_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     indexed_at     TIMESTAMPTZ,
     -- F1a: 표 설명 (xlsx 검색 보강용 — 업로드 시 입력, 워커가 청크에 병합). 표는 의미적으로 빈약해 검색 다리 필요

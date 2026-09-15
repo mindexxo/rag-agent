@@ -193,10 +193,12 @@ async def handle_upload(
         filename: str,
         blob_path: Path,
         description: str | None = None,
+        uploaded_by: str | None = None,
 ) -> Document:
     """업로드 시점 처리: pending row + 색인 대기열 행을 **같은 트랜잭션**에 등록한다 (#139).
     실제 청킹/임베딩/색인/supersede는 워커 drain이 index_pending_document로 수행한다.
     description은 표 설명(xlsx 검색 보강) — 워커가 청킹 시 병합한다.
+    uploaded_by는 업로더 식별자(X-User-Id) — 없으면 NULL.
     mime은 blob_path에서 직접 구한다 — 호출부가 계산해 넘길 이유가 없다.
 
     문서 식별은 **filename 완전 일치** 하나뿐 (2026-08-05 정책 확정).
@@ -226,6 +228,10 @@ async def handle_upload(
         folder_id=prev.folder_id if prev else None,
         is_searchable=prev.is_searchable if prev else True,
         description=description if description is not None else (prev.description if prev else None),
+        # 등록자만은 **계승하지 않는다** (#164). 위 세 값은 "문서에 건 설정"이라 개정판에도
+        # 이어져야 하지만, 등록자는 uploaded_at과 짝을 이루는 "이 버전을 올린 사람"이다 —
+        # 계승하면 화면에서 최신 개정을 누가 했는지 알 수 없게 된다.
+        uploaded_by=uploaded_by,
     )
     session.add(doc)
     await session.flush()  # doc.id 확보 (대기열 payload에 필요)

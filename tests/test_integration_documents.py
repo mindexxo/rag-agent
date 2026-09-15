@@ -747,3 +747,26 @@ async def test_일괄_폴더가_없거나_남의_것이면_404(client, tenant_id
         res = await _bulk(client, document_ids=[doc['document_id']], folder_id=fid)
         assert res.status_code == 404, f'{label} → {res.status_code}'
     assert (await _get_doc(doc['document_id'])).folder_id is None
+
+
+@pytest.mark.asyncio
+async def test_일괄_상한_경계(client, tenant_id, fake_queue, blob_tmp):
+    """200건은 스키마를 통과하고(대상이 없어 404), 201건은 스키마에서 422.
+
+    유효한 문서 200건을 실제로 만들지 않고 경계만 본다 — 통과 여부는 대상 조회 이전에
+    갈리므로 404가 나오면 스키마를 지난 것이다.
+    """
+    assert (await _bulk(client, document_ids=list(range(1, 201)),
+                        is_searchable=False)).status_code == 404
+    assert (await _bulk(client, document_ids=list(range(1, 202)),
+                        is_searchable=False)).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_일괄_404는_어긋난_id를_알려준다(client, tenant_id, fake_queue, blob_tmp):
+    """화면이 '무엇이 문제인지' 보여줄 수 있어야 한다 — 어느 id가 걸렸는지 응답에 싣는다."""
+    doc = await _upload(client, '환불정책.md', MD)
+    res = await _bulk(client, document_ids=[doc['document_id'], 999999], is_searchable=False)
+    assert res.status_code == 404
+    assert '999999' in res.json()['detail']
+    assert str(doc['document_id']) not in res.json()['detail']   # 멀쩡한 id는 안 싣는다

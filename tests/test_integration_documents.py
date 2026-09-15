@@ -4,6 +4,8 @@
 버전 엎어치기(supersede)→dedupe→실패 경로(drain이 failed 확정)→소프트 삭제.
 업로드는 arq를 만지지 않는다 — 문서와 색인 대기열 행이 같은 트랜잭션에 커밋된다 (#139 outbox).
 """
+from datetime import timedelta
+
 import pytest
 from sqlalchemy import func, select
 
@@ -15,8 +17,8 @@ from tests.conftest import indexed_chunk_texts, ingest
 from rag.models import AnswerCache as AnswerCacheRow, Document
 
 
-async def _upload(client, filename: str, content: bytes, mime='text/markdown') -> dict:
-    res = await client.post('/kms/documents', files={'file': (filename, content, mime)})
+async def _upload(client, filename: str, content: bytes, mime='text/markdown', headers=None) -> dict:
+    res = await client.post('/kms/documents', files={'file': (filename, content, mime)}, headers=headers)
     assert res.status_code == 200, res.text
     return res.json()
 
@@ -407,8 +409,9 @@ async def test_동시_삽입은_유니크_인덱스가_막고_409(client, tenant
     import routers.documents as rd
     real = rd.handle_upload
 
-    async def _collide(session, t, filename, blob_path, description=None):
-        doc = await real(session, t, filename, blob_path, description=description)
+    async def _collide(session, t, filename, blob_path, description=None, uploaded_by=None):
+        doc = await real(session, t, filename, blob_path, description=description,
+                         uploaded_by=uploaded_by)
         doc.version = 1          # 남이 방금 v1을 넣은 것과 같은 결과
         return doc
 
@@ -419,3 +422,65 @@ async def test_동시_삽입은_유니크_인덱스가_막고_409(client, tenant
     assert res.json()['current_version'] == 1
     assert sorted((blob_tmp / tenant_id).iterdir())      # 남은 건 v1의 blob 하나뿐
 
+
+
+# ── #164 등록일시·등록자 ──────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_목록은_등록일시_내림차순이고_등록자를_싣는다(client, tenant_id, fake_queue, blob_tmp):
+    """목록 API의 기본 정렬 키는 uploaded_at이다 (#164).
+
+    정렬 키가 정말 uploaded_at인지 보려면 id 순서와 어긋나게 만들어야 한다 —
+    그냥 두면 id.desc()와 결과가 같아 무엇으로 정렬했는지 구분되지 않는다.
+    """
+    first = await _upload(client, '가정책.md', MD, headers={'X-User-Id': 'agent-a'})
+    second = await _upload(client, '나정책.md', MD, headers={'X-User-Id': 'agent-b'})
+
+    items = (await client.get('/kms/documents')).json()
+    assert [d['document_id'] for d in items] == [second['document_id'], first['document_id']]
+    assert items[0]['uploaded_by'] == 'agent-b'
+    assert items[0]['uploaded_at']                      # datetime 직렬화 확인
+
+    # 먼저 올린 문서의 등록일시만 미래로 옮긴다 → id 순서와 반대가 되어야 한다.
+    # (aware 값을 그대로 대입한다 — 시각 컬럼 매핑이 TIMESTAMPTZ에 맞춰져 있다, rag/models.py의 Base)
+    async with AsyncSessionLocal() as s:
+        doc = await s.get(Document, first['document_id'])
+        doc.uploaded_at = doc.uploaded_at + timedelta(days=1)
+        await s.commit()
+
+    items = (await client.get('/kms/documents')).json()
+    assert [d['document_id'] for d in items] == [first['document_id'], second['document_id']]
+
+
+@pytest.mark.asyncio
+async def test_등록자는_X_User_Id로_기록되고_미전송이면_null(client, tenant_id, fake_queue, blob_tmp):
+    """#164: 헤더가 없으면 NULL로 남긴다 — conversation의 'test-user' 폴백을 쓰지 않는다.
+    그 가짜 값이 문서 관리 화면의 등록자 칸에 그대로 뜨기 때문."""
+    with_user = await _upload(client, '가정책.md', MD, headers={'X-User-Id': 'agent-a'})
+    without = await _upload(client, '나정책.md', MD)
+
+    assert with_user['uploaded_by'] == 'agent-a'
+    assert without['uploaded_by'] is None
+    assert (await _get_doc(with_user['document_id'])).uploaded_by == 'agent-a'
+    assert (await _get_doc(without['document_id'])).uploaded_by is None
+
+
+@pytest.mark.asyncio
+async def test_재업로드_등록자는_계승하지_않는다(client, tenant_id, fake_queue, blob_tmp):
+    """#164: 문서에 건 설정(is_searchable)은 개정판에 계승되지만, 등록자는 그 버전을 올린
+    사람으로 갱신된다 — 계승하면 최신 개정을 누가 했는지 화면에서 알 수 없다."""
+    v1 = await _upload(client, '환불정책.md', MD, headers={'X-User-Id': 'agent-a'})
+    await ingest(v1['document_id'])
+    assert (await client.patch(f"/kms/documents/{v1['document_id']}",
+                               json={'is_searchable': False})).status_code == 200
+
+    v2 = await _upload(client, '환불정책.md', MD, headers={'X-User-Id': 'agent-b'})
+    assert v2['version'] == 2
+    assert v2['is_searchable'] is False       # 설정은 계승
+    assert v2['uploaded_by'] == 'agent-b'     # 등록자는 갱신
+
+    # 헤더 없이 올린 버전이 직전 등록자를 물려받지 않는지 — "계승하지 않는다"가 깨지는
+    # 가장 흔한 형태(prev 폴백)를 직접 찍는다.
+    v3 = await _upload(client, '환불정책.md', MD)
+    assert v3['version'] == 3
+    assert v3['uploaded_by'] is None

@@ -70,6 +70,10 @@ class DocumentUploadResponse(BaseModel):
     is_active: bool
     folder_id: int | None = None
     is_searchable: bool = True
+    uploaded_at: datetime          # 등록일시 — 목록 기본 정렬 키 (해당 **버전**의 업로드 시각)
+    # 등록자. X-User-Id 미전송이면 null이고, 이 필드가 생기기 전에 올라온 문서도 전부 null이다
+    # (소급해 채울 정보가 없다) — 화면은 빈 값 표시를 처리해야 한다.
+    uploaded_by: str | None = None
     ref_count: int | None = None  # 답변 인용 누적 횟수 (목록 API에서만 집계 — filename 키)
 
 

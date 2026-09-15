@@ -22,8 +22,9 @@ async def _seed_turn(tenant_id: str, *, status: str, age_seconds: int,
     """대화 1개 + assistant 메시지 1개를 심는다. 반환: 메시지 id.
 
     created_at은 **DB 서버 시계**(func.now())로 되돌린다 — 스윕의 비교도 func.now()라
-    같은 시계여야 한다. 파이썬 datetime.now()로 심으면 로컬(KST)과 서버(UTC) 시차만큼
-    미래로 심겨 스윕에 안 걸린다(실제로 그렇게 한 번 실패했다).
+    같은 시계여야 한다. 파이썬 시계로 심으면 두 시계가 어긋난 만큼 경계가 흔들린다.
+    (naive datetime.now()가 UTC로 오해돼 9시간 미래로 심긴 적이 있는데, 그 오해 자체는
+    시각 컬럼 매핑을 TIMESTAMPTZ에 맞추며 사라졌다 — rag/models.py의 Base.)
     """
     async with AsyncSessionLocal() as s:
         conv = Conversation(tenant_id=tenant_id, created_by=created_by)

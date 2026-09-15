@@ -6,7 +6,7 @@
   1. 한 대화에서 여러 메시지가 매칭돼도 결과·total은 대화 1건 (EXISTS 세미조인)
   2. 첨부 본문(attachments)은 검색 대상이 아니다 — 조회 API가 파일명만 주는 정책과 같은 이유
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -28,7 +28,7 @@ async def _seed_conv(tenant_id: str, title: str | None, contents: list[str],
     시간을 인위적으로 벌리면 '최근 매칭' 선택이 created_at만으로 결정돼, 실제로 동작하는
     id 보조정렬이 검증되지 않는다.
     """
-    base = datetime.now()   # 모델 매핑이 naive — aware를 넣으면 asyncpg가 거부
+    base = datetime.now(timezone.utc)
     async with AsyncSessionLocal() as s:
         conv = Conversation(tenant_id=tenant_id, created_by=created_by, title=title,
                             last_used_at=base + timedelta(minutes=minutes))
@@ -119,7 +119,7 @@ async def test_턴이_다르면_created_at_최신이_이긴다(client, tenant_id
     async with AsyncSessionLocal() as s:                       # 뒤이은 턴 (시각이 더 나중)
         s.add(Message(conversation_id=cid, tenant_id=tenant_id, role='user',
                       content='배송비는 누가 부담하나요',
-                      created_at=datetime.now() + timedelta(minutes=10)))
+                      created_at=datetime.now(timezone.utc) + timedelta(minutes=10)))
         await s.commit()
     body = await _search(client, '배송')
     assert '배송비' in body['items'][0]['snippet']

@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS documents (
     status_reason  TEXT,
     page_count     INTEGER,
     char_count     INTEGER,
-    uploaded_by    TEXT,
+    uploaded_by    TEXT,                       -- 등록자 (#164부터 저장 — X-User-Id 미전송 시 NULL. 이전 문서는 전부 NULL)
     uploaded_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     indexed_at     TIMESTAMPTZ,
     -- F1a: 표 설명 (xlsx 검색 보강용 — 업로드 시 입력, 워커가 청크에 병합). 표는 의미적으로 빈약해 검색 다리 필요
@@ -260,7 +260,7 @@ CREATE TABLE IF NOT EXISTS search_index_outbox (
     status      TEXT      NOT NULL DEFAULT 'pending',     -- pending | done | failed
     attempts    INTEGER   NOT NULL DEFAULT 0,
     last_error  TEXT,
-    created_at  TIMESTAMP NOT NULL DEFAULT now()
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 -- 드레인은 pending만 id 순으로 읽는다 — done이 아무리 쌓여도 이 부분 인덱스만 훑는다.
 CREATE INDEX IF NOT EXISTS idx_outbox_pending ON search_index_outbox (id) WHERE status = 'pending';
@@ -268,4 +268,8 @@ CREATE INDEX IF NOT EXISTS idx_outbox_pending ON search_index_outbox (id) WHERE 
 --   ALTER TABLE search_index_outbox ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';
 --   ALTER TABLE search_index_outbox DROP COLUMN IF EXISTS next_attempt_at;
 --   DROP INDEX IF EXISTS idx_outbox_ready;
+-- 기존 DB 반영 (2026-09-15, 시각 컬럼 타입 통일 #164 — 이 테이블만 TIMESTAMP였다):
+--   ALTER TABLE search_index_outbox
+--     ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at AT TIME ZONE 'UTC';
+--   (기존 값은 서버 TimeZone이 Etc/UTC라 UTC 벽시계로 저장돼 있다 — 실조회로 확인)
 --   CREATE INDEX IF NOT EXISTS idx_outbox_pending ON search_index_outbox (id) WHERE status = 'pending';

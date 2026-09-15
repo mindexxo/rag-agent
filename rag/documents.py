@@ -160,7 +160,7 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
                 f'이미지가 쪽 면적의 {image_ratio:.0f}%를 차지합니다. '
                 f'이미지로 그려진 표·흐름도는 텍스트를 추출할 수 없어 검색되지 않습니다.'
             )[:500]
-        doc.indexed_at = datetime.now(timezone.utc).replace(tzinfo=None)   # naive 컬럼 — UTC 유지
+        doc.indexed_at = datetime.now(timezone.utc)
         for old_id in old_active_ids:
             await cache.invalidate_source(session, tenant_id, old_id)
 

@@ -7,7 +7,7 @@
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 
 from database import AsyncSessionLocal
 from rag import cache
@@ -442,12 +442,10 @@ async def test_목록은_등록일시_내림차순이고_등록자를_싣는다(
     assert items[0]['uploaded_at']                      # datetime 직렬화 확인
 
     # 먼저 올린 문서의 등록일시만 미래로 옮긴다 → id 순서와 반대가 되어야 한다.
-    # 값을 파이썬에서 만들어 바인딩하지 않고 SQL 측에서 더한다 — documents.uploaded_at은
-    # TIMESTAMPTZ인데 ORM 매핑은 naive datetime이라(rag/models.py:89) aware 값 바인딩이 깨진다.
+    # (aware 값을 그대로 대입한다 — 시각 컬럼 매핑이 TIMESTAMPTZ에 맞춰져 있다, rag/models.py의 Base)
     async with AsyncSessionLocal() as s:
-        await s.execute(update(Document)
-                        .where(Document.id == first['document_id'])
-                        .values(uploaded_at=Document.uploaded_at + timedelta(days=1)))
+        doc = await s.get(Document, first['document_id'])
+        doc.uploaded_at = doc.uploaded_at + timedelta(days=1)
         await s.commit()
 
     items = (await client.get('/kms/documents')).json()

@@ -64,10 +64,23 @@ _ORPHAN_MARKER_RE = re.compile(r'(?:^|\n)[ \t]*(\d{1,2}\.|\(\d{1,2}\))[ \t]*\n?$
 # 문서가 스스로 선언하는 층이라 폰트 크기 휴리스틱과 성격이 다르다 — 코퍼스가 아니라 도메인 관례다.
 _CHAPTER_RE = re.compile(r'^제\s*\d+\s*장\b')
 
-# docling 그림 요소의 자리표시. 텍스트 PDF 안에 렌더된 도표는 어떤 파서도 못 읽는다(#137 결함 4 —
-# docling 표 모드·OCR·VLM 셋 다 실측 실패). 지우지 않고 남겨 "여기 도표가 있었다"를 알리고,
-# #144(VLM 캡션)가 이 자리를 채운다.
+# docling 그림 요소의 자리표시. 텍스트 PDF 안에 렌더된 도표는 파서로는 못 읽는다(#137 결함 4).
+# 지우지 않고 남겨 "여기 도표가 있었다"를 알린다.
+# **캡션이 붙으면 이 자리를 캡션이 대체한다**(#162) — 자리표시가 남아 있다는 것은 VLM 호출이
+# 실패했다는 뜻이다(count_picture_placeholders).
 _PICTURE_PLACEHOLDER = '<!-- image -->'
+
+# 그림 캡션 프롬프트(#162). **도형 어휘(박스·화살표·불릿)를 쓰지 않는다** — 하나의 프롬프트가
+# 모든 문서의 모든 그림에 적용되므로 흐름도를 전제한 문구는 표·사진에 해롭다. 실측(2026-09-14):
+# 흐름도를 전제한 문구는 불릿 귀속을 한 칸 밀거나 통째로 생략했고, 아래 타입 무관 문구가 흐름도·
+# 수식·표·차트 4유형에서 가장 정확했다.
+_PICTURE_CAPTION_PROMPT = (
+    '이미지의 내용을 한국어로 옮겨라.\n'
+    '- 이미지 안의 글자를 하나도 빠뜨리지 말고 원문 그대로 옮긴다. 고쳐 쓰거나 요약하지 않는다.\n'
+    '- 요소들 사이에 관계가 있으면 그 관계를 함께 적는다.\n'
+    '- 관계가 분명하지 않으면 보이는 위치대로 나열만 한다.\n'
+    '- 이미지에 없는 내용은 쓰지 않는다.'
+)
 
 @dataclass
 class ChunkData:
@@ -223,7 +236,9 @@ def _docling_runtime():
         if _docling_converter is None:
             from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
             from docling.datamodel.base_models import InputFormat
-            from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
+            from docling.datamodel.pipeline_options import (PdfPipelineOptions,
+                                                            PictureDescriptionApiOptions,
+                                                            TableFormerMode)
             from docling.document_converter import DocumentConverter, PdfFormatOption
 
             opts = PdfPipelineOptions(artifacts_path=settings.docling_artifacts_path)
@@ -240,6 +255,17 @@ def _docling_runtime():
             opts.accelerator_options = AcceleratorOptions(
                 num_threads=settings.docling_num_threads,
                 device=AcceleratorDevice(settings.docling_device))
+            # 그림 캡션(#162). enable_remote_services를 안 켜면 do_picture_description이 설정
+            # 단계에서 OperationNotAllowed로 죽는다 — VLM 다운과 달리 docling이 삼켜주지 않는
+            # 경로라 항상 같이 켠다. VLM에 못 닿으면 캡션이 안 붙고 자리표시가 남을 뿐이다.
+            opts.enable_remote_services = True
+            opts.do_picture_description = True
+            opts.picture_description_options = PictureDescriptionApiOptions(
+                url=settings.vlm_caption_url,
+                params={'model': settings.vlm_caption_model},
+                prompt=_PICTURE_CAPTION_PROMPT,
+                scale=settings.vlm_caption_scale,
+                timeout=settings.vlm_caption_timeout_seconds)
             _docling_converter = DocumentConverter(
                 format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)})
             _docling_semaphore = threading.Semaphore(settings.docling_max_concurrency)
@@ -261,6 +287,32 @@ def _docling_table_markdown(item, doc) -> str | None:
     return to_markdown_table(header, rows)
 
 
+def count_picture_placeholders(chunks) -> int:
+    """청크들에 남은 그림 자리표시 수(#162). 캡션이 안 붙은 그림의 개수다.
+
+    캡션이 켜져 있는데 이 값이 0이 아니면 VLM 호출이 실패했다는 뜻이다 — docling이 VLM 실패를
+    삼키므로(예외 없음) 이것이 유일한 관측 창이다. 지표 기록은 호출부(rag/documents.py)가 한다:
+    이 모듈은 0층 leaf라 rag/metrics.py를 import하지 않는다(AGENTS.md 계층 규칙).
+
+    **캡션이 붙은 그림은 셀 수 없다** — 캡션은 일반 본문과 구분되지 않게 들어가기 때문이다(설계 결정).
+    그래서 이 지표는 성공률이 아니라 실패 신호다.
+    """
+    return sum(c.text.count(_PICTURE_PLACEHOLDER) for c in chunks)
+
+
+def _docling_picture_caption(element) -> str:
+    """그림 요소의 VLM 캡션(#162). 없으면 빈 문자열.
+
+    docling은 캡션을 `annotations`에 담는다(2.126 기준). 여러 개가 달릴 수 있어 첫 비어 있지 않은
+    것을 쓴다 — 우리 설정은 캡션 엔진 하나뿐이라 실질적으로 0개 또는 1개다.
+    """
+    for ann in getattr(element, 'annotations', None) or []:
+        text = (getattr(ann, 'text', '') or '').strip()
+        if text:
+            return text
+    return ''
+
+
 def _docling_elements(doc):
     """docling 문서 → (label, text, page, table_markdown) 튜플 흐름. 읽기 순서.
 
@@ -272,6 +324,10 @@ def _docling_elements(doc):
         page = element.prov[0].page_no if getattr(element, 'prov', None) else None
         if label == 'table':
             yield label, '', page, _docling_table_markdown(element, doc)
+        elif label == 'picture':
+            # 캡션(#162)은 element.text가 아니라 annotations에 붙는다 — text만 보면 조용히 버려진다.
+            # VLM이 죽거나 꺼져 있으면 annotations가 비어 빈 문자열이 나가고, 소비자가 자리표시로 되돌린다.
+            yield label, _docling_picture_caption(element), page, None
         else:
             text = getattr(element, 'text', '') or ''
             # 목록 항목의 번호·글머리('2.1', '-', '(1)')는 text에서 떼어 marker에 둔다. 빠뜨리면
@@ -290,7 +346,7 @@ def _sections_from_docling_elements(elements) -> list[_Section]:
       첫 헤딩 = 문서 제목(L1) / '제 N 장' = L2 / 그 외 헤딩 = L3 (장이 아직 없으면 L2).
     그러면 _pack_sections의 joinable(공통 조상 깊이 ≥2)이 현행과 같이 동작해 같은 장 아래
     조항끼리 묶인다. 이 규칙 없이 두면 26쪽 규정이 73→170청크로 갈렸다(#143 실측).
-    표는 markdown 그대로, 그림은 _PICTURE_PLACEHOLDER, 나머지 텍스트 요소는 본문 줄.
+    표는 markdown 그대로, 그림은 캡션(없으면 _PICTURE_PLACEHOLDER), 나머지 텍스트 요소는 본문 줄.
     """
     items: list[_Item] = []
     seen_title = False
@@ -311,7 +367,9 @@ def _sections_from_docling_elements(elements) -> list[_Section]:
             if table_markdown:
                 items.append((page, table_markdown, None))
         elif label == 'picture':
-            items.append((page, _PICTURE_PLACEHOLDER, None))
+            # 캡션이 있으면 그것이 본문이다(#162). 없으면 자리표시 — 둘 다 한 줄 항목으로 들어간다.
+            caption = _docling_norm(text)
+            items.append((page, caption or _PICTURE_PLACEHOLDER, None))
         else:
             text = _docling_norm(text)
             if text:
@@ -330,7 +388,9 @@ def _docling_sections(file_path: str | Path) -> list[_Section]:
 
     실패(예외·타임아웃)는 그대로 올린다 — pdfplumber 폴백 없음. 저품질 색인을 조용히 만들지 않는다
     (strict-grounded). 호출부(index_pending_document)가 failed로 기록한다.
-    이미지 도표는 못 읽는다 — _PICTURE_PLACEHOLDER 자리표시를 남긴다 (#144).
+    이미지 도표는 VLM 캡션으로 읽는다 (#162) — VLM에 못 닿아 캡션이 없으면
+    _PICTURE_PLACEHOLDER 자리표시가 남는다. 격자 표 이미지는 docling이 TableItem으로 분류해
+    이 경로를 타지 않는다(별도 이슈).
     """
     converter, semaphore = _docling_runtime()
     with semaphore:

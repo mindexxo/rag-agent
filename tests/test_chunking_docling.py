@@ -10,7 +10,8 @@ import pytest
 
 from config import settings
 from rag.chunking import (_PICTURE_PLACEHOLDER, _docling_elements, _docling_norm,
-                          _sections_from_docling_elements, chunk_file)
+                          _sections_from_docling_elements, chunk_file,
+                          count_picture_placeholders)
 
 
 def _h(text, page=1):
@@ -65,7 +66,7 @@ class TestElementMapping:
         assert secs[0].body == md
         assert secs[0].line_pages == [1, 1, 1]          # 표 3줄 ↔ 쪽 3개 — 1:1 대응 (결함 6)
 
-    def test_그림은_자리표시로_남긴다(self):
+    def test_그림은_캡션이_없으면_자리표시로_남긴다(self):
         secs = _sections_from_docling_elements([_h('제목'), _h('(1) 프로세스'), ('picture', '', 1, None), _t('설명')])
         assert secs[0].body.split('\n') == [_PICTURE_PLACEHOLDER, '설명']
 
@@ -97,6 +98,57 @@ class TestElementMapping:
     def test_빈_헤딩과_빈_텍스트는_건너뛴다(self):
         secs = _sections_from_docling_elements([_h('제목'), _h('\xa0'), _t(''), _t('본문')])
         assert [s.heading_path for s in secs] == [['제목']] and secs[0].body == '본문'
+
+
+class TestPictureCaption:
+    """그림 캡션(#162) — 캡션이 자리표시를 대체한다. 튜플만 먹이므로 VLM·모델 없이 돈다."""
+
+    def test_캡션이_있으면_자리표시_대신_캡션이_본문에_들어간다(self):
+        cap = '4단계 흐름도: 신청 접수 → 자격 심사 → 매칭 승인 → 집행·보고'
+        secs = _sections_from_docling_elements([_h('제목'), _h('(1) 절차'), ('picture', cap, 1, None), _t('설명')])
+        assert secs[0].body.split('\n') == [cap, '설명']
+
+    def test_캡션이_비면_자리표시로_되돌아간다(self):
+        # VLM이 죽거나 꺼져 있으면 docling이 캡션을 안 만든다(예외 없음) — 그때의 경로다.
+        secs = _sections_from_docling_elements([_h('제목'), ('picture', '', 1, None)])
+        assert secs[0].body == _PICTURE_PLACEHOLDER
+
+    def test_캡션이_공백뿐이면_자리표시로_되돌아간다(self):
+        secs = _sections_from_docling_elements([_h('제목'), ('picture', '\xa0  ', 1, None)])
+        assert secs[0].body == _PICTURE_PLACEHOLDER
+
+    def test_그림마다_캡션_유무가_달라도_각각_처리된다(self):
+        secs = _sections_from_docling_elements([
+            _h('제목'), _h('절'),
+            ('picture', '그림1 설명', 1, None), _t('본문1'),
+            ('picture', '', 1, None), _t('본문2'),
+        ])
+        assert secs[0].body.split('\n') == ['그림1 설명', '본문1', _PICTURE_PLACEHOLDER, '본문2']
+
+    def test_캡션은_annotations에서_꺼낸다(self):
+        # 캡션은 element.text가 아니라 annotations에 붙는다. text만 보면 조용히 버려진다 —
+        # 실제로 그 상태였고(#162 실측) 캡션이 청크에 안 실렸다.
+        from types import SimpleNamespace as NS
+        def pic(annotations):
+            return NS(label=NS(value='picture'), text='', marker=None,
+                      annotations=annotations, prov=[NS(page_no=1)])
+        doc = NS(iterate_items=lambda: [
+            (pic([NS(text='막대그래프: 면 100% 40℃, 린넨 30℃')]), 0),
+            (pic([]), 1),
+            (pic(None), 2),
+            (pic([NS(text=''), NS(text='두 번째가 살아있다')]), 3),
+        ])
+        assert [t for _, t, _, _ in _docling_elements(doc)] == [
+            '막대그래프: 면 100% 40℃, 린넨 30℃', '', '', '두 번째가 살아있다']
+
+    def test_자리표시_집계는_캡션_실패_수를_센다(self):
+        # 지표(kms_index_picture_placeholder_total)의 입력. 캡션 성공분은 일반 본문과 구분되지
+        # 않아 셀 수 없다 — 이 함수는 성공률이 아니라 실패 신호다.
+        from types import SimpleNamespace as NS
+        chunks = [NS(text=f'앞 {_PICTURE_PLACEHOLDER} 뒤'), NS(text='캡션이 붙은 그림 설명'),
+                  NS(text=f'{_PICTURE_PLACEHOLDER}\n{_PICTURE_PLACEHOLDER}')]
+        assert count_picture_placeholders(chunks) == 3
+        assert count_picture_placeholders([]) == 0
 
 
 docling = pytest.importorskip('docling', reason='docling 미설치 — 실변환 테스트는 설치 환경에서만')
@@ -183,3 +235,50 @@ class TestRealConversion:
         assert opts.queue_max_size == settings.docling_queue_max_size
         assert opts.accelerator_options.num_threads == settings.docling_num_threads
         assert opts.do_ocr is settings.docling_do_ocr
+
+    def test_캡션_설정이_파이프라인에_실제로_전달된다(self):
+        # 위와 같은 이유(#151). 특히 scale은 조용히 틀리면 VLM이 글자를 못 읽고 **원문에 없는
+        # 내용을 지어낸다**(#162 실측: scale 1.0에서 3회 모두 환각). 값이 안 걸리면 기본 2.0으로
+        # 도는데 에러가 없어 아무도 모른다 — 그래서 값까지 단언한다.
+        from docling.datamodel.base_models import InputFormat
+        from rag.chunking import _PICTURE_CAPTION_PROMPT, _docling_runtime
+
+        converter, _ = _docling_runtime()
+        opts = converter.format_to_options[InputFormat.PDF].pipeline_options
+        assert opts.do_picture_description is True
+        assert opts.enable_remote_services is True   # 빠지면 OperationNotAllowed로 변환 자체가 죽는다
+        api = opts.picture_description_options
+        assert api.scale == settings.vlm_caption_scale
+        assert api.timeout == settings.vlm_caption_timeout_seconds
+        assert api.params == {'model': settings.vlm_caption_model}
+        assert api.prompt == _PICTURE_CAPTION_PROMPT
+        assert str(api.url) == settings.vlm_caption_url   # AnyUrl — str 캐스팅 후 비교
+
+    def test_VLM이_죽어도_예외_없이_자리표시로_끝난다(self, tmp_path, monkeypatch):
+        """캡션 실패 폴백에 우리 try/except가 없는 근거를 고정한다(#162).
+
+        docling이 API 실패를 삼키기 때문에 폴백이 공짜인데, 그건 **docling의 동작**이지 우리 계약이
+        아니다 — 업그레이드로 바뀌면 문서가 통째로 failed 된다. 그때 이 테스트가 먼저 깨지게 둔다.
+        (설정 변경이 먹으려면 컨버터 싱글턴을 비워야 한다 — 전역 캐시라 재생성이 안 된다.)
+        """
+        import rag.chunking as ch
+        from reportlab.lib.pagesizes import A4
+        from reportlab.platypus import Image as RLImage, SimpleDocTemplate
+
+        png = tmp_path / 'fig.png'
+        png.write_bytes(bytes.fromhex(          # 1×1 PNG — 내용은 무관, 그림 요소가 있으면 된다
+            '89504e470d0a1a0a0000000d494844520000000100000001080200000090'
+            '7753de0000000c4944415408d763f8cfc00000030101003c2f8e3b0000000049454e44ae426082'))
+        p = tmp_path / 'pic.pdf'
+        SimpleDocTemplate(str(p), pagesize=A4).build([RLImage(str(png), width=300, height=200)])
+
+        monkeypatch.setattr(settings, 'vlm_caption_url', 'http://127.0.0.1:1/v1/chat/completions')
+        monkeypatch.setattr(settings, 'vlm_caption_timeout_seconds', 2.0)
+        monkeypatch.setattr(ch, '_docling_converter', None)      # 싱글턴 비우기 — 바뀐 설정으로 재생성
+        monkeypatch.setattr(ch, '_docling_semaphore', None)
+        try:
+            chunks = chunk_file(p)               # 예외가 올라오면 이 줄에서 실패한다
+        finally:
+            ch._docling_converter = None         # 죽은 URL이 박힌 컨버터를 다음 테스트에 남기지 않는다
+            ch._docling_semaphore = None
+        assert ch.count_picture_placeholders(chunks) >= 1   # 캡션 대신 자리표시로 남는다

@@ -12,10 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import AsyncSessionLocal
 from rag import cache, os_index, outbox
-from rag.chunking import chunk_file, pdf_image_area_ratio
+from rag.chunking import chunk_file, count_picture_placeholders, pdf_image_area_ratio
 from rag.embeddings import embed_texts
 from rag.index_text import build_index_text
-from rag.metrics import INDEX_DURATION_SECONDS, INDEX_TOTAL, ext_label
+from rag.metrics import (
+    INDEX_DURATION_SECONDS,
+    INDEX_PICTURE_PLACEHOLDER_TOTAL,
+    INDEX_TOTAL,
+    ext_label,
+)
 from rag.models import Document, Folder
 
 # 이미지 면적이 이 비율을 넘으면 인제스션에서 경고를 남긴다 (#137 결함 4).
@@ -105,6 +110,10 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
     # 네 단계가 같은 분모(성공한 문서)를 갖도록 실패 분기 뒤에서 기록한다 — 단계별 p95를
     # 나란히 읽으려면 분모가 같아야 한다.
     INDEX_DURATION_SECONDS.labels(stage='parse', ext=_ext).observe(time.monotonic() - _t_start)
+    # 캡션이 안 붙은 그림 수(#162). docling이 VLM 실패를 예외 없이 삼키므로 이 값이 유일한
+    # 관측 창이다 — 캡션이 켜져 있는데 늘면 VLM이 죽었거나 느린 것이다.
+    if (placeholders := count_picture_placeholders(chunks)):
+        INDEX_PICTURE_PLACEHOLDER_TOTAL.labels(ext=_ext).inc(placeholders)
     _t_parse_done = time.monotonic()
     # 임베딩 입력에만 '파일명 > 헤딩' 컨텍스트를 얹는다 (저장되는 chunk.text는 원문 유지).
     # 리랭커·어휘 채널·엔진 색인이 같은 조립을 쓴다 — 세 소비자가 같은 형태를 본다.
@@ -152,13 +161,15 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         doc.status = 'ready'
         doc.is_active = True
         doc.char_count = sum(len(c.text) for c in chunks)
-        # 도표가 이미지로 렌더된 문서는 그 내용이 색인되지 않는데도 ready가 된다
-        # (#137 결함 4). 근거가 비어 있다는 사실을 사용자가 알 수 있게 남긴다 —
-        # 검색·인용은 정상 동작하므로 상태는 ready 그대로 둔다.
+        # 도표가 이미지로 렌더된 문서를 사용자에게 알린다(#137 결함 4). 검색·인용은 정상
+        # 동작하므로 상태는 ready 그대로 둔다. 문구는 #162 이후 바뀌었다 — 그림은 VLM 캡션으로
+        # 읽히므로 "검색되지 않습니다"가 더 이상 사실이 아니다. 격자 표 이미지만 여전히 안 읽힌다
+        # (docling이 TableItem으로 분류해 캡션 훅을 안 탄다).
         if image_ratio >= IMAGE_WARN_RATIO:
             doc.status_reason = (
                 f'이미지가 쪽 면적의 {image_ratio:.0f}%를 차지합니다. '
-                f'이미지로 그려진 표·흐름도는 텍스트를 추출할 수 없어 검색되지 않습니다.'
+                f'그림은 AI가 설명을 만들어 검색에 반영합니다. 다만 표처럼 칸이 나뉜 이미지는 '
+                f'반영되지 않고, 생성된 설명이 부정확할 수 있어 원문 확인이 필요합니다.'
             )[:500]
         doc.indexed_at = datetime.now(timezone.utc)
         for old_id in old_active_ids:

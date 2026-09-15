@@ -16,11 +16,15 @@ from rag.models import Message
 
 async def _ask(client, query: str, user: str | None = None):
     headers = {'X-User-Id': user} if user else {}
-    return await client.post('/kms/query', json={'query': query}, headers=headers)
+    res = await client.post('/kms/query', json={'query': query}, headers=headers)
+    # 상태를 여기서 본다 (#170) — 예전엔 그냥 돌려줘서, 429가 나도 조용히 지나가고 한참 뒤
+    # 집계 단언에서 터졌다("집계가 틀렸나?"를 한동안 의심하게 된다).
+    assert res.status_code == 200, f'{query!r} → {res.status_code} {res.text[:200]}'
+    return res
 
 
 @pytest.mark.asyncio
-async def test_씨앗_저장_user_id_latency_cache_kind(client, tenant_id, fake_llm, pass_gate):
+async def test_씨앗_저장_user_id_latency_cache_kind(client, tenant_id, fake_llm, pass_gate, relaxed_quota):
     await sync_faq((await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})).json()['id'])
     await _ask(client, '환불 기간 알려줘', user='agent-kim')          # 생성 경로
     await _ask(client, '환불 기간 알려줘', user='agent-lee')          # semantic 캐시 히트 (즉시 경로)
@@ -44,7 +48,7 @@ async def test_씨앗_저장_user_id_latency_cache_kind(client, tenant_id, fake_
 
 
 @pytest.mark.asyncio
-async def test_stats_집계_정확성(client, tenant_id, fake_llm, pass_gate):
+async def test_stats_집계_정확성(client, tenant_id, fake_llm, pass_gate, relaxed_quota):
     await sync_faq((await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})).json()['id'])
     fake_llm.answer = f'7일 이내 처리됩니다. {citation_tail([1])}'   # 출처 꼬리 인용 (#56)
     await _ask(client, '환불 기간 알려줘', user='agent-kim')     # 답변 1 (생성)
@@ -75,7 +79,7 @@ async def test_stats_집계_정확성(client, tenant_id, fake_llm, pass_gate):
 
 
 @pytest.mark.asyncio
-async def test_레거시_intent_NULL_거절은_답변률을_왜곡하지_않는다(client, tenant_id, fake_llm, pass_gate):
+async def test_레거시_intent_NULL_거절은_답변률을_왜곡하지_않는다(client, tenant_id, fake_llm, pass_gate, relaxed_quota):
     """intent 컬럼 도입(2026-08-07) 전 행은 분자·분모 어디에도 안 들어가야 한다.
 
     분모만 intent를 거르고 분자를 안 거르면, 레거시 행이 분자에만 들어가
@@ -101,7 +105,7 @@ async def test_레거시_intent_NULL_거절은_답변률을_왜곡하지_않는�
 
 
 @pytest.mark.asyncio
-async def test_daily_빈_날짜는_0으로_채워진다(client, tenant_id, fake_llm):
+async def test_daily_빈_날짜는_0으로_채워진다(client, tenant_id, fake_llm, relaxed_quota):
     await _ask(client, '질문 하나')                              # 오늘 1건
 
     body = (await client.get('/kms/stats?days=7')).json()
@@ -113,7 +117,7 @@ async def test_daily_빈_날짜는_0으로_채워진다(client, tenant_id, fake_
 
 
 @pytest.mark.asyncio
-async def test_unanswered_지식갭_목록(client, tenant_id, fake_llm):
+async def test_unanswered_지식갭_목록(client, tenant_id, fake_llm, relaxed_quota):
     # 게이트 미우회 + 문서 없음 → 자연 거절 경로
     await _ask(client, '오프라인 매장이 있나요?', user='agent-kim')
     await _ask(client, '해외 배송 되나요?', user='agent-kim')
@@ -125,7 +129,7 @@ async def test_unanswered_지식갭_목록(client, tenant_id, fake_llm):
 
 
 @pytest.mark.asyncio
-async def test_첨부전용_턴은_KB_지표에서_제외(client, tenant_id, fake_llm):
+async def test_첨부전용_턴은_KB_지표에서_제외(client, tenant_id, fake_llm, relaxed_quota):
     """#63 — ATTACHMENT 턴이 intent='KNOWLEDGE'로 남으면 첨부 요약 질문이 근거미확인율
     분모·지식 갭 리포트에 섞인다(첨부는 KB와 무관 — 리뷰 발견). 각주 누락(최악 조합:
     인용 0건)이어도 두 지표 모두에 안 잡혀야 한다."""
@@ -150,7 +154,7 @@ async def test_첨부전용_턴은_KB_지표에서_제외(client, tenant_id, fak
 
 
 @pytest.mark.asyncio
-async def test_stats_테넌트_격리(client, tenant_id, other_tenant_id, fake_llm):
+async def test_stats_테넌트_격리(client, tenant_id, other_tenant_id, fake_llm, relaxed_quota):
     await _ask(client, '질문 하나')                              # tenant A에 거절 데이터
     async with AsyncClient(transport=ASGITransport(app=__import__('main').app),
                            base_url='http://testserver',
@@ -163,7 +167,7 @@ async def test_stats_테넌트_격리(client, tenant_id, other_tenant_id, fake_l
 # ── #61: 거절 문구 판정 → 인용없음(ungrounded) 구조 판정 전환 ────────────
 
 @pytest.mark.asyncio
-async def test_비표준_거절문구도_ungrounded로_집계된다(client, tenant_id, fake_llm, pass_gate):
+async def test_비표준_거절문구도_ungrounded로_집계된다(client, tenant_id, fake_llm, pass_gate, relaxed_quota):
     """옛 문구 판정이 놓쳤던 유형 — 핵심 문구 없이 부재를 단정하고 꼬리가 빈 답변.
 
     실측 사례(#48 거절축 덤프): "해외 배송은 제공되지 않습니다. ««»»"
@@ -181,7 +185,7 @@ async def test_비표준_거절문구도_ungrounded로_집계된다(client, tena
 
 
 @pytest.mark.asyncio
-async def test_차단_턴은_ungrounded_집계에서_빠진다(client, tenant_id, fake_llm):
+async def test_차단_턴은_ungrounded_집계에서_빠진다(client, tenant_id, fake_llm, relaxed_quota):
     """차단은 '근거 없이 답했다'가 아니다 — status='blocked'가 분모·분자 양쪽에서 걸러낸다.
 
     #61 주의점: 차단 턴은 sources=[]라 구조 판정만 보면 ungrounded가 된다(옛 문구 판정에서는
@@ -199,7 +203,7 @@ async def test_차단_턴은_ungrounded_집계에서_빠진다(client, tenant_id
 
 
 @pytest.mark.asyncio
-async def test_OTHER_잡담은_지식갭_목록에_안_뜬다(client, tenant_id, fake_llm):
+async def test_OTHER_잡담은_지식갭_목록에_안_뜬다(client, tenant_id, fake_llm, relaxed_quota):
     """#61이 만든 신규 회귀를 막는다 — stats_unanswered에 intent 필터가 새로 필요해졌다.
 
     문구 판정 시절엔 잡담 답변이 거절 문구를 담을 일이 없어 안 걸렸다. 인용 기반 판정에서는
@@ -217,7 +221,7 @@ async def test_OTHER_잡담은_지식갭_목록에_안_뜬다(client, tenant_id,
 
 
 @pytest.mark.asyncio
-async def test_문구가_거절이어도_인용이_있으면_ungrounded가_아니다(client, tenant_id, fake_llm, pass_gate):
+async def test_문구가_거절이어도_인용이_있으면_ungrounded가_아니다(client, tenant_id, fake_llm, pass_gate, relaxed_quota):
     """판정이 문구에서 완전히 분리됐다는 것의 대칭 확인 (#61).
 
     옛 streaming.py의 `refusal or` 절은 "본문은 거절인데 꼬리에 번호가 남은" 모순을

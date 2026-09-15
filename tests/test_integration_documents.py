@@ -4,6 +4,7 @@
 버전 엎어치기(supersede)→dedupe→실패 경로(drain이 failed 확정)→소프트 삭제.
 업로드는 arq를 만지지 않는다 — 문서와 색인 대기열 행이 같은 트랜잭션에 커밋된다 (#139 outbox).
 """
+import json
 from datetime import timedelta
 
 import pytest
@@ -17,10 +18,18 @@ from tests.conftest import indexed_chunk_texts, ingest
 from rag.models import AnswerCache as AnswerCacheRow, Document
 
 
-async def _upload(client, filename: str, content: bytes, mime='text/markdown', headers=None) -> dict:
-    res = await client.post('/kms/documents', files={'file': (filename, content, mime)}, headers=headers)
+async def _upload(client, filename: str, content: bytes, mime='text/markdown', headers=None,
+                  extra_parts=None) -> dict:
+    files = {'file': (filename, content, mime), **(extra_parts or {})}
+    res = await client.post('/kms/documents', files=files, headers=headers)
     assert res.status_code == 200, res.text
     return res.json()
+
+
+def _doc_data(**fields) -> dict:
+    """document-data 파트 (#165) — 브라우저가 Blob으로 실을 때와 같은 모양.
+    filename이 붙어 서버에는 UploadFile로 도착한다."""
+    return {'document-data': ('blob', json.dumps(fields), 'application/json')}
 
 
 async def _get_doc(doc_id: int) -> Document:
@@ -409,9 +418,10 @@ async def test_동시_삽입은_유니크_인덱스가_막고_409(client, tenant
     import routers.documents as rd
     real = rd.handle_upload
 
-    async def _collide(session, t, filename, blob_path, description=None, uploaded_by=None):
-        doc = await real(session, t, filename, blob_path, description=description,
-                         uploaded_by=uploaded_by)
+    # 인자는 그대로 흘려보낸다 — handle_upload에 파라미터가 하나 늘 때마다 이 대역이 깨져
+    # 무관한 테스트가 실패하던 것을 끊는다(#164·#165에서 연달아 겪었다).
+    async def _collide(session, t, filename, blob_path, **kw):
+        doc = await real(session, t, filename, blob_path, **kw)
         doc.version = 1          # 남이 방금 v1을 넣은 것과 같은 결과
         return doc
 
@@ -484,3 +494,118 @@ async def test_재업로드_등록자는_계승하지_않는다(client, tenant_i
     v3 = await _upload(client, '환불정책.md', MD)
     assert v3['version'] == 3
     assert v3['uploaded_by'] is None
+
+
+# ── #165 업로드 시 폴더 지정 (document-data 파트) ─────────────
+
+async def _folder(client, name: str) -> int:
+    res = await client.post('/kms/folders', json={'name': name})
+    assert res.status_code == 200, res.text
+    return res.json()['id']
+
+
+@pytest.mark.asyncio
+async def test_업로드_시_폴더_지정(client, tenant_id, fake_queue, blob_tmp):
+    fid = await _folder(client, '규정집')
+    body = await _upload(client, '환불정책.md', MD, extra_parts=_doc_data(folder_id=fid))
+    assert body['folder_id'] == fid
+    assert (await _get_doc(body['document_id'])).folder_id == fid
+
+
+@pytest.mark.asyncio
+async def test_document_data를_문자열_파트로_보내도_동작(client, tenant_id, fake_queue, blob_tmp):
+    """브라우저는 Blob(=UploadFile)로, 다른 클라이언트는 문자열 필드로 보낼 수 있다 — 둘 다 받는다."""
+    fid = await _folder(client, '규정집')
+    body = await _upload(client, '환불정책.md', MD,
+                         extra_parts={'document-data': (None, json.dumps({'folder_id': fid}))})
+    assert body['folder_id'] == fid
+
+
+@pytest.mark.asyncio
+async def test_folder_id_null이면_미분류로_뗀다(client, tenant_id, fake_queue, blob_tmp):
+    """null 전송 = 미분류. 값만 보면 '안 보냄'과 같아서, 보냈는지 여부로 갈린다."""
+    fid = await _folder(client, '규정집')
+    v1 = await _upload(client, '환불정책.md', MD, extra_parts=_doc_data(folder_id=fid))
+    await ingest(v1['document_id'])
+
+    v2 = await _upload(client, '환불정책.md', MD, extra_parts=_doc_data(folder_id=None))
+    assert v2['version'] == 2
+    assert v2['folder_id'] is None
+
+
+@pytest.mark.asyncio
+async def test_folder_id_미전송이면_직전_버전에서_계승(client, tenant_id, fake_queue, blob_tmp):
+    fid = await _folder(client, '규정집')
+    v1 = await _upload(client, '환불정책.md', MD, extra_parts=_doc_data(folder_id=fid))
+    await ingest(v1['document_id'])
+
+    # document-data는 보내되 folder_id 키만 없다 → 계승
+    v2 = await _upload(client, '환불정책.md', MD, extra_parts=_doc_data(description='표 설명'))
+    assert v2['folder_id'] == fid
+    assert (await _get_doc(v2['document_id'])).description == '표 설명'   # JSON 경로도 값이 산다
+    # 파트 자체를 안 보내도 계승 (옛 방식 호출)
+    v3 = await _upload(client, '환불정책.md', MD)
+    assert v3['folder_id'] == fid
+
+
+@pytest.mark.asyncio
+async def test_없는_폴더는_404_문서도_blob도_안_남는다(client, tenant_id, fake_queue, blob_tmp):
+    res = await client.post('/kms/documents',
+                            files={'file': ('환불정책.md', MD, 'text/markdown'),
+                                   **_doc_data(folder_id=999999)})
+    assert res.status_code == 404
+    async with AsyncSessionLocal() as s:
+        cnt = (await s.execute(select(func.count()).select_from(Document)
+                               .where(Document.tenant_id == tenant_id))).scalar()
+    assert cnt == 0
+    assert not (blob_tmp / tenant_id).exists() or not list((blob_tmp / tenant_id).iterdir())
+
+
+@pytest.mark.asyncio
+async def test_다른_테넌트_폴더는_404(client, tenant_id, other_tenant_id, fake_queue, blob_tmp):
+    """격리 — 남의 폴더 id를 넣어도 통과하면 안 된다."""
+    res = await client.post('/kms/folders', json={'name': '남의폴더'},
+                            headers={'X-Tenant-Id': other_tenant_id})
+    other_fid = res.json()['id']
+
+    res = await client.post('/kms/documents',
+                            files={'file': ('환불정책.md', MD, 'text/markdown'),
+                                   **_doc_data(folder_id=other_fid)})
+    assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_document_data와_평면필드_동시_전송은_400(client, tenant_id, fake_queue, blob_tmp):
+    """한쪽을 조용히 무시하면 '보냈는데 안 먹는' 버그가 된다 — 명시 거절."""
+    res = await client.post('/kms/documents',
+                            files={'file': ('환불정책.md', MD, 'text/markdown'),
+                                   **_doc_data(description='새 방식')},
+                            data={'description': '옛 방식'})
+    assert res.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_잘못된_document_data는_422(client, tenant_id, fake_queue, blob_tmp):
+    for bad in ('{깨진 json', json.dumps({'folder_id': 'abc'}), json.dumps({'오타필드': 1})):
+        res = await client.post('/kms/documents',
+                                files={'file': ('환불정책.md', MD, 'text/markdown'),
+                                       'document-data': ('blob', bad, 'application/json')})
+        assert res.status_code == 422, f'{bad} → {res.status_code}'
+
+
+@pytest.mark.asyncio
+async def test_옛_평면필드_방식은_그대로_동작(client, tenant_id, fake_queue, blob_tmp):
+    """FE 전환 전 호출 호환 — description·expect_version 평면 필드."""
+    res = await client.post('/kms/documents',
+                            files={'file': ('환불정책.md', MD, 'text/markdown')},
+                            data={'description': '표 설명', 'expect_version': '0'})
+    assert res.status_code == 200, res.text
+    assert (await _get_doc(res.json()['document_id'])).description == '표 설명'
+
+
+@pytest.mark.asyncio
+async def test_신규_문서에_폴더를_안_주면_미분류(client, tenant_id, fake_queue, blob_tmp):
+    """계승할 직전 버전이 없을 때의 기본값 — 파트를 안 보내도, 보내되 folder_id만 빼도 미분류."""
+    a = await _upload(client, '환불정책.md', MD)
+    b = await _upload(client, '배송정책.md', MD, extra_parts=_doc_data(description='표 설명'))
+    assert a['folder_id'] is None and b['folder_id'] is None

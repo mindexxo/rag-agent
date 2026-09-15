@@ -198,3 +198,29 @@ async def test_업로드_시_지정한_폴더가_색인_메타까지_간다(clie
     assert mine, '방금 색인한 문서가 후보에 없다'
     assert mine[0].folder_name == '정책'
     assert mine[0].folder_description == '환불·반품 규정 모음'
+
+
+@pytest.mark.asyncio
+async def test_검색제외_폴더로_업로드하면_검색에_안_잡힌다(client, tenant_id, fake_queue, blob_tmp, fake_embed):
+    """#165: 폴더의 참조 off가 **신규 업로드에도** 먹는지.
+
+    이미 색인된 문서는 폴더 토글이 META 부분갱신으로 반영된다(위 2번). 처음부터 off 폴더로
+    들어온 문서는 그 경로를 타지 않고 INDEX_DOCUMENT로 색인되므로, 색인 시점의
+    effective_searchable 계산에 폴더 상태가 들어가야 한다 — 빠지면 대외비 폴더에 올린 문서가
+    검색에 그대로 노출된다.
+    """
+    folder = (await client.post('/kms/folders', json={'name': '대외비'})).json()
+    assert (await client.patch(f"/kms/folders/{folder['id']}",
+                               json={'is_searchable': False})).status_code == 200
+
+    res = await client.post('/kms/documents', files={
+        'file': ('환불정책.md', MD, 'text/markdown'),
+        'document-data': ('blob', json.dumps({'folder_id': folder['id']}), 'application/json'),
+    })
+    assert res.status_code == 200, res.text
+    doc_id = res.json()['document_id']
+    await ingest(doc_id)
+
+    async with AsyncSessionLocal() as s:
+        cands = await retrieve_candidates(s, tenant_id, '반품 기간', top_n=20)
+    assert [c for c in cands.chunks if c.document_id == doc_id] == [], '참조 off 폴더 문서가 검색 후보에 떴다'

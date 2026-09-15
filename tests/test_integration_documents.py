@@ -601,3 +601,11 @@ async def test_옛_평면필드_방식은_그대로_동작(client, tenant_id, fa
                             data={'description': '표 설명', 'expect_version': '0'})
     assert res.status_code == 200, res.text
     assert (await _get_doc(res.json()['document_id'])).description == '표 설명'
+
+
+@pytest.mark.asyncio
+async def test_신규_문서에_폴더를_안_주면_미분류(client, tenant_id, fake_queue, blob_tmp):
+    """계승할 직전 버전이 없을 때의 기본값 — 파트를 안 보내도, 보내되 folder_id만 빼도 미분류."""
+    a = await _upload(client, '환불정책.md', MD)
+    b = await _upload(client, '배송정책.md', MD, extra_parts=_doc_data(description='표 설명'))
+    assert a['folder_id'] is None and b['folder_id'] is None

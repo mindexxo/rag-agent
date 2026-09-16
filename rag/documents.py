@@ -198,6 +198,55 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
     INDEX_TOTAL.labels(ext=_ext, result='ok').inc()   # 실패 쪽은 outbox.drain이 센다(재시도/확정 구분)
 
 
+async def soft_delete_documents(
+        session: AsyncSession, tenant_id: str, document_ids: list[int]
+) -> list[int]:
+    """문서 소프트 삭제 (F5) — 단건·일괄 삭제가 공유하는 하나의 경로 (#174).
+
+    같은 filename의 **전 버전**을 함께 내린다. 한 버전만 내리면 그 이름의 옛 버전이 검색에
+    되살아난 것처럼 보인다(supersede와 같은 메커니즘).
+
+    - status='deleted' + is_active=False → 검색 즉시 제외 + 목록에서 사라짐
+    - 캐시 무효화 → 이 문서를 근거로 만든 답변 재사용 방지
+    - DROP_DOCUMENTS outbox → 색인에서 청크 제거. **이게 빠지면 지운 문서가 계속 인용된다**
+    - documents row·blob은 보존 → 과거 대화 인용의 원본 다운로드 유지
+
+    반환은 실제로 내려간 document_id들 — 전 버전을 함께 내리므로 요청한 id보다 많을 수 있다.
+    **커밋하지 않는다**: 호출부 트랜잭션에 얹힌다(outbox.enqueue와 같은 규약). 문서 UPDATE·
+    캐시 삭제·대기열 행이 한 커밋으로 묶여야 "문서는 지웠는데 색인엔 남는" 상태가 안 생긴다.
+
+    status 필터를 두지 않는 것은 의도다 — 이미 deleted인 문서를 다시 지워도 성공으로 본다
+    (삭제는 "그 문서가 없는 상태"를 만드는 것이라, 이미 그 상태면 실패로 볼 이유가 없다).
+    단건 DELETE가 원래 이렇게 동작했고, 일괄도 같은 규칙을 쓴다.
+    """
+    if not document_ids:
+        return []
+    # id → filename을 **서브쿼리로** 푼다. 따로 SELECT해서 값을 받아오면 그 사이에 같은 이름의
+    # 새 버전이 들어올 창이 생긴다 — 한 문장이면 그 창이 없다(단건이 쓰던 방식 그대로다).
+    # 요청에 같은 문서의 다른 버전이 섞여 있어도 filename으로 모이므로 한 번만 처리된다.
+    filenames = (
+        select(Document.filename)
+        .where(Document.tenant_id == tenant_id)      # 격리 — WHERE 절 명시
+        .where(Document.id.in_(document_ids))
+    )
+    doc_ids = (await session.execute(
+        update(Document)
+        .where(Document.tenant_id == tenant_id)      # 격리 — UPDATE에도 유지(이중 방어).
+                                                     # 이게 빠지면 같은 파일명을 쓰는 남의 테넌트
+                                                     # 문서까지 지워진다 — 테스트로 고정해 둔다.
+        .where(Document.filename.in_(filenames))
+        .values(is_active=False, status='deleted', status_reason='user_deleted')
+        .returning(Document.id)
+    )).scalars().all()
+    if not doc_ids:
+        return []
+
+    for did in doc_ids:
+        await cache.invalidate_source(session, tenant_id, did)
+    outbox.enqueue(session, tenant_id, outbox.DROP_DOCUMENTS, document_ids=list(doc_ids))
+    return list(doc_ids)
+
+
 async def handle_upload(
         session: AsyncSession,
         tenant_id: str,

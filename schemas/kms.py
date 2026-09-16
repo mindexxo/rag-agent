@@ -116,9 +116,9 @@ class DocumentUpdateRequest(BaseModel):
     is_searchable: bool | None = None
 
 
-# 한 번에 바꿀 수 있는 문서 수 (#166). 화면에서 한 페이지를 전체 선택해도 들어가는 크기면서,
-# 사고로 수만 건이 한 요청에 실려 오는 것은 막는 선. 초과는 422.
-BULK_UPDATE_MAX_ITEMS = 200
+# 한 번에 다룰 수 있는 문서 수 — 일괄 변경(#166)·일괄 삭제(#174) 공통. 화면에서 한 페이지를
+# 전체 선택해도 들어가는 크기면서, 사고로 수만 건이 한 요청에 실려 오는 것은 막는 선. 초과는 422.
+BULK_MAX_ITEMS = 200
 
 
 class DocumentBulkUpdateRequest(BaseModel):
@@ -127,7 +127,7 @@ class DocumentBulkUpdateRequest(BaseModel):
     필드 의미는 DocumentUpdateRequest와 같다(folder_id는 null 전송 = 미분류, 미전송 = 변경 없음).
     대상이 하나라도 어긋나면 아무것도 바꾸지 않는다 — 판정은 routers/documents.py.
     """
-    document_ids: list[int] = Field(default=[], max_length=BULK_UPDATE_MAX_ITEMS)
+    document_ids: list[int] = Field(default=[], max_length=BULK_MAX_ITEMS)
     folder_id: int | None = None
     is_searchable: bool | None = None
 

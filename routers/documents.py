@@ -38,7 +38,8 @@ from rag.chunking import extract_text
 from rag.documents import handle_upload
 from rag.models import Document, Folder
 from routers.kms import get_tenant_id, get_user_id
-from schemas.kms import (ATTACHMENT_FILENAME_MAX, ATTACHMENT_MAX_TEXT_CHARS, DocumentExistsResponse,
+from schemas.kms import (ATTACHMENT_FILENAME_MAX, ATTACHMENT_MAX_TEXT_CHARS,
+                         DocumentBulkUpdateRequest, DocumentExistsResponse,
                          DocumentUploadMetadata, DocumentUploadResponse, DocumentUpdateRequest,
                          QueryAttachment)
 from text_norm import normalize_filename
@@ -326,6 +327,84 @@ async def _folder_is_on(session: AsyncSession, tenant_id: str, folder_id: int | 
     )).scalar())
 
 
+@router.patch('/documents', response_model=list[DocumentUploadResponse])
+async def bulk_update_documents(
+        request: DocumentBulkUpdateRequest,
+        tenant_id: str = Depends(get_tenant_id),
+        session: AsyncSession = Depends(get_session)
+):
+    """문서 여러 건의 폴더 소속·참조 on/off를 한 번에 바꾼다 (#166).
+
+    단건 PATCH를 N번 부른 것과 결과는 같지만 커밋도, 색인 갱신 대기열 행도 한 번이다.
+    대상이 하나라도 어긋나면(없는 id·다른 테넌트·삭제됨) **아무것도 바꾸지 않고 404**를 준다 —
+    화면에서 체크한 목록과 결과가 어긋나면 무엇이 반영됐는지 되짚을 방법이 없다.
+    """
+    changing_folder = 'folder_id' in request.model_fields_set   # null 전송(미분류)과 미전송 구분
+    changing_searchable = request.is_searchable is not None
+    if not request.document_ids or not (changing_folder or changing_searchable):
+        return []    # 바꿀 것이 없는 요청은 조회도 하지 않는다
+
+    # 1. 대상 확정. 테넌트 격리 규약 2항(UPDATE 전에 스코프 조회로 id를 확정한다)을 이 단계가
+    #    겸한다 — 아래 outbox가 부르는 os_index.sync_meta_documents_now는 document_ids에
+    #    tenant 필터를 걸지 않고 호출부의 사전 스코프를 전제하기 때문이다.
+    ids = list(dict.fromkeys(request.document_ids))    # 중복 제거(순서 유지) — 같은 id를 두 번 세지 않게
+    docs = (await session.execute(
+        select(Document)
+        .where(Document.tenant_id == tenant_id)
+        .where(Document.status != 'deleted')
+        .where(Document.id.in_(ids))
+        .order_by(Document.id)
+    )).scalars().all()
+    missing = [i for i in ids if i not in {d.id for d in docs}]
+    if missing:
+        # 남의 테넌트 id인지 없는 id인지 구분해 알려주지 않는다 — 요청자가 보낸 값을 되돌려줄 뿐.
+        raise HTTPException(status_code=404, detail=f'문서를 찾을 수 없습니다: {missing[:10]}')
+
+    # 2. 폴더 검증은 1회면 된다(대상 전부가 같은 폴더로 간다).
+    folder_on: dict[int, bool] = {}
+    if changing_folder and request.folder_id is not None:
+        folder = (await session.execute(
+            select(Folder)
+            .where(Folder.tenant_id == tenant_id)   # 다른 테넌트 폴더 지정 차단
+            .where(Folder.id == request.folder_id)
+        )).scalars().first()
+        if folder is None:
+            raise HTTPException(status_code=404, detail="folder not found")
+        folder_on[folder.id] = folder.is_searchable
+
+    # 3. 변경 **전** 실효 참조를 따지려면 각 문서가 지금 속한 폴더의 상태가 필요하다.
+    #    문서마다 폴더가 다르므로 한 번에 모아 온다 — 단건처럼 문서 수만큼 조회하지 않는다.
+    current_folder_ids = {d.folder_id for d in docs if d.folder_id is not None} - folder_on.keys()
+    if current_folder_ids:
+        folder_on.update({r.id: r.is_searchable for r in (await session.execute(
+            select(Folder.id, Folder.is_searchable)
+            .where(Folder.tenant_id == tenant_id)
+            .where(Folder.id.in_(current_folder_ids))
+        )).all()})
+
+    def _effective(doc: Document) -> bool:
+        """실효 참조 = 문서 on AND (미분류 OR 폴더 on) — _folder_is_on과 같은 규칙."""
+        return doc.is_searchable and (doc.folder_id is None or bool(folder_on.get(doc.folder_id)))
+
+    # 4. 캐시 무효화는 **문서별로** 판정한다. 문서마다 현재 폴더·스위치가 달라 on→off 전이도
+    #    제각각이다 — 일괄로 판정하면 off된 문서를 근거로 만든 답변이 캐시로 계속 나간다.
+    for doc in docs:
+        before = _effective(doc)
+        if changing_folder:
+            doc.folder_id = request.folder_id
+        if changing_searchable:
+            doc.is_searchable = request.is_searchable
+        if before and not _effective(doc):
+            await cache.invalidate_source(session, tenant_id, doc.id)
+
+    # 5. 색인의 비정규화 메타 갱신은 **한 행**에 담는다 (#139). 워커는 최종값이 같은 문서끼리
+    #    묶어 갱신하므로(os_index.sync_meta_documents_now) 200건이어도 보통 질의 1~2회다.
+    outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=[d.id for d in docs])
+    await session.commit()
+    # ref_count는 비운다 — 목록 API 전용 집계다(_to_response 기본값).
+    return [_to_response(d) for d in docs]
+
+
 @router.patch('/documents/{document_id}', response_model=DocumentUploadResponse)
 async def update_document(
         document_id: int,
@@ -337,6 +416,9 @@ async def update_document(
     doc = (await session.execute(
         select(Document)
         .where(Document.tenant_id == tenant_id)
+        # 삭제된 문서는 대상이 아니다 (#166). 목록·exists 조회는 전부 이 필터를 갖고 있는데
+        # 여기만 빠져 있어, 목록에 뜨지도 않는 죽은 행의 폴더·참조 컬럼이 200으로 바뀌었다.
+        .where(Document.status != 'deleted')
         .where(Document.id == document_id)
     )).scalars().first()
     if doc is None:

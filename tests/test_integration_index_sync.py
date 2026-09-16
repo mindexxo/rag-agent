@@ -224,3 +224,28 @@ async def test_검색제외_폴더로_업로드하면_검색에_안_잡힌다(cl
     async with AsyncSessionLocal() as s:
         cands = await retrieve_candidates(s, tenant_id, '반품 기간', top_n=20)
     assert [c for c in cands.chunks if c.document_id == doc_id] == [], '참조 off 폴더 문서가 검색 후보에 떴다'
+
+
+@pytest.mark.asyncio
+async def test_일괄_참조끄기가_한_행으로_모든_문서를_제외한다(client, tenant_id, fake_queue,
+                                                        blob_tmp, fake_embed):
+    """#166: 일괄 변경이 남기는 META 행은 **하나**인데, 그 한 행이 담긴 문서 전부를 갱신해야 한다.
+
+    위 2번(단건 토글)은 문서 하나짜리 payload를 본다. 여기서 보는 건 payload의 document_ids가
+    여러 개일 때다 — 워커가 최종값이 같은 문서끼리 묶어 한 번에 갱신하는 경로(sync_meta_documents_now)라
+    한쪽만 반영되면 "체크해서 껐는데 일부가 계속 검색되는" 형태로 샌다.
+    """
+    a = await _upload(client, '환불정책.md')
+    b = await _upload(client, '배송정책.md')
+    await ingest(a['document_id'])
+    await ingest(b['document_id'])
+    assert {a['document_id'], b['document_id']} <= await _cited_ids(tenant_id)
+
+    res = await client.patch('/kms/documents', json={
+        'document_ids': [a['document_id'], b['document_id']], 'is_searchable': False})
+    assert res.status_code == 200, res.text
+
+    # 한 행에 둘 다 담겨 있으므로 drain은 한 번이면 된다 (pending_row_ids가 document_ids 배열도 찾는다)
+    assert await ingest(a['document_id']) == {'done': 1, 'failed': 0}
+    ids = await _cited_ids(tenant_id)
+    assert a['document_id'] not in ids and b['document_id'] not in ids

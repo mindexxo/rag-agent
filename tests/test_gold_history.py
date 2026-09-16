@@ -108,9 +108,11 @@ class TestSmokeSample:
     def test_작은_스모크에도_모든_타입이_들어온다(self):
         from eval.generation import GEN_TYPES, _smoke_sample
 
-        rows = ([{'type': 'single_fact'}] * 20 + [{'type': 'paraphrase'}] * 20
-                + [{'type': 'rare_lexical'}] * 10 + [{'type': 'multi_doc'}] * 10
-                + [{'type': 'multi_turn'}] * 15)          # gold의 테넌트 블록 순서와 같은 모양
+        # 타입이 블록으로 뭉친 모양을 만든다 — gold가 그렇게 생겼고, 앞에서 자르면 뒤쪽 타입이
+        # 통째로 빠지는 상황이 이 테스트가 재현하려는 것이다.
+        # 목록을 손으로 적지 않고 GEN_TYPES에서 만드는 이유: 손으로 적었더니 #95가 고난도 6종을
+        # 합류시킨 뒤로 이 픽스처만 5종에 머물러, 통과할 수 없는 단언이 2주 넘게 빨간 채였다(#173).
+        rows = [{'type': t} for t in sorted(GEN_TYPES) for _ in range(10)]
         for n in (1, 5, 10):
             got = {r['type'] for r in _smoke_sample(rows, n)}
             assert got == GEN_TYPES, f'SMOKE={n}에서 누락: {GEN_TYPES - got}'

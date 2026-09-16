@@ -40,3 +40,22 @@ def nfc(text: str) -> str:
     """비교 직전 방어용 NFC 정규화 — 통제 불가 입력(LLM 출력)과 맞출 때만 쓴다.
     저장·전달 값을 바꾸는 용도가 아니다 (그건 normalize_filename의 몫)."""
     return unicodedata.normalize('NFC', text)
+
+
+# LIKE 패턴에서 특수 의미를 갖는 문자. ESCAPE 절과 짝이며, 백슬래시가 먼저 나와야 한다
+# (뒤에 두면 %·_를 이스케이프하며 넣은 백슬래시를 다시 이스케이프한다).
+LIKE_ESCAPE_CHAR = '\\'
+_LIKE_SPECIALS = (LIKE_ESCAPE_CHAR, '%', '_')
+
+
+def like_pattern(q: str) -> str:
+    """사용자 입력을 부분일치 LIKE 패턴으로 만든다 — 대화 검색(#28)·문서 목록 검색(#176) 공용.
+
+    이스케이프하지 않으면 검색어의 %·_가 와일드카드로 동작한다 — 'a_b'로 검색하면 'axb'까지
+    걸린다(실측). 문서 파일명에는 _가 흔해서(kms_01_비밀번호재설정.pdf) 특히 잘 드러난다.
+    SQLAlchemy .ilike()는 자동 이스케이프를 하지 않으므로, 호출부가 escape=LIKE_ESCAPE_CHAR를
+    함께 넘겨야 이 치환이 의미를 갖는다.
+    """
+    for ch in _LIKE_SPECIALS:
+        q = q.replace(ch, LIKE_ESCAPE_CHAR + ch)
+    return f'%{q}%'

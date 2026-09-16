@@ -157,3 +157,26 @@ async def test_같은_파일명이_두_테넌트에_있어도_내_것만_지운�
 
         still = (await other.get(f"/kms/documents/{theirs['document_id']}")).json()
         assert still['status'] != 'deleted', '같은 파일명을 쓰는 남의 문서가 지워졌다'
+
+
+@pytest.mark.asyncio
+async def test_문서_목록_필터_격리(client, tenant_id, other_tenant_id, fake_queue, blob_tmp):
+    """#176으로 늘어난 표면 — 검색·필터 **어떤 조합으로도** 남의 문서가 새면 안 된다.
+
+    total·has_more가 필터와 같은 WHERE에서 나오므로, 격리가 빠지면 목록 본문뿐 아니라
+    건수까지 남의 데이터를 센다(화면에 '전체 12건'인데 6건만 보이는 형태로 드러난다).
+    """
+    md = '# 제목\n\n본문 내용\n'.encode()
+    same_name = '환불정책.md'
+    (await client.post('/kms/documents', files={'file': (same_name, md, 'text/markdown')})).json()
+
+    async with _client_for(other_tenant_id) as other:
+        await other.post('/kms/documents', files={'file': (same_name, md, 'text/markdown')})
+        await other.post('/kms/documents', files={'file': ('B사전용.md', md, 'text/markdown')})
+
+        for params in ({}, {'q': '환불'}, {'q': 'B사'}, {'status': 'pending'},
+                       {'is_searchable': True}, {'folder_id': 0}, {'limit': 200}):
+            body = (await client.get('/kms/documents', params=params or None)).json()
+            names = [d['filename'] for d in body['items']]
+            assert 'B사전용.md' not in names, f'{params}: 남의 문서가 목록에 떴다'
+            assert body['total'] == len(names), f'{params}: total이 남의 문서까지 셌다'

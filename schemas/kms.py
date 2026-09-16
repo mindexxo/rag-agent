@@ -101,6 +101,30 @@ class DocumentUploadMetadata(BaseModel):
     expect_version: int | None = None     # 낙관적 잠금 — 의미는 upload_document 참조
 
 
+# 한 번에 다룰 수 있는 문서 수 — 일괄 변경(#166)·일괄 삭제(#174) 공통. 화면에서 한 페이지를
+# 전체 선택해도 들어가는 크기면서, 사고로 수만 건이 한 요청에 실려 오는 것은 막는 선. 초과는 422.
+BULK_MAX_ITEMS = 200
+
+# 문서 목록 페이지 크기 (#176). 상한을 BULK_MAX_ITEMS에 맞춘 건 화면에서 **한 페이지를 전체
+# 선택해 일괄 변경·삭제로 넘기는** 흐름 때문이다 — 페이지가 그 상한을 넘으면 전체선택이 422가 된다.
+DOC_LIST_DEFAULT_LIMIT = 50
+DOC_LIST_MAX_LIMIT = BULK_MAX_ITEMS
+
+# 목록 상태 필터로 받을 수 있는 값 (rag/models.py Document.status의 어휘와 같아야 한다).
+DOC_STATUSES = frozenset({'pending', 'parsing', 'embedding', 'ready', 'failed'})
+
+
+class DocumentListResponse(BaseModel):
+    """문서 목록 (#176) — 필드 이름은 대화 목록(ConversationListResponse)과 맞춘다.
+
+    has_more는 total에서 파생한다(offset + len(items) < total). limit+1 조회 트릭을 쓰지 않는
+    것도 대화 목록과 같다 — total이 있으면 산술로 나오고, 마지막 부분 페이지에서도 정확하다.
+    """
+    items: list[DocumentUploadResponse]
+    total: int = 0
+    has_more: bool
+
+
 class DocumentExistsResponse(BaseModel):
     """업로드 전 동일 파일명 존재 확인 응답 (FE가 대체 확인 창을 띄울지 판단)."""
     exists: bool
@@ -115,10 +139,6 @@ class DocumentUpdateRequest(BaseModel):
     folder_id: int | None = None
     is_searchable: bool | None = None
 
-
-# 한 번에 다룰 수 있는 문서 수 — 일괄 변경(#166)·일괄 삭제(#174) 공통. 화면에서 한 페이지를
-# 전체 선택해도 들어가는 크기면서, 사고로 수만 건이 한 요청에 실려 오는 것은 막는 선. 초과는 422.
-BULK_MAX_ITEMS = 200
 
 
 class DocumentBulkUpdateRequest(BaseModel):

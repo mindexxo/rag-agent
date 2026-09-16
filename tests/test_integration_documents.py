@@ -15,7 +15,7 @@ from rag import cache
 from rag import outbox
 from rag.models import SearchIndexOutbox
 from tests.conftest import indexed_chunk_texts, ingest
-from rag.models import AnswerCache as AnswerCacheRow, Document
+from rag.models import AnswerCache as AnswerCacheRow, Conversation, Document, Message
 
 
 async def _upload(client, filename: str, content: bytes, mime='text/markdown', headers=None,
@@ -446,7 +446,7 @@ async def test_목록은_등록일시_내림차순이고_등록자를_싣는다(
     first = await _upload(client, '가정책.md', MD, headers={'X-User-Id': 'agent-a'})
     second = await _upload(client, '나정책.md', MD, headers={'X-User-Id': 'agent-b'})
 
-    items = (await client.get('/kms/documents')).json()
+    items = (await client.get('/kms/documents')).json()['items']
     assert [d['document_id'] for d in items] == [second['document_id'], first['document_id']]
     assert items[0]['uploaded_by'] == 'agent-b'
     assert items[0]['uploaded_at']                      # datetime 직렬화 확인
@@ -458,7 +458,7 @@ async def test_목록은_등록일시_내림차순이고_등록자를_싣는다(
         doc.uploaded_at = doc.uploaded_at + timedelta(days=1)
         await s.commit()
 
-    items = (await client.get('/kms/documents')).json()
+    items = (await client.get('/kms/documents')).json()['items']
     assert [d['document_id'] for d in items] == [first['document_id'], second['document_id']]
 
 
@@ -791,7 +791,7 @@ async def test_일괄_삭제는_목록에서_사라지고_전_버전을_함께_�
     # 요청한 건 v2지만 같은 filename의 v1도 함께 내려간다
     for did in (a_v1['document_id'], a_v2['document_id'], b['document_id']):
         assert (await _get_doc(did)).status == 'deleted'
-    assert (await client.get('/kms/documents')).json() == []
+    assert (await client.get('/kms/documents')).json()['items'] == []
 
 
 @pytest.mark.asyncio
@@ -866,3 +866,144 @@ async def test_단건_삭제_동작_보존(client, tenant_id, fake_queue, blob_t
     assert (await client.delete(f"/kms/documents/{doc['document_id']}")).status_code == 204
     assert (await client.delete(f"/kms/documents/{doc['document_id']}")).status_code == 204
     assert (await client.delete('/kms/documents/999999')).status_code == 404
+
+
+# ── #176 목록 페이징 + 검색·필터 ──────────────────────────────
+
+async def _list(client, **params):
+    res = await client.get('/kms/documents', params=params or None)
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+@pytest.mark.asyncio
+async def test_목록_페이징_total과_has_more(client, tenant_id, fake_queue, blob_tmp):
+    ids = [(await _upload(client, f'정책{i}.md', MD))['document_id'] for i in range(5)]
+
+    first = await _list(client, limit=2, offset=0)
+    assert [d['document_id'] for d in first['items']] == ids[:-3:-1]   # 최신순
+    assert first['total'] == 5 and first['has_more'] is True
+
+    last = await _list(client, limit=2, offset=4)
+    assert len(last['items']) == 1                    # 마지막은 부분 페이지
+    assert last['total'] == 5 and last['has_more'] is False
+
+    beyond = await _list(client, limit=2, offset=99)
+    assert beyond['items'] == [] and beyond['total'] == 5 and beyond['has_more'] is False
+
+
+@pytest.mark.asyncio
+async def test_목록_limit은_범위를_벗어나면_상한으로(client, tenant_id, fake_queue, blob_tmp):
+    await _upload(client, '정책.md', MD)
+    for bad in (0, -1, 9999):
+        assert (await _list(client, limit=bad))['total'] == 1     # 422가 아니라 상한으로 클램프
+    assert (await _list(client, offset=-5))['items']              # 음수 offset은 0으로
+
+
+@pytest.mark.asyncio
+async def test_목록_파일명_검색(client, tenant_id, fake_queue, blob_tmp):
+    await _upload(client, '환불정책.md', MD)
+    await _upload(client, '배송정책.md', MD)
+    await _upload(client, 'kms_01_비밀번호.md', MD)
+
+    assert (await _list(client, q='환불'))['total'] == 1
+    assert (await _list(client, q='정책'))['total'] == 2
+    assert (await _list(client, q='없는이름'))['total'] == 0
+    assert (await _list(client, q=''))['total'] == 3            # 빈 검색어는 필터 없음
+
+    # LIKE 이스케이프 — _는 '아무 글자 하나'라, 이스케이프하지 않으면 kmsX01도 걸린다
+    assert (await _list(client, q='kms_01'))['total'] == 1
+    assert (await _list(client, q='kmsX01'))['total'] == 0
+
+
+@pytest.mark.asyncio
+async def test_목록_검색어가_NFD여도_걸린다(client, tenant_id, fake_queue, blob_tmp):
+    """파일명은 NFC로 저장된다(#34). 이름을 복사해 붙여넣으면 NFD일 수 있다 — macOS 경로."""
+    import unicodedata
+    await _upload(client, '환불정책.md', MD)
+    nfd = unicodedata.normalize('NFD', '환불')
+    assert nfd != '환불'                                  # 실제로 분해형이 맞는지 먼저 확인
+    assert (await _list(client, q=nfd))['total'] == 1
+
+
+@pytest.mark.asyncio
+async def test_목록_폴더_필터와_미분류(client, tenant_id, fake_queue, blob_tmp):
+    fid = await _folder(client, '규정집')
+    in_folder = await _upload(client, '환불정책.md', MD, extra_parts=_doc_data(folder_id=fid))
+    unfiled = await _upload(client, '배송정책.md', MD)
+
+    assert [d['document_id'] for d in (await _list(client, folder_id=fid))['items']] \
+        == [in_folder['document_id']]
+    assert [d['document_id'] for d in (await _list(client, folder_id=0))['items']] \
+        == [unfiled['document_id']]                       # 0 = 미분류
+    assert (await _list(client))['total'] == 2            # 필터 없으면 전부
+
+
+@pytest.mark.asyncio
+async def test_목록_상태_필터(client, tenant_id, fake_queue, blob_tmp):
+    doc = await _upload(client, '환불정책.md', MD)         # 업로드 직후는 pending
+    assert (await _list(client, status='pending'))['total'] == 1
+    assert (await _list(client, status='ready'))['total'] == 0
+    assert (await _list(client, status=['ready', 'pending']))['total'] == 1   # 복수 선택
+
+    await ingest(doc['document_id'])                       # ready로 승격
+    assert (await _list(client, status='ready'))['total'] == 1
+
+    res = await client.get('/kms/documents', params={'status': 'done'})
+    assert res.status_code == 422                          # 어휘에 없는 값은 조용히 0건이 아니라 거절
+
+
+@pytest.mark.asyncio
+async def test_목록_답변사용_필터(client, tenant_id, fake_queue, blob_tmp):
+    on = await _upload(client, '환불정책.md', MD)
+    off = await _upload(client, '배송정책.md', MD)
+    assert (await client.patch(f"/kms/documents/{off['document_id']}",
+                               json={'is_searchable': False})).status_code == 200
+
+    assert [d['document_id'] for d in (await _list(client, is_searchable=True))['items']] \
+        == [on['document_id']]
+    assert [d['document_id'] for d in (await _list(client, is_searchable=False))['items']] \
+        == [off['document_id']]
+
+
+@pytest.mark.asyncio
+async def test_목록_ref_count는_이번_페이지만_집계한다(client, tenant_id, fake_queue, blob_tmp):
+    """집계를 페이지의 파일명으로 좁혔다(#176) — 좁히는 조건이 틀리면 0이 되거나 남의 값이 붙는다."""
+    cited = await _upload(client, '환불정책.md', MD)
+    await _upload(client, '배송정책.md', MD)
+
+    async with AsyncSessionLocal() as s:
+        conv = Conversation(tenant_id=tenant_id, created_by='agent-a')
+        s.add(conv)
+        await s.flush()
+        s.add(Message(tenant_id=tenant_id, conversation_id=conv.id, role='assistant',
+                      content='답변', cited_docs=['환불정책.md']))
+        await s.commit()
+
+    body = await _list(client)
+    counts = {d['filename']: d['ref_count'] for d in body['items']}
+    assert counts == {'환불정책.md': 1, '배송정책.md': 0}
+
+    # 인용된 문서가 페이지에 없을 때도 다른 문서 값이 오염되지 않는다
+    only_other = await _list(client, q='배송')
+    assert [d['ref_count'] for d in only_other['items']] == [0]
+    assert cited['document_id'] not in [d['document_id'] for d in only_other['items']]
+
+
+@pytest.mark.asyncio
+async def test_답변사용_필터는_문서_스위치_기준이다(client, tenant_id, fake_queue, blob_tmp):
+    """#176 결정을 고정한다 — 폴더가 참조 off여도 **문서 스위치가 on이면** is_searchable=true에 잡힌다.
+
+    실제로 검색에 쓰이는지는 폴더와의 곱(실효 참조)이지만, 그 판정을 이 필터에 넣는 것은
+    제품 결정이지 버그 수정이 아니다(같은 규칙의 네 번째 사본이 된다는 이유로 미뤘다).
+    나중에 '고치려는' 변경이 오면 이 테스트가 먼저 걸려 결정을 다시 보게 한다.
+    """
+    off_folder = await _folder(client, '대외비')
+    assert (await client.patch(f'/kms/folders/{off_folder}',
+                               json={'is_searchable': False})).status_code == 200
+    doc = await _upload(client, '환불정책.md', MD, extra_parts=_doc_data(folder_id=off_folder))
+    assert doc['is_searchable'] is True                      # 문서 스위치는 그대로 on
+
+    on = (await _list(client, is_searchable=True))['items']
+    assert [d['document_id'] for d in on] == [doc['document_id']]
+    assert (await _list(client, is_searchable=False))['items'] == []

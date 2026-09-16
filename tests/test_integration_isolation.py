@@ -106,3 +106,54 @@ async def test_문서_일괄변경_격리(client, tenant_id, other_tenant_id, fa
     # 남의 요청으로 내 문서가 바뀌지 않았다
     after = (await client.get(f"/kms/documents/{mine['document_id']}")).json()
     assert after['is_searchable'] is True and after['folder_id'] is None
+
+
+@pytest.mark.asyncio
+async def test_문서_일괄삭제_격리(client, tenant_id, other_tenant_id, fake_queue, blob_tmp):
+    """#174로 늘어난 표면 — 쿼리 파라미터로 받은 id 목록이 tenant 스코프를 지나야 한다.
+
+    이 경로가 새면 피해가 크고 조용하다: 대상 확정이 tenant를 안 걸면 남의 문서가
+    soft delete되고, 그 id가 DROP_DOCUMENTS payload에 실려 색인에서도 청크가 지워진다
+    (os_index.drop_documents_now는 document_ids에 tenant 필터를 걸지 않는다).
+    """
+    md = '# 제목\n\n본문 내용\n'.encode()
+    mine = (await client.post('/kms/documents',
+                              files={'file': ('A사문서.md', md, 'text/markdown')})).json()
+
+    async with _client_for(other_tenant_id) as other:
+        theirs = (await other.post('/kms/documents',
+                                   files={'file': ('B사문서.md', md, 'text/markdown')})).json()
+
+        # 남의 문서를 섞어 보내면 전체 404 — 자기 문서(theirs)도 지워지면 안 된다
+        res = await other.request('DELETE', '/kms/documents',
+                                  params={'ids': [theirs['document_id'], mine['document_id']]})
+        assert res.status_code == 404
+        still = (await other.get(f"/kms/documents/{theirs['document_id']}")).json()
+        assert still['status'] != 'deleted', '전체 거절인데 자기 문서가 지워졌다'
+
+        # 남의 문서만 지목해도 404 (존재 자체를 알려주지 않는다)
+        assert (await other.request('DELETE', '/kms/documents',
+                                    params={'ids': [mine['document_id']]})).status_code == 404
+
+    after = (await client.get(f"/kms/documents/{mine['document_id']}")).json()
+    assert after['status'] != 'deleted'
+
+
+@pytest.mark.asyncio
+async def test_같은_파일명이_두_테넌트에_있어도_내_것만_지운다(client, tenant_id, other_tenant_id,
+                                                          fake_queue, blob_tmp):
+    """삭제는 id가 아니라 **filename**으로 전 버전을 매칭한다(#174) — 그래서 UPDATE에 tenant
+    필터가 빠지면 같은 이름을 쓰는 남의 문서까지 지워진다. 흔한 파일명일수록 위험하다."""
+    md = '# 제목\n\n본문 내용\n'.encode()
+    same_name = '환불정책.md'
+    mine = (await client.post('/kms/documents',
+                              files={'file': (same_name, md, 'text/markdown')})).json()
+    async with _client_for(other_tenant_id) as other:
+        theirs = (await other.post('/kms/documents',
+                                   files={'file': (same_name, md, 'text/markdown')})).json()
+
+        assert (await client.request('DELETE', '/kms/documents',
+                                     params={'ids': [mine['document_id']]})).status_code == 204
+
+        still = (await other.get(f"/kms/documents/{theirs['document_id']}")).json()
+        assert still['status'] != 'deleted', '같은 파일명을 쓰는 남의 문서가 지워졌다'

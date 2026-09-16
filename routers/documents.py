@@ -22,8 +22,8 @@ from typing import Annotated
 from uuid import uuid4
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, Request, UploadFile, Depends, HTTPException
-from sqlalchemy import func, select, update
+from fastapi import APIRouter, File, Form, Query, Request, UploadFile, Depends, HTTPException
+from sqlalchemy import func, select
 from sqlalchemy import text as sql_text
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
@@ -35,10 +35,10 @@ from config import settings
 from database import get_session
 from rag import cache, outbox
 from rag.chunking import extract_text
-from rag.documents import handle_upload
+from rag.documents import handle_upload, soft_delete_documents
 from rag.models import Document, Folder
 from routers.kms import get_tenant_id, get_user_id
-from schemas.kms import (ATTACHMENT_FILENAME_MAX, ATTACHMENT_MAX_TEXT_CHARS,
+from schemas.kms import (ATTACHMENT_FILENAME_MAX, ATTACHMENT_MAX_TEXT_CHARS, BULK_MAX_ITEMS,
                          DocumentBulkUpdateRequest, DocumentExistsResponse,
                          DocumentUploadMetadata, DocumentUploadResponse, DocumentUpdateRequest,
                          QueryAttachment)
@@ -455,6 +455,41 @@ async def update_document(
     return _to_response(doc)
 
 
+@router.delete('/documents', status_code=204)
+async def bulk_delete_documents(
+        ids: Annotated[list[int] | None, Query(max_length=BULK_MAX_ITEMS)] = None,
+        tenant_id: str = Depends(get_tenant_id),
+        session: AsyncSession = Depends(get_session)
+):
+    """문서 여러 건 삭제 (#174). 실제 처리는 단건과 **같은 경로**(soft_delete_documents)다.
+
+    id 목록을 본문이 아니라 쿼리 파라미터로 받는다 — DELETE 요청의 content는 RFC 9110상
+    정의된 의미가 없어 중간 장비가 버릴 여지가 있다. 200건이 1.8KB라 URL 길이도 문제없다.
+
+    없는 id·다른 테넌트 id가 하나라도 있으면 **아무것도 지우지 않고 404**(일괄 변경 #166과 같다).
+    반면 **이미 삭제된 문서는 통과시킨다** — 단건 DELETE가 원래 그렇게 동작했고(멱등),
+    삭제는 "그 문서가 없는 상태"를 만드는 것이라 이미 그 상태면 실패로 볼 이유가 없다.
+    """
+    if not ids:
+        return                      # 지울 것이 없는 요청은 조회도 하지 않는다
+
+    # 대상 확정 — status 필터를 두지 않는 것이 위 멱등 규칙의 구현점이다.
+    # 테넌트 스코프 조회로 id를 먼저 확정한다(격리 규약 2항) — 아래 outbox가 부르는
+    # os_index.drop_documents_now는 document_ids에 tenant 필터를 걸지 않는다.
+    unique = list(dict.fromkeys(ids))
+    found = set((await session.execute(
+        select(Document.id)
+        .where(Document.tenant_id == tenant_id)
+        .where(Document.id.in_(unique))
+    )).scalars().all())
+    missing = [i for i in unique if i not in found]
+    if missing:
+        raise HTTPException(status_code=404, detail=f'문서를 찾을 수 없습니다: {missing[:10]}')
+
+    await soft_delete_documents(session, tenant_id, unique)
+    await session.commit()
+
+
 @router.delete('/documents/{document_id}', status_code=204)
 async def delete_document(
         document_id: int,
@@ -463,37 +498,12 @@ async def delete_document(
 ):
     """문서 소프트 삭제 (F5). 같은 filename의 전 버전을 비활성 처리한다.
 
-    - status='deleted' + is_active=False → 검색 즉시 제외 + 목록에서 사라짐 (supersede와 동일 메커니즘)
-    - 청크 삭제 → 인덱스에서 제거
-    - 캐시 무효화 → 이 문서를 근거로 만든 답변 재사용 방지
-    - documents row·blob은 보존 → 과거 대화 인용의 원본 다운로드 유지
+    무엇을 하는지는 rag/documents.py의 soft_delete_documents가 정의점이다 —
+    일괄 삭제(#174)와 같은 경로를 탄다. 규칙이 두 벌로 갈리면 한쪽만 고쳐지는 사고가 난다.
     """
-    # id → filename은 서브쿼리로 풀어 UPDATE...RETURNING 한 문장으로 처리.
-    # 대상 문서가 없으면 서브쿼리가 NULL → 매칭 0건 → 404.
-    filename_sq = (
-        select(Document.filename)
-        .where(Document.tenant_id == tenant_id)   # 격리 — WHERE 절 명시
-        .where(Document.id == document_id)
-        .scalar_subquery()
-    )
-
-    doc_ids = (await session.execute(
-        update(Document)
-        .where(Document.tenant_id == tenant_id)
-        .where(Document.filename == filename_sq)
-        .values(is_active=False, status='deleted', status_reason='user_deleted')
-        .returning(Document.id)
-    )).scalars().all()
-
+    doc_ids = await soft_delete_documents(session, tenant_id, [document_id])
     if not doc_ids:
         raise HTTPException(status_code=404, detail="document not found")
-
-    for did in doc_ids:
-        await cache.invalidate_source(session, tenant_id, did)
-
-    # 외부 색인에서도 제거 (#139). **색인이 서빙 정본이라 이게 누락되면 삭제된 문서가 계속
-    # 인용된다** — 그래서 같은 트랜잭션에 적재해 반영을 보장한다(rag/outbox.py).
-    outbox.enqueue(session, tenant_id, outbox.DROP_DOCUMENTS, document_ids=list(doc_ids))
     await session.commit()
 
 

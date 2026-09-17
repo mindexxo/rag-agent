@@ -110,5 +110,7 @@ class WorkerSettings:
     ]
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     max_jobs = 10       # 한 워커가 동시 진행하는 잡 수 (asyncio 코루틴 동시성, 스레드 아님). arq 기본값과 동일 — 명시.
-    job_timeout = 600   # 대형 문서 임베딩 여유 (기본 300 초과 시 CancelledError로 pending 고착하던 것 완화)
+    job_timeout = 1200  # drain 한 회차 상한. **config.docling_document_timeout_seconds(900)보다 커야 한다** — 작으면
+                        # 긴 문서가 docling 타임아웃(→행 실패·attempts 증가) 대신 arq 취소(→CancelledError 되던짐,
+                        # attempts 그대로)로 끝나 1분마다 영원히 재시도된다(#168). 900 + 임베딩 몫 300.
     max_tries = 1       # cron 잡 자체의 재시도 없음 — 행 단위 재시도는 outbox.attempts가 담당

@@ -21,8 +21,9 @@ COPY requirements.txt .
 #    링크하는데 slim 베이스엔 없어서 import cv2가 실패하고 PDF 인제스션이 전부 깨진다
 #    (2026-09-13 개발계 실측). 시스템 라이브러리를 까는 방법(+215MB)도 되지만, 쓰지도 않는
 #    OCR 엔진을 빼고 headless로 바꾸는 쪽이 이미지도 작고 의존도 정직하다.
-#    OCR은 #144 검토에서 기각됐다(한국어 품질 부족 — 그림은 #162의 VLM 캡션으로 읽는다).
-#    스캔 PDF 때문에 OCR을 다시 들이게 되면 이 줄을 재판단한다.
+#    OCR은 켜져 있지만(#168) 엔진은 워커가 아니라 원격 Triton(serving/triton-ocr/)에 있다 — 워커는
+#    KServe HTTP 클라이언트(requests)만 쓴다. 그래서 rapidocr·onnxruntime을 여기 들이지 않는다.
+#    인프로세스로 되돌리면 피크 +1.2GB·시간 79%가 워커에 다시 얹힌다(이슈 #168 실측).
 RUN pip install --upgrade pip \
     && pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r requirements.txt \

@@ -28,10 +28,13 @@ services:
     # 호스트 OOM killer가 워커가 아닌 다른 컨테이너를 고를 수도 있다. 상한을 주면 커널이
     # 이 컨테이너만 죽이고 restart 정책이 되살리며, 죽은 사실이 플래그로 남는다:
     #   docker inspect -f '{{.State.OOMKilled}}' <컨테이너>
-    # 상한 없이 죽으면 arq 잡이 통째로 사라지고(max_tries=1) 문서가 pending에 고착했다가
-    # DOC_STALE_SECONDS(900초) 뒤 lazy 스윕이 failed로만 바꾼다 — 원인이 아무 데도 안 남는다.
+    # 상한 없이 죽으면 arq 잡이 통째로 사라지고(max_tries=1) outbox 행은 pending인 채 attempts도 안 올라
+    # 다음 회차가 같은 문서를 다시 잡는다(rag/outbox.py — 문서 pending을 정리하는 스윕은 없다).
+    # 원인이 아무 데도 안 남는다.
     # 2.5g 근거: **리눅스 컨테이너 실측**(2026-09-13) — 변환 피크 1,797MB·상주 1,399MB
     # (CPU torch + headless opencv + layout_batch_size=1 기준). 39% 여유.
+    # OCR을 켜도(#168) 이 상한 그대로다 — 엔진이 원격 Triton이라 워커엔 안 얹힌다: 26쪽 실문서
+    # 원격 OCR 피크 1,699MB(2026-09-17). 인프로세스로 켰다면 2,990~3,318MB로 이 상한을 넘겼다.
     # 앞선 1.5g는 macOS에서 샘플링한 RSS에 기댄 값이었고 실제로 OOM(exit 137)을 냈다.
     # 재조정 근거는 WORKER_METRICS_PORT로 노출되는 process_resident_memory_bytes다.
     mem_limit: 2.5g

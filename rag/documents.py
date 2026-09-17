@@ -162,14 +162,14 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         doc.is_active = True
         doc.char_count = sum(len(c.text) for c in chunks)
         # 도표가 이미지로 렌더된 문서를 사용자에게 알린다(#137 결함 4). 검색·인용은 정상
-        # 동작하므로 상태는 ready 그대로 둔다. 문구는 #162 이후 바뀌었다 — 그림은 VLM 캡션으로
-        # 읽히므로 "검색되지 않습니다"가 더 이상 사실이 아니다. 격자 표 이미지만 여전히 안 읽힌다
-        # (docling이 TableItem으로 분류해 캡션 훅을 안 탄다).
+        # 동작하므로 상태는 ready 그대로 둔다. 문구는 두 번 바뀌었다 — #162 이후 그림은 VLM 캡션으로,
+        # #168 이후 격자 표 이미지는 한국어 OCR로 읽히므로 "반영되지 않습니다"는 더 이상 사실이 아니다.
+        # 남는 위험은 생성·인식 오류라 그것만 알린다.
         if image_ratio >= IMAGE_WARN_RATIO:
             doc.status_reason = (
                 f'이미지가 쪽 면적의 {image_ratio:.0f}%를 차지합니다. '
-                f'그림은 AI가 설명을 만들어 검색에 반영합니다. 다만 표처럼 칸이 나뉜 이미지는 '
-                f'반영되지 않고, 생성된 설명이 부정확할 수 있어 원문 확인이 필요합니다.'
+                f'그림은 AI가 설명을 만들고 표 이미지는 글자를 인식해 검색에 반영합니다. '
+                f'생성된 설명이나 인식된 값이 부정확할 수 있어 원문 확인이 필요합니다.'
             )[:500]
         doc.indexed_at = datetime.now(timezone.utc)
         for old_id in old_active_ids:

@@ -462,3 +462,17 @@ async def client(tenant_id, fake_embed):
         headers={'X-Tenant-Id': tenant_id},
     ) as c:
         yield c
+
+
+@pytest.fixture(autouse=True, scope='session')
+def _no_remote_ocr():
+    """OCR 엔진은 원격 Triton이라(#168) 기본값(True) 그대로면 PDF를 태우는 모든 테스트가 그 서버에 묶인다
+    — 도달 불가면 _docling_sections가 실패로 올려 문서 테스트가 전부 깨진다. 임베딩을 fake로 바꾸는 것과
+    같은 이유로 세션 시작에 한 번 끈다. OCR 자체는 tests/test_chunking_docling.py::TestRemoteOcr가 자기
+    monkeypatch로 켜고(끝나면 되돌아온다) 컨버터 싱글턴도 스스로 비운다.
+
+    **함수 스코프 + monkeypatch로 만들면 안 된다** — autouse가 monkeypatch를 먼저 붙잡아 비동기 클라이언트·
+    이벤트 루프 픽스처와의 해제 순서가 바뀌고, 루프가 닫힌 뒤 undo가 돌아 test_limiter_fail_open·
+    test_retry_dispatch가 teardown에서 'Event loop is closed'로 깨졌다(2026-09-17 실측, origin/main에선 통과)."""
+    from config import settings
+    settings.docling_do_ocr = False

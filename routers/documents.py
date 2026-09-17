@@ -39,10 +39,11 @@ from rag.documents import handle_upload, soft_delete_documents
 from rag.models import Document, Folder
 from routers.kms import get_tenant_id, get_user_id
 from schemas.kms import (ATTACHMENT_FILENAME_MAX, ATTACHMENT_MAX_TEXT_CHARS, BULK_MAX_ITEMS,
-                         DocumentBulkUpdateRequest, DocumentExistsResponse,
+                         DOC_LIST_DEFAULT_LIMIT, DOC_LIST_MAX_LIMIT, DOC_STATUSES,
+                         DocumentBulkUpdateRequest, DocumentExistsResponse, DocumentListResponse,
                          DocumentUploadMetadata, DocumentUploadResponse, DocumentUpdateRequest,
                          QueryAttachment)
-from text_norm import normalize_filename
+from text_norm import LIKE_ESCAPE_CHAR, like_pattern, normalize_filename
 
 
 def _to_response(doc: Document, ref_count: int | None = None) -> DocumentUploadResponse:
@@ -225,39 +226,87 @@ async def upload_document(
     # 워커 cron(1분)이 처리한다. 응답 시점의 status는 pending이고, 검색 반영은 최대 1~5분.
     return _to_response(doc)
 
-@router.get('/documents', response_model=list[DocumentUploadResponse])
+@router.get('/documents', response_model=DocumentListResponse)
 async def list_documents(
+        limit: int = DOC_LIST_DEFAULT_LIMIT,
+        offset: int = 0,
+        q: str | None = None,                  # 파일명 부분 일치
+        folder_id: int | None = None,          # 0 = 미분류만, 그 외 = 그 폴더
+        status: Annotated[list[str] | None, Query()] = None,   # 복수 선택 가능
+        is_searchable: bool | None = None,     # 문서 스위치 값 기준 (아래 주석)
         tenant_id: str = Depends(get_tenant_id),
         session: AsyncSession = Depends(get_session)
 ):
-    """테넌트의 문서 목록. 최신 업로드가 위로 오도록 uploaded_at 내림차순.
-    supersede된 구버전(deleted)은 제외 — 죽은 행에 폴더/참조 컨트롤이 노출되는 혼란 방지."""
-    # (구) 900초 pending 스윕은 제거했다 (#139). 인제스션이 outbox 행으로 durable해져
-    # "오래 pending = 잡 유실"이라는 전제가 사라졌고, 대량 업로드·엔진 다운 중엔 15분 넘게
-    # 대기하는 것이 정상이다. 실패 판정은 outbox가 MAX_ATTEMPTS 초과 시 문서를 failed로 찍는다.
+    """테넌트의 문서 목록 — 페이징·검색·필터 (#176). 최신 업로드가 위로 온다.
+
+    supersede된 구버전(deleted)은 제외한다 — 죽은 행에 폴더/참조 컨트롤이 노출되는 혼란 방지.
+    형태(limit/offset·items/total/has_more)는 대화 목록(routers/conversations.py)과 맞췄다.
+
+    `is_searchable`은 **documents.is_searchable 값**으로만 거른다. 실제로 검색에 쓰이는지는
+    폴더 스위치와의 곱(실효 참조)이지만, 그 판정을 SQL로 옮기면 같은 규칙의 네 번째 사본이
+    된다(rag/os_index.py의 effective_searchable, _folder_is_on, bulk_update_documents의
+    _effective). 참조 off 폴더를 실제로 운영하기 시작하면 그때 실효 기준으로 올린다 —
+    파라미터 이름이 그대로라 FE 계약은 바뀌지 않는다. (#176 결정)
+    """
+    # HTTP 파라미터 위생 — 범위 밖 limit은 상한으로, 음수 offset은 0으로 (대화 목록과 같은 처리).
+    if not 1 <= limit <= DOC_LIST_MAX_LIMIT:
+        limit = DOC_LIST_MAX_LIMIT
+    if offset < 0:
+        offset = 0
+    q = (q or '').strip() or None      # 빈 문자열을 필터로 쓰면 '%%'가 되어 전건 매칭이다
+    if status and not set(status) <= DOC_STATUSES:
+        raise HTTPException(status_code=422,
+                            detail=f'알 수 없는 status: {sorted(set(status) - DOC_STATUSES)}')
+
+    # 조건은 **한 번만** 만들어 count와 페이지 쿼리가 함께 쓴다 — 갈라지면 has_more가 어긋난다.
+    where = (Document.tenant_id == tenant_id) & (Document.status != 'deleted')
+    if q is not None:
+        # 파일명은 경계에서 NFC로 저장된다(#34). 검색어도 맞춰야 한다 — text_norm의 정책은
+        # "타이핑 입력은 IME가 NFC를 내므로 위험군이 아니다"지만, 파일명 검색은 사용자가
+        # **이름을 복사해 붙여넣는** 경로가 흔하고 macOS에서 복사한 이름은 NFD일 수 있다.
+        where &= Document.filename.ilike(like_pattern(normalize_filename(q)),
+                                         escape=LIKE_ESCAPE_CHAR)
+    if folder_id is not None:
+        # 0은 '미분류' 약속 — 폴더 id는 1부터라 유효한 값과 겹치지 않는다. 쿼리 파라미터에는
+        # null이 없어서(#165의 multipart와 같은 제약) 값 하나로 표현했다.
+        where &= Document.folder_id.is_(None) if folder_id == 0 else Document.folder_id == folder_id
+    if status:
+        where &= Document.status.in_(status)
+    if is_searchable is not None:
+        where &= Document.is_searchable == is_searchable
+
+    total = (await session.execute(select(func.count(Document.id)).where(where))).scalar_one()
     docs = (await session.execute(
         select(Document)
-        .where(Document.tenant_id == tenant_id)   # 격리 — WHERE 절 명시
-        .where(Document.status != 'deleted')
-        # 화면의 기본 정렬 키가 등록일시다(#164). id.desc()와 사실상 같은 순서지만 계약을 맞춘다.
-        # id는 동률 깨기용 — uploaded_at은 트랜잭션 시작 시각이라 같은 값이 나올 수 있다.
+        .where(where)
         .order_by(Document.uploaded_at.desc(), Document.id.desc())
+        .offset(offset)
+        .limit(limit)
     )).scalars().all()
 
     # 인용 횟수: 저장 시 확정된 실인용 목록(cited_docs)을 filename별 집계 (F5).
     # sources(검색 후보 노출 수)가 아닌 실인용 — stats top_documents와 정의 통일.
     # filename 키라 버전 교체 후에도 카운트가 이어진다.
-    ref_rows = (await session.execute(sql_text("""
-        SELECT d AS filename, count(*) AS cnt
-        FROM messages, jsonb_array_elements_text(messages.cited_docs) AS d
-        WHERE messages.tenant_id = :tenant_id
-          AND messages.role = 'assistant'
-          AND jsonb_typeof(messages.cited_docs) = 'array'
-        GROUP BY 1
-    """), {"tenant_id": tenant_id})).all()
-    ref_counts = {r.filename: r.cnt for r in ref_rows}
+    # **이번 페이지의 파일명으로 좁힌다** (#176) — 예전엔 테넌트의 messages 전체를 훑었다.
+    ref_counts: dict[str, int] = {}
+    if docs:
+        ref_rows = (await session.execute(sql_text("""
+            SELECT d AS filename, count(*) AS cnt
+            FROM messages, jsonb_array_elements_text(messages.cited_docs) AS d
+            WHERE messages.tenant_id = :tenant_id
+              AND messages.role = 'assistant'
+              AND jsonb_typeof(messages.cited_docs) = 'array'
+              AND d = ANY(:filenames)
+            GROUP BY 1
+        """), {"tenant_id": tenant_id, "filenames": list({d.filename for d in docs})})).all()
+        ref_counts = {r.filename: r.cnt for r in ref_rows}
 
-    return [_to_response(d, ref_counts.get(d.filename, 0)) for d in docs]
+    return DocumentListResponse(
+        items=[_to_response(d, ref_counts.get(d.filename, 0)) for d in docs],
+        total=total,
+        # len(docs)를 쓴다 — limit을 쓰면 마지막 부분 페이지에서 어긋난다(대화 목록과 같은 이유).
+        has_more=offset + len(docs) < total,
+    )
 
 
 # ⚠ 이 라우트는 반드시 '/documents/{document_id}'보다 **위에** 있어야 한다.

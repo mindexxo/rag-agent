@@ -52,6 +52,14 @@ CREATE INDEX IF NOT EXISTS idx_docs_tenant_status
 CREATE UNIQUE INDEX IF NOT EXISTS uq_docs_one_active_per_name
     ON documents (tenant_id, filename)
     WHERE is_active = TRUE;
+-- 파일명 부분일치 검색 (#176). 대화 제목·본문과 같은 이유 — ILIKE '%…%'는 선행 와일드카드라
+-- btree를 못 탄다. documents는 업로드 때만 쓰므로 인덱스 유지 비용이 사실상 없다.
+CREATE INDEX IF NOT EXISTS idx_docs_filename_trgm
+    ON documents USING gin (filename gin_trgm_ops);
+-- 기존 DB 반영 (2026-09-17, 목록 파일명 검색 #176):
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_docs_filename_trgm
+--       ON documents USING gin (filename gin_trgm_ops);
+--   (CONCURRENTLY는 쓰기 락을 피한다 — 트랜잭션 블록 밖에서 단독 실행해야 한다)
 -- filename은 애플리케이션 경계에서 NFC로 정규화된 값만 저장된다 (#34, text_norm.py).
 -- 위 UNIQUE는 코드포인트 단위라, 정규형이 섞이면 시각적으로 같은 이름이 별개 문서로 통과한다.
 --

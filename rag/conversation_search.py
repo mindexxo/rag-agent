@@ -16,6 +16,7 @@ from sqlalchemy import or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rag.models import Conversation, Message
+from text_norm import LIKE_ESCAPE_CHAR, like_pattern
 
 # 스니펫: 매칭 지점 전후 문자 수 (#28). 목록에서 한 줄로 표시되므로 총 30자 남짓이 상한이다.
 # 처음엔 40이었는데 한글 기준으로 너무 길었다 — 영문 40자는 예닐곱 단어지만 한글 40자는
@@ -23,27 +24,10 @@ from rag.models import Conversation, Message
 # 뜻이 안 잡히는 경우가 생겨 그 사이로 잡았다.
 SNIPPET_RADIUS = 15
 
-# LIKE 패턴에서 특수 의미를 갖는 문자. ESCAPE 절과 짝이며, 백슬래시가 먼저 나와야 한다
-# (뒤에 두면 %·_를 이스케이프하며 넣은 백슬래시를 다시 이스케이프한다).
-_LIKE_ESCAPE_CHAR = '\\'
-_LIKE_SPECIALS = (_LIKE_ESCAPE_CHAR, '%', '_')
-
-
-def _escape_like(raw: str) -> str:
-    """사용자 입력을 LIKE 패턴 리터럴로 만든다 (#28).
-
-    이스케이프하지 않으면 검색어의 %·_가 와일드카드로 동작한다 — 'a_b'로 검색하면
-    'axb'까지 걸린다(실측). SQLAlchemy .ilike()는 자동 이스케이프를 하지 않으므로
-    호출부가 escape=_LIKE_ESCAPE_CHAR를 함께 넘겨야 이 치환이 의미를 갖는다.
-    """
-    for ch in _LIKE_SPECIALS:
-        raw = raw.replace(ch, _LIKE_ESCAPE_CHAR + ch)
-    return raw
-
-
-def _pattern(q: str) -> str:
-    """search_filter·snippets_for가 공유하는 LIKE 패턴 조립 — 정의점 하나."""
-    return f'%{_escape_like(q)}%'
+# 패턴 조립·이스케이프는 text_norm으로 옮겼다 (#176) — 문서 목록 검색도 같은 규칙을 쓰는데,
+# 라우터가 '대화 검색' 모듈에서 가져다 쓰는 모양이 되면 이 모듈의 공개 표면 계약이 흐려진다.
+# 이 모듈의 계약(라우터는 pattern을 모른다)은 그대로다 — 안에서 유틸을 쓸 뿐이다.
+_LIKE_ESCAPE_CHAR = LIKE_ESCAPE_CHAR
 
 
 def _build_snippet(content: str, q: str) -> str | None:
@@ -83,7 +67,7 @@ def search_filter(tenant_id: str, q: str | None):
     """
     if q is None:
         return true()
-    pattern = _pattern(q)
+    pattern = like_pattern(q)
     return or_(
         Conversation.title.ilike(pattern, escape=_LIKE_ESCAPE_CHAR),
         select(Message.id)
@@ -106,7 +90,7 @@ async def snippets_for(session: AsyncSession, tenant_id: str, conversation_ids: 
     윈도우 함수(row_number)나 LATERAL이면 DB에서 1건으로 줄일 수 있지만, 리포에 전례가
     없는 구문이라 현 데이터 규모에서는 단순함을 택했다 — 느려지면 그때 교체할 것.
     """
-    pattern = _pattern(q)
+    pattern = like_pattern(q)
     rows = (await session.execute(
         select(Message.conversation_id, Message.content)
         .where(Message.conversation_id.in_(conversation_ids))

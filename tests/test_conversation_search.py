@@ -13,7 +13,8 @@ from httpx import ASGITransport, AsyncClient
 
 from database import AsyncSessionLocal
 from rag.models import Conversation, Message
-from rag.conversation_search import SNIPPET_RADIUS, _build_snippet, _escape_like
+from rag.conversation_search import SNIPPET_RADIUS, _build_snippet
+from text_norm import like_pattern
 
 USER_A = {'X-User-Id': 'agent-a'}
 USER_B = {'X-User-Id': 'agent-b'}
@@ -79,9 +80,10 @@ def test_스니펫_매칭_못찾으면_None():
 
 
 def test_이스케이프_와일드카드():
-    assert _escape_like('a_b') == r'a\_b'
-    assert _escape_like('50%') == r'50\%'
-    assert _escape_like(r'a\b') == r'a\\b'      # 백슬래시가 먼저 — 이후 치환분을 재이스케이프하지 않는다
+    # 패턴 조립은 text_norm.like_pattern으로 옮겼다 (#176) — 문서 목록 검색도 같은 규칙을 쓴다.
+    assert like_pattern('a_b') == r'%a\_b%'
+    assert like_pattern('50%') == r'%50\%%'
+    assert like_pattern(r'a\b') == r'%a\\b%'    # 백슬래시가 먼저 — 이후 치환분을 재이스케이프하지 않는다
 
 
 # ── 검색 동작 ────────────────────────────────────────────────

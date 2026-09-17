@@ -1007,3 +1007,37 @@ async def test_답변사용_필터는_문서_스위치_기준이다(client, tena
     on = (await _list(client, is_searchable=True))['items']
     assert [d['document_id'] for d in on] == [doc['document_id']]
     assert (await _list(client, is_searchable=False))['items'] == []
+
+
+@pytest.mark.asyncio
+async def test_목록_문서가_없으면_빈_페이지(client, tenant_id):
+    """문서가 하나도 없는 테넌트 — items·total·has_more의 기본값이 화면에서 깨지지 않아야 한다."""
+    body = await _list(client)
+    assert body == {'items': [], 'total': 0, 'has_more': False}
+
+
+@pytest.mark.asyncio
+async def test_목록_필터를_건_채로_페이징하면_total도_필터_기준(client, tenant_id, fake_queue, blob_tmp):
+    """total이 필터를 안 거치면 '전체 6건'이라 써놓고 3건만 보이는 화면이 된다.
+
+    조건을 한 곳에서 만들어 count와 페이지 쿼리가 함께 쓰는지를 보는 테스트다 —
+    필터와 페이징을 따로 검증하면 이 어긋남이 안 잡힌다.
+    """
+    fid = await _folder(client, '규정집')
+    for i in range(3):                                   # 폴더 안 3건
+        await _upload(client, f'규정{i}.md', MD, extra_parts=_doc_data(folder_id=fid))
+    for i in range(3):                                   # 미분류 3건
+        await _upload(client, f'기타{i}.md', MD)
+
+    first = await _list(client, folder_id=fid, limit=2, offset=0)
+    assert first['total'] == 3                           # 6이 아니라 3 — 필터 기준
+    assert len(first['items']) == 2 and first['has_more'] is True
+    assert all(d['folder_id'] == fid for d in first['items'])
+
+    second = await _list(client, folder_id=fid, limit=2, offset=2)
+    assert second['total'] == 3 and len(second['items']) == 1
+    assert second['has_more'] is False                    # 필터 기준으로 마지막 페이지
+
+    # 검색어 + 페이징도 같은 규칙
+    q_page = await _list(client, q='규정', limit=2, offset=2)
+    assert q_page['total'] == 3 and len(q_page['items']) == 1 and q_page['has_more'] is False

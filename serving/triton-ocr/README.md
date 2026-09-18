@@ -19,8 +19,12 @@ PDF 인제스션의 표 이미지(TableItem) 셀을 읽는 한국어 RapidOCR을
 # 호스트 드라이버 535(CUDA 12.2) → Triton 25.02(CUDA 12.8, forward-compat) + onnxruntime-gpu 1.22.0(CUDA 12)
 docker build --build-arg BASE=nvcr.io/nvidia/tritonserver:25.02-py3 -t kms-triton-ocr:25.02 .
 docker rm -f kms-triton-ocr
-docker run -d --name kms-triton-ocr --gpus device=3 -p 18893:8000 kms-triton-ocr:25.02
+docker run -d --name kms-triton-ocr --gpus device=3 --shm-size=1g -p 18893:8000 kms-triton-ocr:25.02
 ```
+
+`--shm-size=1g`는 필수다 — 도커 기본 64MB면 Python backend가 tritonserver와 텐서를 주고받는 공유메모리가 큰 크롭에서
+모자라 `Failed to increase the shared memory pool size`(HTTP 500)가 난다(2026-09-18 125건 부하 중 1건, 12쪽 문서).
+워커는 그 문서를 failed로 확정하고 outbox가 재시도한다. NVIDIA 권장값이 1g.
 
 확인 — 셋 다 봐야 한다. **ready만 보고 끝내지 마라**: 첫 배포 때 CUDA EP 로드가 실패해도 rapidocr가
 CPU로 조용히 내려가 ready가 떴다(2026-09-17). 지금은 model.py가 그 경우 기동을 실패시키지만 로그로 재확인한다.

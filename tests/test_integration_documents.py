@@ -118,7 +118,7 @@ async def test_인덱싱_예외시_failed_기록(client, tenant_id, fake_queue, 
         raise RuntimeError('임베딩 서버 폭발')
 
     monkeypatch.setattr(rd, 'embed_texts', _boom)
-    monkeypatch.setattr(outbox, 'MAX_ATTEMPTS', 1)     # 운영은 5회 — 테스트는 한 번에 확정
+    # RuntimeError는 결정적 실패로 분류돼 1회로 확정된다(#185) — MAX_ATTEMPTS를 낮출 필요가 없다.
     r = await ingest(body['document_id'])              # 핸들러는 예외를 올리고, drain이 failed를 찍는다 (#139)
     assert r == {'done': 0, 'failed': 1}
 
@@ -127,16 +127,23 @@ async def test_인덱싱_예외시_failed_기록(client, tenant_id, fake_queue, 
     assert '임베딩 서버 폭발' in doc.status_reason               # 재업로드 판단 근거가 남는다
     async with AsyncSessionLocal() as s:
         row = (await s.execute(select(SearchIndexOutbox)
+                               .where(SearchIndexOutbox.op == outbox.INDEX_DOCUMENT)
                                .where(SearchIndexOutbox.payload['document_id'].as_integer()
                                       == body['document_id']))).scalars().one()
+        # failed 확정은 잔여 청크 DROP을 같은 커밋에 남긴다(#184) — 여기선 청크가 없어 0건 삭제로 끝난다
+        drops = (await s.execute(select(SearchIndexOutbox)
+                                 .where(SearchIndexOutbox.op == outbox.DROP_DOCUMENTS)
+                                 .where(SearchIndexOutbox.payload['document_ids']
+                                        .contains([body['document_id']])))).scalars().all()
     assert row.status == 'failed' and row.attempts == 1
+    assert len(drops) == 1 and drops[0].status == 'pending'
+    assert await ingest(body['document_id']) == {'done': 1, 'failed': 0}   # 그 DROP — 없는 청크, 무해
 
 
 @pytest.mark.asyncio
-async def test_빈_파일은_failed_유령_ready_방지(client, tenant_id, fake_queue, blob_tmp, monkeypatch):
-    monkeypatch.setattr(outbox, 'MAX_ATTEMPTS', 1)
+async def test_빈_파일은_failed_유령_ready_방지(client, tenant_id, fake_queue, blob_tmp):
     body = await _upload(client, '빈문서.md', b'')
-    r = await ingest(body['document_id'])                        # 핸들러가 ValueError → drain이 failed 확정
+    r = await ingest(body['document_id'])                        # 핸들러가 ValueError → 결정적 → 1회로 failed 확정(#185)
     assert r['failed'] == 1
     doc = await _get_doc(body['document_id'])
     assert doc.status == 'failed'                                # 청크 0개 → ready 승격 금지 (C2)

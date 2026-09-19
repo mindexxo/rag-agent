@@ -99,6 +99,13 @@ INDEX_PICTURE_PLACEHOLDER_TOTAL = Counter(
 
 SEARCH_INDEX_SYNC_TOTAL = Counter(
     'kms_search_index_sync_total',
-    '외부 검색 색인 동기화 (#139). error가 늘면 색인이 낡는다 — rag.os_reconcile로 복구',
-    labelnames=('op', 'result'),      # op=sync_documents|drop_documents|sync_faqs|drop_faqs
+    '외부 검색 색인 동기화 (#139), 재시도 단위. error가 늘면 색인이 낡는다 — rag.os_reconcile로 복구',
+    labelnames=('op', 'result'),      # op=rag/outbox.py의 op 어휘 (index_document|drop_documents|…)
 )                                     # result=ok|error  (라벨 카디널리티 고정 — 규율 참조)
+
+SEARCH_INDEX_FAILED_TOTAL = Counter(
+    'kms_search_index_failed_total',
+    'outbox 행이 failed로 확정된 수 (#185, 확정 단위 — 위 error는 재시도마다 오른다). '
+    '0이 아니면 PG↔엔진 불일치가 사람 손 없이는 안 맞는 상태다 — 알람은 rag/outbox.py _on_failed에서',
+    labelnames=('op',),
+)

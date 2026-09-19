@@ -130,9 +130,10 @@ class SearchIndexOutbox(Base):
     **행을 PG 변경과 같은 트랜잭션에 쓴다** — 그것이 이 패턴의 전부다. 커밋이 성공하면
     색인에 할 일이 반드시 기록돼 있고, 롤백되면 그 일도 함께 사라진다.
 
-    단일 워커가 1분 주기로 pending을 id 순으로 처리한다. 성공하면 done, 실패는 attempts에
-    쌓여 MAX_ATTEMPTS를 넘으면 failed(INDEX_DOCUMENT면 문서도 failed). 행은 지우지 않는다 —
-    done/failed 행이 이력이자 관측 지점이다.
+    단일 워커가 1분 주기로 pending을 id 순으로 처리한다. 성공하면 done. 결정적 실패는 1회로
+    failed, 일시 실패는 attempts를 올리고 next_attempt_at을 지수 백오프로 미룬다 — MAX_ATTEMPTS까지
+    못 끝내면 failed(#185). INDEX_DOCUMENT의 failed는 문서도 failed로 찍고 잔여 청크 DROP을
+    같은 커밋에 등재한다(#184). 행은 지우지 않는다 — done/failed 행이 이력이자 관측 지점이다.
 
     연산은 전부 멱등이다(색인=_id upsert, 삭제=없는 것 지워도 무해, 메타=덮어쓰기) — 재시도가
     겹쳐도 결과가 같다. at-least-once.
@@ -146,6 +147,7 @@ class SearchIndexOutbox(Base):
     status: Mapped[str] = mapped_column(default='pending', server_default='pending')  # pending|done|failed
     attempts: Mapped[int] = mapped_column(default=0, server_default="0")
     last_error: Mapped[str | None]
+    next_attempt_at: Mapped[datetime | None]   # 일시 실패의 다음 시도 시각 — NULL이면 지금(#185)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 

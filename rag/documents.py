@@ -295,9 +295,11 @@ async def handle_upload(
 
     **예외 하나 — failed는 그 자리에서 다시 시도한다 (#161).** 같은 이름에 정상(pending·ready)
     행이 없고 failed 행만 있으면 새 version을 만들지 않고 그 행을 pending으로 되살린다.
-    failed는 청크 0개·인용 0회라 사용자에겐 "등록이 안 된 상태"인데, 실패한 **시도**가 개정
+    failed는 검색에 나오지 않고 사용자에겐 "등록이 안 된 상태"인데, 실패한 **시도**가 개정
     **번호**를 소비하면 "내가 언제 v1을 등록했지?"가 된다. 새 행을 안 만드니 failed v1·ready v2가
-    목록에 두 줄로 남는 문제도 애초에 생기지 않는다. exists·_current_version도 같은 기준으로
+    목록에 두 줄로 남는 문제도 애초에 생기지 않는다.
+    단, "failed = 청크 0개"는 **항상 참이 아니다** — 색인(②) 뒤 커밋(③)에서 실패가 반복된 문서는
+    엔진에 청크가 남아 있다. 되살리는 행은 재색인이 먼저 지우고, 내리는 행은 DROP을 적재한다. exists·_current_version도 같은 기준으로
     failed를 "없는 문서"로 답한다(routers/documents.py) — 세 곳의 기준이 갈리면 확인창에서 본 것과
     다른 결과가 난다.
     """
@@ -331,10 +333,20 @@ async def handle_upload(
         )
         if reused is None:
             raise FailedReuseConflict(filename)
+        # 나머지 failed는 내린다 — soft_delete_documents와 **같은 세 동작**(상태·캐시·DROP). 그 함수에
+        # 위임하지 않는 이유는 filename 기준으로 전 버전을 내려 되살리는 target까지 지우기 때문이다.
+        # DROP이 필요한 이유: failed라도 엔진에 청크가 남을 수 있다 — index_pending_document는
+        # ②에서 청크를 쓴 뒤 ③에서 커밋하므로, ③ 실패가 반복돼 failed로 굳은 문서는 searchable=True
+        # 청크를 가진 채다(리뷰 지적). target은 재색인이 먼저 지우지만(index_parsed_document의
+        # _delete_by_terms) others는 재색인이 없어 여기서 지워야 한다.
         others = [d.id for d in failed if d.id != target.id]
         if others:
             await session.execute(update(Document).where(Document.id.in_(others))
-                                  .values(status='deleted', is_active=False))
+                                  .values(status='deleted', is_active=False,
+                                          status_reason='failed_superseded'))
+            for did in others:
+                await cache.invalidate_source(session, tenant_id, did)
+            outbox.enqueue(session, tenant_id, outbox.DROP_DOCUMENTS, document_ids=others)
         await session.refresh(target)      # UPDATE로 바뀐 값을 ORM 객체에 반영 (응답에 쓴다)
         outbox.enqueue(session, tenant_id, outbox.INDEX_DOCUMENT, document_id=target.id)
         return target, stale_blob

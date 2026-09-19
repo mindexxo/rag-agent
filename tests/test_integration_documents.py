@@ -1065,7 +1065,8 @@ async def _make_failed(doc_id: int) -> None:
     """워커가 5회 실패해 failed로 굳힌 상태를 DB로 재현한다 — 문서 행과 대기열 행 둘 다."""
     async with AsyncSessionLocal() as s:
         await s.execute(update(Document).where(Document.id == doc_id)
-                        .values(status='failed', status_reason='색인 5회 실패: 테스트 유발'))
+                        .values(status='failed', is_active=False,
+                                status_reason='색인 5회 실패: 테스트 유발'))
         await s.execute(update(SearchIndexOutbox)
                         .where(SearchIndexOutbox.payload['document_id'].as_integer() == doc_id)
                         .values(status='failed', attempts=5))
@@ -1176,3 +1177,57 @@ async def test_정상_행이_하나라도_있으면_재사용하지_않는다(cl
     v1 = await _upload(client, '환불정책.md', MD)                          # pending
     v2 = await _upload(client, '환불정책.md', MD)
     assert v2['version'] == 2 and v2['document_id'] != v1['document_id']
+
+
+async def _make_failed_with_chunks(client, doc_id: int) -> list[str]:
+    """**청크가 엔진에 남은** failed — index_pending_document가 ②(색인) 뒤 ③(커밋)에서 실패가
+    반복돼 굳은 상태. ready까지 올린 뒤 상태만 되돌려 재현한다. 반환: 남아 있는 청크 본문."""
+    await ingest(doc_id)
+    await _make_failed(doc_id)
+    texts = await _chunk_texts(doc_id)
+    assert texts, '재현 실패 — 청크가 있어야 한다'
+    return texts
+
+
+@pytest.mark.asyncio
+async def test_내려가는_failed의_잔여_청크는_DROP으로_지운다(client, tenant_id, fake_queue, blob_tmp):
+    """리뷰 지적: 나머지 failed를 deleted로만 바꾸면 ③ 실패로 남은 청크가 정리 경로 없이 검색에
+    영구 노출된다(예전엔 목록에 failed로 보여 사람이 지울 수 있었다). soft_delete와 같은 세 동작."""
+    v1 = await _upload(client, '환불정책.md', MD)
+    await _make_failed_with_chunks(client, v1['document_id'])          # v1: 청크 남은 failed
+    async with AsyncSessionLocal() as s:                              # v2 failed (옛 이력)
+        s.add(Document(tenant_id=tenant_id, filename='환불정책.md', mime='text/markdown',
+                       blob_path=str(blob_tmp / tenant_id / 'legacy_v2.md'), version=2,
+                       status='failed', status_reason='옛 실패'))
+        await s.commit()
+
+    res = await _upload(client, '환불정책.md', MD)                    # v2를 되살리고 v1은 내린다
+    assert res['version'] == 2
+    v1_doc = await _get_doc(v1['document_id'])
+    assert v1_doc.status == 'deleted' and v1_doc.status_reason == 'failed_superseded'
+
+    async with AsyncSessionLocal() as s:                              # DROP 행이 v1을 담고 있다
+        rows = (await s.execute(select(SearchIndexOutbox)
+                                .where(SearchIndexOutbox.tenant_id == tenant_id)
+                                .where(SearchIndexOutbox.status == 'pending')
+                                .where(SearchIndexOutbox.op == outbox.DROP_DOCUMENTS))).scalars().all()
+    assert [r.payload['document_ids'] for r in rows] == [[v1['document_id']]]
+
+    await ingest(v1['document_id'])                                    # DROP 처리
+    assert await _chunk_texts(v1['document_id']) == []               # 잔여 청크가 사라졌다
+
+
+@pytest.mark.asyncio
+async def test_되살린_failed의_잔여_청크는_재색인이_교체한다(client, tenant_id, fake_queue, blob_tmp):
+    """target 쪽은 별도 DROP이 없어도 된다 — index_parsed_document가 색인 전에 같은 document_id
+    청크를 지운다. 내용이 바뀐 blob으로 재색인하면 옛 청크가 남지 않는지 본다."""
+    v1 = await _upload(client, '환불정책.md', MD)
+    old_texts = await _make_failed_with_chunks(client, v1['document_id'])
+
+    new_md = '# 배송 안내\n\n## 1. 기간\n\n도서산간은 3일 더 걸린다.\n'.encode()
+    await _upload(client, '환불정책.md', new_md)                      # 같은 행을 되살림
+    assert await ingest(v1['document_id']) == {'done': 1, 'failed': 0}
+
+    texts = await _chunk_texts(v1['document_id'])
+    assert texts and all('도서산간' in t or '배송' in t for t in texts)
+    assert not any(t in texts for t in old_texts)                       # 옛 청크가 남지 않았다

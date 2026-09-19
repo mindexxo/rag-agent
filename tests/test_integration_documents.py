@@ -6,9 +6,10 @@
 """
 import json
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
-from sqlalchemy import delete as sql_delete, func, select
+from sqlalchemy import delete as sql_delete, func, select, update
 
 from database import AsyncSessionLocal
 from rag import cache
@@ -421,9 +422,9 @@ async def test_동시_삽입은_유니크_인덱스가_막고_409(client, tenant
     # 인자는 그대로 흘려보낸다 — handle_upload에 파라미터가 하나 늘 때마다 이 대역이 깨져
     # 무관한 테스트가 실패하던 것을 끊는다(#164·#165에서 연달아 겪었다).
     async def _collide(session, t, filename, blob_path, **kw):
-        doc = await real(session, t, filename, blob_path, **kw)
+        doc, stale = await real(session, t, filename, blob_path, **kw)
         doc.version = 1          # 남이 방금 v1을 넣은 것과 같은 결과
-        return doc
+        return doc, stale
 
     monkeypatch.setattr(rd, 'handle_upload', _collide)
 
@@ -1056,3 +1057,122 @@ async def test_uploaded_at은_KST_오프셋으로_나가고_시점은_같다(cli
     assert (await _list(client))['items'][0]['uploaded_at'].endswith('+09:00')
     ex = (await client.get('/kms/documents/exists', params={'filename': '환불정책.md'})).json()
     assert ex['uploaded_at'].endswith('+09:00')
+
+
+# ── #161 failed 문서는 "없는 문서" — 재업로드는 그 행을 되살린다 ──
+
+async def _make_failed(doc_id: int) -> None:
+    """워커가 5회 실패해 failed로 굳힌 상태를 DB로 재현한다 — 문서 행과 대기열 행 둘 다."""
+    async with AsyncSessionLocal() as s:
+        await s.execute(update(Document).where(Document.id == doc_id)
+                        .values(status='failed', status_reason='색인 5회 실패: 테스트 유발'))
+        await s.execute(update(SearchIndexOutbox)
+                        .where(SearchIndexOutbox.payload['document_id'].as_integer() == doc_id)
+                        .values(status='failed', attempts=5))
+        await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_failed만_있으면_없는_문서로_본다(client, tenant_id, fake_queue, blob_tmp):
+    """exists=false, expect_version=0 통과 — 확인창이 뜨지 않는다. 세 판정(exists·_current_version·
+    handle_upload)이 같은 기준이어야 하는 것을 이 테스트가 앞의 둘에서 고정한다."""
+    doc = await _upload(client, '환불정책.md', MD)
+    await _make_failed(doc['document_id'])
+
+    ex = (await client.get('/kms/documents/exists', params={'filename': '환불정책.md'})).json()
+    assert ex == {'exists': False, 'document_id': None, 'version': None, 'status': None, 'uploaded_at': None}
+    assert (await _post(client, '환불정책.md', MD, expect_version=0)).status_code == 200   # 새 문서처럼
+
+
+@pytest.mark.asyncio
+async def test_failed_재업로드는_같은_행을_되살린다(client, tenant_id, fake_queue, blob_tmp):
+    """새 version이 아니라 그 행이 pending으로 돌아온다 — id·version 유지, 실패 흔적은 지워지고,
+    옛 blob은 삭제되며, 등록자·등록일시는 이번 업로드 것으로 바뀐다."""
+    v1 = await _upload(client, '환불정책.md', MD, headers={'X-User-Id': 'agent-a'})
+    await _make_failed(v1['document_id'])
+    before = await _get_doc(v1['document_id'])
+    old_blob = Path(before.blob_path)
+    assert old_blob.exists() and before.status == 'failed' and before.status_reason
+
+    res = await _upload(client, '환불정책.md', '# 다시 올림\n\n고친 내용\n'.encode(), headers={'X-User-Id': 'agent-b'})
+    assert res['document_id'] == v1['document_id']       # 같은 행
+    assert res['version'] == 1 and res['status'] == 'pending'
+    assert res['status_reason'] is None                  # 옛 실패 사유가 남지 않는다
+    assert res['uploaded_by'] == 'agent-b'               # 이번 업로드가 등록자
+
+    after = await _get_doc(v1['document_id'])
+    assert after.blob_path != before.blob_path
+    assert not old_blob.exists() and Path(after.blob_path).exists()   # 옛 blob 삭제, 새 blob 존재
+    assert after.uploaded_at > before.uploaded_at        # 목록 최신순에서 위로 온다 (#164)
+
+    # 같은 이름의 행은 여전히 하나 — 새 version이 생기지 않았다
+    async with AsyncSessionLocal() as s:
+        n = (await s.execute(select(func.count()).select_from(Document)
+                             .where(Document.tenant_id == tenant_id))).scalar()
+    assert n == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_재업로드_후_ingest하면_ready_v1_한_줄(client, tenant_id, fake_queue, blob_tmp):
+    v1 = await _upload(client, '환불정책.md', MD)
+    await _make_failed(v1['document_id'])
+    await _upload(client, '환불정책.md', MD)
+    assert await ingest(v1['document_id']) == {'done': 1, 'failed': 0}
+
+    doc = await _get_doc(v1['document_id'])
+    assert doc.status == 'ready' and doc.is_active is True and doc.version == 1
+    items = (await _list(client))['items']
+    assert [(d['version'], d['status']) for d in items] == [(1, 'ready')]   # 두 줄이 아니다
+
+
+@pytest.mark.asyncio
+async def test_failed_재사용_경합은_한_명만_성공(client, tenant_id, fake_queue, blob_tmp, monkeypatch):
+    """조건부 UPDATE(status='failed'인 동안만)가 경합을 가른다. 재사용 직전에 다른 세션이 먼저
+    되살린 상황을 주입하면 이쪽은 0행 → 409, 행은 하나, 새 blob은 지워진다."""
+    v1 = await _upload(client, '환불정책.md', MD)
+    await _make_failed(v1['document_id'])
+    blobs_before = sorted((blob_tmp / tenant_id).iterdir())
+
+    import rag.documents as rd
+    real = rd._reuse_failed_row
+
+    async def _race(session, target_id, **values):
+        async with AsyncSessionLocal() as other:          # 다른 요청이 먼저 되살렸다
+            await other.execute(update(Document).where(Document.id == target_id)
+                                .values(status='pending', status_reason=None))
+            await other.commit()
+        return await real(session, target_id, **values)
+
+    monkeypatch.setattr(rd, '_reuse_failed_row', _race)
+    res = await _post(client, '환불정책.md', MD)
+    assert res.status_code == 409
+    assert sorted((blob_tmp / tenant_id).iterdir()) == blobs_before     # 새 blob은 남지 않는다
+    async with AsyncSessionLocal() as s:
+        n = (await s.execute(select(func.count()).select_from(Document)
+                             .where(Document.tenant_id == tenant_id))).scalar()
+    assert n == 1
+
+
+@pytest.mark.asyncio
+async def test_failed가_둘이면_최신을_되살리고_나머지는_내린다(client, tenant_id, fake_queue, blob_tmp):
+    """옛 코드가 남긴 이력(v1 failed + v2 failed)도 정리된다 — 개발계 실측 0건이지만 방어."""
+    v1 = await _upload(client, '환불정책.md', MD)
+    await _make_failed(v1['document_id'])
+    async with AsyncSessionLocal() as s:                  # 옛 방식으로 만들어졌을 v2 failed
+        s.add(Document(tenant_id=tenant_id, filename='환불정책.md', mime='text/markdown',
+                       blob_path=str(blob_tmp / tenant_id / 'legacy_v2.md'), version=2,
+                       status='failed', status_reason='옛 실패'))
+        await s.commit()
+
+    res = await _upload(client, '환불정책.md', MD)
+    assert res['version'] == 2 and res['status'] == 'pending'            # 최신(v2)을 되살림
+    assert (await _get_doc(v1['document_id'])).status == 'deleted'      # v1은 내려간다
+    assert [(d['version'], d['status']) for d in (await _list(client))['items']] == [(2, 'pending')]
+
+
+@pytest.mark.asyncio
+async def test_정상_행이_하나라도_있으면_재사용하지_않는다(client, tenant_id, fake_queue, blob_tmp):
+    """pending·ready가 있으면 기존 규칙(새 version) — failed 재사용은 정상 행이 없을 때만."""
+    v1 = await _upload(client, '환불정책.md', MD)                          # pending
+    v2 = await _upload(client, '환불정책.md', MD)
+    assert v2['version'] == 2 and v2['document_id'] != v1['document_id']

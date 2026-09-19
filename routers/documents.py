@@ -8,6 +8,9 @@ POST /kms/documents (multipart)
   내용이 같아도 마찬가지 — 내용 해시 dedupe는 제거했다(규칙을 하나로 유지).
 - 원본 파일은 테넌트 디렉터리 아래 UUID 이름으로 저장 (업로드 1건 = 파일 1개).
 - 버전 롤백은 미지원. 되돌리려면 이전 파일을 다시 업로드한다.
+- **예외(#161)**: failed 문서는 "이미 있는 문서"로 세지 않는다 — 확인창 없이 통과하고, 재업로드는
+  새 version을 만들지 않고 그 행을 pending으로 되살린다(version 유지). 상세는 rag/documents.py의
+  handle_upload docstring. failed는 목록에는 보인다 — 재시도·삭제할 수 있어야 하므로.
 
 동시 업로드 (2026-08-07 추가):
 - FE가 확인창에서 본 버전을 expect_version으로 보내면, 그 사이 DB가 바뀌었을 때 409를 준다.
@@ -35,7 +38,7 @@ from config import settings
 from database import get_session
 from rag import cache, outbox
 from rag.chunking import extract_text
-from rag.documents import handle_upload, soft_delete_documents
+from rag.documents import FailedReuseConflict, handle_upload, soft_delete_documents
 from rag.models import Document, Folder
 from routers.kms import get_tenant_id, get_user_id
 from schemas.kms import (ATTACHMENT_FILENAME_MAX, ATTACHMENT_MAX_TEXT_CHARS, BULK_MAX_ITEMS,
@@ -80,14 +83,16 @@ def _reject_if_oversized(request: Request, limit: int) -> None:
 async def _current_version(session: AsyncSession, tenant_id: str, filename: str) -> int:
     """해당 파일명의 현재 버전. 없으면 0.
 
-    판정 기준은 exists API·supersede와 **정확히 같아야** 한다 — tenant + filename 완전 일치,
-    status != 'deleted'. 기준이 어긋나면 "확인창에서 본 것과 다른 문서가 대체되는" 사고가 난다.
+    판정 기준은 exists API·handle_upload의 재사용 판정과 **정확히 같아야** 한다 — tenant + filename
+    완전 일치, status가 deleted·failed가 아닌 것. 기준이 어긋나면 "확인창에서 본 것과 다른 문서가
+    대체되는" 사고가 난다. failed를 빼는 이유는 #161 — 그 문서는 검색에 없고 재업로드가 그 행을
+    되살리므로(version 유지) 사용자에겐 "없는 문서"다.
     """
     return (await session.execute(
         select(func.max(Document.version))
         .where(Document.tenant_id == tenant_id)      # 격리 — WHERE 절 명시
         .where(Document.filename == filename)
-        .where(Document.status != 'deleted')
+        .where(Document.status.not_in(('deleted', 'failed')))
     )).scalar() or 0
 
 
@@ -209,18 +214,24 @@ async def upload_document(
 
     # 4. 파일 인덱싱 후 저장 (mime은 handle_upload가 blob_path에서 직접 구한다)
     try:
-        doc = await handle_upload(
+        doc, stale_blob = await handle_upload(
             session, tenant_id, filename, blob_path, description=meta.description,
             uploaded_by=user_id, folder_id=meta.folder_id, folder_given=folder_given,
         )
         await session.commit()
-    except IntegrityError:
-        # 같은 이름·같은 version이 방금 먼저 들어왔다 — UNIQUE(tenant_id, filename, version).
-        # 위 조회를 두 요청이 함께 통과했을 때의 최종 방어선.
+    except (IntegrityError, FailedReuseConflict):
+        # IntegrityError: 같은 이름·같은 version이 방금 먼저 들어왔다 — UNIQUE(tenant_id, filename,
+        # version). 위 조회를 두 요청이 함께 통과했을 때의 최종 방어선.
         # (expect_version 미전송 호출도 여기서 409가 된다 — 이전엔 그대로 터져 500이었다)
+        # FailedReuseConflict(#161): 같은 failed를 둘이 동시에 되살리려 했고 이쪽이 졌다.
+        # 둘 다 새 blob만 지운다 — 옛 blob은 DB가 여전히 가리키고 있다.
         await session.rollback()
         blob_path.unlink(missing_ok=True)
         return _version_conflict(filename, await _current_version(session, tenant_id, filename))
+    # failed 행을 되살린 경우 옛 blob은 **커밋 뒤에** 지운다 (#161) — 커밋 전에 지우면 롤백 시
+    # DB는 옛 경로를 가리키는데 파일은 없다. failed는 인용된 적이 없어 보존할 이유도 없다.
+    if stale_blob:
+        Path(stale_blob).unlink(missing_ok=True)
 
     # 색인 대기열 행은 handle_upload가 문서와 같은 트랜잭션에 등록했다 (#139 outbox) —
     # 워커 cron(1분)이 처리한다. 응답 시점의 status는 pending이고, 검색 반영은 최대 1~5분.
@@ -319,9 +330,10 @@ async def document_exists(
 ):
     """업로드 전 동일 파일명 확인 (FE가 대체 확인 창을 띄울지 판단).
 
-    판정 기준은 supersede 로직과 **정확히 같아야** 한다 — tenant + filename **완전 일치**
-    (대소문자·공백 구분), status != 'deleted'. 기준이 어긋나면 "물어본 것과 다른 문서가
-    지워지는" 사고가 난다.
+    판정 기준은 _current_version·handle_upload의 재사용 판정과 **정확히 같아야** 한다 — tenant +
+    filename **완전 일치**(대소문자·공백 구분), status가 deleted·failed가 아닌 것(#161). 기준이
+    어긋나면 "물어본 것과 다른 문서가 지워지는" 사고가 난다. failed만 있으면 exists=false다 —
+    재업로드가 그 행을 되살리므로 FE는 새 문서처럼(expect_version=0) 보내면 된다.
 
     이 API는 안내용일 뿐 강제력이 없다. 업로드 API는 확인 없이도 통과하며(2026-08-05 결정),
     그 경우 기존 버전이 그대로 대체된다.
@@ -333,7 +345,7 @@ async def document_exists(
         select(Document)
         .where(Document.tenant_id == tenant_id)      # 격리 — WHERE 절 명시
         .where(Document.filename == filename)
-        .where(Document.status != 'deleted')
+        .where(Document.status.not_in(('deleted', 'failed')))
         .order_by(Document.version.desc())
         .limit(1)
     )).scalars().first()

@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import AsyncSessionLocal
@@ -247,6 +247,27 @@ async def soft_delete_documents(
     return list(doc_ids)
 
 
+class FailedReuseConflict(Exception):
+    """failed 행을 되살리려는 순간 다른 요청이 먼저 되살렸다 (#161). 라우터가 409로 바꾼다."""
+
+
+async def _reuse_failed_row(session: AsyncSession, target_id: int, **values) -> int | None:
+    """failed 행 하나를 pending으로 되살린다 — **status='failed'인 동안에만** 먹는 조건부 UPDATE.
+
+    같은 failed를 둘이 동시에 재업로드하면 한쪽의 UPDATE가 0행이 된다(그새 pending이 됐으니
+    조건이 안 맞는다) — 그쪽이 None을 받아 FailedReuseConflict로 빠진다. 별도 함수로 뗀 이유는
+    테스트가 이 경합을 monkeypatch로 재현하기 위해서다(test_동시_삽입은_유니크_인덱스가_막고_409와
+    같은 방식). 반환: 되살린 행 id, 0행이면 None.
+    """
+    return (await session.execute(
+        update(Document)
+        .where(Document.id == target_id)
+        .where(Document.status == 'failed')
+        .values(**values)
+        .returning(Document.id)
+    )).scalar()
+
+
 async def handle_upload(
         session: AsyncSession,
         tenant_id: str,
@@ -256,8 +277,10 @@ async def handle_upload(
         uploaded_by: str | None = None,
         folder_id: int | None = None,
         folder_given: bool = False,
-) -> Document:
+) -> tuple[Document, str | None]:
     """업로드 시점 처리: pending row + 색인 대기열 행을 **같은 트랜잭션**에 등록한다 (#139).
+    반환은 (문서, 지워야 할 옛 blob 경로 또는 None) — 옛 blob은 **호출부가 커밋 뒤에** 지운다.
+    커밋 전에 지우면 롤백 시 DB는 옛 경로를 가리키는데 파일은 없는 상태가 된다.
     실제 청킹/임베딩/색인/supersede는 워커 drain이 index_pending_document로 수행한다.
     description은 표 설명(xlsx 검색 보강) — 워커가 청킹 시 병합한다.
     uploaded_by는 업로더 식별자(X-User-Id) — 없으면 NULL.
@@ -269,6 +292,14 @@ async def handle_upload(
     내용 해시(sha) dedupe는 제거 — 같은 이름이면 내용이 같아도 새 version이 된다.
     "같은 이름이면 물어보고, 확인하면 대체"라는 단일 규칙을 유지하기 위함
     (내용 동일 여부로 확인 창을 띄울지 말지 분기하면 규칙이 둘이 된다).
+
+    **예외 하나 — failed는 그 자리에서 다시 시도한다 (#161).** 같은 이름에 정상(pending·ready)
+    행이 없고 failed 행만 있으면 새 version을 만들지 않고 그 행을 pending으로 되살린다.
+    failed는 청크 0개·인용 0회라 사용자에겐 "등록이 안 된 상태"인데, 실패한 **시도**가 개정
+    **번호**를 소비하면 "내가 언제 v1을 등록했지?"가 된다. 새 행을 안 만드니 failed v1·ready v2가
+    목록에 두 줄로 남는 문제도 애초에 생기지 않는다. exists·_current_version도 같은 기준으로
+    failed를 "없는 문서"로 답한다(routers/documents.py) — 세 곳의 기준이 갈리면 확인창에서 본 것과
+    다른 결과가 난다.
     """
     # 같은 filename의 모든 버전 조회 (다음 version 계산 + 설정 계승용)
     docs = (await session.execute(
@@ -276,6 +307,37 @@ async def handle_upload(
         .where(Document.tenant_id == tenant_id)
         .where(Document.filename == filename)
     )).scalars().all()
+
+    # failed 재사용 (#161) — 정상 행이 없고 failed만 있을 때. deleted 이력이 섞여 있어도 된다
+    # (예: v1 deleted + v2 failed → v2를 되살린다). failed가 여럿이면 최신을 되살리고 나머지는 내린다.
+    alive = [d for d in docs if d.status not in ('deleted', 'failed')]
+    failed = [d for d in docs if d.status == 'failed']
+    if not alive and failed:
+        target = max(failed, key=lambda d: d.version)
+        stale_blob = target.blob_path
+        reused = await _reuse_failed_row(
+            session, target.id,
+            status='pending', is_active=False,
+            # 워커 ③단계는 status_reason을 이미지 경고일 때만 덮어쓴다 — 여기서 안 지우면
+            # 옛 실패 사유가 ready 문서에 그대로 남는다. page_count·char_count·indexed_at도 같이 비운다.
+            status_reason=None, page_count=None, char_count=None, indexed_at=None,
+            blob_path=str(blob_path), mime=_detect_mime(blob_path),
+            # server_default는 INSERT에만 적용된다 — UPDATE에서 갱신하지 않으면 목록(uploaded_at
+            # 내림차순, #164)에서 재업로드한 문서가 위로 올라오지 않는다.
+            uploaded_at=func.now(), uploaded_by=uploaded_by,
+            # 설정은 그 행의 값을 유지(= 계승과 같은 결과), 보냈으면 그 값 — #165 규칙 그대로.
+            folder_id=(folder_id if folder_given else target.folder_id),
+            description=(description if description is not None else target.description),
+        )
+        if reused is None:
+            raise FailedReuseConflict(filename)
+        others = [d.id for d in failed if d.id != target.id]
+        if others:
+            await session.execute(update(Document).where(Document.id.in_(others))
+                                  .values(status='deleted', is_active=False))
+        await session.refresh(target)      # UPDATE로 바뀐 값을 ORM 객체에 반영 (응답에 쓴다)
+        outbox.enqueue(session, tenant_id, outbox.INDEX_DOCUMENT, document_id=target.id)
+        return target, stale_blob
 
     # pending 버전 row만 insert. is_active=False(ready 전엔 검색 제외).
     # 폴더 소속·참조 on/off(F2)는 직전 버전에서 계승 — 개정판 업로드로 설정이 풀리지 않게.
@@ -305,6 +367,6 @@ async def handle_upload(
     # arq 잡 등록은 없다: Redis 순단으로 잡이 유실돼 pending이 고착하던 실패 모드(P1-4)가
     # 이 한 줄로 사라진다. 사유·처리 규약은 rag/outbox.py.
     outbox.enqueue(session, tenant_id, outbox.INDEX_DOCUMENT, document_id=doc.id)
-    return doc
+    return doc, None
 
 

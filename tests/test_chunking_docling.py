@@ -282,3 +282,140 @@ class TestRealConversion:
             ch._docling_converter = None         # 죽은 URL이 박힌 컨버터를 다음 테스트에 남기지 않는다
             ch._docling_semaphore = None
         assert ch.count_picture_placeholders(chunks) >= 1   # 캡션 대신 자리표시로 남는다
+
+
+# ── 원격 OCR (#168) ─────────────────────────────────────────────────────────────────
+# 표 이미지(TableItem)의 셀은 Triton에 올린 RapidOCR이 읽는다. 여기서 고정하는 것 셋:
+#   ① 옵션이 실제로 파이프라인에 들어가는가(특히 scale 3.0 — KServe 옵션 기본값 2.0과 다르다)
+#   ② 원격이 죽으면 문서가 **실패**하는가(조용한 빈 격자 색인 금지 — docling은 삼키므로 우리가 올린다)
+#   ③ 서버가 있으면 숫자·영문 표 셀이 실제로 읽히는가(도달 가능할 때만 — 한글은 폰트 자산이 필요해 안 쓴다)
+
+def _reset_converter(ch):
+    """설정 변경이 먹으려면 컨버터 싱글턴을 비워야 한다 — 전역 캐시라 재생성이 안 된다."""
+    ch._docling_converter = None
+    ch._docling_semaphore = None
+
+
+def _triton_ready(base_url: str) -> bool:
+    import requests
+    try:
+        return requests.get(f'{base_url}/v2/health/ready', timeout=2).status_code == 200
+    except Exception:            # noqa: BLE001 — 도달 불가는 스킵 사유일 뿐
+        return False
+
+
+def _table_image_pdf(tmp_path):
+    """숫자·영문 표를 **비트맵**으로 그려 PDF에 넣는다 — 텍스트 레이어가 없어 OCR만이 읽을 수 있다."""
+    from PIL import Image, ImageDraw, ImageFont
+    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import Image as RLImage, SimpleDocTemplate
+    rows = [['Part', 'Warranty', 'Fee'], ['Motor', '3y', '48000'], ['Blade', '1y', '12000'], ['Pack', '2y', '35000']]
+    cw, rh = 400, 110
+    W, H = cw * 3, rh * len(rows) + 20
+    im = Image.new('RGB', (W, H), 'white'); d = ImageDraw.Draw(im)
+    font = ImageFont.load_default(size=44)
+    for r, row in enumerate(rows):
+        for c, cell in enumerate(row):
+            x0, y0 = c * cw, 10 + r * rh
+            d.rectangle([x0, y0, x0 + cw, y0 + rh], outline='black', width=4)
+            d.text((x0 + 30, y0 + 28), cell, fill='black', font=font)
+    png = tmp_path / 'table.png'; im.save(png)
+    p = tmp_path / 'table_image.pdf'
+    SimpleDocTemplate(str(p), pagesize=A4).build([RLImage(str(png), width=480, height=H * 480 / W)])
+    return p, rows
+
+
+class TestConversionGuard:
+    """raises_on_error=True가 못 잡는 불완전 변환을 _docling_sections가 올리는지 — 모델 없이 가짜 컨버터로."""
+
+    def _with_result(self, monkeypatch, status, errors):
+        import threading
+        import types
+        import rag.chunking as ch
+        doc = types.SimpleNamespace(iterate_items=lambda: iter(()))
+        res = types.SimpleNamespace(status=status, errors=errors, document=doc)
+        conv = types.SimpleNamespace(convert=lambda *a, **k: res)
+        monkeypatch.setattr(ch, '_docling_runtime', lambda: (conv, threading.Semaphore(1)))
+        return ch
+
+    def test_부분_성공은_실패로_올린다(self, monkeypatch, tmp_path):
+        # 문서 타임아웃이 나면 docling은 처리된 쪽까지만 담고 PARTIAL_SUCCESS로 **정상 반환**한다 —
+        # 그대로 두면 뒤쪽 쪽이 빠진 문서가 ready가 된다.
+        from docling.datamodel.base_models import ConversionStatus
+        ch = self._with_result(monkeypatch, ConversionStatus.PARTIAL_SUCCESS, [])
+        with pytest.raises(RuntimeError, match='partial_success'):
+            ch._docling_sections(tmp_path / 'x.pdf')
+
+    def test_성공이어도_errors가_있으면_실패로_올린다(self, monkeypatch, tmp_path):
+        # 원격 OCR 실패는 status를 안 바꾸고 errors에만 남긴다(kserve_v2_ocr_model.py) — 표가 빈 격자로 색인된다.
+        from docling.datamodel.base_models import (ConversionStatus, DoclingComponentType,
+                                                    ErrorItem, FailureCategory)
+        err = ErrorItem(component_type=DoclingComponentType.MODEL, module_name='KserveV2OcrModel',
+                        error_message='connection refused', category=FailureCategory.INFERENCE_FAILURE)
+        ch = self._with_result(monkeypatch, ConversionStatus.SUCCESS, [err])
+        with pytest.raises(RuntimeError, match='KserveV2OcrModel'):
+            ch._docling_sections(tmp_path / 'x.pdf')
+
+    def test_완전_성공은_통과한다(self, monkeypatch, tmp_path):
+        from docling.datamodel.base_models import ConversionStatus
+        ch = self._with_result(monkeypatch, ConversionStatus.SUCCESS, [])
+        assert ch._docling_sections(tmp_path / 'x.pdf') == []
+
+
+class TestRemoteOcr:
+    def test_OCR_설정이_파이프라인에_실제로_전달된다(self, monkeypatch):
+        # 캡션 테스트와 같은 이유(#151·#162) — 조용히 무시되는 설정을 잡는다. scale이 특히 그렇다:
+        # KserveV2OcrOptions 기본값은 2.0이라 빠뜨리면 에러 없이 인프로세스 실측(3.0)과 다른 결과가 나온다.
+        import rag.chunking as ch
+        from docling.datamodel.base_models import InputFormat
+        from docling.datamodel.pipeline_options import OcrMode
+        monkeypatch.setattr(settings, 'docling_do_ocr', True)
+        _reset_converter(ch)
+        try:
+            converter, _ = ch._docling_runtime()
+            opts = converter.format_to_options[InputFormat.PDF].pipeline_options
+            assert opts.do_ocr is True
+            o = opts.ocr_options
+            assert o.kind == 'kserve_v2_ocr'
+            assert o.scale == ch._OCR_SCALE == 3.0
+            assert o.lang == [ch._OCR_LANG] == ['korean']
+            assert o.transport == 'http'
+            assert o.model_name == settings.ocr_kserve_model_name
+            assert o.url == settings.ocr_kserve_url
+            assert o.timeout == settings.ocr_kserve_timeout_seconds
+            assert o.mode == OcrMode.DEFAULT          # 비트맵 영역만 — 본문 텍스트 레이어 무손상의 근거
+        finally:
+            _reset_converter(ch)
+
+    def test_원격_OCR이_죽으면_문서가_실패한다(self, tmp_path, monkeypatch):
+        """VLM(#162)과 반대다 — 캡션은 없어도 진행하지만 OCR 실패는 문서를 failed로 확정한다.
+
+        docling은 KServe 실패를 삼키고 쪽을 그대로 내보내므로(errors에만 기록) 그대로 두면 표가
+        **빈 격자로 조용히 색인**된다. 그게 #168 이전 상태와 같아 보여도 '읽는다'는 약속이 깨진 것이라
+        실패로 올린다. 오래 죽어 있으면 docling_do_ocr로 끄는 게 운영 절차다(config.py).
+        """
+        import rag.chunking as ch
+        p, _ = _table_image_pdf(tmp_path)
+        monkeypatch.setattr(settings, 'docling_do_ocr', True)
+        monkeypatch.setattr(settings, 'ocr_kserve_url', 'http://127.0.0.1:1')
+        monkeypatch.setattr(settings, 'ocr_kserve_timeout_seconds', 2.0)
+        _reset_converter(ch)
+        try:
+            with pytest.raises(RuntimeError, match='docling 변환 불완전'):
+                chunk_file(p)
+        finally:
+            _reset_converter(ch)
+
+    def test_표_이미지_셀을_원격_OCR이_읽는다(self, tmp_path, monkeypatch):
+        import rag.chunking as ch
+        if not _triton_ready(settings.ocr_kserve_url):
+            pytest.skip(f'Triton OCR 미도달: {settings.ocr_kserve_url} (OCR_KSERVE_URL로 지정)')
+        p, rows = _table_image_pdf(tmp_path)
+        monkeypatch.setattr(settings, 'docling_do_ocr', True)
+        _reset_converter(ch)
+        try:
+            body = '\n'.join(c.text for c in chunk_file(p))
+        finally:
+            _reset_converter(ch)
+        for value in ('48000', '12000', '35000'):        # 금액 셀 — 표 이미지에서 제일 중요한 값
+            assert value in body, body

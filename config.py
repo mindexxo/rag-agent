@@ -173,9 +173,13 @@ class Settings(BaseSettings):
                                               # (표·부산물 처리 없음, #141 휴리스틱은 #143에서 제거). 폴백 아님 — 수동 스위치
     docling_table_mode: str = "accurate"      # fast | accurate. accurate이 병합 셀을 한 셀로 잡는다(출장 지급표
                                               # '부회장/사장' 실측). RAM 차이 +110MB(687→796MB)라 정확도를 택한다
-    docling_do_ocr: bool = False              # 켜도 텍스트 PDF 안의 그림은 못 읽는다(자리표시만) — RAM만 +200MB.
-                                              # 스캔 PDF가 들어오는 날 재검토. 텍스트 PDF 속 그림은
-                                              # OCR이 아니라 VLM 캡션으로 읽는다(#162, 아래 vlm_caption_*)
+    docling_do_ocr: bool = True               # 이미지로 렌더된 표(TableItem)의 셀을 읽는다(#168). 그림(PictureItem)은
+                                              # VLM 캡션(#162)이 읽고, 이 둘은 서로 닿지 않는 경로다. 엔진은 워커 안이
+                                              # 아니라 **원격 Triton**(아래 ocr_kserve_*) — 인프로세스로 켜면 워커 피크
+                                              # +1.2GB(1,784→2,990~3,318MiB)·시간 79%(쪽당 3.3→15.9초)라 밖으로 뺐다
+                                              # (리눅스 컨테이너 실측 2026-09-16, 이슈 #168). 원격 실패는 문서 failed로
+                                              # 확정된다(조용한 저품질 색인 금지) — Triton이 오래 죽어 있을 때 이 스위치로
+                                              # 끄면 OCR 없이(표 이미지는 빈 격자) 색인이 계속된다. 켜기 전 상태와 같다.
     docling_do_cell_matching: bool = False    # 7월 설정 계승 — 켜면 한글 표 셀의 공백이 뭉친다 ("편도 3,000원")
     docling_device: str = "cpu"               # 'auto'는 서버에서 GPU/MPS 탐색을 시도한다. 앱은 GPU 장비에 안 올린다
     docling_num_threads: int = 4              # 워커 vCPU 수에 맞춤. 공식 실측: 4→16스레드에 쪽당 1.67→1.09초
@@ -194,17 +198,36 @@ class Settings(BaseSettings):
     docling_max_concurrency: int = 1          # **arq max_jobs(10)와 별개인 변환 동시 상한.** chunk_file은 to_thread라
                                               # 잡 10개가 겹치면 변환도 10개 겹쳐 메모리가 10배 난다. 세마포어로 막는다.
                                               # 임베딩 I/O는 max_jobs가 계속 겹치게 둔다 — 변환만 직렬화
-    docling_document_timeout_seconds: float = 300.0   # 사슬: 이 값 < arq job_timeout 600 < DOC_STALE_SECONDS 900.
-                                              # 600 안에서 임베딩 몫을 남긴다. 실측 최대 26쪽 6초라 50배 여유
-    docling_max_num_pages: int = 300          # 병적 입력 가드. **초과분을 자르는 게 아니라 문서를 거부한다**
+    docling_document_timeout_seconds: float = 900.0   # **한 문서 상한. 반드시 arq job_timeout(rag/worker.py, 1200)보다 작아야 한다.**
+                                              # 넘기면 arq가 drain 잡을 취소하는데 rag/outbox.py는 CancelledError를 되던져
+                                              # attempts를 안 올린다 — 그 문서는 실패 확정도 못 되고 1분마다 영원히 재시도된다.
+                                              # docling 타임아웃이 먼저 끊어야 행이 예외로 실패해 attempts가 쌓인다(#168).
+                                              # (옛 주석의 DOC_STALE_SECONDS는 코드에 없다 — 문서 pending을 정리하는 스윕은 없다.)
+                                              # 값 근거(#168 실측, 리눅스 워커 + worker15 GPU OCR): 쪽당 CPU 3.3초 + OCR 요청
+                                              # 약 5.9건/쪽 × 0.47초(CUDA EP 튜닝 후, 141건 평균; 튜닝 전 0.96) → 약 6.1초/쪽.
+                                              # 900초면 약 145쪽(튜닝 전 기준 100쪽). 더 올리면 그만큼
+                                              # 다른 PDF 변환이 막힌다(docling_max_concurrency=1) — 300쪽 문서 하나가 45분 독점.
+    docling_max_num_pages: int = 300          # 병적 입력 가드. **초과분을 자르는 게 아니라 문서를 거부한다**. 실제로는 이 값보다
+                                              # docling_document_timeout_seconds가 먼저 건다(약 100~140쪽) — 그때는 failed 사유가 timeout이다.
                                               # (ConversionError → failed, 2026-09-13 실측). 파일 크기 상한은 라우터(DOC_MAX_FILE_BYTES 10MB)가
                                               # 업로드 시점에 이미 막으므로 여기선 쪽 수만. 10MB 텍스트 PDF ≈ 100~200쪽
     docling_artifacts_path: str | None = None # 모델 가중치 디렉터리. None이면 첫 변환 때 HF에서 내려받는다 —
                                               # NCP VM은 외부망 확인 필요. 이미지에 미리 굽고 경로를 주는 쪽이 안전
 
+    # 원격 OCR — Triton(worker15 GPU)에 올린 RapidOCR을 docling KserveV2OcrOptions로 부른다 (#168).
+    # 모델·파라미터는 docling 인프로세스와 동일(serving/triton-ocr/ 참조). 동일성은 같은 PDF의 markdown 대조로
+    # 검증했다(2026-09-17): CPU Triton은 표 이미지 1쪽·실문서 26쪽 모두 **바이트 동일**. GPU(CUDA EP, TF32 끔)는
+    # 표 이미지는 바이트 동일, 26쪽은 글자 내용은 같고 줄 묶음만 6곳 다르다(글머리 유무·문단 병합) — conv 수치
+    # 차이로 OCR 박스 좌표가 미세하게 달라 docling의 줄 그룹핑이 바뀐다. 언어(korean)·use_cls=False는
+    # 서버·클라이언트 상수다(rag/chunking.py).
+    ocr_kserve_url: str = "http://localhost:18893"   # KServe v2 **base**(스킴+호스트:포트). vlm_caption_url과 달리
+                                              # 경로를 붙이지 않는다 — docling이 /v2/models/{model}/infer를 조립한다. 실주소는 .env
+    ocr_kserve_model_name: str = "ocr"        # Triton 모델 리포지토리 이름(serving/triton-ocr/model_repository/ocr)
+    ocr_kserve_timeout_seconds: float = 60.0  # 요청 하나(=비트맵 영역 하나) 상한. docling 기본값 유지. 넘으면 그 문서는 failed
+
     # 그림 캡션 — docling picture description 훅으로 그림을 사내 VLM에 보내 설명을 받아 청크에 싣는다 (#162).
     # 대상은 **PictureItem뿐**이다. 격자가 있는 표 이미지는 docling이 TableItem으로 분류해 이 훅을
-    # 타지 않는다(실측 2026-09-14: 표 이미지 PDF → PictureItem 0·TableItem 1). 그건 별도 이슈다.
+    # 타지 않는다(실측 2026-09-14: 표 이미지 PDF → PictureItem 0·TableItem 1). 그쪽은 위 ocr_kserve_*의 원격 OCR이 읽는다(#168).
     # VLM이 죽어도 docling이 예외를 삼킨다(실측: 닫힌 포트 조준 → 예외 없이 7.5초, 캡션 0개) —
     # 그래서 실패 폴백(자리표시 유지)에 우리 try/except가 필요 없다. 문서는 그대로 ready로 진행한다.
     # **on/off 스위치를 두지 않는다**(사용자 결정): VLM이 없거나 못 닿으면 캡션이 안 붙을 뿐이고
@@ -218,7 +241,7 @@ class Settings(BaseSettings):
                                               # 완전 일치(3회 재현). PdfPipelineOptions.images_scale과 **다른 값**이다
                                               # — 그쪽은 캡션 품질과 무관함을 실측으로 분리 확인했다(2026-09-14)
     vlm_caption_timeout_seconds: float = 20.0 # 요청 하나의 상한(docling 기본값 유지). 예산: 이 값 × 그림 수가
-                                              # docling_document_timeout_seconds(300)를 넘으면 문서가 failed 된다.
+                                              # docling_document_timeout_seconds(900)를 넘으면 문서가 failed 된다.
                                               # 실문서는 최대 2장/문서라 여유가 크지만, 그림 많은 문서가 들어오면 재검토
 
 

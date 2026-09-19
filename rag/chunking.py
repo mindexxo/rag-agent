@@ -12,7 +12,7 @@
  채움률은 문서 조판에 달렸다. 모의 코퍼스에서 100%였으나(2026-08-15) 실문서 PDF에서는
  93%였다 — 절 제목이 본문과 같은 크기인 문서는 헤딩이 안 잡힌다 (#137).
 
- - PDF : **docling**(레이아웃 ML + TableFormer, OCR 끔)이 기본 — #143. 인쇄 부산물·제목 분할·표 빈 셀을
+ - PDF : **docling**(레이아웃 ML + TableFormer + 원격 한국어 OCR #168)이 기본 — #143. 인쇄 부산물·제목 분할·표 빈 셀을
          모델이 구조적으로 처리하고, 헤딩 층만 한국 규정 번호 체계('제 N 장'/'제 N 조')로 복원한다.
          `docling_enabled=False`면 pdfplumber 글자 크기 휴리스틱(비상 경로). page는 **청크마다 실제 쪽**.
          채팅 첨부(extract_text)는 항상 pdfplumber — 사용자 대기 경로라 콜드 스타트를 안 태운다.
@@ -59,13 +59,21 @@ _PACK_CHARS = 500
 # 같은 줄일 때(공백)와 번호가 독립 줄일 때(개행)가 둘 다 나온다.
 _ORPHAN_MARKER_RE = re.compile(r'(?:^|\n)[ \t]*(\d{1,2}\.|\(\d{1,2}\))[ \t]*\n?$')
 
+# OCR 상수 (#168) — 서버(serving/triton-ocr/model_repository/ocr/1/model.py)와 짝이다. 설정으로 빼지 않는다:
+# 값이 바뀌면 서버 모델도 같이 바뀌어야 하고, 둘 다 실측으로 고정한 것이라 환경별로 다를 이유가 없다.
+_OCR_LANG = 'korean'   # docling 기본은 ['chinese'] — 중국어 모델로 한글 표를 읽으면 '3년'→'34' 같은 틀린 값이
+                       # 채워진다(#144의 'OCR 기각'은 이 상태의 측정이었다 — #168에서 정정)
+_OCR_SCALE = 3.0       # 크롭 렌더 배수(72dpi 기준). 인프로세스 RapidOcrOptions 기본값과 같다. **KserveV2OcrOptions의
+                       # 기본값은 2.0**이라 명시하지 않으면 인프로세스 실측과 결과가 달라진다
+
 # 한국 규정 문서의 장(章) 제목 — '제 3 장 복 무', '제3장 총칙'. docling은 장과 조를 같은 레벨로
 # 내놓으므로(#143 실측: 26쪽 141개 헤딩 전부 level 1) 이 패턴으로 층을 복원한다. 마크다운의 '#'처럼
 # 문서가 스스로 선언하는 층이라 폰트 크기 휴리스틱과 성격이 다르다 — 코퍼스가 아니라 도메인 관례다.
 _CHAPTER_RE = re.compile(r'^제\s*\d+\s*장\b')
 
-# docling 그림 요소의 자리표시. 텍스트 PDF 안에 렌더된 도표는 파서로는 못 읽는다(#137 결함 4).
-# 지우지 않고 남겨 "여기 도표가 있었다"를 알린다.
+# docling 그림 요소의 자리표시. #137 결함 4 당시 'docling 표 모드·OCR·VLM 셋 다 실측 실패'로 적었는데,
+# 그 OCR은 중국어 모델이었다 — 한국어 RapidOCR은 표 이미지의 셀을 읽는다(#168). 그림은 VLM 캡션(#162)이
+# 읽고, 캡션이 없을 때만 이 자리표시가 남는다. 지우지 않고 남겨 "여기 도표가 있었다"를 알리고,
 # **캡션이 붙으면 이 자리를 캡션이 대체한다**(#162) — 자리표시가 남아 있다는 것은 VLM 호출이
 # 실패했다는 뜻이다(count_picture_placeholders).
 _PICTURE_PLACEHOLDER = '<!-- image -->'
@@ -226,6 +234,10 @@ def _docling_runtime():
 
     모델은 한 번만 올린다 — 이후 쪽당 0.3초(#143 실측). **리눅스 컨테이너 실측(2026-09-13)**:
     변환 피크 1.8GB·상주 1.4GB이고, 같은 프로세스로 12회 반복하면 4~6회차에서 평평해진다(누수 없음).
+    OCR을 켜도 이 수준이다 — 엔진이 원격(Triton, #168)이라 워커엔 HTTP 클라이언트뿐: 26쪽 실문서 원격 OCR
+    피크 1,699MB(리눅스 컨테이너 2026-09-17). 인프로세스로 켰을 때는 2,990MB였다. 다만 **정상상태는 더 높다**:
+    125건을 한 프로세스로 돌리면 RSS가 2,3xx MB에서 평탄해지고 OCR 유무로 30MB밖에 안 다르다(2026-09-18,
+    docker-compose.yml mem_limit 주석). 단일 문서 피크로 상한을 정하면 안 된다.
     다만 작업 전으로 돌아오지도 않는다 — 모델이 상주하고 glibc가 해제분을 OS에 바로 반납하지 않는다.
     컨테이너 메모리 상한(docker-compose.yml)은 이 피크 위에 잡는다. 세마포어는 arq `max_jobs`(10)와 별개로
     **변환만** 직렬화한다 — chunk_file은 to_thread로 돌아 잡이 겹치면 변환도 겹쳐 메모리가
@@ -236,7 +248,7 @@ def _docling_runtime():
         if _docling_converter is None:
             from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
             from docling.datamodel.base_models import InputFormat
-            from docling.datamodel.pipeline_options import (PdfPipelineOptions,
+            from docling.datamodel.pipeline_options import (KserveV2OcrOptions, PdfPipelineOptions,
                                                             PictureDescriptionApiOptions,
                                                             TableFormerMode)
             from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -247,6 +259,15 @@ def _docling_runtime():
             opts.layout_batch_size = settings.docling_layout_batch_size
             opts.queue_max_size = settings.docling_queue_max_size
             opts.do_ocr = settings.docling_do_ocr
+            if settings.docling_do_ocr:
+                # 엔진은 워커가 아니라 원격 Triton(#168, config.py ocr_kserve_* 주석). 기본 OcrMode는 비트맵
+                # 영역만 OCR하고 텍스트 레이어는 건드리지 않는다 — OCR on/off의 본문이 동일함을 실측했다.
+                # 각도 분류기(use_cls=False)는 서버 쪽 상수다. 요청 실패는 docling이 삼키고 errors에만 남기므로
+                # _docling_sections가 errors를 보고 실패로 올린다.
+                opts.ocr_options = KserveV2OcrOptions(
+                    url=settings.ocr_kserve_url, model_name=settings.ocr_kserve_model_name,
+                    transport='http', lang=[_OCR_LANG], scale=_OCR_SCALE,
+                    timeout=settings.ocr_kserve_timeout_seconds)
             opts.do_table_structure = True
             opts.table_structure_options.mode = (TableFormerMode.FAST if settings.docling_table_mode == 'fast'
                                                  else TableFormerMode.ACCURATE)
@@ -387,15 +408,23 @@ def _docling_sections(file_path: str | Path) -> list[_Section]:
     임계 상수가 0개다. 헤딩 층 복원은 _sections_from_docling_elements가 한다.
 
     실패(예외·타임아웃)는 그대로 올린다 — pdfplumber 폴백 없음. 저품질 색인을 조용히 만들지 않는다
-    (strict-grounded). 호출부(index_pending_document)가 failed로 기록한다.
-    이미지 도표는 VLM 캡션으로 읽는다 (#162) — VLM에 못 닿아 캡션이 없으면
-    _PICTURE_PLACEHOLDER 자리표시가 남는다. 격자 표 이미지는 docling이 TableItem으로 분류해
-    이 경로를 타지 않는다(별도 이슈).
+    (strict-grounded). 호출부(index_pending_document)가 failed로 기록한다. **raises_on_error=True만으로는
+    부족하다** — docling은 PARTIAL_SUCCESS(문서 타임아웃으로 뒤쪽 쪽이 빠짐, 원격 OCR 실패 등)에 예외를
+    안 던진다(document_converter.py: status not in {SUCCESS, PARTIAL_SUCCESS}일 때만). 그래서 status와
+    errors를 직접 보고 올린다(#168). VLM 캡션 실패는 errors에 안 쌓이므로(로그만) 여기 걸리지 않는다 —
+    #162의 '캡션 없이 진행'은 그대로다.
+    이미지 도표는 VLM 캡션으로 읽고(#162), 격자 표 이미지(TableItem)는 원격 한국어 OCR이 셀을 채운다(#168).
     """
     converter, semaphore = _docling_runtime()
     with semaphore:
         result = converter.convert(str(file_path), max_num_pages=settings.docling_max_num_pages,
                                    raises_on_error=True)
+    from docling.datamodel.base_models import ConversionStatus   # 지연 import — docling은 톱레벨에 안 들인다
+    if result.status != ConversionStatus.SUCCESS or result.errors:
+        detail = '; '.join(f'{e.category.value}/{e.module_name}: {(e.error_message or "")[:100]}'
+                           for e in result.errors[:3])
+        raise RuntimeError(f'docling 변환 불완전 — status={result.status.value}, '
+                           f'errors={len(result.errors)}: {detail}')
     return _sections_from_docling_elements(_docling_elements(result.document))
 
 

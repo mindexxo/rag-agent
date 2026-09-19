@@ -342,7 +342,8 @@ async def handle_upload(
         # DROP이 필요한 이유: failed라도 엔진에 청크가 남을 수 있다 — index_pending_document는
         # ②에서 청크를 쓴 뒤 ③에서 커밋하므로, ③ 실패가 반복돼 failed로 굳은 문서는 searchable=True
         # 청크를 가진 채다(리뷰 지적). target은 재색인이 먼저 지우지만(index_parsed_document의
-        # _delete_by_terms) others는 재색인이 없어 여기서 지워야 한다.
+        # _delete_by_terms) others는 재색인이 없어 여기서 지워야 한다. #184 이후 failed 확정 자체가
+        # DROP을 등재하므로(outbox.drain — "생길 때 지운다") 여기는 이중 안전판이다("내릴 때 지운다").
         others = [d.id for d in failed if d.id != target.id]
         if others:
             await session.execute(update(Document).where(Document.id.in_(others))

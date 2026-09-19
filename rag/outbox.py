@@ -13,9 +13,19 @@
 ## 처리 — 단일 워커, cron 1분, 폴링
 
 워커 cron(rag/worker.py)이 1분마다 `drain_once`를 부른다. pending 행을 **id 순으로** 하나씩
-처리하고 성공하면 done. 실패는 attempts에 쌓여 MAX_ATTEMPTS를 넘으면 failed로 확정한다
-(INDEX_DOCUMENT면 문서도 failed — FE가 그걸로 실패를 본다). 행은 지우지 않는다: done/failed
-행이 이력이자 관측 지점이다. 보존 정리는 나중에 스케줄러로.
+처리하고 성공하면 done. 실패는 두 갈래다(#185) — **결정적** 실패(파싱 오류·빈 파일·지원 안 하는
+형식처럼 다시 돌려도 같은 것)는 1회로 failed 확정, **일시** 실패(엔진·임베딩 서버 연결·타임아웃·5xx)는
+attempts에 쌓이며 `next_attempt_at`을 지수 백오프로 미룬다(1·2·4…60분 상한, 총 창 약 19시간).
+MAX_ATTEMPTS까지 못 끝내면 failed 확정. 어느 쪽이든 failed가 되는 순간 `_on_failed`가 불린다 —
+지금은 ERROR 로그와 확정 카운터까지, 알람 연동은 그 함수만 채우면 된다.
+INDEX_DOCUMENT의 failed는 문서도 failed로 찍고(FE가 그걸로 실패를 본다) **잔여 청크 DROP을 같은
+커밋에 등재한다**(#184 — ② 엔진 쓰기 뒤 ③ 커밋만 실패하면 검색 가능한 청크가 남기 때문).
+행은 지우지 않는다: done/failed 행이 이력이자 관측 지점이다. 보존 정리는 나중에 스케줄러로.
+
+일시/결정적 분류의 정의점은 이 파일의 `is_transient` 하나다. 기본은 **결정적**이다 — 목록에 없는
+예외를 일시로 봐 하루를 기다리게 하는 것보다, 결정적으로 봐 바로 failed로 보이는 쪽이 사용자에게
+싸다(재업로드 한 번). 알려진 오분류: bulk 부분 실패(`RuntimeError`)에 섞인 `rejected_execution`은
+일시인데 결정적으로 잡힌다 — 단일 워커라 드물어 감수한다.
 
 **의도적으로 하지 않은 것**과 그 트리거:
 - 워커 여러 대 → 지금은 단일 워커라 프로세스 안 `asyncio.Lock` 하나로 cron 겹침(1분 넘게
@@ -24,12 +34,11 @@
   못 막는다 — SELECT에 행 잠금이 없어 같은 pending 행을 둘이 뽑을 수 있다. 결과는 멱등으로
   수렴하지만(같은 _id upsert라 두 번 색인해도 같다), 그래서 테스트·eval은
   `row_ids`로 자기 문서의 행만 처리한다. 개발계에서 워커를 띄운 채 eval을 돌리면 이 경합이 실재한다.
-- 인라인(커밋 직후 즉시 처리) → 안 한다. 삭제·토글·FAQ 수정도 cron까지 최대 1분(재시도 포함
-  1~5분) 뒤 검색에 반영된다. **제품 결정**: "문서 변경은 검색에 최대 1~5분 뒤 반영될 수 있다"로
-  가이드한다. 그 사이 삭제·비공개 문서가 인용될 수 있음을 받아들인 것이다(답변 캐시는
+- 인라인(커밋 직후 즉시 처리) → 안 한다. 삭제·토글·FAQ 수정도 cron까지 최대 1분 뒤 검색에
+  반영된다. **제품 결정**: "문서 변경은 검색에 최대 1분 뒤 반영되고, 검색 엔진 장애 중이면 복구 후
+  최대 1시간(백오프 상한) 안에 따라잡는다"로 가이드한다. 그 사이 삭제·비공개 문서가 인용될 수 있음을 받아들인 것이다(답변 캐시는
   라우터가 즉시 무효화하므로 창은 새 검색에만 열린다). 좁히려면 워커 폴링 루프(10초)나
   "지금 반영" 수동 트리거를 얹으면 되고, 둘 다 이 구조 위에 그대로 붙는다.
-- 백오프 → 매 회차 재시도. 엔진이 죽어 있으면 매분 실패가 쌓일 뿐 해롭지 않다.
 - 크래시 루프 방어(잡을 때 attempts 증가) → 파서가 프로세스를 죽이는 파일은 사람이 본다.
 
 ## 멱등성이 전제다
@@ -46,12 +55,15 @@
 """
 import asyncio
 import logging
+from datetime import timedelta
 
-from sqlalchemy import select, update
+import httpx
+from sqlalchemy import func, or_, select, update
+from sqlalchemy.exc import InterfaceError, OperationalError
 
 from database import AsyncSessionLocal
 from rag import os_client, os_index
-from rag.metrics import INDEX_TOTAL, SEARCH_INDEX_SYNC_TOTAL, ext_label
+from rag.metrics import INDEX_TOTAL, SEARCH_INDEX_FAILED_TOTAL, SEARCH_INDEX_SYNC_TOTAL, ext_label
 from rag.models import Document, SearchIndexOutbox
 
 logger = logging.getLogger(__name__)
@@ -65,8 +77,13 @@ DROP_FAQS = 'drop_faqs'                # {"faq_ids": [int]}
 META_FAQS = 'meta_faqs'                # {"faq_ids": [int]}
 
 PENDING, DONE, FAILED = 'pending', 'done', 'failed'
-MAX_ATTEMPTS = 5        # 이걸 넘으면 failed 확정 — 사람이 본다. 테스트는 monkeypatch로 1을 쓴다.
+# 일시 실패의 재시도 상한(#185). 1·2·4·8·16·32분 뒤 60분 고정이라 24회면 총 약 19시간 —
+# "엔진이 반나절 죽었다 살아나도 사람 손 없이 따라잡는다"가 목표 눈금이다. 결정적 실패는 이 수를 안 본다.
+MAX_ATTEMPTS = 24
+BACKOFF_CAP_MINUTES = 60   # 복구 뒤 늦어도 이 안에 반영된다 — 눈금을 키우면 그만큼 낡은 채로 기다린다
 BATCH = 50              # 한 회차가 처리할 최대 행. 다음 회차가 이어받으니 크지 않아도 된다.
+# 살아 있는 문서 상태 — DROP_DOCUMENTS가 건너뛰는 집합(_apply 참조). Document.status 6값 중 deleted·failed의 여집합.
+_ALIVE_STATUSES = ('pending', 'parsing', 'embedding', 'ready')
 
 _drain_lock = asyncio.Lock()   # cron 겹침 방지 — 단일 워커 전제(모듈 docstring)
 
@@ -90,7 +107,18 @@ async def _apply(session, op: str, payload: dict, row_id: int) -> None:
         from rag.documents import index_pending_document   # 지연 import — documents가 이 모듈을 import
         await index_pending_document(payload['document_id'], outbox_row_id=row_id)
     elif op == DROP_DOCUMENTS:
-        await os_index.drop_documents_now(payload['document_ids'])
+        # 살아 있는 문서는 건너뛴다(#184 안전판). failed 확정이 등재한 DROP이 백오프로 미뤄진 사이
+        # 사용자가 같은 파일을 재업로드하면 그 failed 행이 되살아나(#161) INDEX가 먼저 끝날 수 있다 —
+        # 그 뒤에 도는 DROP이 새 청크를 지우면 ready인데 검색에 없는 문서가 된다. payload엔 id만
+        # 싣고 처리 시점의 PG를 읽는다는 규약 그대로: 지금 deleted·failed(또는 행 없음)인 것만 지운다.
+        ids = list(payload['document_ids'])
+        alive = set((await session.execute(
+            select(Document.id).where(Document.id.in_(ids))
+            .where(Document.status.in_(_ALIVE_STATUSES)))).scalars().all())
+        if alive:
+            logger.info('DROP_DOCUMENTS 건너뜀 — 되살아난 문서 %s', sorted(alive))
+        if targets := [i for i in ids if i not in alive]:
+            await os_index.drop_documents_now(targets)
     elif op == META_DOCUMENTS:
         await os_index.sync_meta_documents_now(session, payload['document_ids'])
     elif op == INDEX_FAQ:
@@ -103,11 +131,76 @@ async def _apply(session, op: str, payload: dict, row_id: int) -> None:
         raise ValueError(f'알 수 없는 outbox op: {op!r}')
 
 
-async def drain(session, limit: int = BATCH, *, row_ids: list[int] | None = None) -> dict:
-    """pending 행을 id 순으로 처리한다. 반환 {'done': n, 'failed': n}.
+def is_transient(exc: BaseException) -> bool:
+    """실패가 **일시적**인가 — 다시 시도하면 될 수 있는 종류인가. 분류의 정의점(#185).
 
-    row_ids — 이 행들만 처리한다. 테스트·eval 스크립트용: 개발계 DB를 여러 세션이 공유하므로
-    전체 drain은 남의 pending 업로드까지 처리해 버린다. 운영 cron은 넘기지 않는다.
+    일시 = 상대(검색 엔진·임베딩 서버)에 닿지 못했거나 상대가 바빴다는 신호만:
+      - opensearchpy: ConnectionError(ConnectionTimeout·SSLError 포함), TransportError 중 429·502·503·504
+        또는 상태코드 없음('N/A' — 연결 계층 실패)
+      - httpx(임베딩 TEI 호출): TransportError(ConnectError·Timeout·RemoteProtocolError),
+        HTTPStatusError 중 429·5xx
+      - builtin ConnectionError(ConnectionRefusedError 등 OSError 하위)·TimeoutError(asyncio.TimeoutError와 동일 클래스)
+      - PG 자체(SQLAlchemy가 asyncpg 예외를 감싼 것): OperationalError·InterfaceError — 핸들러가 같은 세션으로
+        PG를 읽고 쓰는 도중 커넥션이 끊긴 경우. 분류 뒤의 attempts UPDATE도 같은 DB라 함께 실패할 수
+        있는데, 그때는 예외가 drain 밖으로 나가 이 회차가 끊기고 행은 pending 그대로 남는다 — 무해.
+    그 밖은 전부 **결정적** — 파싱 ValueError, docling RuntimeError, blob 없음(FileNotFoundError),
+    프로그래밍 오류. 백 번 돌려도 같으므로 바로 failed로 보이는 것이 사용자에게 싸다(모듈 docstring).
+    """
+    if isinstance(exc, (ConnectionError, TimeoutError, OperationalError, InterfaceError)):
+        return True
+    if isinstance(exc, httpx.TransportError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return code == 429 or code >= 500
+    # opensearchpy는 함수 안에서 import한다 — rag/ 어느 모듈도 톱레벨에 들이지 않는 규율(os_client.client
+    # 참조, AGENTS.md)을 따른다. 순환 회피가 아니라서 AGENTS.md의 지연 import 목록엔 따로 적혀 있다.
+    from opensearchpy import ConnectionError as OsConnectionError, TransportError
+    if isinstance(exc, OsConnectionError):
+        return True
+    if isinstance(exc, TransportError):
+        return exc.status_code in ('N/A', 429, 502, 503, 504)
+    return False
+
+
+def backoff_delay(attempts: int) -> timedelta:
+    """attempts번째 실패 뒤 다음 시도까지 — 1·2·4·8·16·32분, 그 뒤 BACKOFF_CAP_MINUTES 고정."""
+    return timedelta(minutes=min(2 ** (attempts - 1), BACKOFF_CAP_MINUTES))
+
+
+def _on_failed(op: str, row_id: int, err: str) -> None:
+    """failed 확정 지점 하나 — 알람을 붙일 때 여기만 채운다(#185). 지금은 ERROR 로그와 확정 카운터.
+
+    확정은 재시도와 다르다: 이 시점부터 그 행의 PG↔엔진 불일치는 사람이 고칠 때까지 영구다
+    (META·DROP·FAQ는 Document/Faq에 표시도 남지 않는다 — 이 로그·카운터가 유일한 단서).
+    """
+    SEARCH_INDEX_FAILED_TOTAL.labels(op=op).inc()
+    logger.error('outbox failed 확정 (op=%s id=%s): %s', op, row_id, err)
+
+
+def due_pending_stmt(limit: int = BATCH, *, row_ids: list[int] | None = None):
+    """drain이 이번 회차에 집을 행 — pending이고 **시도 시각이 됐거나 정해지지 않은** 것, id 순.
+
+    row_ids를 주면 그 행들만 고르고 **백오프와 limit을 무시한다** — "지정한 행을 지금 전부 처리한다"가
+    그 인자의 뜻이다(테스트 `ingest`·eval 스크립트는 자기 문서의 행을 즉시 반영하려고 부른다).
+    """
+    stmt = (select(SearchIndexOutbox.id, SearchIndexOutbox.tenant_id, SearchIndexOutbox.op,
+                   SearchIndexOutbox.payload)
+            .where(SearchIndexOutbox.status == PENDING)
+            .order_by(SearchIndexOutbox.id))
+    if row_ids is not None:
+        return stmt.where(SearchIndexOutbox.id.in_(list(row_ids)))
+    return (stmt.where(or_(SearchIndexOutbox.next_attempt_at.is_(None),
+                           SearchIndexOutbox.next_attempt_at <= func.now()))
+            .limit(limit))
+
+
+async def drain(session, limit: int = BATCH, *, row_ids: list[int] | None = None) -> dict:
+    """pending 행을 id 순으로 처리한다. 반환 {'done': n, 'failed': n} — failed는 "이번 회차에 실패한
+    행 수"다(백오프로 물러난 것과 확정된 것을 합친다).
+
+    row_ids — 이 행들만 처리한다(백오프·limit 무시 — due_pending_stmt). 테스트·eval 스크립트용: 개발계 DB를
+    여러 세션이 공유하므로 전체 drain은 남의 pending 업로드까지 처리해 버린다. 운영 cron은 넘기지 않는다.
 
     한 행의 실패가 다음 행을 막지 않는다 — 실패한 행만 attempts를 올리고 계속 간다.
     행 단위로 commit한다: 50건 중 30번째에서 프로세스가 죽어도 29건은 done으로 남는다.
@@ -115,17 +208,13 @@ async def drain(session, limit: int = BATCH, *, row_ids: list[int] | None = None
     INDEX_DOCUMENT는 핸들러가 자기 트랜잭션에서 done을 찍는다(ready 승격과 같은 커밋 —
     "ready ≡ 색인됨"을 커밋 단위로 보장). 그래서 여기서는 그 op의 status를 건드리지 않는다.
     """
-    stmt = (select(SearchIndexOutbox.id, SearchIndexOutbox.op, SearchIndexOutbox.payload)
-            .where(SearchIndexOutbox.status == PENDING)
-            .order_by(SearchIndexOutbox.id).limit(limit))
-    if row_ids is not None:
-        stmt = stmt.where(SearchIndexOutbox.id.in_(list(row_ids)))
-    rows = (await session.execute(stmt)).all()
+    rows = (await session.execute(due_pending_stmt(limit, row_ids=row_ids))).all()
 
     done = failed = 0
-    for row_id, op, payload in rows:           # 값으로 들고 간다 — rollback이 ORM 객체를 만료시킨다
+    for row_id, tenant_id, op, payload in rows:   # 값으로 들고 간다 — rollback이 ORM 객체를 만료시킨다
+        payload = payload or {}
         try:
-            await _apply(session, op, payload or {}, row_id)
+            await _apply(session, op, payload, row_id)
             if op != INDEX_DOCUMENT:
                 await mark_done(session, row_id)
             await session.commit()
@@ -142,7 +231,8 @@ async def drain(session, limit: int = BATCH, *, row_ids: list[int] | None = None
                 .values(attempts=SearchIndexOutbox.attempts + 1, last_error=err)
                 .returning(SearchIndexOutbox.attempts)
             )).scalar()
-            terminal = attempts >= MAX_ATTEMPTS
+            # 결정적 실패는 횟수를 안 본다 — 다시 돌려도 같은 결과라 기다리는 것이 사용자에게 손해다.
+            terminal = not is_transient(e) or attempts >= MAX_ATTEMPTS
             if terminal:
                 await session.execute(
                     update(SearchIndexOutbox).where(SearchIndexOutbox.id == row_id)
@@ -152,23 +242,36 @@ async def drain(session, limit: int = BATCH, *, row_ids: list[int] | None = None
                     # pending일 때만: 그새 삭제됐거나 다른 경로로 끝난 문서는 건드리지 않는다.
                     await session.execute(
                         update(Document)
-                        .where(Document.id == (payload or {}).get('document_id'))
+                        .where(Document.id == payload.get('document_id'))
                         .where(Document.status == 'pending')
                         .values(status='failed', status_reason=f'색인 {attempts}회 실패: {err}'[:500]))
+                    # 잔여 청크 DROP을 같은 커밋에(#184). index_pending_document는 ② 엔진 쓰기 뒤 ③ 커밋이라
+                    # ③만 실패해 failed로 굳으면 searchable=True 청크가 남아 실패한 문서가 검색에 잡힌다.
+                    # "failed = 엔진에 청크 없음"을 여기서 참으로 만든다 — 생길 때 지운다. 그 failed를
+                    # 나중에 내릴 때 지우는 handle_upload의 others DROP(#161)은 이것의 이중 안전판이다.
+                    # 청크가 없었으면(②보다 앞서 죽음) 0건 삭제 — 멱등이라 무해.
+                    enqueue(session, tenant_id, DROP_DOCUMENTS, document_ids=[payload.get('document_id')])
+            else:
+                await session.execute(
+                    update(SearchIndexOutbox).where(SearchIndexOutbox.id == row_id)
+                    .values(next_attempt_at=func.now() + backoff_delay(attempts)))
             await session.commit()
             SEARCH_INDEX_SYNC_TOTAL.labels(op=op, result='error').inc()
+            if terminal:
+                _on_failed(op, row_id, err)
             if op == INDEX_DOCUMENT:
                 # 문서 단위 결과를 따로 센다 (#151). 위 카운터는 재시도 단위라 실패율의 분모가
                 # 못 된다. ext는 실패 경로에서만 한 번 더 읽는다 — 드문 경로라 비용이 무의미하고,
                 # "PDF만 실패한다" 같은 패턴은 이 라벨이 없으면 보이지 않는다.
                 fname = (await session.execute(
                     select(Document.filename)
-                    .where(Document.id == (payload or {}).get('document_id')))).scalar()
+                    .where(Document.id == payload.get('document_id')))).scalar()
                 INDEX_TOTAL.labels(ext=ext_label(fname or ''),
                                    result='failed' if terminal else 'retry').inc()
             failed += 1
             logger.warning('outbox 반영 실패 (op=%s id=%s attempts=%d%s): %s',
-                           op, row_id, attempts, ' → failed 확정' if terminal else '', e)
+                           op, row_id, attempts,
+                           ' → failed 확정' if terminal else f' → {backoff_delay(attempts)} 뒤 재시도', e)
     return {'done': done, 'failed': failed}
 
 

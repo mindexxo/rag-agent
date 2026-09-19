@@ -268,10 +268,14 @@ CREATE TABLE IF NOT EXISTS search_index_outbox (
     status      TEXT      NOT NULL DEFAULT 'pending',     -- pending | done | failed
     attempts    INTEGER   NOT NULL DEFAULT 0,
     last_error  TEXT,
+    next_attempt_at TIMESTAMPTZ,                          -- 일시 실패의 다음 시도 시각(#185 지수 백오프). NULL=지금
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 -- 드레인은 pending만 id 순으로 읽는다 — done이 아무리 쌓여도 이 부분 인덱스만 훑는다.
+-- next_attempt_at 필터는 이 인덱스 위에서 힙으로 건다 — pending 집합이 작아 별도 인덱스는 두지 않는다.
 CREATE INDEX IF NOT EXISTS idx_outbox_pending ON search_index_outbox (id) WHERE status = 'pending';
+-- 기존 DB 반영 (2026-09-20, #185 지수 백오프 — #139 때 지운 컬럼을 되살린다):
+--   ALTER TABLE search_index_outbox ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ;
 -- 기존 DB 반영 (2026-09-11, 1차 outbox → status 모델로 전환):
 --   ALTER TABLE search_index_outbox ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';
 --   ALTER TABLE search_index_outbox DROP COLUMN IF EXISTS next_attempt_at;

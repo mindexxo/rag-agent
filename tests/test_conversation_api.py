@@ -120,3 +120,16 @@ async def test_query_신규대화에_created_by_저장(client, tenant_id, fake_l
     # 만든 사람에겐 이어가기 허용, 남에겐 404
     assert (await client.post('/kms/query', headers=USER_B,
                               json={'query': '그럼 교환은?', 'conversation_id': cid})).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_updated_at은_KST_오프셋으로_나가고_시점은_같다(client, tenant_id):
+    """#181 — 응답 스키마 세 곳이 같은 KstDatetime을 쓴다. 대화 목록 쪽도 형식·시점을 고정한다."""
+    from datetime import datetime
+    ids = await _seed(tenant_id, 1)
+    body = (await client.get('/kms/conversations', headers=USER_A)).json()
+    item = next(i for i in body['items'] if i['conversation_id'] == ids[0])
+    assert item['updated_at'].endswith('+09:00')
+    async with AsyncSessionLocal() as s:
+        stored = (await s.get(Conversation, ids[0])).last_used_at
+    assert datetime.fromisoformat(item['updated_at']) == stored      # 변환이지 이동이 아니다

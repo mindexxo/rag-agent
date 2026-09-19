@@ -1,7 +1,8 @@
 """운영 리포트 응답 스키마 (지표 MVP — Alli형: 사용량·답변률·지식 갭)."""
-from datetime import datetime
 
 from pydantic import BaseModel
+
+from schemas.common import KstDatetime
 
 
 class DailyCount(BaseModel):
@@ -34,4 +35,4 @@ class StatsSummary(BaseModel):
 
 class UnansweredItem(BaseModel):
     question: str        # 근거를 못 댄 답변의 사용자 질문 원문 — FAQ 보강 재료 (지식 갭, #61)
-    asked_at: datetime
+    asked_at: KstDatetime        # KST 오프셋(#181)

@@ -1,8 +1,8 @@
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from schemas.common import KstDatetime
 from schemas.kms import SourceCitation
 
 # 👎 사유 태그 (#8) — 수리 경로별 고정 슬러그. 검증은 이 Literal 하나 (4종에 테이블은 과설계)
@@ -12,7 +12,7 @@ FeedbackTag = Literal['wrong_info', 'wrong_source', 'outdated_doc', 'insufficien
 class ConversationSummary(BaseModel):
     conversation_id: int
     title: str | None = None     # 첫 질문 앞 80자 (없으면 FE가 '대화 #id' 폴백)
-    updated_at: datetime         # 최근 사용 시각(last_used_at) — 목록 "n분 전" 표시용 (#10)
+    updated_at: KstDatetime      # 최근 사용 시각(last_used_at) — 목록 "n분 전" 표시용 (#10). KST 오프셋(#181)
     # 검색(q) 매칭 발췌 (#28) — 내용에서 걸린 대화만. 제목에서만 걸렸거나 q 미전송이면 None
     # (제목은 이미 title로 보이므로 같은 내용을 중복해 내려주지 않는다).
     # 하이라이트는 FE가 이 문자열 안에서 처리한다 — 서버는 마크업 없는 평문만 준다.

@@ -12,7 +12,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
 from routers.kms import get_tenant_id
+from schemas.common import KST
 from schemas.stats import DailyCount, StatsSummary, TopDocument, UnansweredItem
+
+# ── 기간 경계는 KST 자정 (#181) ──────────────────────────────
+# DB 세션 tz는 Etc/UTC(실측)라 `now()::date`·`created_at::date`는 UTC 자정에서 갈린다 — 그러면
+# "오늘 질문 수"가 KST 오전 9시에 바뀐다. 응답 시각(schemas/common.KstDatetime)과 **같은 상수**를
+# :tz로 바인드해 벽시계를 KST로 옮긴 뒤 날짜를 자른다. 세 SQL이 같은 조각을 쓴다 — 정의점 하나.
+# `make_interval(days => :days)`를 원식대로 두는 이유: `date - :days`로 바꾸면 asyncpg가 그 바인드를
+# int/interval 중 무엇으로 볼지 모호해질 수 있다. now()만 KST 벽시계로 바꾸고 구조는 유지한다.
+_TODAY_KST = "(now() AT TIME ZONE :tz)::date"
+_TODAY_KST_MINUS_DAYS = "((now() AT TIME ZONE :tz) - make_interval(days => :days))::date + 1"
+_SINCE_KST = f"(({_TODAY_KST_MINUS_DAYS})::timestamp AT TIME ZONE :tz)"   # KST 자정 → timestamptz
 
 router = APIRouter(prefix='/kms')
 
@@ -23,7 +34,7 @@ async def stats_summary(
         tenant_id: str = Depends(get_tenant_id),
         session: AsyncSession = Depends(get_session),
 ):
-    params = {'tenant_id': tenant_id, 'days': days}
+    params = {'tenant_id': tenant_id, 'days': days, 'tz': KST.key}
 
     # 기간 경계는 모든 쿼리가 '달력일' 기준을 공유한다 — days=7이면 오늘 포함 최근 7일(일 단위 절단).
     # 롤링 윈도(now()-7일)를 쓰면 윈도 첫 부분날의 데이터가 "질문 수엔 있는데 일별 합계엔 없는"
@@ -36,7 +47,7 @@ async def stats_summary(
     # 들어간다(같은 이유로 stats_unanswered에도 이 필터를 새로 넣었다).
     # 분자도 같은 조건 필수 — intent NULL(컬럼 도입 전 행)이 분자에만 들어가면 분자가 분모의
     # 부분집합이 아니게 돼 근거미확인율이 1을 넘거나 답변률이 음수가 된다.
-    row = (await session.execute(text("""
+    row = (await session.execute(text(f"""
         SELECT
           count(*) FILTER (WHERE role = 'user')                                        AS questions,
           count(*) FILTER (WHERE role = 'assistant' AND status = 'done'
@@ -51,16 +62,16 @@ async def stats_summary(
                              AND coalesce(jsonb_array_length(cited_docs), 0) = 0)      AS ungrounded
         FROM messages
         WHERE tenant_id = :tenant_id
-          AND created_at >= (now() - make_interval(days => :days))::date + 1
+          AND created_at >= {_SINCE_KST}
     """), params)).one()
 
     # 질문 없는 날도 0으로 채운다 — 빠진 행은 FE에서 "구멍 난 표"가 되고 추이 감이 왜곡된다.
-    daily_rows = (await session.execute(text("""
+    daily_rows = (await session.execute(text(f"""
         SELECT to_char(d, 'YYYY-MM-DD') AS d, count(m.id) AS n
         FROM generate_series(
-               (now() - make_interval(days => :days))::date + 1, now()::date, '1 day') AS d
+               {_TODAY_KST_MINUS_DAYS}, {_TODAY_KST}, '1 day') AS d
         LEFT JOIN messages m
-          ON m.created_at::date = d
+          ON (m.created_at AT TIME ZONE :tz)::date = d::date
          AND m.tenant_id = :tenant_id AND m.role = 'user'
         GROUP BY 1 ORDER BY 1
     """), params)).all()
@@ -68,12 +79,12 @@ async def stats_summary(
     # 인용 top 문서 — 저장 시 확정된 실인용 목록(cited_docs)만 집계. 본문 재파싱·전송 없음.
     # (저장 시점에 출처 꼬리 해석(rag/citation_tail, #56)이 확정 — 단일 정의점.
     #  첨부 인용은 '첨부: 파일명' 문자열로 함께 잡힌다 — 첨부 기반 답변도 지표에 노출)
-    top_rows = (await session.execute(text("""
+    top_rows = (await session.execute(text(f"""
         SELECT d AS filename, count(*) AS cnt
         FROM messages, jsonb_array_elements_text(cited_docs) AS d
         WHERE tenant_id = :tenant_id AND role = 'assistant'
           AND jsonb_typeof(cited_docs) = 'array'
-          AND created_at >= (now() - make_interval(days => :days))::date + 1
+          AND created_at >= {_SINCE_KST}
         GROUP BY 1 ORDER BY cnt DESC LIMIT 10
     """), params)).all()
 
@@ -106,7 +117,7 @@ async def stats_unanswered(
     목적에는 그게 맞다(둘 다 근거가 없다는 뜻이므로). 다만 API 응답만으로는 그 둘을
     구별할 수 없다는 것을 알고 볼 것 — 필요하면 messages.content를 직접 감사해야 한다.
     """
-    rows = (await session.execute(text("""
+    rows = (await session.execute(text(f"""
         SELECT u.content AS question, a.created_at AS asked_at
         FROM messages a
         JOIN messages u ON u.id = a.question_message_id
@@ -118,8 +129,8 @@ async def stats_unanswered(
           -- 잡담이 전부 지식 갭 목록을 덮는다(개발계 실측: OTHER·done 53건 전부 빈 배열).
           AND a.role = 'assistant' AND a.status = 'done' AND a.intent = 'KNOWLEDGE'
           AND coalesce(jsonb_array_length(a.cited_docs), 0) = 0
-          AND a.created_at >= (now() - make_interval(days => :days))::date + 1
+          AND a.created_at >= {_SINCE_KST}
         ORDER BY a.created_at DESC
         LIMIT :limit
-    """), {'tenant_id': tenant_id, 'days': days, 'limit': limit})).all()
+    """), {'tenant_id': tenant_id, 'days': days, 'limit': limit, 'tz': KST.key})).all()
     return [UnansweredItem(question=r.question, asked_at=r.asked_at) for r in rows]

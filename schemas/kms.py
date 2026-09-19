@@ -1,7 +1,7 @@
 """KMS API 요청/응답 스키마"""
-from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from schemas.common import KstDatetime
 from text_norm import normalize_filename
 
 class SourceCitation(BaseModel):
@@ -70,7 +70,7 @@ class DocumentUploadResponse(BaseModel):
     is_active: bool
     folder_id: int | None = None
     is_searchable: bool = True
-    uploaded_at: datetime          # 등록일시 — 목록 기본 정렬 키 (해당 **버전**의 업로드 시각)
+    uploaded_at: KstDatetime       # 등록일시 — 목록 기본 정렬 키 (해당 **버전**의 업로드 시각). KST 오프셋(#181)
     # 등록자. X-User-Id 미전송이면 null이고, 이 필드가 생기기 전에 올라온 문서도 전부 null이다
     # (소급해 채울 정보가 없다) — 화면은 빈 값 표시를 처리해야 한다.
     uploaded_by: str | None = None
@@ -131,7 +131,7 @@ class DocumentExistsResponse(BaseModel):
     document_id: int | None = None
     version: int | None = None       # 존재할 경우 현재 버전 (업로드하면 +1이 된다)
     status: str | None = None
-    uploaded_at: datetime | None = None
+    uploaded_at: KstDatetime | None = None
 
 
 class DocumentUpdateRequest(BaseModel):

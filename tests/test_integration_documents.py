@@ -1041,3 +1041,18 @@ async def test_목록_필터를_건_채로_페이징하면_total도_필터_기�
     # 검색어 + 페이징도 같은 규칙
     q_page = await _list(client, q='규정', limit=2, offset=2)
     assert q_page['total'] == 3 and len(q_page['items']) == 1 and q_page['has_more'] is False
+
+
+# ── #181 응답 시각은 KST 오프셋 ──────────────────────────────
+
+@pytest.mark.asyncio
+async def test_uploaded_at은_KST_오프셋으로_나가고_시점은_같다(client, tenant_id, fake_queue, blob_tmp):
+    from datetime import datetime
+    body = await _upload(client, '환불정책.md', MD)
+    assert body['uploaded_at'].endswith('+09:00')
+    # 응답 문자열을 다시 파싱하면 DB의 UTC 값과 같은 시점 — 변환이지 이동이 아니다
+    assert datetime.fromisoformat(body['uploaded_at']) == (await _get_doc(body['document_id'])).uploaded_at
+    # 목록·exists도 같은 형식 (스키마 세 곳이 같은 타입을 쓴다)
+    assert (await _list(client))['items'][0]['uploaded_at'].endswith('+09:00')
+    ex = (await client.get('/kms/documents/exists', params={'filename': '환불정책.md'})).json()
+    assert ex['uploaded_at'].endswith('+09:00')

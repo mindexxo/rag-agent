@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from database import AsyncSessionLocal
 from rag.citation_labels import TAIL_END, TAIL_START, citation_tail
-from rag.models import Message
+from rag.models import Conversation, Message
 
 
 
@@ -236,3 +236,33 @@ async def test_문구가_거절이어도_인용이_있으면_ungrounded가_아�
     assert body['knowledge_done'] == 1
     assert body['ungrounded'] == 0                               # 문구가 아니라 인용을 본다
     assert body['top_documents'][0]['filename'] == 'FAQ'
+
+
+# ── #181 일별 집계 경계는 KST 자정 ────────────────────────────
+
+@pytest.mark.asyncio
+async def test_daily_버킷은_KST_자정으로_갈린다(client, tenant_id):
+    """KST 어제 23:30(=UTC 어제 14:30)과 KST 오늘 00:30(=UTC 어제 15:30)을 심는다.
+    세션 tz(UTC) 자정 기준이었다면 둘 다 '어제'로 잡혀 today=0·yesterday=2가 된다 — 그 어긋남이
+    "오늘 질문 수가 오전 9시에 바뀌는" 현상이었다. 경계를 못 박는 테스트가 없었다(#181)."""
+    from datetime import datetime, time, timedelta
+    from schemas.common import KST
+    today = datetime.now(KST).date()
+    yesterday = today - timedelta(days=1)
+    at_2330 = datetime.combine(yesterday, time(23, 30), KST)
+    at_0030 = datetime.combine(today, time(0, 30), KST)
+
+    async with AsyncSessionLocal() as s:
+        conv = Conversation(tenant_id=tenant_id, created_by='agent-a')
+        s.add(conv)
+        await s.flush()
+        s.add_all([Message(tenant_id=tenant_id, conversation_id=conv.id, role='user',
+                           content='어제 밤', created_at=at_2330),
+                   Message(tenant_id=tenant_id, conversation_id=conv.id, role='user',
+                           content='오늘 새벽', created_at=at_0030)])
+        await s.commit()
+
+    body = (await client.get('/kms/stats?days=2')).json()
+    daily = {d['date']: d['questions'] for d in body['daily']}
+    assert daily == {yesterday.isoformat(): 1, today.isoformat(): 1}
+    assert body['questions'] == 2                        # 기간 필터(경계식)도 KST 자정 기준

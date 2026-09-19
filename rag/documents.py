@@ -333,6 +333,10 @@ async def handle_upload(
         )
         if reused is None:
             raise FailedReuseConflict(filename)
+        # 되살리는 행 자신의 캐시도 지운다 — 같은 id를 **다른 내용**으로 되살리는 것이라, 잔여 청크로
+        # 만들어진 답변 캐시가 있었다면 새 내용과 어긋난 답을 재사용한다. 워커 ③은 구버전(old_active_ids)만
+        # 무효화하고 자기 자신은 건드리지 않는다(신버전은 새 id라 캐시가 없다는 전제) — 재사용은 그 전제 밖이다.
+        await cache.invalidate_source(session, tenant_id, target.id)
         # 나머지 failed는 내린다 — soft_delete_documents와 **같은 세 동작**(상태·캐시·DROP). 그 함수에
         # 위임하지 않는 이유는 filename 기준으로 전 버전을 내려 되살리는 target까지 지우기 때문이다.
         # DROP이 필요한 이유: failed라도 엔진에 청크가 남을 수 있다 — index_pending_document는

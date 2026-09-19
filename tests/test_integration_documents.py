@@ -1105,6 +1105,9 @@ async def test_failed_재업로드는_같은_행을_되살린다(client, tenant_
     assert after.blob_path != before.blob_path
     assert not old_blob.exists() and Path(after.blob_path).exists()   # 옛 blob 삭제, 새 blob 존재
     assert after.uploaded_at > before.uploaded_at        # 목록 최신순에서 위로 온다 (#164)
+    # 처음 올린 것과 같은 출발점 — "색인됨" 흔적이 남으면 안 된다
+    assert after.is_active is False
+    assert after.indexed_at is None and after.char_count is None and after.page_count is None
 
     # 같은 이름의 행은 여전히 하나 — 새 version이 생기지 않았다
     async with AsyncSessionLocal() as s:
@@ -1200,11 +1203,18 @@ async def test_내려가는_failed의_잔여_청크는_DROP으로_지운다(clie
                        blob_path=str(blob_tmp / tenant_id / 'legacy_v2.md'), version=2,
                        status='failed', status_reason='옛 실패'))
         await s.commit()
+        # 잔여 청크로 인용된 답변 캐시가 있었다고 치자 — 내려가는 v1의 것은 지워져야 한다
+        await cache.save_answer(s, tenant_id, '질의 v1', '답 v1', [], [v1['document_id']])
+        await s.commit()
 
     res = await _upload(client, '환불정책.md', MD)                    # v2를 되살리고 v1은 내린다
     assert res['version'] == 2
     v1_doc = await _get_doc(v1['document_id'])
     assert v1_doc.status == 'deleted' and v1_doc.status_reason == 'failed_superseded'
+    async with AsyncSessionLocal() as s:                              # 세 동작 중 캐시 무효화
+        remain = (await s.execute(select(AnswerCacheRow.answer)
+                                  .where(AnswerCacheRow.tenant_id == tenant_id))).scalars().all()
+    assert remain == []
 
     async with AsyncSessionLocal() as s:                              # DROP 행이 v1을 담고 있다
         rows = (await s.execute(select(SearchIndexOutbox)
@@ -1231,3 +1241,69 @@ async def test_되살린_failed의_잔여_청크는_재색인이_교체한다(cl
     texts = await _chunk_texts(v1['document_id'])
     assert texts and all('도서산간' in t or '배송' in t for t in texts)
     assert not any(t in texts for t in old_texts)                       # 옛 청크가 남지 않았다
+
+
+@pytest.mark.asyncio
+async def test_deleted_이력이_섞여_있어도_failed만_살아있으면_되살린다(client, tenant_id, fake_queue, blob_tmp):
+    """v1 deleted + v2 failed — 개발계 실측(id 7503)과 같은 이력. deleted는 '살아 있는 행'이 아니므로
+    v2를 되살린다(v3를 만들지 않는다). v1은 deleted 그대로."""
+    v1 = await _upload(client, '환불정책.md', MD)
+    await ingest(v1['document_id'])                                    # v1 ready
+    v2 = await _upload(client, '환불정책.md', MD)
+    await ingest(v2['document_id'])                                    # v2 ready, v1 supersede → deleted
+    assert (await _get_doc(v1['document_id'])).status == 'deleted'
+    await _make_failed(v2['document_id'])                              # v2 failed
+
+    res = await _upload(client, '환불정책.md', MD)
+    assert res['document_id'] == v2['document_id'] and res['version'] == 2 and res['status'] == 'pending'
+    assert (await _get_doc(v1['document_id'])).status == 'deleted'    # 건드리지 않는다
+    async with AsyncSessionLocal() as s:
+        n = (await s.execute(select(func.count()).select_from(Document)
+                             .where(Document.tenant_id == tenant_id))).scalar()
+    assert n == 2                                                      # v3가 생기지 않았다
+
+
+@pytest.mark.asyncio
+async def test_되살릴_때_폴더와_설명은_유지하고_보내면_갱신한다(client, tenant_id, fake_queue, blob_tmp):
+    """#165 규칙이 재사용 경로에서도 그대로 — 미전송이면 그 행의 값, 보냈으면 그 값(null이면 미분류)."""
+    fa = await _folder(client, '규정집')
+    fb = await _folder(client, '대외비')
+    doc = await _upload(client, '환불정책.md', MD,
+                        extra_parts=_doc_data(folder_id=fa, description='표 설명 1'))
+    await _make_failed(doc['document_id'])
+
+    kept = await _upload(client, '환불정책.md', MD)                    # 아무것도 안 보냄 → 유지
+    assert kept['document_id'] == doc['document_id']
+    assert kept['folder_id'] == fa and (await _get_doc(doc['document_id'])).description == '표 설명 1'
+
+    await _make_failed(doc['document_id'])
+    moved = await _upload(client, '환불정책.md', MD,
+                          extra_parts=_doc_data(folder_id=fb, description='표 설명 2'))   # 보냄 → 갱신
+    assert moved['folder_id'] == fb and (await _get_doc(doc['document_id'])).description == '표 설명 2'
+
+    await _make_failed(doc['document_id'])
+    unfiled = await _upload(client, '환불정책.md', MD, extra_parts=_doc_data(folder_id=None))   # null → 미분류
+    assert unfiled['folder_id'] is None
+
+
+@pytest.mark.asyncio
+async def test_ready와_failed가_공존하면_기존_규칙으로_새_version(client, tenant_id, fake_queue, blob_tmp):
+    """옛 코드가 남긴 'ready v1 + failed v2' 이력(개발계 실측 0건). 살아 있는 행이 있으니 재사용하지 않고
+    v3를 만든다 — failed v2는 그대로 남고, 정리는 목록 필터(#176)+삭제(#174)로 한다(스콥 밖 동작을 고정)."""
+    v1 = await _upload(client, '환불정책.md', MD)
+    await ingest(v1['document_id'])                                    # v1 ready
+    async with AsyncSessionLocal() as s:                              # v2 failed (직접 심음)
+        s.add(Document(tenant_id=tenant_id, filename='환불정책.md', mime='text/markdown',
+                       blob_path=str(blob_tmp / tenant_id / 'legacy_v2.md'), version=2,
+                       status='failed', status_reason='옛 실패'))
+        await s.commit()
+
+    res = await _upload(client, '환불정책.md', MD)
+    assert res['version'] == 3                                         # 재사용 아님
+    statuses = sorted((d.version, d.status) for d in (await _all_docs(tenant_id)))
+    assert statuses == [(1, 'ready'), (2, 'failed'), (3, 'pending')]   # failed v2는 그대로
+
+
+async def _all_docs(tenant_id: str) -> list[Document]:
+    async with AsyncSessionLocal() as s:
+        return list((await s.execute(select(Document).where(Document.tenant_id == tenant_id))).scalars().all())

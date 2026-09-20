@@ -12,6 +12,7 @@ import pytest
 from rag.index_text import build_index_text
 from rag.reranker import _rerank_text
 from rag.retrieval_types import RetrievedChunk
+from tests.helpers_documents import MD, doc_data, upload
 
 
 def _chunk(**kw) -> RetrievedChunk:
@@ -91,6 +92,25 @@ class TestFolderApi:
         """리랭커 입력에 후보 수만큼 누적되므로 길이를 막는다."""
         res = await client.post('/kms/folders', json={'name': '긴설명', 'description': 'x' * 201})
         assert res.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_문서가_든_폴더는_삭제_거절(self, client, tenant_id, fake_queue, blob_tmp):
+        """P1-17. 검색제외 폴더를 지우면 그 안의 문서가 미분류로 풀려 **조용히 검색에 복귀한다**.
+
+        폴더 삭제 자체는 문서를 건드리지 않으므로(FK SET NULL) 사고가 겉으로 안 드러난다 —
+        그래서 빈 폴더만 지우게 막는다. 소프트 삭제된 문서는 세지 않는다.
+        """
+        folder = (await client.post('/kms/folders', json={'name': '비공개자료'})).json()
+        doc = await upload(client, '내부메모.md', MD,
+                           extra_parts=doc_data(folder_id=folder['id']))
+
+        res = await client.delete(f"/kms/folders/{folder['id']}")
+        assert res.status_code == 409
+        assert '1개' in res.json()['detail']                  # 몇 건이 막고 있는지 알려준다
+
+        # 문서를 지우면(소프트 삭제) 카운트에서 빠져 폴더를 지울 수 있다
+        assert (await client.delete(f"/kms/documents/{doc['document_id']}")).status_code == 204
+        assert (await client.delete(f"/kms/folders/{folder['id']}")).status_code == 204
 
 
 class TestFolderCacheInvalidation:

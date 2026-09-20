@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
 from rag import cache, outbox
+from rag.documents import get_folder
 from rag.models import Document, Folder
 from routers.kms import get_tenant_id
 from schemas.kms import FolderInfo, FolderCreateRequest, FolderUpdateRequest
@@ -37,11 +38,8 @@ async def _invalidate_folder_docs(session: AsyncSession, tenant_id: str, folder_
 
 
 async def _get_folder(session: AsyncSession, tenant_id: str, folder_id: int) -> Folder:
-    folder = (await session.execute(
-        select(Folder)
-        .where(Folder.tenant_id == tenant_id)   # 격리 — WHERE 절 명시
-        .where(Folder.id == folder_id)
-    )).scalars().first()
+    """내 테넌트의 폴더 또는 404. 조회 자체는 rag/documents.py의 get_folder가 정의점이다."""
+    folder = await get_folder(session, tenant_id, folder_id)
     if folder is None:
         raise HTTPException(status_code=404, detail='folder not found')
     return folder

@@ -430,6 +430,20 @@ async def _effective_ref_now(session: AsyncSession, tenant_id: str, doc: Documen
                           await _folder_is_on(session, tenant_id, doc.folder_id))
 
 
+def _require_all_found(requested: list[int], found: set[int]) -> None:
+    """요청한 문서 id가 전부 조회됐는지. 하나라도 빠지면 **아무것도 바꾸지 않고** 404.
+
+    일괄 변경(#166)·일괄 삭제(#174)가 공유하는 응답 규약이다 — 화면에서 체크한 목록과 결과가
+    어긋나면 무엇이 반영됐는지 되짚을 방법이 없어서, 부분 성공 대신 전부 거절한다.
+    남의 테넌트 id인지 없는 id인지 **구분해 알려주지 않는다** — 요청자가 보낸 값을 되돌려줄 뿐이다.
+
+    조회는 호출부가 한다. 조건이 서로 다르기 때문이다 — 일괄 변경은 deleted를 제외하고 Document
+    객체 전체가 필요하지만, 일괄 삭제는 이미 deleted인 문서도 통과시켜야 한다(멱등).
+    """
+    if missing := [i for i in requested if i not in found]:
+        raise HTTPException(status_code=404, detail=f'문서를 찾을 수 없습니다: {missing[:10]}')
+
+
 @router.patch('/documents', response_model=list[DocumentUploadResponse])
 async def bulk_update_documents(
         request: DocumentBulkUpdateRequest,
@@ -458,10 +472,7 @@ async def bulk_update_documents(
         .where(Document.id.in_(ids))
         .order_by(Document.id)
     )).scalars().all()
-    missing = [i for i in ids if i not in {d.id for d in docs}]
-    if missing:
-        # 남의 테넌트 id인지 없는 id인지 구분해 알려주지 않는다 — 요청자가 보낸 값을 되돌려줄 뿐.
-        raise HTTPException(status_code=404, detail=f'문서를 찾을 수 없습니다: {missing[:10]}')
+    _require_all_found(ids, {d.id for d in docs})
 
     # 2. 폴더 검증은 1회면 된다(대상 전부가 같은 폴더로 간다).
     folder_on: dict[int, bool] = {}
@@ -576,9 +587,7 @@ async def bulk_delete_documents(
         .where(Document.tenant_id == tenant_id)
         .where(Document.id.in_(unique))
     )).scalars().all())
-    missing = [i for i in unique if i not in found]
-    if missing:
-        raise HTTPException(status_code=404, detail=f'문서를 찾을 수 없습니다: {missing[:10]}')
+    _require_all_found(unique, found)
 
     await soft_delete_documents(session, tenant_id, unique)
     await session.commit()

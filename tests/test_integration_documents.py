@@ -8,6 +8,9 @@
 같은 축의 나머지: _folders(등록정보·폴더·일괄 변경) _delete(삭제) _list(목록) _failed(#161).
 공용 헬퍼는 tests/helpers_documents.py.
 """
+from pathlib import Path
+from urllib.parse import quote
+
 import pytest
 from sqlalchemy import func, select
 
@@ -259,6 +262,51 @@ async def test_exists_는_테넌트_격리(client, tenant_id, fake_queue, blob_t
     res = await client.get('/kms/documents/exists', params={'filename': '환불정책.md'},
                            headers={'X-Tenant-Id': 'other-tenant'})
     assert res.json()['exists'] is False
+
+
+# ===== 원본 다운로드 (GET /documents/{id}/download) ===========================
+# 답변 인용(sources)의 document_id에서 연결되는 경로다. 소프트 삭제 후에도 살아 있어야 한다 —
+# 과거 대화가 인용한 원본을 계속 받을 수 있게 row·blob을 보존하는 것이 F5의 설계다.
+
+@pytest.mark.asyncio
+async def test_다운로드는_저장된_원본_바이트와_파일명을_준다(client, tenant_id, fake_queue, blob_tmp):
+    body = await upload(client, '환불정책.md', MD)
+
+    res = await client.get(f"/kms/documents/{body['document_id']}/download")
+    assert res.status_code == 200, res.text
+    assert res.content == MD                                  # blob은 업로드 바이트 그대로다
+    # 한글 파일명은 RFC 5987 퍼센트 인코딩으로 나간다. 조각이 아니라 전체를 대조한다.
+    assert quote('환불정책.md') in res.headers['content-disposition']
+
+
+@pytest.mark.asyncio
+async def test_다운로드는_소프트_삭제_후에도_된다(client, tenant_id, fake_queue, blob_tmp):
+    """삭제는 row·blob을 보존한다 — 과거 대화의 인용에서 원본을 계속 받을 수 있어야 한다."""
+    body = await upload(client, '환불정책.md', MD)
+    assert (await client.delete(f"/kms/documents/{body['document_id']}")).status_code == 204
+
+    res = await client.get(f"/kms/documents/{body['document_id']}/download")
+    assert res.status_code == 200
+    assert res.content == MD
+
+
+@pytest.mark.asyncio
+async def test_다운로드는_테넌트_격리(client, tenant_id, fake_queue, blob_tmp):
+    body = await upload(client, '환불정책.md', MD)
+
+    res = await client.get(f"/kms/documents/{body['document_id']}/download",
+                           headers={'X-Tenant-Id': 'other-tenant'})
+    assert res.status_code == 404                             # 있는 id여도 남의 것이면 없는 것
+
+
+@pytest.mark.asyncio
+async def test_blob_파일이_사라졌으면_410(client, tenant_id, fake_queue, blob_tmp):
+    """DB는 가리키는데 파일이 없는 상태. 404(문서 없음)와 구분해서 알려준다."""
+    body = await upload(client, '환불정책.md', MD)
+    Path((await get_doc(body['document_id'])).blob_path).unlink()
+
+    res = await client.get(f"/kms/documents/{body['document_id']}/download")
+    assert res.status_code == 410
 
 
 # ===== 낙관적 잠금 (expect_version) ==========================================

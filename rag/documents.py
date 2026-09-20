@@ -1,5 +1,12 @@
-"""문서 업로드 서비스
-업로드 파일을 dedupe/버전 정책(supersede)에 따라 처리한다.
+"""문서 도메인 — 업로드·인제스션·삭제. 라우터(routers/documents.py)와 워커가 함께 쓴다.
+
+들어 있는 것: 업로드 시점 처리(handle_upload — 버전 정책·failed 재사용), 인제스션 전체
+(index_pending_document — 파싱·임베딩·색인·ready 승격, outbox의 INDEX_DOCUMENT 핸들러),
+소프트 삭제(soft_delete_documents), 문서 내리기(_retire_documents), 폴더 조회(get_folder).
+
+**HTTPException을 만들지 않는다.** 라우터도 워커도 import하는 모듈이라 starlette를 들이지
+않는다 — 도메인 예외(FailedReuseConflict)나 None을 돌려주고, HTTP 변환은 라우터가 한다.
+같은 이유로 스레드 오프로딩은 stdlib `asyncio.to_thread`를 쓴다.
 """
 import asyncio
 import mimetypes

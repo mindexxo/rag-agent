@@ -13,6 +13,7 @@
   7. failed 확정 시 잔여 청크 DROP(#184): ③ 커밋만 실패한 문서의 청크가 다음 회차에 0, DROP 가드는
      되살아난 문서를 건너뛴다
   8. 처리 순서 무관(#185): 백오프로 미뤄진 v1 행보다 v2 행이 먼저 끝나도 신버전이 이긴다
+  9. supersede 삭제는 ③ 커밋의 DROP 행으로(#186): ③이 실패하면 구버전은 PG·엔진 모두 그대로(검색됨)
 """
 import json
 from datetime import timedelta
@@ -451,5 +452,53 @@ async def test_백오프로_미뤄진_v1보다_v2가_먼저_끝나도_신버전�
     d1, d2 = await _doc(v1), await _doc(v2)
     assert (d2.status, d2.is_active) == ('ready', True)
     assert d1.status == 'deleted'
+    assert await ingest(v1) == {'done': 1, 'failed': 0}         # v2의 ③이 남긴 DROP[v1] 행(#186)
+    assert await indexed_chunk_texts(v1) == []
+    assert (await _cited_ids(tenant_id)) & {v1, v2} == {v2}
+
+
+# ── 9. supersede 구버전 삭제는 커밋 뒤 outbox로 (#186) ────────────────────────────
+
+@pytest.mark.asyncio
+async def test_재업로드_커밋이_실패하면_구버전은_PG_엔진_모두_그대로다(client, tenant_id, fake_queue, blob_tmp,
+                                                                 fake_embed, monkeypatch):
+    """③ 커밋만 죽는다(②는 끝나 v2 청크가 엔진에 있다). 구버전 v1은 ready·active·청크 그대로·검색됨이어야
+    한다 — ②에서 지웠던 때는 여기서 "목록엔 정상인데 검색엔 없는" v1이 영구로 남았다."""
+    v1 = (await _upload(client, '환불정책.md'))['document_id']
+    assert await ingest(v1) == {'done': 1, 'failed': 0}
+    v1_texts = await indexed_chunk_texts(v1)
+    assert v1_texts
+
+    v2 = (await _upload(client, '환불정책.md', MD.replace('14일'.encode(), '30일'.encode())))['document_id']
+    _break_commit_stage(monkeypatch)
+    assert await ingest(v2) == {'done': 0, 'failed': 1}         # 결정적 → 1회로 v2 failed
+    monkeypatch.undo()
+
+    d1, d2 = await _doc(v1), await _doc(v2)
+    assert (d1.status, d1.is_active) == ('ready', True)         # 구버전 무사
+    assert d2.status == 'failed'
+    assert await indexed_chunk_texts(v1) == v1_texts            # 엔진도 그대로
+    assert (await _cited_ids(tenant_id)) & {v1, v2} >= {v1}     # 검색에 여전히 잡힌다
+    drops = await _drop_rows(v1)
+    assert drops == []                                          # DROP[v1]은 ③과 함께 롤백됐다
+    assert len(await _drop_rows(v2)) == 1                       # v2 잔여 청크 DROP은 failed 확정이 남김(#184)
+
+    assert await ingest(v2) == {'done': 1, 'failed': 0}         # 그 DROP — v2 청크 정리
+    assert await indexed_chunk_texts(v2) == []
+    assert await indexed_chunk_texts(v1) == v1_texts
+
+
+@pytest.mark.asyncio
+async def test_재업로드_성공은_구버전_DROP_행을_같은_커밋에_남긴다(client, tenant_id, fake_queue, blob_tmp, fake_embed):
+    v1 = (await _upload(client, '환불정책.md'))['document_id']
+    assert await ingest(v1) == {'done': 1, 'failed': 0}
+    v2 = (await _upload(client, '환불정책.md', MD.replace('14일'.encode(), '30일'.encode())))['document_id']
+    assert await ingest(v2) == {'done': 1, 'failed': 0}
+
+    (drop,) = await _drop_rows(v1)
+    assert drop.status == 'pending' and drop.payload == {'document_ids': [v1]}
+    assert (await _doc(v1)).status == 'deleted'
+    assert await indexed_chunk_texts(v1)                        # 다음 회차까지 공존 — 제품 결정 범위
+    assert await ingest(v1) == {'done': 1, 'failed': 0}
     assert await indexed_chunk_texts(v1) == []
     assert (await _cited_ids(tenant_id)) & {v1, v2} == {v2}

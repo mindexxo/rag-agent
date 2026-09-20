@@ -82,8 +82,11 @@ async def test_같은_파일명_재업로드는_엎어치기(client, tenant_id, 
     old, new = await _get_doc(v1['document_id']), await _get_doc(v2['document_id'])
     assert new.status == 'ready' and new.is_active is True
     assert old.status == 'deleted' and old.is_active is False   # supersede
-    assert await _chunk_texts(v1['document_id']) == []                    # 옛 청크 제거
     assert any('30일' in t for t in await _chunk_texts(v2['document_id']))
+    # 옛 청크는 ③ 커밋이 남긴 DROP 행이 다음 회차에 지운다(#186) — 그 전까진 남아 있다(≤1분 공존, 제품 결정)
+    assert any('14일' in t for t in await _chunk_texts(v1['document_id']))
+    assert await ingest(v1['document_id']) == {'done': 1, 'failed': 0}   # 그 DROP 행
+    assert await _chunk_texts(v1['document_id']) == []                    # 옛 청크 제거
     async with AsyncSessionLocal() as session:                   # 옛 근거 캐시 무효화
         rows = (await session.execute(
             select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)

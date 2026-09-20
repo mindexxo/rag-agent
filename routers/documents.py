@@ -39,7 +39,7 @@ from database import get_session
 from rag import cache, outbox
 from rag.chunking import extract_text
 from rag.documents import FailedReuseConflict, handle_upload, soft_delete_documents
-from rag.models import Document, Folder
+from rag.models import ALIVE_DOCUMENT_STATUSES, Document, Folder
 from routers.kms import get_tenant_id, get_user_id
 from schemas.kms import (ATTACHMENT_FILENAME_MAX, ATTACHMENT_MAX_TEXT_CHARS, BULK_MAX_ITEMS,
                          DOC_LIST_DEFAULT_LIMIT, DOC_LIST_MAX_LIMIT, DOC_STATUSES,
@@ -84,7 +84,7 @@ async def _current_version(session: AsyncSession, tenant_id: str, filename: str)
     """해당 파일명의 현재 버전. 없으면 0.
 
     판정 기준은 exists API·handle_upload의 재사용 판정과 **정확히 같아야** 한다 — tenant + filename
-    완전 일치, status가 deleted·failed가 아닌 것. 기준이 어긋나면 "확인창에서 본 것과 다른 문서가
+    완전 일치, status가 살아 있는 것(ALIVE_DOCUMENT_STATUSES — 세 곳이 같은 상수를 쓴다). 기준이 어긋나면 "확인창에서 본 것과 다른 문서가
     대체되는" 사고가 난다. failed를 빼는 이유는 #161 — 그 문서는 검색에 없고 재업로드가 그 행을
     되살리므로(version 유지) 사용자에겐 "없는 문서"다.
     """
@@ -92,7 +92,7 @@ async def _current_version(session: AsyncSession, tenant_id: str, filename: str)
         select(func.max(Document.version))
         .where(Document.tenant_id == tenant_id)      # 격리 — WHERE 절 명시
         .where(Document.filename == filename)
-        .where(Document.status.not_in(('deleted', 'failed')))
+        .where(Document.status.in_(ALIVE_DOCUMENT_STATUSES))
     )).scalar() or 0
 
 
@@ -345,7 +345,7 @@ async def document_exists(
         select(Document)
         .where(Document.tenant_id == tenant_id)      # 격리 — WHERE 절 명시
         .where(Document.filename == filename)
-        .where(Document.status.not_in(('deleted', 'failed')))
+        .where(Document.status.in_(ALIVE_DOCUMENT_STATUSES))
         .order_by(Document.version.desc())
         .limit(1)
     )).scalars().first()

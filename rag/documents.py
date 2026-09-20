@@ -316,7 +316,7 @@ async def handle_upload(
 
     # failed 재사용 (#161) — 정상 행이 없고 failed만 있을 때. deleted 이력이 섞여 있어도 된다
     # (예: v1 deleted + v2 failed → v2를 되살린다). failed가 여럿이면 최신을 되살리고 나머지는 내린다.
-    alive = [d for d in docs if d.status not in ('deleted', 'failed')]
+    alive = [d for d in docs if d.status in ALIVE_DOCUMENT_STATUSES]
     failed = [d for d in docs if d.status == 'failed']
     if not alive and failed:
         target = max(failed, key=lambda d: d.version)

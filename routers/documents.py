@@ -242,6 +242,53 @@ async def upload_document(
     # 워커 cron(1분)이 처리한다. 응답 시점의 status는 pending이고, 검색 반영은 최대 1~5분.
     return _to_response(doc)
 
+def _list_where(tenant_id: str, q: str | None, folder_id: int | None,
+                status: list[str] | None, is_searchable: bool | None):
+    """목록 조회 조건 (#176). **count와 페이지 쿼리가 같은 것을 써야** has_more가 어긋나지 않는다.
+
+    supersede된 구버전(deleted)은 항상 빠진다 — 죽은 행에 폴더/참조 컨트롤이 노출되는 혼란 방지.
+    호출부가 위생 처리를 끝낸 값을 넘긴다(q는 빈 문자열이 아닌 str 또는 None).
+    """
+    where = (Document.tenant_id == tenant_id) & (Document.status != 'deleted')
+    if q is not None:
+        # 파일명은 경계에서 NFC로 저장된다(#34). 검색어도 맞춰야 한다 — text_norm의 정책은
+        # "타이핑 입력은 IME가 NFC를 내므로 위험군이 아니다"지만, 파일명 검색은 사용자가
+        # **이름을 복사해 붙여넣는** 경로가 흔하고 macOS에서 복사한 이름은 NFD일 수 있다.
+        where &= Document.filename.ilike(like_pattern(normalize_filename(q)),
+                                         escape=LIKE_ESCAPE_CHAR)
+    if folder_id is not None:
+        # 0은 '미분류' 약속 — 폴더 id는 1부터라 유효한 값과 겹치지 않는다. 쿼리 파라미터에는
+        # null이 없어서(#165의 multipart와 같은 제약) 값 하나로 표현했다.
+        where &= Document.folder_id.is_(None) if folder_id == 0 else Document.folder_id == folder_id
+    if status:
+        where &= Document.status.in_(status)
+    if is_searchable is not None:
+        where &= Document.is_searchable == is_searchable
+    return where
+
+
+async def _ref_counts(session: AsyncSession, tenant_id: str,
+                      filenames: list[str]) -> dict[str, int]:
+    """파일명별 인용 횟수 (F5) — 저장 시 확정된 실인용 목록(messages.cited_docs)의 집계.
+
+    sources(검색 후보 노출 수)가 아닌 **실인용**이다 — stats top_documents와 정의를 통일했다.
+    filename 키라 버전 교체 후에도 카운트가 이어진다.
+    **이번 페이지의 파일명으로만** 좁혀 부른다 (#176) — 예전엔 테넌트의 messages 전체를 훑었다.
+    """
+    if not filenames:
+        return {}
+    rows = (await session.execute(sql_text("""
+        SELECT d AS filename, count(*) AS cnt
+        FROM messages, jsonb_array_elements_text(messages.cited_docs) AS d
+        WHERE messages.tenant_id = :tenant_id
+          AND messages.role = 'assistant'
+          AND jsonb_typeof(messages.cited_docs) = 'array'
+          AND d = ANY(:filenames)
+        GROUP BY 1
+    """), {"tenant_id": tenant_id, "filenames": filenames})).all()
+    return {r.filename: r.cnt for r in rows}
+
+
 @router.get('/documents', response_model=DocumentListResponse)
 async def list_documents(
         limit: int = DOC_LIST_DEFAULT_LIMIT,
@@ -275,22 +322,7 @@ async def list_documents(
                             detail=f'알 수 없는 status: {sorted(set(status) - DOC_STATUSES)}')
 
     # 조건은 **한 번만** 만들어 count와 페이지 쿼리가 함께 쓴다 — 갈라지면 has_more가 어긋난다.
-    where = (Document.tenant_id == tenant_id) & (Document.status != 'deleted')
-    if q is not None:
-        # 파일명은 경계에서 NFC로 저장된다(#34). 검색어도 맞춰야 한다 — text_norm의 정책은
-        # "타이핑 입력은 IME가 NFC를 내므로 위험군이 아니다"지만, 파일명 검색은 사용자가
-        # **이름을 복사해 붙여넣는** 경로가 흔하고 macOS에서 복사한 이름은 NFD일 수 있다.
-        where &= Document.filename.ilike(like_pattern(normalize_filename(q)),
-                                         escape=LIKE_ESCAPE_CHAR)
-    if folder_id is not None:
-        # 0은 '미분류' 약속 — 폴더 id는 1부터라 유효한 값과 겹치지 않는다. 쿼리 파라미터에는
-        # null이 없어서(#165의 multipart와 같은 제약) 값 하나로 표현했다.
-        where &= Document.folder_id.is_(None) if folder_id == 0 else Document.folder_id == folder_id
-    if status:
-        where &= Document.status.in_(status)
-    if is_searchable is not None:
-        where &= Document.is_searchable == is_searchable
-
+    where = _list_where(tenant_id, q, folder_id, status, is_searchable)
     total = (await session.execute(select(func.count(Document.id)).where(where))).scalar_one()
     docs = (await session.execute(
         select(Document)
@@ -299,23 +331,7 @@ async def list_documents(
         .offset(offset)
         .limit(limit)
     )).scalars().all()
-
-    # 인용 횟수: 저장 시 확정된 실인용 목록(cited_docs)을 filename별 집계 (F5).
-    # sources(검색 후보 노출 수)가 아닌 실인용 — stats top_documents와 정의 통일.
-    # filename 키라 버전 교체 후에도 카운트가 이어진다.
-    # **이번 페이지의 파일명으로 좁힌다** (#176) — 예전엔 테넌트의 messages 전체를 훑었다.
-    ref_counts: dict[str, int] = {}
-    if docs:
-        ref_rows = (await session.execute(sql_text("""
-            SELECT d AS filename, count(*) AS cnt
-            FROM messages, jsonb_array_elements_text(messages.cited_docs) AS d
-            WHERE messages.tenant_id = :tenant_id
-              AND messages.role = 'assistant'
-              AND jsonb_typeof(messages.cited_docs) = 'array'
-              AND d = ANY(:filenames)
-            GROUP BY 1
-        """), {"tenant_id": tenant_id, "filenames": list({d.filename for d in docs})})).all()
-        ref_counts = {r.filename: r.cnt for r in ref_rows}
+    ref_counts = await _ref_counts(session, tenant_id, list({d.filename for d in docs}))
 
     return DocumentListResponse(
         items=[_to_response(d, ref_counts.get(d.filename, 0)) for d in docs],

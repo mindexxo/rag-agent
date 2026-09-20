@@ -306,9 +306,8 @@ async def list_documents(
     형태(limit/offset·items/total/has_more)는 대화 목록(routers/conversations.py)과 맞췄다.
 
     `is_searchable`은 **documents.is_searchable 값**으로만 거른다. 실제로 검색에 쓰이는지는
-    폴더 스위치와의 곱(실효 참조)이지만, 그 판정을 SQL로 옮기면 같은 규칙의 네 번째 사본이
-    된다(rag/os_index.py의 effective_searchable, _folder_is_on, bulk_update_documents의
-    _effective). 참조 off 폴더를 실제로 운영하기 시작하면 그때 실효 기준으로 올린다 —
+    폴더 스위치와의 곱(실효 참조 — _effective_ref)이지만, 그 판정을 SQL로 옮기면 사본이 하나 더
+    생긴다. 참조 off 폴더를 실제로 운영하기 시작하면 그때 실효 기준으로 올린다 —
     파라미터 이름이 그대로라 FE 계약은 바뀌지 않는다. (#176 결정)
     """
     # HTTP 파라미터 위생 — 범위 밖 limit은 상한으로, 음수 offset은 0으로 (대화 목록과 같은 처리).
@@ -409,6 +408,33 @@ async def _folder_is_on(session: AsyncSession, tenant_id: str, folder_id: int | 
     )).scalar())
 
 
+def _effective_ref(doc_is_searchable: bool, folder_is_on: bool) -> bool:
+    """실효 참조 = 문서 스위치 on AND 폴더 on(미분류는 on으로 친다). **라우터 판정의 정의점**.
+
+    폴더 상태를 어떻게 얻는지는 호출부가 정한다 — 단건은 문서마다 조회(_effective_ref_now),
+    일괄은 대상 폴더를 미리 한 번에 모은 dict(bulk_update_documents). 판정식만 여기로 모았기
+    때문에 쿼리 횟수는 전과 같다 (#188 B-1).
+
+    ⚠ rag/os_index.py의 `effective_searchable`과 **다른 판정**이다. 이름이 닮았지만 그쪽은
+    색인용이라 is_faq·is_active·status=='ready'까지 본다. 여기는 사용자가 돌린 스위치 둘만 본다
+    — 캐시 무효화 판정("근거가 검색에서 빠지는가")에 쓰이기 때문이다. 합치면 동작이 바뀐다.
+    """
+    return bool(doc_is_searchable) and bool(folder_is_on)
+
+
+async def _effective_ref_now(session: AsyncSession, tenant_id: str, doc: Document) -> bool:
+    """이 문서의 지금 실효 참조 — 폴더 상태를 문서마다 조회하는 단건 경로.
+
+    문서 스위치가 꺼져 있으면 폴더를 조회하지 않는다. 전 호출부가
+    `doc.is_searchable and await _folder_is_on(...)`로 단축 평가하던 것을 그대로 옮긴 것이라
+    판정 결과도 쿼리 횟수도 같다.
+    """
+    if not doc.is_searchable:
+        return False
+    return _effective_ref(doc.is_searchable,
+                          await _folder_is_on(session, tenant_id, doc.folder_id))
+
+
 @router.patch('/documents', response_model=list[DocumentUploadResponse])
 async def bulk_update_documents(
         request: DocumentBulkUpdateRequest,
@@ -465,8 +491,9 @@ async def bulk_update_documents(
         )).all()})
 
     def _effective(doc: Document) -> bool:
-        """실효 참조 = 문서 on AND (미분류 OR 폴더 on) — _folder_is_on과 같은 규칙."""
-        return doc.is_searchable and (doc.folder_id is None or bool(folder_on.get(doc.folder_id)))
+        """이 요청이 미리 모아둔 folder_on으로 본 실효 참조. 판정식은 _effective_ref가 정의점."""
+        return _effective_ref(doc.is_searchable,
+                              doc.folder_id is None or bool(folder_on.get(doc.folder_id)))
 
     # 4. 캐시 무효화는 **문서별로** 판정한다. 문서마다 현재 폴더·스위치가 달라 on→off 전이도
     #    제각각이다 — 일괄로 판정하면 off된 문서를 근거로 만든 답변이 캐시로 계속 나간다.
@@ -506,8 +533,7 @@ async def update_document(
     if doc is None:
         raise HTTPException(status_code=404, detail="document not found")
 
-    # 변경 전 실효 참조 상태 = 문서 on AND (미분류 OR 폴더 on)
-    effective_before = doc.is_searchable and await _folder_is_on(session, tenant_id, doc.folder_id)
+    effective_before = await _effective_ref_now(session, tenant_id, doc)
 
     # folder_id는 "null 전송 = 미분류 이동"과 "미전송 = 변경 없음"을 구분해야 함
     if 'folder_id' in request.model_fields_set:
@@ -525,7 +551,7 @@ async def update_document(
 
     # 실효 참조가 on→off로 바뀌는 모든 경로(문서 off, off 폴더로 이동)에서 캐시 무효화 —
     # off된 문서를 근거로 만든 답변이 exact 캐시로 계속 나가는 것 방지. off→on은 무효화할 캐시가 없음.
-    effective_after = doc.is_searchable and await _folder_is_on(session, tenant_id, doc.folder_id)
+    effective_after = await _effective_ref_now(session, tenant_id, doc)
     if effective_before and not effective_after:
         await cache.invalidate_source(session, tenant_id, doc.id)
 

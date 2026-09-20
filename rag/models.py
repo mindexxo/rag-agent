@@ -82,6 +82,12 @@ class Folder(Base):
     )
 
 
+# Document.status 6값 중 "살아 있는" 넷 — 처리 중이거나 서빙 중이라 색인·supersede·DROP 판정의 대상이 되는
+# 상태. deleted·failed는 사용자에게 없는 문서다(#161). 정의점은 여기 하나 — rag/documents.py(같은 파일명의
+# 구버전 집합)와 rag/outbox.py(DROP 가드)가 같은 집합을 써야 한다.
+ALIVE_DOCUMENT_STATUSES = ('pending', 'parsing', 'embedding', 'ready')
+
+
 class Document(Base):
     """업로드된 원본 문서. 같은 filename 재업로드 = 새 version (내용 무관, 2026-08-05)."""
     __tablename__ = "documents"
@@ -93,7 +99,7 @@ class Document(Base):
     blob_path: Mapped[str]                                                            # 원본 파일 저장 경로 (웹 업로드는 UUID 이름, CLI는 원본 경로 그대로)
     version: Mapped[int] = mapped_column(default=1, server_default="1")               # 같은 filename 내 일련번호
     is_active: Mapped[bool] = mapped_column(default=False, server_default="false")    # 검색 대상 여부 (filename당 단 하나만 true)
-    status: Mapped[str] = mapped_column(default="pending", server_default="pending")  # pending|parsing|embedding|ready|failed|deleted
+    status: Mapped[str] = mapped_column(default="pending", server_default="pending")  # pending|parsing|embedding|ready|failed|deleted — 살아 있는 넷은 ALIVE_DOCUMENT_STATUSES
     status_reason: Mapped[str | None]                                                 # 실패/삭제 사유
     page_count: Mapped[int | None]                                                    # PDF 페이지 수
     char_count: Mapped[int | None]                                                    # 본문 글자 수
@@ -130,9 +136,10 @@ class SearchIndexOutbox(Base):
     **행을 PG 변경과 같은 트랜잭션에 쓴다** — 그것이 이 패턴의 전부다. 커밋이 성공하면
     색인에 할 일이 반드시 기록돼 있고, 롤백되면 그 일도 함께 사라진다.
 
-    단일 워커가 1분 주기로 pending을 id 순으로 처리한다. 성공하면 done, 실패는 attempts에
-    쌓여 MAX_ATTEMPTS를 넘으면 failed(INDEX_DOCUMENT면 문서도 failed). 행은 지우지 않는다 —
-    done/failed 행이 이력이자 관측 지점이다.
+    단일 워커가 1분 주기로 pending을 id 순으로 처리한다. 성공하면 done. 결정적 실패는 1회로
+    failed, 일시 실패는 attempts를 올리고 next_attempt_at을 지수 백오프로 미룬다 — MAX_ATTEMPTS까지
+    못 끝내면 failed(#185). INDEX_DOCUMENT의 failed는 문서도 failed로 찍고 잔여 청크 DROP을
+    같은 커밋에 등재한다(#184). 행은 지우지 않는다 — done/failed 행이 이력이자 관측 지점이다.
 
     연산은 전부 멱등이다(색인=_id upsert, 삭제=없는 것 지워도 무해, 메타=덮어쓰기) — 재시도가
     겹쳐도 결과가 같다. at-least-once.
@@ -146,6 +153,7 @@ class SearchIndexOutbox(Base):
     status: Mapped[str] = mapped_column(default='pending', server_default='pending')  # pending|done|failed
     attempts: Mapped[int] = mapped_column(default=0, server_default="0")
     last_error: Mapped[str | None]
+    next_attempt_at: Mapped[datetime | None]   # 일시 실패의 다음 시도 시각 — NULL이면 지금(#185)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 

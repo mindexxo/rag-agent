@@ -8,11 +8,17 @@
   3. 색인 일시 실패: attempts·last_error 남기고 다음 회차에 성공                     (E2E #7)
   4. reconcile(문서): 색인에서 사라진 ready 문서는 재등재, PG에 없는 문서 청크는 삭제  (E2E #9)
   5. reconcile(FAQ): 같은 계약                                                        (배포 체크리스트 D)
+  6. 백오프(#185): 일시 실패는 next_attempt_at을 미루고 cron 선정에서 빠진다, 결정적 실패는 1회 확정,
+     확정 시 _on_failed 훅·카운터
+  7. failed 확정 시 잔여 청크 DROP(#184): ③ 커밋만 실패한 문서의 청크가 다음 회차에 0, DROP 가드는
+     되살아난 문서를 건너뛴다
+  8. 처리 순서 무관(#185): 백오프로 미뤄진 v1 행보다 v2 행이 먼저 끝나도 신버전이 이긴다
 """
 import json
+from datetime import timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 
 from database import AsyncSessionLocal
 from rag import os_index, os_reconcile, outbox
@@ -110,7 +116,7 @@ async def test_색인_일시_실패는_attempts를_남기고_다음_회차에_�
     monkeypatch.setattr(rd.os_index, 'index_parsed_document', _flaky)
     assert await ingest(doc_id) == {'done': 0, 'failed': 1}
     doc = await _doc(doc_id)
-    assert doc.status == 'pending'                          # failed 아님 — MAX_ATTEMPTS(5) 전
+    assert doc.status == 'pending'                          # failed 아님 — 일시 실패라 MAX_ATTEMPTS 전엔 백오프(#185)
     (op, status, attempts, err), = await _rows(doc_id)
     assert (op, status, attempts) == ('index_document', 'pending', 1)
     assert 'Cannot connect' in err
@@ -249,3 +255,201 @@ async def test_일괄_참조끄기가_한_행으로_모든_문서를_제외한�
     assert await ingest(a['document_id']) == {'done': 1, 'failed': 0}
     ids = await _cited_ids(tenant_id)
     assert a['document_id'] not in ids and b['document_id'] not in ids
+
+
+# ── 6. 백오프 (#185) ─────────────────────────────────────────────────────────────
+
+async def _row(doc_id) -> SearchIndexOutbox:
+    """문서의 **최신** INDEX_DOCUMENT 행 — attempts·next_attempt_at·status를 본다.
+    failed 행을 재사용해 재업로드하면(#161) 같은 document_id로 행이 둘이라 최신을 고른다."""
+    async with AsyncSessionLocal() as s:
+        return (await s.execute(select(SearchIndexOutbox)
+                                .where(SearchIndexOutbox.op == outbox.INDEX_DOCUMENT)
+                                .where(SearchIndexOutbox.payload['document_id'].as_integer() == doc_id)
+                                .order_by(SearchIndexOutbox.id.desc()).limit(1))
+                ).scalars().one()
+
+
+async def _due_ids() -> set[int]:
+    """운영 cron이 이번 회차에 집을 행 id — row_ids 없이 due_pending_stmt를 그대로 실행한다.
+    공유 DB라 남의 행도 섞이므로 포함 여부만 단언한다."""
+    async with AsyncSessionLocal() as s:
+        return {r.id for r in (await s.execute(outbox.due_pending_stmt(limit=1000))).all()}
+
+
+@pytest.mark.asyncio
+async def test_일시_실패는_다음_시도를_미루고_cron_선정에서_빠진다(client, tenant_id, fake_queue, blob_tmp,
+                                                              fake_embed, monkeypatch):
+    """엔진 연결 실패 → attempts=1, next_attempt_at≈now+1분, 전체 drain의 선정 대상에서 빠진다.
+    시각을 과거로 돌리면 다시 잡힌다. row_ids 지정(ingest)은 백오프를 무시한다(헬퍼 계약)."""
+    doc_id = (await _upload(client, '환불정책.md'))['document_id']
+    import rag.documents as rd
+
+    async def _down(**kw):
+        raise ConnectionError('Cannot connect to host localhost:9200')
+    monkeypatch.setattr(rd.os_index, 'index_parsed_document', _down)
+
+    assert await ingest(doc_id) == {'done': 0, 'failed': 1}
+    row = await _row(doc_id)
+    assert (row.status, row.attempts) == ('pending', 1)
+    async with AsyncSessionLocal() as s:
+        now = (await s.execute(select(func.now()))).scalar()
+    assert timedelta(seconds=30) < row.next_attempt_at - now <= timedelta(minutes=1)   # backoff_delay(1)=1분
+    assert row.id not in await _due_ids()                       # cron은 건너뛴다
+
+    assert await ingest(doc_id) == {'done': 0, 'failed': 1}     # row_ids 지정 → 백오프 무시, 즉시 재시도
+    row = await _row(doc_id)
+    assert row.attempts == 2
+    assert row.next_attempt_at - now > timedelta(minutes=1, seconds=30)   # backoff_delay(2)=2분으로 늘었다
+
+    async with AsyncSessionLocal() as s:                        # 시각이 지나면 다시 선정된다
+        await s.execute(update(SearchIndexOutbox).where(SearchIndexOutbox.id == row.id)
+                        .values(next_attempt_at=func.now() - timedelta(seconds=1)))
+        await s.commit()
+    assert row.id in await _due_ids()
+    assert (await _doc(doc_id)).status == 'pending'             # 문서는 failed가 아니다
+
+
+@pytest.mark.asyncio
+async def test_일시_실패가_MAX_ATTEMPTS에_닿으면_확정되고_훅이_불린다(client, tenant_id, fake_queue, blob_tmp,
+                                                                  fake_embed, monkeypatch):
+    doc_id = (await _upload(client, '환불정책.md'))['document_id']
+    import rag.documents as rd
+
+    async def _down(**kw):
+        raise ConnectionError('Cannot connect')
+    monkeypatch.setattr(rd.os_index, 'index_parsed_document', _down)
+    monkeypatch.setattr(outbox, 'MAX_ATTEMPTS', 2)
+    hook_calls = []
+    monkeypatch.setattr(outbox, '_on_failed', lambda op, row_id, err: hook_calls.append((op, row_id, err)))
+    before = outbox.SEARCH_INDEX_FAILED_TOTAL.labels(op=outbox.INDEX_DOCUMENT)._value.get()
+
+    assert await ingest(doc_id) == {'done': 0, 'failed': 1}
+    assert hook_calls == []                                     # 1회차 — 아직 백오프
+    assert await ingest(doc_id) == {'done': 0, 'failed': 1}
+    row = await _row(doc_id)
+    assert (row.status, row.attempts) == ('failed', 2)
+    assert (await _doc(doc_id)).status == 'failed'
+    assert hook_calls == [(outbox.INDEX_DOCUMENT, row.id, 'Cannot connect')]
+    # 훅을 대역으로 바꿨으니 카운터는 안 올랐어야 한다 — 훅이 카운터의 유일한 증가 지점임을 같이 확인
+    assert outbox.SEARCH_INDEX_FAILED_TOTAL.labels(op=outbox.INDEX_DOCUMENT)._value.get() == before
+
+
+@pytest.mark.asyncio
+async def test_결정적_실패는_META_행도_1회로_확정하고_카운터가_오른다(client, tenant_id, fake_queue, blob_tmp,
+                                                                fake_embed, monkeypatch):
+    """INDEX_DOCUMENT 아닌 op에서도 분류가 같다 — META_DOCUMENTS 핸들러가 프로그래밍 오류(결정적)로
+    죽으면 재시도 없이 failed, 확정 카운터 +1(진짜 _on_failed 경로)."""
+    doc_id = (await _upload(client, '환불정책.md'))['document_id']
+    assert await ingest(doc_id) == {'done': 1, 'failed': 0}
+    res = await client.patch(f'/kms/documents/{doc_id}', json={'is_searchable': False})
+    assert res.status_code == 200, res.text
+
+    async def _bug(session, ids):
+        raise KeyError('folder_id')
+    monkeypatch.setattr(outbox.os_index, 'sync_meta_documents_now', _bug)
+    before = outbox.SEARCH_INDEX_FAILED_TOTAL.labels(op=outbox.META_DOCUMENTS)._value.get()
+
+    assert await ingest(doc_id) == {'done': 0, 'failed': 1}
+    rows = [r for r in await _rows(doc_id) if r[0] == outbox.META_DOCUMENTS]
+    assert rows == [(outbox.META_DOCUMENTS, 'failed', 1, "'folder_id'")]
+    assert outbox.SEARCH_INDEX_FAILED_TOTAL.labels(op=outbox.META_DOCUMENTS)._value.get() == before + 1
+
+
+# ── 7. failed 확정 시 잔여 청크 DROP (#184) ──────────────────────────────────────
+
+async def _drop_rows(doc_id):
+    async with AsyncSessionLocal() as s:
+        return (await s.execute(select(SearchIndexOutbox)
+                                .where(SearchIndexOutbox.op == outbox.DROP_DOCUMENTS)
+                                .where(SearchIndexOutbox.payload['document_ids'].contains([doc_id]))
+                                .order_by(SearchIndexOutbox.id))).scalars().all()
+
+
+def _break_commit_stage(monkeypatch):
+    """③ 커밋 단계만 죽인다 — ②는 끝나 엔진에 청크가 있고, mark_done(③이 ready 승격과 함께 부른다)이 폭발.
+    결정적 예외라 1회로 failed 확정(#185)."""
+    async def _boom(session, row_id):
+        raise RuntimeError('③ 커밋 직전 폭발')
+    monkeypatch.setattr(outbox, 'mark_done', _boom)
+
+
+@pytest.mark.asyncio
+async def test_커밋_단계만_실패해_failed가_된_문서의_청크는_다음_회차에_지워진다(client, tenant_id, fake_queue,
+                                                                        blob_tmp, fake_embed, monkeypatch):
+    doc_id = (await _upload(client, '환불정책.md'))['document_id']
+    _break_commit_stage(monkeypatch)
+    assert await ingest(doc_id) == {'done': 0, 'failed': 1}
+    doc = await _doc(doc_id)
+    assert doc.status == 'failed' and '③ 커밋 직전 폭발' in doc.status_reason
+    assert len(await indexed_chunk_texts(doc_id)) > 0             # 바로 그 불일치 — failed인데 청크가 있다
+    (drop,) = await _drop_rows(doc_id)
+    assert drop.status == 'pending' and drop.payload == {'document_ids': [doc_id]}
+
+    monkeypatch.undo()                                          # 엔진·mark_done 정상
+    assert await ingest(doc_id) == {'done': 1, 'failed': 0}     # DROP 행
+    assert await indexed_chunk_texts(doc_id) == []              # failed = 청크 0, 이제 참
+    assert (await _drop_rows(doc_id))[0].status == 'done'
+
+
+@pytest.mark.asyncio
+async def test_DROP은_되살아난_문서를_건너뛴다(client, tenant_id, fake_queue, blob_tmp, fake_embed, monkeypatch):
+    """failed 확정의 DROP이 미뤄진 사이 재업로드(#161 행 재사용)가 먼저 색인을 끝냈다 — 늦게 도는
+    DROP이 새 청크를 지우면 ready인데 검색에 없는 문서가 된다. 살아 있는 문서는 건너뛰어야 한다."""
+    doc_id = (await _upload(client, '환불정책.md'))['document_id']
+    _break_commit_stage(monkeypatch)
+    assert await ingest(doc_id) == {'done': 0, 'failed': 1}
+    monkeypatch.undo()
+    (drop,) = await _drop_rows(doc_id)
+
+    again = await _upload(client, '환불정책.md')                 # failed 행 재사용 — 같은 id, pending
+    assert again['document_id'] == doc_id and again['version'] == 1
+    index_row = await _row(doc_id)
+    assert index_row.id > drop.id and index_row.status == 'pending'
+
+    # 순서를 뒤집어 재현: INDEX 먼저(ready), 그 뒤 미뤄졌던 DROP
+    assert await outbox.drain_once(row_ids=[index_row.id]) == {'done': 1, 'failed': 0}
+    assert (await _doc(doc_id)).status == 'ready'
+    texts = await indexed_chunk_texts(doc_id)
+    assert len(texts) > 0
+    assert await outbox.drain_once(row_ids=[drop.id]) == {'done': 1, 'failed': 0}
+    assert await indexed_chunk_texts(doc_id) == texts           # 건너뛰었다 — 청크 그대로
+    assert (await _drop_rows(doc_id))[0].status == 'done'
+
+
+# ── 8. 처리 순서 무관 (#185) ──────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_백오프로_미뤄진_v1보다_v2가_먼저_끝나도_신버전이_이긴다(client, tenant_id, fake_queue, blob_tmp,
+                                                                    fake_embed, monkeypatch):
+    """v1 INDEX가 일시 실패로 물러난 사이 v2가 올라와 먼저 색인된다. 그 뒤 v1 차례가 와도 v2를
+    supersede하면 안 된다 — v2 ready·active·검색됨, v1 deleted·청크 0."""
+    v1 = (await _upload(client, '환불정책.md'))['document_id']
+    import rag.documents as rd
+
+    async def _down(**kw):
+        raise ConnectionError('Cannot connect')
+    monkeypatch.setattr(rd.os_index, 'index_parsed_document', _down)
+    assert await ingest(v1) == {'done': 0, 'failed': 1}         # v1 행: pending, 백오프
+    monkeypatch.undo()
+
+    v2 = (await _upload(client, '환불정책.md', MD.replace('14일'.encode(), '30일'.encode())))['document_id']
+    assert v2 != v1
+    v1_row, v2_row = await _row(v1), await _row(v2)
+    assert v1_row.id < v2_row.id and v1_row.status == v2_row.status == 'pending'
+
+    # 역순 재현 — 미뤄진 v1을 건너뛰고 v2만 처리
+    assert await outbox.drain_once(row_ids=[v2_row.id]) == {'done': 1, 'failed': 0}
+    d1, d2 = await _doc(v1), await _doc(v2)
+    assert (d2.status, d2.is_active) == ('ready', True)
+    assert (d1.status, d1.is_active) == ('deleted', False)      # pending 구버전도 supersede된다
+    assert any('30일' in t for t in await indexed_chunk_texts(v2))
+
+    # v1 차례 — ①의 "pending 아님 → done" 분기. v2는 그대로.
+    assert await outbox.drain_once(row_ids=[v1_row.id]) == {'done': 1, 'failed': 0}
+    assert (await _row(v1)).status == 'done'
+    d1, d2 = await _doc(v1), await _doc(v2)
+    assert (d2.status, d2.is_active) == ('ready', True)
+    assert d1.status == 'deleted'
+    assert await indexed_chunk_texts(v1) == []
+    assert (await _cited_ids(tenant_id)) & {v1, v2} == {v2}

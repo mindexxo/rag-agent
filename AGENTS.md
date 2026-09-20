@@ -34,6 +34,9 @@
 이걸 하는 모듈: `chunking`(→xlsx_chunking), `embeddings`·`limiter`(→clients),
 `reranker`(→clients, embeddings), `retriever`(→reranker), `stream_resume`(→clients, streaming),
 `outbox`(→documents).
+순환 회피가 아닌 지연 import은 `opensearchpy` 하나뿐이다 — `rag/` 어느 모듈도 톱레벨에 들이지 않고
+`os_client.client()`·`outbox.is_transient()`가 함수 안에서 import한다(매핑 상수만 보는 테스트가 그 패키지
+없이 `os_client`를 import할 수 있게 한 규율을 outbox도 따른다).
 
 검색 저장소(`os_*` 4모듈)에는 **지연 import가 없다**(#146). 구 rag/opensearch.py는 19~21곳을
 함수 안에 두고 있었는데, 그중 진짜 순환은 둘뿐이었다 — `retriever`(자료형)와 `outbox`(재등재).

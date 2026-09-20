@@ -12,6 +12,7 @@
      확정 시 _on_failed 훅·카운터
   7. failed 확정 시 잔여 청크 DROP(#184): ③ 커밋만 실패한 문서의 청크가 다음 회차에 0, DROP 가드는
      되살아난 문서를 건너뛴다
+  8. 처리 순서 무관(#185): 백오프로 미뤄진 v1 행보다 v2 행이 먼저 끝나도 신버전이 이긴다
 """
 import json
 from datetime import timedelta
@@ -414,3 +415,41 @@ async def test_DROP은_되살아난_문서를_건너뛴다(client, tenant_id, fa
     assert await outbox.drain_once(row_ids=[drop.id]) == {'done': 1, 'failed': 0}
     assert await indexed_chunk_texts(doc_id) == texts           # 건너뛰었다 — 청크 그대로
     assert (await _drop_rows(doc_id))[0].status == 'done'
+
+
+# ── 8. 처리 순서 무관 (#185) ──────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_백오프로_미뤄진_v1보다_v2가_먼저_끝나도_신버전이_이긴다(client, tenant_id, fake_queue, blob_tmp,
+                                                                    fake_embed, monkeypatch):
+    """v1 INDEX가 일시 실패로 물러난 사이 v2가 올라와 먼저 색인된다. 그 뒤 v1 차례가 와도 v2를
+    supersede하면 안 된다 — v2 ready·active·검색됨, v1 deleted·청크 0."""
+    v1 = (await _upload(client, '환불정책.md'))['document_id']
+    import rag.documents as rd
+
+    async def _down(**kw):
+        raise ConnectionError('Cannot connect')
+    monkeypatch.setattr(rd.os_index, 'index_parsed_document', _down)
+    assert await ingest(v1) == {'done': 0, 'failed': 1}         # v1 행: pending, 백오프
+    monkeypatch.undo()
+
+    v2 = (await _upload(client, '환불정책.md', MD.replace('14일'.encode(), '30일'.encode())))['document_id']
+    assert v2 != v1
+    v1_row, v2_row = await _row(v1), await _row(v2)
+    assert v1_row.id < v2_row.id and v1_row.status == v2_row.status == 'pending'
+
+    # 역순 재현 — 미뤄진 v1을 건너뛰고 v2만 처리
+    assert await outbox.drain_once(row_ids=[v2_row.id]) == {'done': 1, 'failed': 0}
+    d1, d2 = await _doc(v1), await _doc(v2)
+    assert (d2.status, d2.is_active) == ('ready', True)
+    assert (d1.status, d1.is_active) == ('deleted', False)      # pending 구버전도 supersede된다
+    assert any('30일' in t for t in await indexed_chunk_texts(v2))
+
+    # v1 차례 — ①의 "pending 아님 → done" 분기. v2는 그대로.
+    assert await outbox.drain_once(row_ids=[v1_row.id]) == {'done': 1, 'failed': 0}
+    assert (await _row(v1)).status == 'done'
+    d1, d2 = await _doc(v1), await _doc(v2)
+    assert (d2.status, d2.is_active) == ('ready', True)
+    assert d1.status == 'deleted'
+    assert await indexed_chunk_texts(v1) == []
+    assert (await _cited_ids(tenant_id)) & {v1, v2} == {v2}

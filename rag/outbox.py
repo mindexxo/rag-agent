@@ -41,6 +41,14 @@ INDEX_DOCUMENT의 failed는 문서도 failed로 찍고(FE가 그걸로 실패를
   "지금 반영" 수동 트리거를 얹으면 되고, 둘 다 이 구조 위에 그대로 붙는다.
 - 크래시 루프 방어(잡을 때 attempts 증가) → 파서가 프로세스를 죽이는 파일은 사람이 본다.
 
+## 처리 순서에 기대지 마라
+
+id 순은 **성향이지 보장이 아니다**(#185). 백오프로 미뤄진 행은 뒤의 행보다 늦게 돌고, 행 단위 격리라
+실패한 행 뒤의 행은 같은 회차에 먼저 끝난다. 그래서 모든 핸들러는 "이 행이 등재 순서대로 왔다"를
+전제하지 않고 **처리 시점의 PG 상태**로 판단한다 — META는 최신값을 읽고, DROP은 살아 있는 문서를
+건너뛰고(_apply), INDEX_DOCUMENT는 version 조건으로 구버전만 supersede한다(rag/documents.py ①).
+새 op를 넣을 때도 같은 물음을 먼저 던져라: "이 행이 뒤에 등재된 행보다 늦게 돌면 무엇이 깨지나."
+
 ## 멱등성이 전제다
 
 모든 연산이 멱등이다: 색인은 `_id=chunk_id` upsert(chunk_id가 결정적 — os_index.chunk_os_id),
@@ -64,7 +72,7 @@ from sqlalchemy.exc import InterfaceError, OperationalError
 from database import AsyncSessionLocal
 from rag import os_client, os_index
 from rag.metrics import INDEX_TOTAL, SEARCH_INDEX_FAILED_TOTAL, SEARCH_INDEX_SYNC_TOTAL, ext_label
-from rag.models import Document, SearchIndexOutbox
+from rag.models import ALIVE_DOCUMENT_STATUSES, Document, SearchIndexOutbox
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +90,6 @@ PENDING, DONE, FAILED = 'pending', 'done', 'failed'
 MAX_ATTEMPTS = 24
 BACKOFF_CAP_MINUTES = 60   # 복구 뒤 늦어도 이 안에 반영된다 — 눈금을 키우면 그만큼 낡은 채로 기다린다
 BATCH = 50              # 한 회차가 처리할 최대 행. 다음 회차가 이어받으니 크지 않아도 된다.
-# 살아 있는 문서 상태 — DROP_DOCUMENTS가 건너뛰는 집합(_apply 참조). Document.status 6값 중 deleted·failed의 여집합.
-_ALIVE_STATUSES = ('pending', 'parsing', 'embedding', 'ready')
 
 _drain_lock = asyncio.Lock()   # cron 겹침 방지 — 단일 워커 전제(모듈 docstring)
 
@@ -114,7 +120,7 @@ async def _apply(session, op: str, payload: dict, row_id: int) -> None:
         ids = list(payload['document_ids'])
         alive = set((await session.execute(
             select(Document.id).where(Document.id.in_(ids))
-            .where(Document.status.in_(_ALIVE_STATUSES)))).scalars().all())
+            .where(Document.status.in_(ALIVE_DOCUMENT_STATUSES)))).scalars().all())
         if alive:
             logger.info('DROP_DOCUMENTS 건너뜀 — 되살아난 문서 %s', sorted(alive))
         if targets := [i for i in ids if i not in alive]:

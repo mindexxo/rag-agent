@@ -21,7 +21,7 @@ from rag.metrics import (
     INDEX_TOTAL,
     ext_label,
 )
-from rag.models import Document, Folder
+from rag.models import ALIVE_DOCUMENT_STATUSES, Document, Folder
 
 # 이미지 면적이 이 비율을 넘으면 인제스션에서 경고를 남긴다 (#137 결함 4).
 # 실측(실문서 21건): 도표가 이미지인 3건이 21.1% / 4.4% / 0.7%, 나머지 18건 0%.
@@ -81,17 +81,20 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         tenant_id, filename, version = doc.tenant_id, doc.filename, doc.version
         blob_path, description = doc.blob_path, doc.description or ''
         folder_id, doc_searchable = doc.folder_id, doc.is_searchable
-        # 같은 filename의 active 구버전 — 엔진에서 지우고 PG에서 내릴 대상. 여기서 한 번 읽어
-        # ②·③이 같은 집합을 쓴다. 이 집합이 ③까지 유효한 근거는 **단일 워커의 순차 처리**다
-        # (drain이 행 하나를 끝까지 처리한 뒤 다음 행으로 — 같은 파일명의 다음 버전 INDEX 행은
-        # 그 뒤에 처리된다). 라우터의 expect_version 검사는 FE가 보낼 때만 도는 선택적 방어라
-        # 여기의 근거로 삼지 않는다.
-        old_active_ids = list((await session.execute(
+        # 같은 filename의 **낮은 version** 중 살아 있는 것 — 엔진에서 지우고 PG에서 내릴 대상(supersede).
+        # 여기서 한 번 읽어 ②·③이 같은 집합을 쓴다.
+        # "active만"이 아니라 pending도 포함하고 version 조건을 거는 이유(#185): outbox 행은 등재 순으로
+        # 처리된다는 보장이 없다 — 백오프로 v1 행이 미뤄진 사이 v2 행이 먼저 끝날 수 있다. 그때 v2가
+        # pending v1을 여기서 내려두면 v1의 차례가 와도 위 "pending 아님 → done" 분기로 빠진다.
+        # version 조건은 그 반대 방향의 안전판이다 — 어떤 경로로든 구버전이 나중에 돌아도 신버전을
+        # supersede하지 못한다(그 경우 ③의 active 유니크 uq_docs_one_active_per_name에 걸려 결정적 실패 →
+        # 구버전만 failed). 라우터의 expect_version 검사는 FE가 보낼 때만 도는 선택적 방어라 근거로 삼지 않는다.
+        old_ids = list((await session.execute(
             select(Document.id)
             .where(Document.tenant_id == tenant_id)
             .where(Document.filename == filename)
-            .where(Document.is_active.is_(True))
-            .where(Document.id != document_id)
+            .where(Document.version < version)
+            .where(Document.status.in_(ALIVE_DOCUMENT_STATUSES))
         )).scalars().all())
 
     # ── ② 무거운 계산 — DB 세션 없음 ──
@@ -132,9 +135,10 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         document_id=document_id, tenant_id=tenant_id, filename=filename, version=version,
         folder_id=folder_id, folder_name=folder_name, folder_description=folder_desc,
         searchable=indexed_searchable, chunks=chunks, embeddings=embeddings)
-    # 신버전이 이미 켜져 있으니 구버전을 지워도 빈 창이 없다.
-    if old_active_ids:
-        await os_index.drop_documents_now(old_active_ids)
+    # 신버전이 이미 켜져 있으니 구버전을 지워도 빈 창이 없다. pending 구버전의 청크(그쪽 ②가 썼다가 ③에서
+    # 실패해 남은 것)도 같은 집합이라 여기서 함께 지워진다.
+    if old_ids:
+        await os_index.drop_documents_now(old_ids)
     INDEX_DURATION_SECONDS.labels(stage='index', ext=_ext).observe(time.monotonic() - _t_embed_done)
 
     # ── ③ 유일한 커밋 ──
@@ -152,9 +156,9 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         # 청크 행은 PG에 쓰지 않는다 — 검색·본문·메타 전부 엔진이 든다(#139). 이 커밋은
         # 문서 상태(ready·active·supersede)와 대기열 행만 확정한다.
         # supersede — ①에서 읽은 같은 집합. 옛 active off를 먼저 반영해 유니크 위반을 피한다.
-        if old_active_ids:
+        if old_ids:
             await session.execute(
-                update(Document).where(Document.id.in_(old_active_ids))
+                update(Document).where(Document.id.in_(old_ids))
                 .values(is_active=False, status='deleted'))
             await session.flush()
 
@@ -172,7 +176,7 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
                 f'생성된 설명이나 인식된 값이 부정확할 수 있어 원문 확인이 필요합니다.'
             )[:500]
         doc.indexed_at = datetime.now(timezone.utc)
-        for old_id in old_active_ids:
+        for old_id in old_ids:
             await cache.invalidate_source(session, tenant_id, old_id)
 
         # ②가 도는 사이(초~분) 문서 검색토글·폴더 토글·폴더 이동이 있었을 수 있다. 그 META 행은
@@ -334,7 +338,7 @@ async def handle_upload(
         if reused is None:
             raise FailedReuseConflict(filename)
         # 되살리는 행 자신의 캐시도 지운다 — 같은 id를 **다른 내용**으로 되살리는 것이라, 잔여 청크로
-        # 만들어진 답변 캐시가 있었다면 새 내용과 어긋난 답을 재사용한다. 워커 ③은 구버전(old_active_ids)만
+        # 만들어진 답변 캐시가 있었다면 새 내용과 어긋난 답을 재사용한다. 워커 ③은 구버전(old_ids)만
         # 무효화하고 자기 자신은 건드리지 않는다(신버전은 새 id라 캐시가 없다는 전제) — 재사용은 그 전제 밖이다.
         await cache.invalidate_source(session, tenant_id, target.id)
         # 나머지 failed는 내린다 — soft_delete_documents와 **같은 세 동작**(상태·캐시·DROP). 그 함수에

@@ -43,7 +43,7 @@ from config import settings
 from database import get_session
 from rag import cache, outbox
 from rag.chunking import extract_text
-from rag.documents import FailedReuseConflict, handle_upload, soft_delete_documents
+from rag.documents import FailedReuseConflict, get_folder, handle_upload, soft_delete_documents
 from rag.models import ALIVE_DOCUMENT_STATUSES, Document, Folder
 from routers.kms import get_tenant_id, get_user_id
 from schemas.kms import (ATTACHMENT_FILENAME_MAX, ATTACHMENT_MAX_TEXT_CHARS, BULK_MAX_ITEMS,
@@ -186,12 +186,7 @@ async def upload_document(
     #      **blob을 쓰기 전에** 한다 — 뒤에 두면 실패 경로마다 unlink를 챙겨야 한다(지금 2곳).
     meta, folder_given = await _resolve_upload_data(document_data, description, expect_version)
     if meta.folder_id is not None:
-        folder = (await session.execute(
-            select(Folder)
-            .where(Folder.tenant_id == tenant_id)   # 다른 테넌트 폴더 지정 차단
-            .where(Folder.id == meta.folder_id)
-        )).scalars().first()
-        if folder is None:
+        if await get_folder(session, tenant_id, meta.folder_id) is None:   # 남의 테넌트 폴더 차단
             raise HTTPException(status_code=404, detail="folder not found")
 
     #1. 업로드 바이트 전체를 읽는다
@@ -471,11 +466,7 @@ async def bulk_update_documents(
     # 2. 폴더 검증은 1회면 된다(대상 전부가 같은 폴더로 간다).
     folder_on: dict[int, bool] = {}
     if changing_folder and request.folder_id is not None:
-        folder = (await session.execute(
-            select(Folder)
-            .where(Folder.tenant_id == tenant_id)   # 다른 테넌트 폴더 지정 차단
-            .where(Folder.id == request.folder_id)
-        )).scalars().first()
+        folder = await get_folder(session, tenant_id, request.folder_id)   # 남의 테넌트 폴더 차단
         if folder is None:
             raise HTTPException(status_code=404, detail="folder not found")
         folder_on[folder.id] = folder.is_searchable
@@ -538,12 +529,7 @@ async def update_document(
     # folder_id는 "null 전송 = 미분류 이동"과 "미전송 = 변경 없음"을 구분해야 함
     if 'folder_id' in request.model_fields_set:
         if request.folder_id is not None:
-            folder = (await session.execute(
-                select(Folder)
-                .where(Folder.tenant_id == tenant_id)   # 다른 테넌트 폴더 지정 차단
-                .where(Folder.id == request.folder_id)
-            )).scalars().first()
-            if folder is None:
+            if await get_folder(session, tenant_id, request.folder_id) is None:   # 남의 테넌트 차단
                 raise HTTPException(status_code=404, detail="folder not found")
         doc.folder_id = request.folder_id
     if request.is_searchable is not None:

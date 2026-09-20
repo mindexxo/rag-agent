@@ -49,6 +49,22 @@ def _detect_mime(blob_path: Path) -> str:
     return mime
 
 
+async def get_folder(session: AsyncSession, tenant_id: str, folder_id: int) -> Folder | None:
+    """테넌트의 폴더 하나. 없거나 **남의 테넌트 것이면 None** — 폴더 조회의 정의점 (#188 B-2).
+
+    라우터 넷이 같은 SELECT를 따로 적고 있었다(업로드·단건 변경·일괄 변경 + routers/folders.py의
+    _get_folder). 테넌트 WHERE가 곧 격리라서, 사본이 늘수록 한 곳만 빠뜨릴 위험이 커진다.
+
+    404 변환은 여기서 하지 않는다 — 이 모듈은 라우터도 워커도 import하므로 starlette를 들이지
+    않는다(index_pending_document의 to_thread 주석과 같은 이유). 호출부가 HTTPException을 만든다.
+    """
+    return (await session.execute(
+        select(Folder)
+        .where(Folder.tenant_id == tenant_id)      # 격리 — WHERE 절 명시
+        .where(Folder.id == folder_id)
+    )).scalars().first()
+
+
 async def index_pending_document(document_id: int, *, outbox_row_id: int | None = None) -> None:
     """INDEX_DOCUMENT 핸들러 — 인제스션 전체 (#139 outbox). 워커 drain이 부른다.
 

@@ -13,6 +13,11 @@
 구어체 질의와 문체가 닮아 상위로 올라오지만 정책 근거가 아닌 문서라,
 설명에 그 사실을 적어 리랭커가 구분할 수 있게 한다.
 
+폴더 메타는 엔진 청크에 복사돼 있다(#139 — folder_id·folder_name·folder_description·searchable). 그래서
+PG만 바꾸면 검색은 옛 폴더로 동작한다. 배정·원복은 **같은 커밋에 META_DOCUMENTS 행을 얹고**(#187) 자기 행만
+바로 drain한다 — eval/reindex_documents.py와 같은 규약(공유 DB라 전체 drain은 남의 행을 건드린다).
+라우터의 폴더 변경(routers/folders.py update_folder)이 하는 것과 같은 fan-out이다.
+
 실행:
     python -m eval.assign_folders                 # dry-run (기본)
     python -m eval.assign_folders --apply
@@ -26,6 +31,7 @@ from collections import defaultdict
 from sqlalchemy import delete, select, update
 
 from database import AsyncSessionLocal
+from rag import outbox
 from rag.models import Document, Folder
 from text_norm import nfc
 
@@ -73,6 +79,16 @@ def classify(filename: str, title: str = "") -> str:
     return "guide"
 
 
+async def _drain(rows) -> None:
+    """커밋된 META 행만 바로 반영 — 워커 cron이 없는 로컬에서도 측정 전에 엔진이 PG와 같아진다."""
+    ids = [r.id for r in rows]
+    if not ids:
+        return
+    r = await outbox.drain_once(row_ids=ids)
+    if r.get('skipped') or r['failed']:
+        print(f"⚠ 엔진 메타 갱신 미완 {r} — 행은 pending으로 남아 워커가 재시도한다")
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser(description="코퍼스 폴더 분류")
     ap.add_argument("--apply", action="store_true", help="실제 반영 (미지정 시 dry-run)")
@@ -83,6 +99,7 @@ async def main() -> None:
     tenants = [args.tenant] if args.tenant else V2_TENANTS
     names = {name for name, _ in FOLDERS.values()}
 
+    meta_rows = []          # 같은 커밋에 얹은 META_DOCUMENTS 행 — 커밋 뒤 이 행들만 drain한다
     async with AsyncSessionLocal() as session:
         if args.clear:
             for t in tenants:
@@ -91,12 +108,19 @@ async def main() -> None:
                 )).scalars().all()
                 if not ids:
                     continue
+                # 해제 대상은 UPDATE 전에 뽑는다 — 엔진 청크의 옛 폴더명·설명(·off였다면 searchable)을 지워야 한다
+                doc_ids = (await session.execute(
+                    select(Document.id).where(Document.tenant_id == t).where(Document.folder_id.in_(ids))
+                )).scalars().all()
                 await session.execute(
-                    update(Document).where(Document.folder_id.in_(ids)).values(folder_id=None))
+                    update(Document).where(Document.id.in_(doc_ids)).values(folder_id=None))
                 await session.execute(delete(Folder).where(Folder.id.in_(ids)))
-                print(f"{t}: 폴더 {len(ids)}개 제거 + 배정 해제")
+                if doc_ids:
+                    meta_rows.append(outbox.enqueue(session, t, outbox.META_DOCUMENTS, document_ids=list(doc_ids)))
+                print(f"{t}: 폴더 {len(ids)}개 제거 + 배정 해제 {len(doc_ids)}건")
             if args.apply:
                 await session.commit()
+                await _drain(meta_rows)
                 print("\n원복 완료")
             else:
                 print("\n(dry-run — --apply 필요)")
@@ -141,6 +165,9 @@ async def main() -> None:
                 key = classify(d.filename, title)
                 plan[t][FOLDERS[key][0]].append(f"{d.filename}   〔{title[:34]}〕")
                 d.folder_id = folder_ids[key]
+            # 배정한 문서 전부에 fan-out — 폴더 설명·검색토글이 바뀐 경우까지 한 행으로 덮는다
+            meta_rows.append(outbox.enqueue(session, t, outbox.META_DOCUMENTS,
+                                            document_ids=[d.id for d, _, _ in rows]))
 
         for t, groups in plan.items():
             print(f"\n[{t}]")
@@ -154,7 +181,8 @@ async def main() -> None:
         total = sum(len(v) for g in plan.values() for v in g.values())
         if args.apply:
             await session.commit()
-            print(f"\n반영 완료 — 문서 {total}건 / 테넌트 {len(plan)}개")
+            await _drain(meta_rows)
+            print(f"\n반영 완료 — 문서 {total}건 / 테넌트 {len(plan)}개 (엔진 폴더 메타는 outbox META로 갱신됨)")
             print("⚠ 리랭커 입력이 바뀌었으므로 검색축 재측정 필요 (재색인은 불필요)")
         else:
             await session.rollback()

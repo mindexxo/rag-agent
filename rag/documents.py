@@ -58,11 +58,18 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
     커밋은 **마지막에 한 번**이다. 그 커밋에 ready·is_active·supersede·캐시 무효화·outbox done이
     함께 들어간다 — 그래서 `ready ≡ 색인됨`이 커밋 단위로 성립한다. 어느 단계에서 죽어도
     PG는 pending 그대로, 대기열 행은 pending 그대로여서 다음 회차가 처음부터 다시 한다
-    (엔진에 반쯤 들어간 청크는 같은 _id로 덮이고, 구버전 삭제는 이미 없으면 0건 — 멱등).
+    (엔진에 반쯤 들어간 청크는 같은 _id로 덮인다 — 멱등. 커밋 전엔 엔진에서 아무것도 **지우지** 않는다).
+
+    **파괴적인 엔진 변경은 커밋 뒤 outbox로만** (#186). 구버전 청크 삭제는 ②에서 직접 하지 않고
+    ③ 커밋에 DROP_DOCUMENTS 행으로 얹는다 — ③이 실패하면 행도 롤백돼 구버전은 PG(ready·active)·엔진
+    모두 그대로다. ②에서 지웠던 때는 ③ 실패가 "목록엔 정상인데 검색엔 없는" 구버전을 영구로 남겼다.
+    대가는 성공 경로에서 구·신 버전 청크가 다음 회차(≤1분)까지 공존하는 것 — 삭제 문서가 최대 1분
+    인용될 수 있다는 제품 결정(rag/outbox.py)과 같은 범위. 신버전 색인(②)은 비파괴·멱등 upsert라
+    커밋 전에 해도 되고, 실패로 굳으면 outbox.drain의 failed 확정 DROP(#184)이 치운다.
 
     세션 셋으로 나눈 이유는 그대로다: 무거운 파싱·임베딩 동안 DB 커넥션을 물지 않는다.
       ① 짧은 읽기   처리 대상 확인 + 파싱·색인에 필요한 값만 (커넥션 즉시 반납)
-      ② DB 없이     파싱·청킹·임베딩 → 엔진 색인 + 구버전 엔진 삭제
+      ② DB 없이     파싱·청킹·임베딩 → 엔진 색인 (삭제는 없다 — 위 원칙)
       ③ 짧은 쓰기   유일한 커밋
     """
     # ── ① 짧은 읽기 ──
@@ -81,11 +88,10 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         tenant_id, filename, version = doc.tenant_id, doc.filename, doc.version
         blob_path, description = doc.blob_path, doc.description or ''
         folder_id, doc_searchable = doc.folder_id, doc.is_searchable
-        # 같은 filename의 **낮은 version** 중 살아 있는 것 — 엔진에서 지우고 PG에서 내릴 대상(supersede).
-        # 여기서 한 번 읽어 ②·③이 같은 집합을 쓴다.
+        # 같은 filename의 **낮은 version** 중 살아 있는 것 — ③에서 PG를 내리고 DROP 행을 남길 대상(supersede).
         # "active만"이 아니라 pending도 포함하고 version 조건을 거는 이유(#185): outbox 행은 등재 순으로
         # 처리된다는 보장이 없다 — 백오프로 v1 행이 미뤄진 사이 v2 행이 먼저 끝날 수 있다. 그때 v2가
-        # pending v1을 여기서 내려두면 v1의 차례가 와도 위 "pending 아님 → done" 분기로 빠진다.
+        # pending v1을 ③에서 내려두면 v1의 차례가 와도 위 "pending 아님 → done" 분기로 빠진다.
         # version 조건은 그 반대 방향의 안전판이다 — 어떤 경로로든 구버전이 나중에 돌아도 신버전을
         # supersede하지 못한다(그 경우 ③의 active 유니크 uq_docs_one_active_per_name에 걸려 결정적 실패 →
         # 구버전만 failed). 라우터의 expect_version 검사는 FE가 보낼 때만 도는 선택적 방어라 근거로 삼지 않는다.
@@ -135,10 +141,7 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         document_id=document_id, tenant_id=tenant_id, filename=filename, version=version,
         folder_id=folder_id, folder_name=folder_name, folder_description=folder_desc,
         searchable=indexed_searchable, chunks=chunks, embeddings=embeddings)
-    # 신버전이 이미 켜져 있으니 구버전을 지워도 빈 창이 없다. pending 구버전의 청크(그쪽 ②가 썼다가 ③에서
-    # 실패해 남은 것)도 같은 집합이라 여기서 함께 지워진다.
-    if old_ids:
-        await os_index.drop_documents_now(old_ids)
+    # 구버전 청크는 여기서 지우지 않는다 — ③의 DROP 행이 다음 회차에 지운다(함수 docstring, #186).
     INDEX_DURATION_SECONDS.labels(stage='index', ext=_ext).observe(time.monotonic() - _t_embed_done)
 
     # ── ③ 유일한 커밋 ──
@@ -156,10 +159,14 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         # 청크 행은 PG에 쓰지 않는다 — 검색·본문·메타 전부 엔진이 든다(#139). 이 커밋은
         # 문서 상태(ready·active·supersede)와 대기열 행만 확정한다.
         # supersede — ①에서 읽은 같은 집합. 옛 active off를 먼저 반영해 유니크 위반을 피한다.
+        # 엔진 삭제는 같은 커밋의 DROP 행으로(#186) — deleted로 바뀌는 상태와 함께 확정되거나 함께 롤백된다.
+        # 처리 시 outbox.drain의 DROP 가드는 이 문서들이 deleted라 통과시킨다. pending 구버전의 청크
+        # (그쪽 ②가 썼다가 ③에서 실패해 남은 것)도 같은 집합이라 함께 지워진다.
         if old_ids:
             await session.execute(
                 update(Document).where(Document.id.in_(old_ids))
                 .values(is_active=False, status='deleted'))
+            outbox.enqueue(session, tenant_id, outbox.DROP_DOCUMENTS, document_ids=old_ids)
             await session.flush()
 
         doc.status = 'ready'

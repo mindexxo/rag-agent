@@ -24,10 +24,8 @@ from text_norm import LIKE_ESCAPE_CHAR, like_pattern
 # 뜻이 안 잡히는 경우가 생겨 그 사이로 잡았다.
 SNIPPET_RADIUS = 15
 
-# 패턴 조립·이스케이프는 text_norm으로 옮겼다 (#176) — 문서 목록 검색도 같은 규칙을 쓰는데,
-# 라우터가 '대화 검색' 모듈에서 가져다 쓰는 모양이 되면 이 모듈의 공개 표면 계약이 흐려진다.
+# 패턴 조립·이스케이프는 text_norm이 정의점이다 (#176) — 문서 목록 검색도 같은 규칙을 쓴다.
 # 이 모듈의 계약(라우터는 pattern을 모른다)은 그대로다 — 안에서 유틸을 쓸 뿐이다.
-_LIKE_ESCAPE_CHAR = LIKE_ESCAPE_CHAR
 
 
 def _build_snippet(content: str, q: str) -> str | None:
@@ -69,11 +67,11 @@ def search_filter(tenant_id: str, q: str | None):
         return true()
     pattern = like_pattern(q)
     return or_(
-        Conversation.title.ilike(pattern, escape=_LIKE_ESCAPE_CHAR),
+        Conversation.title.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
         select(Message.id)
         .where(Message.conversation_id == Conversation.id)
         .where(Message.tenant_id == tenant_id)      # 격리 — 상관 서브쿼리에도 WHERE 명시
-        .where(Message.content.ilike(pattern, escape=_LIKE_ESCAPE_CHAR))
+        .where(Message.content.ilike(pattern, escape=LIKE_ESCAPE_CHAR))
         .exists(),
     )
 
@@ -95,7 +93,7 @@ async def snippets_for(session: AsyncSession, tenant_id: str, conversation_ids: 
         select(Message.conversation_id, Message.content)
         .where(Message.conversation_id.in_(conversation_ids))
         .where(Message.tenant_id == tenant_id)      # 격리 — 메시지에도 WHERE 명시
-        .where(Message.content.ilike(pattern, escape=_LIKE_ESCAPE_CHAR))
+        .where(Message.content.ilike(pattern, escape=LIKE_ESCAPE_CHAR))
         .order_by(Message.conversation_id, Message.created_at.desc(), Message.id.desc())
     )).all()
 

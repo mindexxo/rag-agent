@@ -65,6 +65,35 @@ async def get_folder(session: AsyncSession, tenant_id: str, folder_id: int) -> F
     )).scalars().first()
 
 
+async def _retire_documents(session: AsyncSession, tenant_id: str, document_ids: list[int],
+                            *, status_reason: str | None = None) -> None:
+    """문서들을 내린다 — 상태·캐시·DROP **세 동작이 한 묶음**이다 (#188 B-4).
+
+    하나만 빠져도 조용히 어긋난다: 상태만 바꾸면 엔진에 남아 계속 인용되고, DROP만 넣으면
+    목록에 남고, 캐시를 안 지우면 내린 문서를 근거로 만든 답변이 그대로 재사용된다.
+
+    쓰는 곳 둘 — 재업로드의 구버전 supersede(index_pending_document ③)와 failed 정리
+    (_reuse_failed_document의 others). `soft_delete_documents`는 **쓰지 않는다**: 그쪽은 filename
+    하위 질의로 대상 확정과 UPDATE를 한 문장에 묶어 그 사이 창을 닫는 구조라, 여기처럼 id 목록을
+    미리 들고 있을 수 없다(그 함수 주석 참조).
+
+    **커밋하지 않는다** — 호출부 트랜잭션에 얹힌다(outbox.enqueue와 같은 규약).
+    flush까지 하는 이유: supersede는 옛 active가 먼저 off로 반영돼야 신버전을 켤 때
+    uq_docs_one_active_per_name을 안 밟는다.
+    """
+    if not document_ids:
+        return
+    values = {'is_active': False, 'status': 'deleted'}
+    if status_reason is not None:
+        values['status_reason'] = status_reason
+    await session.execute(
+        update(Document).where(Document.id.in_(document_ids)).values(**values))
+    for did in document_ids:
+        await cache.invalidate_source(session, tenant_id, did)
+    outbox.enqueue(session, tenant_id, outbox.DROP_DOCUMENTS, document_ids=list(document_ids))
+    await session.flush()
+
+
 async def index_pending_document(document_id: int, *, outbox_row_id: int | None = None) -> None:
     """INDEX_DOCUMENT 핸들러 — 인제스션 전체 (#139 outbox). 워커 drain이 부른다.
 
@@ -174,16 +203,12 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
 
         # 청크 행은 PG에 쓰지 않는다 — 검색·본문·메타 전부 엔진이 든다(#139). 이 커밋은
         # 문서 상태(ready·active·supersede)와 대기열 행만 확정한다.
-        # supersede — ①에서 읽은 같은 집합. 옛 active off를 먼저 반영해 유니크 위반을 피한다.
+        # supersede — ①에서 읽은 같은 집합을 내린다(_retire_documents: 상태·캐시·DROP).
         # 엔진 삭제는 같은 커밋의 DROP 행으로(#186) — deleted로 바뀌는 상태와 함께 확정되거나 함께 롤백된다.
         # 처리 시 outbox.drain의 DROP 가드는 이 문서들이 deleted라 통과시킨다. pending 구버전의 청크
         # (그쪽 ②가 썼다가 ③에서 실패해 남은 것)도 같은 집합이라 함께 지워진다.
-        if old_ids:
-            await session.execute(
-                update(Document).where(Document.id.in_(old_ids))
-                .values(is_active=False, status='deleted'))
-            outbox.enqueue(session, tenant_id, outbox.DROP_DOCUMENTS, document_ids=old_ids)
-            await session.flush()
+        # 옛 active off가 먼저 flush돼야 아래 is_active=True가 유니크를 안 밟는다(헬퍼가 flush한다).
+        await _retire_documents(session, tenant_id, old_ids)
 
         doc.status = 'ready'
         doc.is_active = True
@@ -199,8 +224,6 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
                 f'생성된 설명이나 인식된 값이 부정확할 수 있어 원문 확인이 필요합니다.'
             )[:500]
         doc.indexed_at = datetime.now(timezone.utc)
-        for old_id in old_ids:
-            await cache.invalidate_source(session, tenant_id, old_id)
 
         # ②가 도는 사이(초~분) 문서 검색토글·폴더 토글·폴더 이동이 있었을 수 있다. 그 META 행은
         # 이미 색인된 청크만 갱신하므로(이 문서는 그때 엔진에 없었다) 여기서 ① 시점 값으로 넣은
@@ -346,13 +369,7 @@ async def _reuse_failed_document(
     # _delete_by_terms) others는 재색인이 없어 여기서 지워야 한다. #184 이후 failed 확정 자체가
     # DROP을 등재하므로(outbox.drain — "생길 때 지운다") 여기는 이중 안전판이다("내릴 때 지운다").
     others = [d.id for d in failed if d.id != target.id]
-    if others:
-        await session.execute(update(Document).where(Document.id.in_(others))
-                              .values(status='deleted', is_active=False,
-                                      status_reason='failed_superseded'))
-        for did in others:
-            await cache.invalidate_source(session, tenant_id, did)
-        outbox.enqueue(session, tenant_id, outbox.DROP_DOCUMENTS, document_ids=others)
+    await _retire_documents(session, tenant_id, others, status_reason='failed_superseded')
     await session.refresh(target)      # UPDATE로 바뀐 값을 ORM 객체에 반영 (응답에 쓴다)
     outbox.enqueue(session, tenant_id, outbox.INDEX_DOCUMENT, document_id=target.id)
     return target, stale_blob

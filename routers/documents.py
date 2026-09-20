@@ -1,16 +1,21 @@
-"""KMS 문서 업로드 라우터.
+"""KMS 문서 관리 라우터 — 업로드·목록·변경·삭제·다운로드 + 채팅 첨부 추출.
 
-POST /kms/documents (multipart)
+**이 파일이 정의점인 것은 HTTP 경계의 규칙뿐이다.** 무엇이 일어나는지는 아래를 보라:
+업로드·supersede·failed 재사용은 rag/documents.py의 handle_upload, 삭제는 같은 파일의
+soft_delete_documents, 색인 반영 시점은 rag/outbox.py, 실효 참조의 색인용 판정은
+rag/os_index.py의 effective_searchable.
 
 문서 식별·버전 정책 (2026-08-05 확정):
 - 식별 기준은 **filename 완전 일치** 하나뿐. 유사 파일명은 별개 문서로 본다.
-- 같은 이름 재업로드 = 새 version + 기존 버전 supersede(비활성화 + 청크 삭제 + 근거 캐시 무효화).
-  내용이 같아도 마찬가지 — 내용 해시 dedupe는 제거했다(규칙을 하나로 유지).
+- 같은 이름 재업로드 = 새 version + 기존 버전 supersede. 내용이 같아도 마찬가지 —
+  내용 해시 dedupe는 제거했다(규칙을 하나로 유지).
+  supersede가 **무엇을 언제** 하는지는 rag/documents.py의 index_pending_document가 정의점이다
+  (#186 이후 구버전 청크 삭제는 커밋 즉시가 아니라 다음 회차의 DROP 작업이다 — 최대 1분 공존).
 - 원본 파일은 테넌트 디렉터리 아래 UUID 이름으로 저장 (업로드 1건 = 파일 1개).
 - 버전 롤백은 미지원. 되돌리려면 이전 파일을 다시 업로드한다.
-- **예외(#161)**: failed 문서는 "이미 있는 문서"로 세지 않는다 — 확인창 없이 통과하고, 재업로드는
-  새 version을 만들지 않고 그 행을 pending으로 되살린다(version 유지). 상세는 rag/documents.py의
-  handle_upload docstring. failed는 목록에는 보인다 — 재시도·삭제할 수 있어야 하므로.
+- **예외(#161)**: failed 문서는 사용자에게 "없는 문서"다 — 목록에는 보이되(재시도·삭제해야 하므로)
+  exists·_current_version·handle_upload 셋이 한 기준으로 없는 것처럼 답한다.
+  기준 상수는 rag/models.py의 ALIVE_DOCUMENT_STATUSES, 되살리는 규칙은 handle_upload docstring.
 
 동시 업로드 (2026-08-07 추가):
 - FE가 확인창에서 본 버전을 expect_version으로 보내면, 그 사이 DB가 바뀌었을 때 409를 준다.
@@ -84,9 +89,9 @@ async def _current_version(session: AsyncSession, tenant_id: str, filename: str)
     """해당 파일명의 현재 버전. 없으면 0.
 
     판정 기준은 exists API·handle_upload의 재사용 판정과 **정확히 같아야** 한다 — tenant + filename
-    완전 일치, status가 살아 있는 것(ALIVE_DOCUMENT_STATUSES — 세 곳이 같은 상수를 쓴다). 기준이 어긋나면 "확인창에서 본 것과 다른 문서가
-    대체되는" 사고가 난다. failed를 빼는 이유는 #161 — 그 문서는 검색에 없고 재업로드가 그 행을
-    되살리므로(version 유지) 사용자에겐 "없는 문서"다.
+    완전 일치, status가 살아 있는 것(ALIVE_DOCUMENT_STATUSES — 세 곳이 같은 상수를 쓴다).
+    기준이 어긋나면 "확인창에서 본 것과 다른 문서가 대체되는" 사고가 난다. failed를 빼는 이유는
+    #161 — 그 문서는 검색에 없고 재업로드가 그 행을 되살리므로(version 유지) "없는 문서"다.
     """
     return (await session.execute(
         select(func.max(Document.version))
@@ -331,9 +336,9 @@ async def document_exists(
     """업로드 전 동일 파일명 확인 (FE가 대체 확인 창을 띄울지 판단).
 
     판정 기준은 _current_version·handle_upload의 재사용 판정과 **정확히 같아야** 한다 — tenant +
-    filename **완전 일치**(대소문자·공백 구분), status가 deleted·failed가 아닌 것(#161). 기준이
-    어긋나면 "물어본 것과 다른 문서가 지워지는" 사고가 난다. failed만 있으면 exists=false다 —
-    재업로드가 그 행을 되살리므로 FE는 새 문서처럼(expect_version=0) 보내면 된다.
+    filename **완전 일치**(대소문자·공백 구분), status가 살아 있는 것(ALIVE_DOCUMENT_STATUSES).
+    기준이 어긋나면 "물어본 것과 다른 문서가 지워지는" 사고가 난다. failed만 있으면 exists=false다
+    (#161) — 재업로드가 그 행을 되살리므로 FE는 새 문서처럼(expect_version=0) 보내면 된다.
 
     이 API는 안내용일 뿐 강제력이 없다. 업로드 API는 확인 없이도 통과하며(2026-08-05 결정),
     그 경우 기존 버전이 그대로 대체된다.

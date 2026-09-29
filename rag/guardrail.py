@@ -30,18 +30,21 @@ logger = logging.getLogger(__name__)
 
 
 async def classify_and_guard(llm: LlmClient, query: str, has_attachments: bool = False,
-                             domain_hint: str | None = None) -> RouteDecision:
+                             domain_hint: str | None = None,
+                             prior_turns: list[dict] | None = None) -> RouteDecision:
     """입력 안전성 + 인텐트를 한 번의 LLM 호출로 판단한다.
 
     safe=false면 차단(BLOCKED), 아니면 intent로 라우팅.
     domain_hint는 KNOWLEDGE 정의의 지식 범위 슬롯에 주입 (빈 값은 중립 폴백).
+    prior_turns는 최근 문답(#142) — 직전 답을 반박·의심하는 발화를 회상과 가르는 데 필요하다.
+    비어 있어도 된다(첫 턴). 어느 예산으로 자르는지는 호출부(rag/service.py)가 정한다.
     판단 실패는 폴백 없이 전파한다 (#72) — 사유는 모듈 docstring. 이 시점엔 사용자의 질문이
     이미 저장돼 있으므로(턴 시작 자리표시), 실패해도 질문이 유실되지는 않는다.
     """
     with otel.span('classify_and_guard', 'GUARDRAIL') as sp:
         decision = await acomplete_validated(llm, [
             {'role': 'system', 'content': build_intent_guard_prompt(domain_hint)},
-            {'role': 'user', 'content': build_classify_user_message(query, has_attachments)},
+            {'role': 'user', 'content': build_classify_user_message(query, has_attachments, prior_turns)},
         ], RouteDecision, span=sp)
         otel.set_attrs(sp, {otel.INPUT_VALUE: query, 'kms.intent': decision.intent, 'kms.safe': decision.safe,
                             'kms.block_reason': decision.reason})   # 차단 사유 — 없으면 no-op (#22)

@@ -244,20 +244,12 @@ def build_cache_reuse_judge_messages(
     ]
 
 
-def build_classify_user_message(query: str, has_attachments: bool = False) -> str:
-    """분류 LLM에 넘길 사용자 메시지 — 현재 입력 (+ 첨부 존재 신호).
+def _history_block(prior_turns: list[dict] | None) -> str:
+    """<이전 대화> 블록 — 분류(#142)와 OTHER 생성이 같은 형식을 쓴다. 비어 있어도 블록은 붙는다.
 
-    첨부 신호가 없으면 "요약해줘"가 대화 요약(OTHER)으로 오분류돼 첨부 요약이
-    막힌다 (교차 기능 갭 — 2026-07-19). 형식은 시스템 프롬프트 few-shot과 동일.
-    """
-    prefix = "상황: 첨부 문서 있음\n" if has_attachments else ""
-    return f"{prefix}입력: {query.strip()}\n출력:"
-
-
-def build_other_user_message(query: str, prior_turns: list[dict] | None = None) -> str:
-    """'그 외'(OTHER) 경로 유저 메시지 — 이전 대화 + 현재 입력.
-    요약·회상·되묻기가 가능하도록 이력을 싣는다. 이력은 서비스 사실의 근거가 아니다.
     prior_turns: [{"q": "...", "a": "..."}, ...] (build_prior_turns 산출물)
+    비었을 때도 "(이전 대화 없음)"을 넣는 이유: 첫 턴과 그 뒤 턴의 메시지 모양이 같아야
+    few-shot(이력이 붙은 형식)이 첫 턴에서도 그대로 통한다.
     """
     if prior_turns:
         lines = ['<이전 대화>']
@@ -265,11 +257,30 @@ def build_other_user_message(query: str, prior_turns: list[dict] | None = None) 
             lines.append(f"사용자: {t['q']}")
             lines.append(f"상담도우미: {t['a']}")
         lines.append('</이전 대화>')
-        history_block = "\n".join(lines) + "\n\n"
-    else:
-        history_block = '<이전 대화>\n(이전 대화 없음)\n</이전 대화>\n\n'
+        return "\n".join(lines) + "\n\n"
+    return '<이전 대화>\n(이전 대화 없음)\n</이전 대화>\n\n'
 
-    return f"{history_block}현재 입력: {query.strip()}"
+
+def build_classify_user_message(query: str, has_attachments: bool = False,
+                                prior_turns: list[dict] | None = None) -> str:
+    """분류 LLM에 넘길 사용자 메시지 — 이전 대화 + 첨부 존재 신호 + 현재 입력.
+
+    이력을 싣는 이유(#142): 직전 답을 반박·의심하는 발화는 문자열만으로는 회상("아까 그거")과
+    가르기 어렵다 — 직전 답과 대조해야 "다시 찾아봐야 하는 입력"인지 판단이 선다.
+    순서는 이력 → 상황 → 입력. 시스템 프롬프트 few-shot과 같은 모양이어야 한다.
+    첨부 신호가 없으면 "요약해줘"가 대화 요약(OTHER)으로 오분류돼 첨부 요약이
+    막힌다 (교차 기능 갭 — 2026-07-19).
+    """
+    prefix = "상황: 첨부 문서 있음\n" if has_attachments else ""
+    return f"{_history_block(prior_turns)}{prefix}입력: {query.strip()}\n출력:"
+
+
+def build_other_user_message(query: str, prior_turns: list[dict] | None = None) -> str:
+    """'그 외'(OTHER) 경로 유저 메시지 — 이전 대화 + 현재 입력.
+    요약·회상·되묻기가 가능하도록 이력을 싣는다. 이력은 서비스 사실의 근거가 아니다.
+    prior_turns: [{"q": "...", "a": "..."}, ...] (build_prior_turns 산출물)
+    """
+    return f"{_history_block(prior_turns)}현재 입력: {query.strip()}"
 
 
 def build_condense_user_message(query: str, history: list[dict]) -> str:

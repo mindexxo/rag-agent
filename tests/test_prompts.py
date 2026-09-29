@@ -310,7 +310,14 @@ class TestChatPromptAndClassify:
                         {'role': 'user', 'content': '유저 입력'}]
 
     def test_classify_형식(self):
-        assert build_classify_user_message('  환불 돼요?  ') == '입력: 환불 돼요?\n출력:'
+        # 첫 턴에도 빈 <이전 대화> 블록이 붙는다(#142) — few-shot과 같은 모양이어야 이력 예시가 첫 턴에도 통한다
+        assert build_classify_user_message('  환불 돼요?  ') == (
+            '<이전 대화>\n(이전 대화 없음)\n</이전 대화>\n\n입력: 환불 돼요?\n출력:')
+
+    def test_classify_이력_순서는_이력_상황_입력(self):
+        out = build_classify_user_message('요약해줘', True, prior_turns=[{'q': '환불?', 'a': '7일입니다'}])
+        assert out == ('<이전 대화>\n사용자: 환불?\n상담도우미: 7일입니다\n</이전 대화>\n\n'
+                       '상황: 첨부 문서 있음\n입력: 요약해줘\n출력:')
 
 
 class TestOtherUserMessage:
@@ -344,3 +351,42 @@ class TestDomainHint:
     def test_상수는_기본_렌더링과_동일(self):
         # eval/generation 등 정적 참조(SYSTEM_PROMPT)가 기본 빌드와 어긋나면 평가·운영 프롬프트가 갈라진다
         assert SYSTEM_PROMPT == build_system_prompt()
+
+
+class TestIntentPromptHistory:
+    """분류 프롬프트가 이력을 받는 구조(#142)를 래칫으로 고정한다.
+
+    실측 근거는 rag/prompt_texts.py의 템플릿 주석. 여기 단언이 깨지면 그 실측이 무효가 된다.
+    """
+    def test_이력을_전제하는_예시는_이력_블록을_달고_있다(self):
+        # 예시 형식이 런타임 메시지와 어긋나면 모델이 예시를 따라 이력을 무시한다 — 이게 #142의 실제 원인이었다
+        p = build_intent_guard_prompt()
+        for ex in ('입력: 아까 그거 다시 말해줘', '입력: 다시\n', '입력: 이어서 해줘',
+                   '입력: 고객한테 대답할 멘트로 작성해줘', '입력: 지금까지 내가 뭐 물어봤지?'):
+            i = p.index(ex)
+            assert '</이전 대화>' in p[max(0, i - 200):i], f'이력 없이 제시된 예시: {ex!r}'
+
+    def test_직전_답과_어긋나는_발화_예시가_KNOWLEDGE로_있다(self):
+        p = build_intent_guard_prompt()
+        for ex in ('입력: 그렇게 안내받은 기억이 없습니다', '입력: 앞에서 말씀하신 것과 차이가 있습니다'):
+            i = p.index(ex)
+            assert '"intent": "KNOWLEDGE"' in p[i:i + 120]
+            assert '</이전 대화>' in p[max(0, i - 200):i]
+
+    def test_OTHER는_기본값이_아니라_닫힌_목록이다(self):
+        p = build_intent_guard_prompt()
+        assert '- OTHER : 아래 다섯에 해당할 때만' in p
+        assert '이 다섯에 들지 않으면 전부 KNOWLEDGE입니다' in p
+        assert '- OTHER : 그 외 전부' not in p        # 옛 기본값 문구가 되살아나면 반박이 다시 OTHER로 샌다
+
+    def test_프롬프트에_반박이라는_말이_없다(self):
+        # 이슈 증상을 프롬프트에 그대로 옮겨 적지 않는다 — 형식 정합과 기본값 반전만으로 잡는 설계
+        assert '반박' not in build_intent_guard_prompt()
+
+    def test_예시_문구는_인텐트_골드에_없다(self):
+        # 예시와 골드가 겹치면 일반화가 아니라 암기를 잰다(#63 규율). 예시 이력 문구·반박 예시 2개를 지킨다.
+        import json
+        from pathlib import Path
+        gold = [json.loads(l)['query'] for l in Path('eval/intent_set_v1.jsonl').read_text().splitlines() if l.strip()]
+        for phrase in ('교환 신청은 며칠까지예요', '그렇게 안내받은 기억이 없습니다', '앞에서 말씀하신 것과 차이가 있습니다'):
+            assert not any(phrase in q for q in gold), f'골드에 예시 문구가 있다: {phrase!r}'

@@ -282,8 +282,13 @@ class RagService:
                 display_query=display_query,
             )
 
-        # 입력 가드레일 + 인텐트 분류 (통합 1회 호출) — 히스토리 유무와 무관하게 항상 실행
-        decision = await classify_and_guard(self._llm, query, has_attachments=bool(attachment_dicts), domain_hint=domain_hint)
+        # 입력 가드레일 + 인텐트 분류 (통합 1회 호출) — 히스토리 유무와 무관하게 항상 실행.
+        # 분류기에도 최근 문답을 준다(#142) — 반박·의심 발화("아깐 2년이라매")는 직전 답과 대조해야
+        # 회상("아까 그거 다시")과 갈린다. 예산은 condense와 같은 눈금(600토큰): 둘 다 "참조 해소에
+        # 최근 몇 턴"이 목적이고, 분류는 매 턴 도는 경로라 생성용 2000토큰을 실을 이유가 없다.
+        decision = await classify_and_guard(
+            self._llm, query, has_attachments=bool(attachment_dicts), domain_hint=domain_hint,
+            prior_turns=build_prior_turns(messages, settings.condense_history_budget_tokens))
         if not decision.safe:
             logger.warning('입력 가드 차단 (tenant=%s, conversation=%s): %s',
                            self.tenant_id, conversation.id, decision.reason)

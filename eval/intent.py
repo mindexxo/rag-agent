@@ -11,6 +11,15 @@ classify_and_guard가 입력을 올바른 경로로 보내는지 측정한다.
 - 대화/메타(요약·회상·자기소개) → OTHER (이번 변경으로 신설)
 - "환불 규정 요약해줘"(서비스 내용 요약) → KNOWLEDGE (급소)
 - 기존 인사/도메인/인젝션/pii 회귀
+- rebuttal(#142): 직전 답을 반박·의심하는 발화 → KNOWLEDGE. 행에 prior_turns(최근 문답)가 있고
+  분류기가 그걸 받는다. 문체 4(해요체 의문·단정, 합쇼체, 반말) × 형태 4(직접부정·출처대비·확신요구·
+  의심표명) 격자라 한 어미가 점수를 좌우하지 못한다. neg 2건은 이력이 있어도 맞장구는 OTHER여야
+  한다는 과잉 발동 감시.
+
+골드 규율: 문구가 분류 프롬프트의 예시(rag/prompt_texts.py)와 **겹치면 안 된다** — 겹치면 일반화가 아니라 암기를
+잰다(#63). 2026-09-29에 겹치던 23행을 같은 경계·다른 문구로 바꿨다(tests/test_prompts.py가 반박 예시
+문구의 부재를 래칫으로 고정). 골드를 바꾸기 전엔 intent_set_v1_before_<변경>.jsonl.bak으로 스냅샷을
+뜬다(gitignore, 로컬 이력).
 
 실행: python -m eval.intent
 """
@@ -53,7 +62,8 @@ async def compute() -> dict:
     async def run(case: dict) -> dict:
         async with sem:
             d = await classify_and_guard(llm, case["query"], case.get("has_attachments", False),
-                                         domain_hint=case.get("domain_hint"))
+                                         domain_hint=case.get("domain_hint"),
+                                         prior_turns=case.get("prior_turns"))   # #142 — 없으면 첫 턴
         return {**case, "got_safe": d.safe, "got_intent": d.intent, "ok": _is_correct(case, d)}
 
     rows = list(await asyncio.gather(*(run(c) for c in cases)))
@@ -79,7 +89,7 @@ async def main():
     # attachment 누락 시 총합과 카테고리 합이 안 맞아 조용히 사라진다 — 정의 순서에 포함 (#22)
     order = ["greeting", "meta_summary", "meta_recall", "self_intro", "external_oos",
              "domain", "domain_statement", "domain_summary_boundary", "domain_hinted",
-             "attachment", "retry", "compose", "injection", "pii_request", "harmful"]
+             "attachment", "retry", "compose", "rebuttal", "injection", "pii_request", "harmful"]
     for cat in order:
         rs = by_cat.get(cat)
         if not rs:

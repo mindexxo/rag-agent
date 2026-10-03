@@ -165,26 +165,80 @@ _SENT_SPLIT = re.compile(r"\n+|(?<!\d)[.!?]+|[.!?]+(?!\d)")
 # 절 경계. 두 가지를 일부러 뺐다 — 숫자 사이 쉼표('3,000원')와 '·'(교육·보건·식수 같은 나열).
 _CLAUSE_SPLIT = re.compile(r"(?<!\d),(?!\d)|[;—]+")
 _MIN_CLAUSE = 6              # 이보다 짧은 조각은 의미를 못 실어 임베딩이 잡음이 된다
+# 목록 항목 머리. 생성 프롬프트(rag/prompt_texts.py 규칙 8)가 "항목이 2개 이상이면
+# '- ' 목록으로 나누라"고 **지시**하므로 이 형태는 예외가 아니라 정상 출력이다.
+_BULLET_HEAD = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
+_MAX_RUN_JOIN = 12           # 한 런에 이 개수를 넘으면 묶지 않는다 — 너무 길면 주제가 뭉개진다
 
 
 def _split_sentences(text: str) -> list[str]:
     return [p.strip() for p in _SENT_SPLIT.split(text) if p.strip()]
 
 
+def _bullet_run_candidates(text: str) -> list[str]:
+    """목록 블록을 **한 덩어리로 되붙인** 후보. 쪼개진 사실을 다시 모으는 것이 목적이다 (#196).
+
+    왜 필요한가: 생성 프롬프트 규칙 8이 "항목이 2개 이상이면 '- ' 목록으로 나누라"고 지시한다.
+    그러면 한 사실의 **주어가 머리말 줄에, 값이 불릿 줄에** 갈라져 어느 한 줄도 포인트 전체와
+    닮지 않는다. 실측(인티큐브 실문서 90건, #196): 포인트 "수습 및 시용기간은 3개월 이상입니다"에
+    머리말 '신규 입사자의 수습 및 시용기간은 다음과 같습니다'가 0.707, 값이 든
+    '- 일반 신규 채용: 3 개월 이상'이 0.682로 **둘 다 임계 0.75 미달**이었다.
+    14B 적중·9B 미적중 포인트 21개 중 **20개가 0.646~0.748 구간**에 몰려 있었다.
+
+    임계를 낮추지 않는 이유: 그 구간에는 진짜 누락도 섞여 있다(rl004 40점↔60점 0.646,
+    md008 월간3일↔누적3회 0.695, pp010 연장1.5배↔야간0.5배 0.741). 임계만 내리면 같이 통과한다.
+    그래서 기준을 완화하는 대신 **비교 대상을 제대로 만들어** 준다 — 답변이 실제로 쓴 줄을
+    순서대로 이어붙일 뿐이라 없는 내용이 생기지 않는다.
+
+    런마다 둘을 낸다: 머리말+런, 런만. 머리말이 다른 사실일 수도 있어 런만도 남긴다.
+    고정 윈도우(2줄)가 아니라 **런 전체**인 이유: 결재선 4줄 사례(작성자→HR팀장→재무팀장→
+    경영전략부문장)는 2줄씩 묶으면 체인 절반만 모여 여전히 미달이다(실측 0.734).
+
+    **원문을 줄 단위로 본다 — _split_sentences 결과를 쓰면 안 된다.** `_SENT_SPLIT`이 숫자 뒤
+    마침표를 문장 경계로 자르기 때문에 "1. 신청"이 ['1', '신청']으로 쪼개져 번호 목록이 영영
+    탐지되지 않는다(리뷰 지적, 실측 확인). `1)` 형태만 우연히 살아남아 숫자+마침표 분기가 죽은
+    코드가 된다. 프롬프트 규칙 8은 "- "만 지시하지만, 이 저장소엔 모델이 서식 지시를 안 지킨
+    전례가 있다(#56→#65 인용 꼬리) — 번호 목록으로 새도 조용히 무력화되지 않게 한다.
+    """
+    lines = [ln.strip() for ln in text.splitlines()]
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        if not lines[i] or not _BULLET_HEAD.match(lines[i]):
+            i += 1
+            continue
+        j = i
+        while j < len(lines) and lines[j] and _BULLET_HEAD.match(lines[j]):
+            j += 1
+        run = lines[i:j]
+        if 1 < len(run) <= _MAX_RUN_JOIN:
+            joined = " ".join(run)
+            out.append(joined)
+            lead = next((lines[k] for k in range(i - 1, -1, -1) if lines[k]), None)
+            if lead and not _BULLET_HEAD.match(lead):
+                out.append(f"{lead} {joined}")
+        i = j
+    return out
+
+
 def _split_segments(text: str) -> list[str]:
-    """문장 + 절. 비교 단위를 포인트 쪽에 맞춘다.
+    """문장 + 절 + 목록 블록. 비교 단위를 포인트 쪽에 맞춘다.
 
     포인트 하나는 사실 하나인데 답변은 여러 사실을 쉼표로 잇는다. 문장만 쓰면
     "A는 X이고, B는 Y입니다"에 포인트 'B는 Y'를 대조하게 되어 코사인이 0.7대로
     깎인다(골드 450문항 실측: 0.80 미만 63쌍 → 절 추가 후 13쌍). 문장 통째도
     후보로 남겨서 긴 포인트가 손해 보지 않게 한다.
+
+    반대 방향(한 사실이 여러 줄로 **쪼개진** 경우)은 _bullet_run_candidates가 맡는다 (#196).
     """
+    sentences = _split_sentences(text)
     out: list[str] = []
-    for s in _split_sentences(text):
+    for s in sentences:
         out.append(s)
         parts = [p.strip() for p in _CLAUSE_SPLIT.split(s) if len(p.strip()) >= _MIN_CLAUSE]
         if len(parts) > 1:
             out.extend(parts)
+    out.extend(_bullet_run_candidates(text))
     return out
 
 
@@ -206,6 +260,12 @@ def expected_points_coverage(answer: str, points: list[str]) -> float | None:
     있으면 코사인이 0.7대로 깎여서다(생성물 900행 실측, 확실한 위음성 6쌍).
 
     임베딩 단계는 패러프레이즈용. 임계 0.75의 근거는 EPCOV_SIM_THRESHOLD 주석.
+
+    **채점 기준 변경 고지 (#196, 2026-10-03): 이 날짜 이전 EPCov 값과 비교 불가.**
+    임베딩 후보에 목록 블록 결합(_bullet_run_candidates)이 추가됐다 — 임계·부분문자열·금액
+    게이트는 그대로고, 한 사실이 "머리말 + 불릿 여러 줄"로 쪼개졌을 때만 결합 후보가 더 생긴다.
+    모델이 바뀐 것이 아니라 **측정 정의가 바뀐 것**이다(citation_accuracy v3·multi_turn #48과
+    같은 종류의 고지). 같은 이유로 eval/consistency.py의 flaky·일치율도 이 날짜로 끊어 읽어라.
     """
     if not points:
         return None

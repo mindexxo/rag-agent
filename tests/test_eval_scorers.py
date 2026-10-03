@@ -119,6 +119,72 @@ class TestSplitSegments:
     def test_숫자_사이_쉼표는_절_경계가_아니다(self):
         assert '3,000원을 지급합니다' in ' '.join(gen._split_segments('보상으로 3,000원을 지급합니다.'))
 
+    # --- 목록 블록 결합 (#196) — 한 사실이 "머리말 + 불릿"으로 쪼개진 경우 -------------
+    # 생성 프롬프트 규칙 8이 목록 서식을 지시하므로 이 형태는 정상 출력이다. 결합 후보가
+    # 없으면 주어가 든 줄과 값이 든 줄이 따로 놀아 어느 쪽도 포인트와 안 닮는다(#196 실측).
+
+    def test_머리말과_불릿을_묶은_후보가_생긴다(self):
+        segs = gen._split_segments('수습 및 시용기간은 다음과 같습니다\n'
+                                   '- 일반 신규 채용: 3개월 이상\n'
+                                   '- 특별 채용: 두지 않을 수 있음')
+        joined = [x for x in segs if '수습 및 시용기간은 다음과 같습니다' in x and '3개월 이상' in x]
+        assert joined, f'머리말+불릿 결합 후보가 없다: {segs}'
+
+    def test_머리말_없는_런만도_후보로_남긴다(self):
+        # 머리말이 다른 사실일 수 있어 런 단독 후보도 필요하다
+        segs = gen._split_segments('- HR팀장 합의\n- 재무팀장 합의\n- 경영전략부문장 결재')
+        assert any('HR팀장 합의 - 재무팀장 합의 - 경영전략부문장 결재' in x for x in segs), segs
+
+    def test_런_전체를_묶는다_고정윈도우가_아니다(self):
+        # 결재선 4줄을 2줄씩 묶으면 체인 절반만 모여 여전히 미달이었다(#196 실측 0.734)
+        segs = gen._split_segments('- 작성자\n- HR팀장\n- 재무팀장\n- 경영전략부문장')
+        assert any(all(k in x for k in ('작성자', 'HR팀장', '재무팀장', '경영전략부문장'))
+                   for x in segs), segs
+
+    def test_불릿_한_줄짜리는_묶지_않는다(self):
+        # 쪼개진 게 아니므로 결합 후보를 만들 이유가 없다 — 후보만 늘면 잡음이다
+        segs = gen._split_segments('안내드립니다\n- 단일 항목입니다')
+        assert '안내드립니다 - 단일 항목입니다' not in segs, segs
+
+    def test_번호_목록도_같이_묶는다(self):
+        segs = gen._split_segments('절차는 다음과 같습니다\n1) 신청\n2) 승인')
+        assert any('1) 신청 2) 승인' in x for x in segs), segs
+
+    def test_마침표_번호목록도_묶는다(self):
+        # _SENT_SPLIT이 숫자 뒤 마침표를 문장 경계로 잘라 '1. 신청'이 ['1','신청']이 된다 —
+        # 문장 분리 결과로 탐지하면 이 형태가 영영 안 걸린다(리뷰 지적). 원문 줄로 봐야 한다.
+        segs = gen._split_segments('절차는 다음과 같습니다\n1. 신청\n2. 승인')
+        assert any('1. 신청 2. 승인' in x for x in segs), segs
+
+    def test_빈_줄이_끼어도_머리말을_찾는다(self):
+        # 실제 생성물은 머리말과 목록 사이에 빈 줄이 있다(마크다운 관행)
+        segs = gen._split_segments('수습기간은 다음과 같습니다\n\n- 일반: 3개월\n- 특별: 없음')
+        assert any('수습기간은 다음과 같습니다' in x and '3개월' in x for x in segs), segs
+
+    def test_결합_후보는_원문에_없는_내용을_만들지_않는다(self):
+        """위양성 방지의 핵심 불변식 — 결합은 **있는 줄을 잇는 것**이지 합성이 아니다.
+
+        임계(0.75)를 낮추지 않고 후보만 늘리는 설계라, 안전성은 "후보가 답변에 실제로
+        존재하는 문자열인가"에 달려 있다. 이게 깨지면 없는 사실이 통과할 수 있다.
+        """
+        text = ('지원 금액은 다음과 같습니다\n'
+                '- 유치원: 24회차까지\n'
+                '- 대학교: 8학기까지')
+        src = text.replace('\n', ' ')
+        for cand in gen._bullet_run_candidates(text):
+            for tok in cand.split():
+                assert tok in src, f'원문에 없는 토큰 {tok!r}이 후보 {cand!r}에 들어갔다'
+
+    def test_런이_끊기면_따로_묶는다(self):
+        # 목록 사이에 설명 문단이 끼면 서로 다른 사실이다 — 가로질러 묶으면 안 된다
+        segs = gen._split_segments('첫째 묶음\n- A1\n- A2\n설명 문단입니다\n- B1\n- B2')
+        assert not any('A2' in x and 'B1' in x for x in segs), segs
+
+    def test_기존_문장절_후보는_그대로_남는다(self):
+        # 결합은 **추가**다. 기존 후보를 대체하면 긴 포인트가 손해를 본다
+        segs = gen._split_segments('안내드립니다\n- A는 1입니다\n- B는 2입니다')
+        assert '안내드립니다' in segs and '- A는 1입니다' in segs and '- B는 2입니다' in segs, segs
+
 
 @pytest.fixture
 def no_embed_fallback(monkeypatch):

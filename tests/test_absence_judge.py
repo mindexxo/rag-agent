@@ -66,7 +66,7 @@ class TestVersioning:
 
 class TestTwoStageGate:
     @pytest.mark.asyncio
-    async def test_인용이_있으면_judge를_부르지_않는다(self, monkeypatch, tmp_path):
+    async def test_인용이_있으면_judge를_부르지_않는다(self, monkeypatch):
         """2단 게이트의 핵심 계약. 깨지면 호출량이 배로 늘고도 조용하다."""
         import eval.refusal as R
 
@@ -86,17 +86,19 @@ class TestTwoStageGate:
         monkeypatch.setattr(R, '_refused', _fake_refused)
         monkeypatch.setattr(R, 'row_tenant', lambda g: 't')
         monkeypatch.setattr(R, 'save_audit', lambda rows, stamp=None: 'audit.jsonl')
-        gold = tmp_path / 'gold.jsonl'      # PosixPath.read_text는 패치 불가 — 실파일로 대체
-        gold.write_text('{"id":"a","type":"no_evidence","query":"refused"}\n'
-                        '{"id":"b","type":"trap","query":"answered"}\n')
-        monkeypatch.setattr(R, 'GOLD', gold)
+        # compute()는 load_gold()로 읽는다(#199 — 정본 직독이면 실문서가 빠져서 바꿨다).
+        # GOLD 상수를 패치하면 더 이상 안 먹는다 — 실제로 쓰는 진입점을 패치한다.
+        monkeypatch.setattr(R, 'load_gold', lambda: [
+            {'id': 'a', 'type': 'no_evidence', 'query': 'refused'},
+            {'id': 'b', 'type': 'trap', 'query': 'answered'},
+        ])
 
         r = await R.compute()
         assert calls == ['refused']          # 인용 0건인 한 건만 판정했다
         assert r['absence_judged_n'] == 1
 
     @pytest.mark.asyncio
-    async def test_OTHER_라우팅은_판정하지_않는다(self, monkeypatch, tmp_path):
+    async def test_OTHER_라우팅은_판정하지_않는다(self, monkeypatch):
         """OTHER는 규칙 3을 안 타고 sources가 항상 빈 목록이라 무조건 근거없음으로 집계된다.
         판정 대상에 넣으면 분모가 라우팅 확률에 좌우되고, 다른 프롬프트의 화법을
         규칙 3 기준으로 재는 오염이 된다(#76 리뷰에서 실측으로 잡힌 문제)."""
@@ -117,10 +119,11 @@ class TestTwoStageGate:
             return True, 'body', ('other' if query == 'other' else 'knowledge')
 
         monkeypatch.setattr(R, '_refused', _fake_refused)
-        gold = tmp_path / 'gold.jsonl'
-        gold.write_text('{"id":"a","type":"no_evidence","query":"other"}\n'
-                        '{"id":"b","type":"no_evidence","query":"knowledge"}\n')
-        monkeypatch.setattr(R, 'GOLD', gold)
+        # GOLD 상수가 아니라 load_gold()를 패치한다 — compute()가 그걸 쓴다 (#199)
+        monkeypatch.setattr(R, 'load_gold', lambda: [
+            {'id': 'a', 'type': 'no_evidence', 'query': 'other'},
+            {'id': 'b', 'type': 'no_evidence', 'query': 'knowledge'},
+        ])
 
         r = await R.compute()
         assert 'other' not in calls          # OTHER 행은 judge에 안 갔다

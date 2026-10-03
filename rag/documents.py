@@ -360,7 +360,7 @@ async def _reuse_failed_document(
         uploaded_at=func.now(), uploaded_by=uploaded_by,
         # 설정은 그 행의 값을 유지(= 계승과 같은 결과), 보냈으면 그 값 — #165 규칙 그대로.
         folder_id=(folder_id if folder_given else target.folder_id),
-        description=(description if description is not None else target.description),
+        description=resolve_description(description, target),
     )
     if reused is None:
         raise FailedReuseConflict(filename)
@@ -382,6 +382,57 @@ async def _reuse_failed_document(
     return target, stale_blob
 
 
+async def document_versions(session: AsyncSession, tenant_id: str, filename: str) -> list[Document]:
+    """같은 filename의 **모든** 버전 행 (status 무관 — deleted·failed 포함).
+
+    `handle_upload`가 쓰던 조회를 그대로 뗀 것이다. 라우터의 xlsx 사전검증(#194)이 "설명이
+    계승될지"를 blob 쓰기 전에 알아야 해서 같은 집합이 필요한데, 쿼리가 두 벌이 되면 기준이
+    갈린다 — 이 이슈가 시작된 사고가 정확히 그거였다(라우터의 `_current_version`은 ALIVE만,
+    `handle_upload`의 계승 출처는 필터 없음).
+
+    status를 안 거르는 것이 의도다 — `next_version`은 deleted·failed까지 센 최대값+1이어야
+    하기 때문이다(안 그러면 UNIQUE(tenant_id, filename, version) 위반). 계승 출처를 고르는
+    것은 별개 질문이고 `latest_alive`가 답한다.
+    """
+    return list((await session.execute(
+        select(Document)
+        .where(Document.tenant_id == tenant_id)
+        .where(Document.filename == filename)
+    )).scalars().all())
+
+
+def latest_alive(docs: list[Document]) -> Document | None:
+    """`docs` 중 살아 있는 최신 버전 — **설정 계승 출처의 정의점** (#194).
+
+    `handle_upload`의 계승과 라우터의 xlsx 설명 사전판정이 이 함수 하나를 쓴다.
+
+    **`next_version` 계산과 혼동하지 마라.** 번호는 전체(deleted·failed 포함) 최대값+1이고,
+    계승 출처는 ALIVE만이다. 서로 다른 질문이라 집합도 다르다.
+
+    ALIVE만 보는 이유(#194): 전에는 status 필터가 없어 "지운 문서를 다시 올리면 지운 문서의
+    폴더·검색토글·표 설명을 그대로 물려받는" 동작이었다. `exists`·`_current_version`이 이미
+    deleted·failed를 "없는 문서"로 답하고 있었으므로, 사용자에겐 **신규 등록으로 보이는
+    업로드가 죽은 행의 설정을 상속**하는 셈이었다. 세 곳의 기준을 ALIVE로 맞춘다.
+    """
+    alive = [d for d in docs if d.status in ALIVE_DOCUMENT_STATUSES]
+    return max(alive, key=lambda d: d.version) if alive else None
+
+
+def resolve_description(description: str | None, source: Document | None) -> str | None:
+    """표 설명의 최종값 — 보낸 값이 있으면 그 값, 없으면 `source`에서 계승, 그것도 없으면 None.
+
+    `handle_upload`(source=살아 있는 직전 버전)·`_reuse_failed_document`(source=되살리는 failed 행
+    자신)·라우터의 xlsx 사전판정(source=살아 있는 직전 버전)이 **같은 식**을 쓴다. 세 곳에
+    따로 적혀 있던 것을 모았다(#194) — 식이 갈리면 "라우터는 통과시켰는데 저장은 빈 값"이 된다.
+
+    failed만 있는 xlsx에 설명 없이 재업로드하면 라우터가 400을 낸다 — source가 ALIVE 최신이라
+    None이기 때문이다. failed는 "없는 문서"(#161)이고 그 위에 올리는 건 신규 업로드라
+    설명이 필요하다(사용자 결정 2026-10-03). `_reuse_failed_document`의 failed 행 계승은 그래서
+    xlsx에서는 도달하지 않고, 설명이 필수가 아닌 다른 형식에서만 의미가 있다.
+    """
+    return description if description is not None else (source.description if source else None)
+
+
 async def handle_upload(
         session: AsyncSession,
         tenant_id: str,
@@ -391,6 +442,7 @@ async def handle_upload(
         uploaded_by: str | None = None,
         folder_id: int | None = None,
         folder_given: bool = False,
+        docs: list[Document] | None = None,
 ) -> tuple[Document, str | None]:
     """업로드 시점 처리: pending row + 색인 대기열 행을 **같은 트랜잭션**에 등록한다 (#139).
     반환은 (문서, 지워야 할 옛 blob 경로 또는 None) — 옛 blob은 **호출부가 커밋 뒤에** 지운다.
@@ -401,6 +453,12 @@ async def handle_upload(
     folder_id/folder_given은 업로드 시 폴더 지정 (#165) — folder_given=False(미전송)면 계승,
     True면 folder_id를 그대로 쓴다(None이면 미분류로 떼는 것). 값만으로는 둘을 못 가른다.
     mime은 blob_path에서 직접 구한다 — 호출부가 계산해 넘길 이유가 없다.
+    docs는 호출부가 이미 읽은 전 버전 목록(선택) — 라우터가 xlsx 사전검증으로 먼저 읽으므로
+    그걸 넘겨 같은 쿼리를 두 번 돌지 않게 한다(#194). 안 넘기면 여기서 읽는다.
+
+    **설정 계승 출처는 `latest_alive` — 살아 있는 최신 버전뿐이다 (#194).** 전에는 필터가 없어
+    deleted·failed 행에서도 물려받았다. 계승 대상은 folder_id·is_searchable·description 셋이고,
+    `next_version`은 이와 **다른 집합**(전체 최대값+1)을 쓴다 — 섞으면 UNIQUE 제약에 걸린다.
 
     문서 식별은 **filename 완전 일치** 하나뿐 (2026-08-05 정책 확정).
     내용 해시(sha) dedupe는 제거 — 같은 이름이면 내용이 같아도 새 version이 된다.
@@ -417,27 +475,27 @@ async def handle_upload(
     failed를 "없는 문서"로 답한다(routers/documents.py) — 세 곳의 기준이 갈리면 확인창에서 본 것과
     다른 결과가 난다.
     """
-    # 같은 filename의 모든 버전 조회 (다음 version 계산 + 설정 계승용)
-    docs = (await session.execute(
-        select(Document)
-        .where(Document.tenant_id == tenant_id)
-        .where(Document.filename == filename)
-    )).scalars().all()
+    # 같은 filename의 모든 버전 (다음 version 계산 + 설정 계승용).
+    # 호출부가 이미 읽었으면 그걸 쓴다 — 라우터의 xlsx 사전검증(#194)이 같은 집합을 먼저
+    # 읽으므로, 안 넘기면 같은 쿼리를 한 요청에 두 번 돌게 된다.
+    if docs is None:
+        docs = await document_versions(session, tenant_id, filename)
 
     # failed 재사용 (#161) — 정상 행이 없고 failed만 있을 때. deleted 이력이 섞여 있어도 된다
     # (예: v1 deleted + v2 failed → v2를 되살린다).
-    alive = [d for d in docs if d.status in ALIVE_DOCUMENT_STATUSES]
+    prev = latest_alive(docs)
     failed = [d for d in docs if d.status == 'failed']
-    if not alive and failed:
+    if prev is None and failed:
         return await _reuse_failed_document(
             session, tenant_id, filename, blob_path, failed,
             description=description, uploaded_by=uploaded_by,
             folder_id=folder_id, folder_given=folder_given)
 
     # pending 버전 row만 insert. is_active=False(ready 전엔 검색 제외).
-    # 폴더 소속·참조 on/off(F2)는 직전 버전에서 계승 — 개정판 업로드로 설정이 풀리지 않게.
+    # 폴더 소속·참조 on/off(F2)·표 설명은 **살아 있는** 직전 버전에서 계승 — 개정판 업로드로
+    # 설정이 풀리지 않게. 계승 출처는 latest_alive가 정의점이고(#194), 번호는 그와 달리
+    # 전체(deleted·failed 포함) 최대값+1이다 — UNIQUE(tenant_id, filename, version) 때문.
     next_version = max((d.version for d in docs), default=0) + 1
-    prev = max(docs, key=lambda d: d.version) if docs else None
     doc = Document(
         tenant_id=tenant_id,
         filename=filename,
@@ -450,7 +508,7 @@ async def handle_upload(
         # 따로 넘겨주는 이유는, folder_id=None이 "미분류로 보내라"와 "안 보냈다" 둘 다이기 때문이다.
         folder_id=(folder_id if folder_given else (prev.folder_id if prev else None)),
         is_searchable=prev.is_searchable if prev else True,
-        description=description if description is not None else (prev.description if prev else None),
+        description=resolve_description(description, prev),
         # 등록자만은 **계승하지 않는다** (#164). 위 세 값은 "문서에 건 설정"이라 개정판에도
         # 이어져야 하지만, 등록자는 uploaded_at과 짝을 이루는 "이 버전을 올린 사람"이다 —
         # 계승하면 화면에서 최신 개정을 누가 했는지 알 수 없게 된다.

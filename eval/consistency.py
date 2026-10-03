@@ -24,8 +24,8 @@ from collections import defaultdict
 from pathlib import Path
 
 from database import AsyncSessionLocal
-from eval.generation import (GEN_TYPES, GOLD, RESULT_DIR, _smoke_sample,
-                             expected_points_hits, run_mode)
+from eval.generation import (GEN_TYPES, RESULT_DIR, _smoke_sample,
+                             expected_points_hits, load_gold, run_mode)
 from eval.retrieval import Resolved
 from rag.llm import LlmClient
 
@@ -35,7 +35,9 @@ OUT = RESULT_DIR / "consistency.jsonl"
 
 
 async def main() -> None:
-    gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+    # load_gold()라야 사내 실문서가 모수에 들어온다 — 정본 직독이면 표본 50문항이
+    # 모의 6테넌트에서만 뽑힌다(#196·#199). 타입 균등 표본이라 모수가 넓어지면 구성이 바뀐다.
+    gold = load_gold()
     sample = _smoke_sample([g for g in gold if g["type"] in GEN_TYPES], N)
     points_by_id = {g["id"]: g.get("expected_points", []) for g in sample}
 

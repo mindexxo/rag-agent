@@ -54,7 +54,9 @@ class Row:
     key: str
     label: str
     higher_better: bool = True
-    version_key: str | None = None   # 이 키가 직전과 다르면 비교하지 않는다 (기준이 바뀐 것)
+    # 이 키(들)가 직전과 다르면 비교하지 않는다 (기준이 바뀐 것). 튜플이면 **하나라도** 다르면
+    # 비교 불가 — 거절 부재단정률처럼 judge 버전과 골드 구성이 **동시에** 기준인 행이 있다 (#199).
+    version_key: str | tuple[str, ...] | None = None
     eps: float | None = None         # 이 행만의 회귀 임계. None이면 REGRESSION_EPS
 
 
@@ -62,7 +64,9 @@ ROWS = [
     Row("intent", "accuracy", "인텐트 정확도"),
     Row("intent", "safe_accuracy", "가드 차단 정확도"),   # 안전성 분리 축 (#22) — 합산에 묻히면 회귀를 못 잡는다
     Row("condense", "accuracy", "질의재작성 정확도"),
-    Row("refusal", "accuracy", "거절 정확도"),
+    # 실문서 편입(#199)으로 분모가 바뀐다(no_evidence 58→68·trap 50→58) — 구성 변경이
+    # 회귀로 찍히지 않게 version_key를 건다. #198의 RAGAS n과 같은 조치.
+    Row("refusal", "accuracy", "거절 정확도", version_key="gold_composition"),
     # 캐시 셋 구성이 바뀌면(6쌍→40쌍 #113) 분모가 달라 다른 눈금 — 구성 변경 첫 실행을
     # '비교 불가'로 처리한다 (retrieval의 gold_composition과 같은 메커니즘).
     Row("cache", "accuracy", "캐시히트 정확도", version_key="cache_composition"),
@@ -92,13 +96,15 @@ ROWS = [
     # 프롬프트에서 3회 반복 시 0~2건(0.0~3.5%)으로 흔들린다(#76 실측). 전역 임계를 쓰면
     # 한 건 흔들림이 매번 회귀 경고가 되어 ⚠ 자체를 아무도 믿지 않게 된다.
     # 0.04 = 2건 이상 차이일 때만 반응한다. 1건 차이는 감사 로그(문항별 판정)로 본다.
+    # 기준이 둘이다 — judge 프롬프트 버전과 골드 구성. 하나만 걸면 다른 쪽 변경이 회귀로 샌다.
     Row("refusal", "absence_rate", "거절  부재단정률", higher_better=False,
-        version_key="judge_prompt_version", eps=0.04),
+        version_key=("judge_prompt_version", "gold_composition"), eps=0.04),
     # 오답단정률 (#95) — trap에서 낚인 값(must_not_contain)이 답변에 실린 비율. 낮을수록 좋다.
     # 순수 문자열 매칭이라 judge 버전 개념이 없다 — 매칭 규칙을 바꾸면 그 커밋에서
     # citation_accuracy 전례대로 "vN 이전과 비교 불가" 주석을 여기 남길 것.
     # eps=0.04: absence_rate와 같은 이유 — 분모 50 내외라 1건이 2%다.
-    Row("refusal", "misinfo_rate", "거절  오답단정률(trap)", higher_better=False, eps=0.04),
+    Row("refusal", "misinfo_rate", "거절  오답단정률(trap)", higher_better=False,
+        version_key="gold_composition", eps=0.04),
 ]
 REGRESSION_EPS = 0.01   # 이보다 크게 떨어지면 회귀 경고
 
@@ -206,9 +212,12 @@ def _report(cur: dict, prev: dict | None) -> None:
         # "버전 올리면 이전 결과와 비교 불가" 규약을 주석이 아니라 코드로 지킨다.
         # 이게 없으면 v2로 올린 첫 실행에서 기준 변경이 회귀 경고로 찍힌다.
         if row.version_key and pv is not None:
-            cv, pvv = axis_data.get(row.version_key), _get(prev, axis, row.version_key)
-            if cv != pvv:
-                print(f"{label:<20}{v:>8.3f}   (기준 {pvv}→{cv} — 비교 불가)")
+            keys = (row.version_key,) if isinstance(row.version_key, str) else row.version_key
+            changed = [(k, _get(prev, axis, k), axis_data.get(k))
+                       for k in keys if axis_data.get(k) != _get(prev, axis, k)]
+            if changed:
+                what = ", ".join(f"{k} {o}→{n}" for k, o, n in changed)
+                print(f"{label:<20}{v:>8.3f}   (기준 {what} — 비교 불가)")
                 continue
         if pv is None:
             delta = "     ―   "

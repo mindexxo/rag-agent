@@ -315,3 +315,57 @@ class TestGoldLoading:
         import eval.generation as g
         src = inspect.getsource(g.main)
         assert 'GOLD.read_text()' not in src, 'main이 아직 정본을 직접 읽는다'
+
+
+class TestRefusalConsistencyGold:
+    """#199 — 거절·consistency 축도 실문서 골드를 읽는가.
+
+    거절 정확도는 모델 교체 판단의 실제 축이고(#114에서 9B가 이기는 몇 안 되는 축),
+    그 값이 모의 코퍼스에서만 나오면 전환 판정이 틀린다.
+    """
+
+    def test_거절축이_정본만_읽지_않는다(self):
+        import inspect
+
+        import eval.refusal as r
+        src = inspect.getsource(r.compute)
+        assert 'GOLD.read_text()' not in src, '거절축이 아직 정본을 직접 읽는다'
+
+    def test_거절축_대상에_실문서가_들어온다(self):
+        from eval.generation import load_gold
+        from eval.refusal import SHOULD_ANSWER, SHOULD_REFUSE
+        target = [g for g in load_gold() if g['type'] in (SHOULD_REFUSE | SHOULD_ANSWER)]
+        assert any(g['id'].startswith('inticube_') for g in target), \
+            '거절 채점 대상에 실문서가 한 건도 없다'
+
+    def test_consistency가_정본만_읽지_않는다(self):
+        import inspect
+
+        import eval.consistency as c
+        src = inspect.getsource(c.main)
+        assert 'GOLD.read_text()' not in src, 'consistency가 아직 정본을 직접 읽는다'
+
+
+class TestVersionKeyTuple:
+    """#199 — version_key가 둘 이상일 때 **하나라도** 바뀌면 비교 불가여야 한다.
+
+    거절 부재단정률은 judge 버전과 골드 구성이 **동시에** 기준이다. 하나만 걸면
+    다른 쪽 변경이 회귀 경고로 샌다.
+    """
+
+    def _report(self, capsys, cur, prev):
+        from eval.run_all import _report
+        _report({'stamp': 'now', 'refusal': cur}, {'stamp': 'before', 'refusal': prev})
+        return capsys.readouterr().out
+
+    def test_튜플_중_하나만_바뀌어도_비교_불가(self, capsys):
+        cur = {'absence_rate': 0.10, 'judge_prompt_version': 'v1', 'gold_composition': 'ne68/trap58'}
+        prev = {'absence_rate': 0.02, 'judge_prompt_version': 'v1', 'gold_composition': 'ne58/trap50'}
+        out = self._report(capsys, cur, prev)
+        assert '비교 불가' in out, out
+        assert 'gold_composition' in out, '무엇이 바뀌어 비교 불가인지 안 알려준다'
+
+    def test_둘_다_같으면_정상_비교(self, capsys):
+        same = {'judge_prompt_version': 'v1', 'gold_composition': 'ne58/trap50'}
+        out = self._report(capsys, {'absence_rate': 0.10, **same}, {'absence_rate': 0.02, **same})
+        assert '비교 불가' not in out, out

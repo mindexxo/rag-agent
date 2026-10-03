@@ -35,8 +35,8 @@ from pathlib import Path
 
 from database import AsyncSessionLocal
 from eval._turn_cleanup import discard_turn
-from eval.generation import must_not_contain_violations, row_tenant
 from rag.conversation import ensure_conversation
+from eval.generation import load_gold, must_not_contain_violations, row_tenant
 from eval.absence_judge import (JUDGE_PROMPT_VERSION, judge_absence, judge_llm,
                                 save_audit)
 from rag.citation_tail import TailSplitter, resolve_citations
@@ -100,7 +100,10 @@ async def _refused(tenant: str, query: str) -> tuple[bool, str, str]:
 
 async def compute() -> dict:
     """거절 정확성 채점 → 요약. 반환: {accuracy, n, false_answer, false_refusal, by_type, misses}."""
-    gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+    # load_gold()를 쓴다 — GOLD 직독이면 eval/gold_private/(사내 실문서)가 통째로 빠진다.
+    # #196과 같은 누락이고, 거절축은 no_evidence 10 + trap 8 = 18건이 영향받는다.
+    # 거절 정확도는 모델 교체 판단의 실제 축이라(#114) 모의 코퍼스만으로 재면 안 된다.
+    gold = load_gold()
     target = [g for g in gold if g["type"] in (SHOULD_REFUSE | SHOULD_ANSWER)]
     sem = asyncio.Semaphore(CONCURRENCY)
     # judge 호출은 기존 세마포어 슬롯 안에서 이어붙인다 — GPU 부하를 새 채널로 늘리지 않는다.
@@ -181,6 +184,10 @@ async def compute() -> dict:
     return {
         "accuracy": sum(r["ok"] for r in rows) / len(rows) if rows else 0.0,
         "n": len(rows),
+        # 채점 대상 구성 — run_all이 version_key로 써서 구성이 바뀐 첫 실행을 '비교 불가'로
+        # 처리한다(retrieval의 gold_composition·#198의 RAGAS n과 같은 메커니즘). 실문서 편입으로
+        # no_evidence 58→68·trap 50→58이 되면서 분모가 바뀐 것이 회귀로 오판되던 것을 막는다.
+        "gold_composition": f"ne{len(ne)}/trap{len(tr)}",
         "misinfo_rate": len(misinfo_violated) / len(misinfo_target) if misinfo_target else None,
         "misinfo_n": len(misinfo_target),
         "misinfo_violated_n": len(misinfo_violated),

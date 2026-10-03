@@ -43,11 +43,14 @@ from config import settings
 from database import get_session
 from rag import cache, outbox
 from rag.chunking import extract_text
-from rag.documents import FailedReuseConflict, get_folder, handle_upload, soft_delete_documents
+from rag.documents import (FailedReuseConflict, document_versions, get_folder, handle_upload,
+                           latest_alive, resolve_description, soft_delete_documents)
 from rag.models import ALIVE_DOCUMENT_STATUSES, Document, Folder
+from rag.xlsx_chunking import XlsxUploadRejected, description_missing, validate_xlsx_upload
 from routers.kms import get_tenant_id, get_user_id
 from schemas.kms import (ATTACHMENT_FILENAME_MAX, ATTACHMENT_MAX_TEXT_CHARS, BULK_MAX_ITEMS,
                          DOC_LIST_DEFAULT_LIMIT, DOC_LIST_MAX_LIMIT, DOC_STATUSES,
+                         DOCUMENT_DESCRIPTION_MAX,
                          DocumentBulkUpdateRequest, DocumentExistsResponse, DocumentListResponse,
                          DocumentUploadMetadata, DocumentUploadResponse, DocumentUpdateRequest,
                          QueryAttachment)
@@ -67,6 +70,10 @@ def _to_response(doc: Document, ref_count: int | None = None) -> DocumentUploadR
         uploaded_at=doc.uploaded_at,
         uploaded_by=doc.uploaded_by,
         ref_count=ref_count,
+        # #194 — 다섯 엔드포인트(업로드·목록·단건·일괄 PATCH·단건 PATCH)가 이 함수 하나를
+        # 거치므로 여기 한 줄이 전부에 반영된다.
+        description=doc.description,
+        indexed_at=doc.indexed_at,
     )
 
 router = APIRouter(prefix='/kms')
@@ -116,6 +123,17 @@ def _version_conflict(filename: str, current_version: int) -> JSONResponse:
         },
     )
 
+def _validation_detail(e: ValidationError, fallback: str = 'document-data') -> str:
+    """pydantic 오류 하나를 "필드: 사유" 한 줄로 — 업로드 데이터의 두 수신 경로가 공유한다.
+
+    메시지를 한 곳에 모아둔 것은 경로마다 다른 문구가 나가지 않게 하려는 것이다
+    (평면 Form 경로는 #194 전까지 아예 예외를 안 잡아 500이었다).
+    """
+    first = e.errors()[0]
+    where = '.'.join(str(x) for x in first['loc']) or fallback
+    return f'{where}: {first["msg"]}'
+
+
 async def _resolve_upload_data(document_data: UploadFile | str | None, description: str | None,
                                expect_version: int | None) -> tuple[DocumentUploadMetadata, bool]:
     """업로드 데이터를 확정한다 (#165). 반환: (데이터, folder_id를 실제로 보냈는지).
@@ -129,8 +147,16 @@ async def _resolve_upload_data(document_data: UploadFile | str | None, descripti
     문자열로 실으면 str로 들어온다. 어느 쪽이든 본문은 같으므로 여기서 하나로 만든다.
     """
     if document_data is None:
-        return DocumentUploadMetadata(description=description,
-                                      expect_version=expect_version), False
+        # 옛 방식도 try로 감싼다 (#194) — description에 max_length가 붙으면서 이 생성이
+        # ValidationError를 낼 수 있게 됐다. FastAPI는 **수동 생성**한 pydantic 예외를 422로
+        # 바꿔주지 않으므로, 감싸지 않으면 201자를 평면 Form으로 보낼 때 500이 난다.
+        try:
+            return DocumentUploadMetadata(description=description,
+                                          expect_version=expect_version), False
+        except ValidationError as e:
+            raise HTTPException(
+                status_code=422,
+                detail=f'입력값이 올바르지 않습니다 ({_validation_detail(e, "description")}).')
     if description is not None or expect_version is not None:
         raise HTTPException(
             status_code=400,
@@ -140,10 +166,8 @@ async def _resolve_upload_data(document_data: UploadFile | str | None, descripti
     try:
         meta = DocumentUploadMetadata.model_validate_json(raw)
     except ValidationError as e:
-        first = e.errors()[0]
-        where = '.'.join(str(x) for x in first['loc']) or 'document-data'
         raise HTTPException(status_code=422,
-                            detail=f'document-data JSON이 올바르지 않습니다 ({where}: {first["msg"]}).')
+                            detail=f'document-data JSON이 올바르지 않습니다 ({_validation_detail(e)}).')
     # null 전송과 미전송을 가르는 지점 — PATCH의 update_document와 같은 방식이다.
     return meta, 'folder_id' in meta.model_fields_set
 
@@ -158,7 +182,8 @@ async def upload_document(
         # 평범한 문자열 필드를 **둘 다** 받는다 — 둘 다 실측했다.
         document_data: Annotated[UploadFile | str | None, Form(alias='document-data')] = None,
         # ── 아래 둘은 옛 방식(평면 Form 필드). document-data 파트가 없을 때만 쓴다 ──
-        description: str | None = Form(None),   # F1a: 표 설명 (xlsx 검색 보강). 선택
+        # F1a: 표 설명 (xlsx 검색 보강). xlsx는 필수 — 판정은 계승까지 따진 뒤 아래 1-1에서 한다 (#194).
+        description: str | None = Form(None, max_length=DOCUMENT_DESCRIPTION_MAX),
         # 낙관적 잠금 (선택). exists 응답의 version을 그대로 보낸다 — 없는 이름이면 0.
         #   미전송 → 검사 없음 (기존 호출부 호환)
         #   0      → 아직 아무 버전도 없어야 함 (새 문서로 등록하려는 경우)
@@ -194,6 +219,30 @@ async def upload_document(
     if len(content) > DOC_MAX_FILE_BYTES:
         raise HTTPException(status_code=413, detail='파일이 10MB를 초과합니다.')
 
+    # 1-1. xlsx 사전검증 (#194) — 표 설명 필수 + 150행 상한. **blob을 쓰기 전에** 한다(위 0-1과 같은 이유).
+    #      #139로 파싱이 워커로 옮겨간 뒤 이 둘은 "업로드는 200인데 1분 뒤 failed"였다. 사용자가
+    #      성공으로 알고 화면을 떠난 뒤 실패하고, 디스크엔 blob이, 목록엔 failed 행이 남았다.
+    #      결정적 실패라 재시도해도 결과가 같으므로 동기 경로로 끌어올린다.
+    #      xlsx가 아니면 추가 쿼리도 워크북 open도 없다.
+    docs = None
+    if suffix == '.xlsx':
+        # 설명 필수는 "이번 요청에 보냈는가"가 아니라 **계승까지 따진 최종값**으로 판정한다(계승 허용,
+        # 2026-10-03). 계승 출처·식은 handle_upload와 같은 latest_alive·resolve_description — 기준을
+        # ALIVE로 맞춘 배경은 그 docstring 참조. docs는 handle_upload에 그대로 넘겨 재조회를 막는다.
+        docs = await document_versions(session, tenant_id, filename)
+        final_description = resolve_description(meta.description, latest_alive(docs))
+        try:
+            # 워크북 열기는 CPU 작업 — 이벤트 루프를 막지 않게 스레드로(extract_attachment와 같은 규율).
+            await run_in_threadpool(validate_xlsx_upload, content, final_description)
+        except XlsxUploadRejected as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception:
+            # openpyxl이 못 여는 파일(손상·확장자 위장). 라우터가 처음으로 xlsx를 직접 열게 되면서
+            # 워커가 받던 이 예외를 여기서 받는다 — 안 잡으면 500이 된다. openpyxl은 손상 종류마다
+            # 다른 예외를 낸다(BadZipFile·KeyError·ParseError·IOError — 3.1.5 소스 확인). 나열하지 않고 넓게 잡는다.
+            raise HTTPException(status_code=400,
+                                detail='xlsx 파일을 열 수 없습니다 (손상되었거나 올바른 xlsx 형식이 아닙니다).')
+
     # 2. blob 저장. 테넌트별 디렉터리 아래 UUID 파일명으로 저장한다 (2026-08-05).
     #    업로드 1건 = 파일 1개로 고정 — 내용이 같아도 경로를 공유하지 않는다.
     #    (내용 해시를 쓰면 v1·v2가 같은 파일을 가리켜, 나중에 비활성 문서 blob을
@@ -217,6 +266,7 @@ async def upload_document(
         doc, stale_blob = await handle_upload(
             session, tenant_id, filename, blob_path, description=meta.description,
             uploaded_by=user_id, folder_id=meta.folder_id, folder_given=folder_given,
+            docs=docs,     # xlsx 사전검증이 이미 읽었으면 재사용 (#194) — 아니면 None이라 안에서 읽는다
         )
         await session.commit()
     except (IntegrityError, FailedReuseConflict):
@@ -523,7 +573,15 @@ async def update_document(
         tenant_id: str = Depends(get_tenant_id),
         session: AsyncSession = Depends(get_session)
 ):
-    """문서 속성 변경 (F2): 폴더 소속·참조 on/off. 보낸 필드만 반영."""
+    """문서 속성 변경 (F2): 폴더 소속·참조 on/off·표 설명. 보낸 필드만 반영.
+
+    **경로가 둘이다 (#194).** folder_id·is_searchable은 색인의 비정규화 메타만 바꾸므로
+    `META_DOCUMENTS` 부분 갱신으로 끝난다. 반면 `description`은 xlsx 청크 **본문**에 병합되는
+    값이라(rag/xlsx_chunking.chunk_xlsx) 메타 갱신으로는 반영되지 않는다 — 재파싱·재임베딩이
+    따르는 전체 재색인이 필요하다. 그래서 이 핸들러에 "가벼운 갱신"과 "무거운 재인제스션"이
+    공존한다. 둘은 **배타적으로** 적재한다(재색인이 돌면 index_pending_document가 폴더·토글
+    최신값을 스스로 다시 읽으므로 META 행은 중복이다).
+    """
     doc = (await session.execute(
         select(Document)
         .where(Document.tenant_id == tenant_id)
@@ -535,16 +593,34 @@ async def update_document(
     if doc is None:
         raise HTTPException(status_code=404, detail="document not found")
 
+    # ── 검증 전부 먼저, mutation은 그 뒤 (#194) — 거절로 빠질 때 doc이 반쯤 바뀐 채 남지 않게 ──
+    # 표 설명은 2-way: 미전송(None)이면 안 건드리고, 보낸 값은 strip 후 빈 문자열이면 지움으로 본다
+    # (routers/folders.py의 FolderUpdateRequest와 같은 방식 — 문서만 3-way로 가면 비일관).
+    new_description, reindex = doc.description, False
+    if request.description is not None:
+        new_description = request.description.strip() or None
+        is_xlsx = Path(doc.filename).suffix.lower() == '.xlsx'
+        if is_xlsx and description_missing(new_description):
+            # 업로드에서 필수로 받아놓고 여기서 비울 수 있으면 규칙이 샌다.
+            raise HTTPException(status_code=400, detail='xlsx 문서는 표 설명을 비울 수 없습니다.')
+        # 재색인은 **ready인 xlsx의 값이 실제로 바뀐** 경우만. pending이면 대기 중인 그 행이 처리될 때
+        # 최신값을 읽고, failed는 되살리지 않는다 — 되살리기는 재업로드 경로의 역할이다(#161). 같은 값
+        # 재전송에 재임베딩을 돌릴 이유도 없고, 비-xlsx는 설명이 청크에 안 들어가 재색인해도 같다.
+        reindex = is_xlsx and new_description != doc.description and doc.status == 'ready'
+    if 'folder_id' in request.model_fields_set and request.folder_id is not None:
+        if await get_folder(session, tenant_id, request.folder_id) is None:   # 남의 테넌트 차단
+            raise HTTPException(status_code=404, detail="folder not found")
+
     effective_before = await _effective_ref_now(session, tenant_id, doc)
 
+    # ── mutation ──
     # folder_id는 "null 전송 = 미분류 이동"과 "미전송 = 변경 없음"을 구분해야 함
     if 'folder_id' in request.model_fields_set:
-        if request.folder_id is not None:
-            if await get_folder(session, tenant_id, request.folder_id) is None:   # 남의 테넌트 차단
-                raise HTTPException(status_code=404, detail="folder not found")
         doc.folder_id = request.folder_id
     if request.is_searchable is not None:
         doc.is_searchable = request.is_searchable
+    if request.description is not None:
+        doc.description = new_description
 
     # 실효 참조가 on→off로 바뀌는 모든 경로(문서 off, off 폴더로 이동)에서 캐시 무효화 —
     # off된 문서를 근거로 만든 답변이 exact 캐시로 계속 나가는 것 방지. off→on은 무효화할 캐시가 없음.
@@ -552,10 +628,24 @@ async def update_document(
     if effective_before and not effective_after:
         await cache.invalidate_source(session, tenant_id, doc.id)
 
-    # 외부 색인의 비정규화 메타 갱신을 같은 트랜잭션에 적재 (#139) — 검색가능·폴더 값이
-    # 청크 문서마다 복사돼 있어 fan-out이 필요하다. **재색인이 아니라 부분 갱신**이다
-    # (재색인은 벡터 없는 구성에서 재임베딩을 부른다 — rag/os_index.py의 _update_meta).
-    outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=[doc.id])
+    if reindex:
+        # 설명이 청크 본문을 바꾸므로 전체 재색인 — pending으로 되돌리고 INDEX_DOCUMENT를
+        # 다시 태운다(rag/os_reconcile.py의 reconcile과 같은 전례). 재파싱·재임베딩·ready
+        # 승격은 index_pending_document 한 곳이 맡는다 — 두 벌을 두지 않는다.
+        # 버전은 올리지 않는다: 번호가 올라가는 사건은 **파일 재업로드**뿐이라는 기존 정책 유지.
+        # 수용한 대가 둘(#194) — ① index_parsed_document가 같은 document_id의 청크를 지우고
+        # 다시 넣으므로 1초 미만 검색 공백이 생긴다. ② 재색인이 실패하면 outbox가 문서를 failed로 굳힌다 —
+        # 설명만 고치려던 사용자가 문서 전체를 잃는 모양이지만, 재업로드로 되살릴 수 있다.
+        doc.status = 'pending'
+        outbox.enqueue(session, tenant_id, outbox.INDEX_DOCUMENT, document_id=doc.id)
+        # 내용이 바뀌었으므로 visibility 전이와 **무관하게** 무효화한다 — 위 effective 조건은
+        # "검색에서 빠지는가"만 보기 때문에 설명 변경을 못 잡는다.
+        await cache.invalidate_source(session, tenant_id, doc.id)
+    else:
+        # 외부 색인의 비정규화 메타 갱신을 같은 트랜잭션에 적재 (#139) — 검색가능·폴더 값이
+        # 청크 문서마다 복사돼 있어 fan-out이 필요하다. **재색인이 아니라 부분 갱신**이다
+        # (재색인은 벡터 없는 구성에서 재임베딩을 부른다 — rag/os_index.py의 _update_meta).
+        outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=[doc.id])
     await session.commit()
     return _to_response(doc)
 

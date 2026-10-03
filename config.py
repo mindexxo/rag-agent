@@ -206,9 +206,16 @@ class Settings(BaseSettings):
                                               # 값 근거(#168 실측, 리눅스 워커 + worker15 GPU OCR): 쪽당 CPU 3.3초 + OCR 요청
                                               # 약 5.9건/쪽 × 0.47초(CUDA EP 튜닝 후, 141건 평균; 튜닝 전 0.96) → 약 6.1초/쪽.
                                               # 900초면 약 145쪽(튜닝 전 기준 100쪽). 더 올리면 그만큼
-                                              # 다른 PDF 변환이 막힌다(docling_max_concurrency=1) — 300쪽 문서 하나가 45분 독점.
-    docling_max_num_pages: int = 300          # 병적 입력 가드. **초과분을 자르는 게 아니라 문서를 거부한다**. 실제로는 이 값보다
-                                              # docling_document_timeout_seconds가 먼저 건다(약 100~140쪽) — 그때는 failed 사유가 timeout이다.
+                                              # 다른 PDF 변환이 막힌다(docling_max_concurrency=1).
+                                              # #194로 docling_max_num_pages를 100으로 내린 뒤로는 쪽수 가드가 **항상 먼저**
+                                              # 걸리므로, 이 timeout은 쪽수가 아니라 쪽당 비용이 튀는 경우(OCR 폭증 등)의 안전판이다.
+    docling_max_num_pages: int = 100          # 병적 입력 가드. **초과분을 자르는 게 아니라 문서를 거부한다**.
+                                              # 300 → 100 (#194). 300은 **사실상 죽은 상한**이었다 — 위 timeout(900초)이
+                                              # 쪽당 약 6.1초에서 약 145쪽에 먼저 걸려, 그 사이 구간 문서는 "900초를 기다린 끝에
+                                              # timeout failed"를 받았다. 사유도 불명확하고 그동안 다른 PDF 변환이 막힌다
+                                              # (docling_max_concurrency=1). 100이면 가드가 **항상 먼저** 걸려 즉시·명확히 거절한다.
+                                              # 대가는 처리 가능한 100~145쪽 문서도 거부하는 것 — 처리율을 예측 가능성과 바꾼
+                                              # 제품 결정이다(#194, 2026-10-03). 되돌릴 땐 timeout부터 재실측할 것.
                                               # (ConversionError → failed, 2026-09-13 실측). 파일 크기 상한은 라우터(DOC_MAX_FILE_BYTES 10MB)가
                                               # 업로드 시점에 이미 막으므로 여기선 쪽 수만. 10MB 텍스트 PDF ≈ 100~200쪽
     docling_artifacts_path: str | None = None # 모델 가중치 디렉터리. None이면 첫 변환 때 HF에서 내려받는다 —

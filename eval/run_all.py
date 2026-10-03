@@ -79,11 +79,14 @@ ROWS = [
     Row("retrieval", "recall_at_20", "검색  R@20", version_key="gold_composition"),
     Row("retrieval", "hit_at_1", "검색  Hit@1", version_key="gold_composition"),
     Row("retrieval", "mrr", "검색  MRR", version_key="gold_composition"),
-    # RAGAS 2행도 같은 구성 변경의 영향권 — 채점 대상(generation_*.jsonl)에 고난도가
-    # 편입된다. 다만 값 산출이 별도 경로(ragas_eval)라 version_key 배관이 없어, #95 병합
-    # 직후 첫 --ragas 실행의 직전 대비는 **구성 변경으로 읽어라** (여기 주석이 그 고지다).
-    Row("ragas", "faithfulness", "생성  faithfulness"),
-    Row("ragas", "answer_relevancy", "생성  relevancy"),
+    # RAGAS 2행도 같은 구성 변경의 영향권 — 채점 대상(generation_*.jsonl)의 구성이 바뀌면
+    # 분모가 달라 다른 눈금이 된다(#95 고난도 편입, #196 실문서 편입).
+    # 예전엔 version_key 배관이 없어 "주석으로 고지"했는데, #196에서 540→630으로 바뀌면서
+    # 구성 변경이 회귀 경고로 찍히는 것을 실제로 겪어 **채점 문항 수(n)를 version_key로** 걸었다.
+    # n은 ragas_eval.compute가 이미 요약에 싣고 있어 추가 배관이 필요 없다.
+    # 한계: 구성이 바뀌었는데 n이 우연히 같으면 못 잡는다 — 그런 변경은 커밋 주석으로 고지할 것.
+    Row("ragas", "faithfulness", "생성  faithfulness", version_key="n"),
+    Row("ragas", "answer_relevancy", "생성  relevancy", version_key="n"),
     # 낮을수록 좋은 유일한 행 (#76) — 부재단정률이 오르는 것이 회귀다.
     # 임계를 전역(0.01)보다 크게 잡는 이유: 분모가 58 내외라 **1건이 1.7%**다. 게다가 같은
     # 프롬프트에서 3회 반복 시 0~2건(0.0~3.5%)으로 흔들린다(#76 실측). 전역 임계를 쓰면

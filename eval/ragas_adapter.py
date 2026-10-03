@@ -1,7 +1,7 @@
 """RAGAS 입력 어댑터.
 
-저장된 생성 결과(eval/results/generation_*.jsonl) + gold(gold_set_v2.jsonl)를
-RAGAS EvaluationDataset으로 변환. judge 불필요 — 순수 데이터 변환/검증용.
+저장된 생성 결과(eval/results/generation_*.jsonl) + gold(load_gold() — 정본 gold_set_v2
++ eval/gold_private/)를 RAGAS EvaluationDataset으로 변환. judge 불필요 — 순수 변환/검증용.
 
 필드 매핑:
 - user_input        ← gold.query (id로 조인; 생성 결과엔 query가 없음)
@@ -19,7 +19,8 @@ from pathlib import Path
 
 from ragas import EvaluationDataset
 
-GOLD = Path("eval/gold_set_v2.jsonl")
+from eval.generation import load_gold
+
 RESULT_DIR = Path("eval/results")
 
 
@@ -33,7 +34,10 @@ def build_dataset(mode: str = "retrieved", ref_only: bool = False) -> Evaluation
     ref_only=True: 검수된 정답문(expected_answer)이 있는 gold만 — reference 필요 지표
     (context_recall·answer_correctness)용. 파일럿 30문항부터 (2026-08-08).
     """
-    gold_by_id = {g["id"]: g for g in _load_jsonl(GOLD)}
+    # load_gold()라야 사내 실문서 골드(eval/gold_private/)가 들어온다 — 정본만 읽으면
+    # 생성 결과에 실문서 행이 있어도 gold_by_id에 없어서 아래 `g is None`으로 통째 스킵된다.
+    # generation.py와 **두 곳 다** 고쳐야 실문서가 RAGAS까지 도달한다 (#196).
+    gold_by_id = {g["id"]: g for g in load_gold()}
     rows = _load_jsonl(RESULT_DIR / f"generation_{mode}.jsonl")
 
     samples = []

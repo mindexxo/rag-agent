@@ -569,7 +569,11 @@ def _smoke_sample(rows: list[dict], n: int) -> list[dict]:
 
 
 async def main():
-    gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+    # load_gold()를 쓴다 — GOLD를 직접 읽으면 eval/gold_private/(사내 실문서 골드)가 통째로
+    # 빠진다. 그 상태로 #114 9B A/B를 540건 돌렸는데 **실문서가 0건**이었다(#196). 이 함수가
+    # 정의만 돼 있고 아무도 안 쓰던 미이전 상태를 여기서 해소한다. 테넌트 라우팅은 이미
+    # 준비돼 있었다 — V2_TENANTS에 inticube가 들어 있고 row_tenant가 id 접두로 라우팅한다.
+    gold = load_gold()
     gen_gold = [g for g in gold if g["type"] in GEN_TYPES]
     if SMOKE:
         gen_gold = _smoke_sample(gen_gold, SMOKE)

@@ -262,3 +262,56 @@ class TestMustNotContainViolations:
         # 단언문 '보증기간은 9개월'과는 매칭되지 않아야 한다.
         answer = '2026-07-01 이후 구매는 9개월이지만, 고객님 구매 건의 보증기간은 6개월입니다.'
         assert gen.must_not_contain_violations(answer, ['보증기간은 9개월']) == []
+
+
+class TestGoldLoading:
+    """#196 2단계 — 실문서 골드가 생성·RAGAS 축에 실제로 도달하는가.
+
+    이 셋이 전부 맞아야 실문서가 측정에 들어온다. 하나라도 어긋나면 조용히 0건이 된다 —
+    #114의 9B A/B 540건이 실문서 0건이었던 것이 정확히 그 사고였다.
+    """
+
+    def test_load_gold가_실문서를_합친다(self):
+        from eval.generation import GOLD, load_gold
+        canonical = sum(1 for l in GOLD.read_text().splitlines() if l.strip())
+        merged = len(load_gold())
+        assert merged > canonical, f'gold_private가 안 합쳐졌다 (정본 {canonical} = 병합 {merged})'
+
+    def test_실문서_테넌트가_라우팅된다(self):
+        from eval.generation import V2_TENANTS, load_gold, row_tenant
+        assert 'inticube' in V2_TENANTS
+        tenants = {row_tenant(g) for g in load_gold()}
+        assert 'inticube' in tenants, f'실문서가 demo로 폴백됐다: {sorted(tenants)}'
+
+    def test_골드_id가_중복되지_않는다(self):
+        # 정본과 gold_private에 같은 id가 있으면 dict 조인에서 한쪽이 조용히 덮인다
+        from eval.generation import load_gold
+        ids = [g['id'] for g in load_gold()]
+        assert len(ids) == len(set(ids)), f'중복 id {len(ids) - len(set(ids))}건'
+
+    def test_ragas_어댑터가_실문서_행을_버리지_않는다(self, tmp_path, monkeypatch):
+        """행동으로 검증한다 — 소스 문자열 검사는 주석에 'load_gold()'만 있어도 통과해버린다.
+
+        generation.py만 고치면 생성은 되지만 RAGAS는 gold_by_id 조회 실패로
+        그 행을 통째 스킵한다(`if g is None: continue`). 두 곳 다 고쳐야 한다.
+        """
+        import json
+
+        import eval.ragas_adapter as ra
+        from eval.generation import load_gold
+        real = next(g for g in load_gold() if g['id'].startswith('inticube_'))
+        (tmp_path / 'generation_retrieved.jsonl').write_text(json.dumps({
+            'id': real['id'], 'type': real['type'], 'answer': '테스트 답변',
+            'retrieved_contexts': ['근거'], 'standalone_query': real['query'],
+        }, ensure_ascii=False) + '\n')
+        monkeypatch.setattr(ra, 'RESULT_DIR', tmp_path)
+        ds = ra.build_dataset('retrieved')
+        assert len(ds) == 1, '실문서 행이 gold 조회 실패로 스킵됐다'
+
+    def test_생성축_main이_정본만_읽지_않는다(self):
+        # main()이 GOLD를 직접 읽으면 gold_private가 통째로 빠진다 (#196의 원인)
+        import inspect
+
+        import eval.generation as g
+        src = inspect.getsource(g.main)
+        assert 'GOLD.read_text()' not in src, 'main이 아직 정본을 직접 읽는다'

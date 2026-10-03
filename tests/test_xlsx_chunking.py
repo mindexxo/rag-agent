@@ -7,7 +7,10 @@ from pathlib import Path
 import openpyxl
 import pytest
 
-from rag.xlsx_chunking import XLSX_MAX_ROWS, XlsxTooManyRows, _cell, _to_markdown, chunk_xlsx
+from io import BytesIO
+
+from rag.xlsx_chunking import (XLSX_MAX_ROWS, XlsxDescriptionRequired, XlsxTooManyRows, XlsxUploadRejected,
+                               _cell, _to_markdown, chunk_xlsx, description_missing, validate_xlsx_upload)
 
 CORPUS_XLSX = (Path(__file__).resolve().parent.parent
                / 'sample_docs' / 'corpus_v2' / 'homeplus' / 'homeplus_10_멤버십혜택표.xlsx')
@@ -103,3 +106,67 @@ class TestChunkXlsx:
         p = tmp_path / 'exact.xlsx'
         wb.save(p)
         assert len(chunk_xlsx(p)) == 1
+
+
+def _xlsx_bytes(n_rows: int, *, blank_in_middle: int = 0) -> bytes:
+    """헤더 1행 + 데이터 n_rows행을 메모리에서 만든다 — 라우터가 받는 것과 같은 '디스크 안 거친 bytes'."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(['col'])
+    for i in range(n_rows):
+        ws.append([i])
+        if blank_in_middle and i == n_rows // 2:
+            for _ in range(blank_in_middle):
+                ws.append([None])
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+class TestValidateXlsxUpload:
+    """업로드 사전검증 (#194) — 라우터가 blob을 쓰기 전에 부른다. 거절은 전부 XlsxUploadRejected 하위."""
+
+    def test_설명_없으면_거절(self):
+        with pytest.raises(XlsxDescriptionRequired):
+            validate_xlsx_upload(_xlsx_bytes(1), None)
+
+    def test_공백만이면_미전송과_동일(self):
+        with pytest.raises(XlsxDescriptionRequired):
+            validate_xlsx_upload(_xlsx_bytes(1), '  \t ')
+
+    def test_설명_있고_정확히_상한이면_통과(self):
+        validate_xlsx_upload(_xlsx_bytes(XLSX_MAX_ROWS), '멤버십 혜택표')     # off-by-one 회귀 방지
+
+    def test_상한_초과면_설명이_있어도_거절(self):
+        with pytest.raises(XlsxTooManyRows) as exc:
+            validate_xlsx_upload(_xlsx_bytes(XLSX_MAX_ROWS + 1), '설명')
+        assert exc.value.rows == XLSX_MAX_ROWS + 1
+
+    def test_설명_검사가_워크북보다_먼저다(self):
+        """설명이 비면 워크북을 열지 않는다 — 깨진 바이트를 줘도 설명 예외가 난다(싼 검사 먼저)."""
+        with pytest.raises(XlsxDescriptionRequired):
+            validate_xlsx_upload(b'not an xlsx at all', None)
+
+    def test_두_거절_모두_공통_베이스로_잡힌다(self):
+        """라우터는 XlsxUploadRejected 하나만 잡는다 — 하위 타입이 늘어도 라우터를 안 고치게."""
+        for content, desc in [(_xlsx_bytes(1), None), (_xlsx_bytes(XLSX_MAX_ROWS + 1), 'x')]:
+            with pytest.raises(XlsxUploadRejected):
+                validate_xlsx_upload(content, desc)
+
+    def test_행_세는_기준이_chunk_xlsx와_같다(self, tmp_path):
+        """중간 빈 행은 둘 다 세지 않는다 — 같은 _iter_sheets를 쓰므로 '검증 통과·색인 거절'이 없다."""
+        content = _xlsx_bytes(XLSX_MAX_ROWS, blank_in_middle=3)
+        validate_xlsx_upload(content, '설명')                      # 사전검증 통과
+        p = tmp_path / 'edge.xlsx'
+        p.write_bytes(content)
+        assert len(chunk_xlsx(p, description='설명')) == 1        # 색인도 통과(시트 1 = 청크 1)
+
+
+class TestDescriptionMissing:
+    def test_None_빈문자열_공백만은_없음(self):
+        assert description_missing(None)
+        assert description_missing('')
+        assert description_missing('  \t\n')
+
+    def test_글자가_하나라도_있으면_있음(self):
+        assert not description_missing(' a ')

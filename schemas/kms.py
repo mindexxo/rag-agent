@@ -57,6 +57,12 @@ class KmsQueryRequest(BaseModel):
     # ICCS 연동 시 이 필드를 제거하고 서버 측 테넌트 정보 조회로 대체한다.
     domain_hint: str | None = Field(default=None, max_length=DOMAIN_HINT_MAX)
 
+# 문서 설명(F1a 표 설명)의 길이 상한 (#194). FOLDER_DESC_MAX와 값이 같지만 근거가 다르다 —
+# 폴더 설명은 리랭커 입력에 후보마다 붙어 지연이 누적되는 쪽이고, 이 값은 xlsx 청크 **본문**에
+# 병합되어 임베딩·어휘 채널에 직접 들어간다. 같은 화면에서 두 설명을 쓰므로 값은 맞춰 둔다.
+DOCUMENT_DESCRIPTION_MAX = 200
+
+
 class DocumentUploadResponse(BaseModel):
     """문서 업로드/조회 응답."""
     document_id: int
@@ -75,6 +81,11 @@ class DocumentUploadResponse(BaseModel):
     # (소급해 채울 정보가 없다) — 화면은 빈 값 표시를 처리해야 한다.
     uploaded_by: str | None = None
     ref_count: int | None = None  # 답변 인용 누적 횟수 (목록 API에서만 집계 — filename 키)
+    # 표 설명 (#194). xlsx만 값이 있다 — 다른 형식은 입력해도 청킹이 무시한다(rag/chunking.chunk_file).
+    # 재업로드 화면이 기존 값을 미리 채우려면 돌려받아야 한다(계승 규칙이 있어서 더욱).
+    description: str | None = None
+    # 색인 완료 시각 (#194). ready 전에는 null — 업로드 직후 폴링 없이 "언제 반영됐나"를 아는 유일한 값.
+    indexed_at: KstDatetime | None = None
 
 
 class DocumentUploadMetadata(BaseModel):
@@ -97,7 +108,10 @@ class DocumentUploadMetadata(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     folder_id: int | None = None
-    description: str | None = None        # F1a: 표 설명 (xlsx 검색 보강)
+    # F1a: 표 설명 (xlsx 검색 보강). xlsx는 **필수**다(#194) — 다만 "이번 요청에 보냈는가"가
+    # 아니라 "계승까지 따진 최종값이 비는가"로 판정하므로 여기서 required로 만들지 않는다.
+    # 그 판정은 `routers/documents.py`의 `upload_document`가 `rag/documents.py`의 `latest_alive`로 끝낸다.
+    description: str | None = Field(None, max_length=DOCUMENT_DESCRIPTION_MAX)
     expect_version: int | None = None     # 낙관적 잠금 — 의미는 upload_document 참조
 
 
@@ -138,6 +152,12 @@ class DocumentUpdateRequest(BaseModel):
     """문서 속성 변경 (F2). 보낸 필드만 반영 — folder_id는 null 전송 시 미분류로 이동."""
     folder_id: int | None = None
     is_searchable: bool | None = None
+    # 표 설명 수정 (#194). 전까지는 파일을 다시 올려야만 고칠 수 있었다(= 새 버전 + 재파싱).
+    # folder_id와 달리 model_fields_set 3단 구분을 쓰지 않는다 — description은 None이 "미분류"
+    # 같은 유효한 목표값이 아니라서 "미전송"과 "null 전송"이 똑같이 "안 바꿈"이면 충분하다.
+    # 지우려면 빈 문자열을 보낸다(routers/folders.py의 FolderUpdateRequest와 같은 2-way).
+    # **xlsx는 비울 수 없다** — 업로드에서 필수로 받아놓고 여기서 뚫리면 규칙이 샌다.
+    description: str | None = Field(None, max_length=DOCUMENT_DESCRIPTION_MAX)
 
 
 

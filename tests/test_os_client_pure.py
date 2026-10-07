@@ -116,3 +116,45 @@ async def test_ensure_index_soft는_못_붙어도_예외_없이_False(monkeypatc
     with caplog.at_level(logging.ERROR, logger='rag.os_client'):
         assert await C.ensure_index_soft() is False
     assert any('연결 실패' in r.getMessage() for r in caplog.records)
+
+
+class TestConnectionPool:
+    """#201 — OpenSearch 커넥션 상한을 명시하는가.
+
+    생략하면 opensearchpy 기본 10이고, 그 값이 그대로 aiohttp TCPConnector(limit=)이 되어
+    **프로세스 전체의 동시 OS 요청 상한**이 된다. 한 턴이 3~5회 부르므로(dense 쿼리별 +
+    BM25 + mget) 동시 수십이면 바로 줄 선다. 기본값으로 되돌아가는 회귀를 막는다.
+    """
+
+    def test_maxsize를_명시한다(self):
+        import inspect
+
+        import rag.os_client as oc
+        src = inspect.getsource(oc.client)
+        assert 'maxsize=' in src, 'maxsize를 안 주면 기본 10으로 묶인다'
+
+    def test_설정_기본값이_10보다_크다(self):
+        from config import settings
+        assert settings.opensearch_maxsize > 10, (
+            f'opensearch_maxsize={settings.opensearch_maxsize} — 라이브러리 기본값과 같거나 작다')
+
+    def test_실제_커넥터_상한에_반영된다(self):
+        """소스 문자열이 아니라 **만들어진 객체**로 확인한다 — 인자 이름이 바뀌거나
+        라이브러리가 조용히 무시해도 잡히게.
+
+        커넥션 객체를 직접 만든다 — AsyncOpenSearch의 풀은 지연 생성이라 첫 요청 전에는
+        connections가 비어 있고(네트워크가 필요하다), 이 테스트는 망 없이도 돌아야 한다.
+        """
+        from opensearchpy._async.http_aiohttp import AIOHttpConnection
+
+        from config import settings
+        conn = AIOHttpConnection(host='localhost', port=9200,
+                                 maxsize=settings.opensearch_maxsize)
+        assert conn._limit == settings.opensearch_maxsize, (
+            f'커넥터 상한 {conn._limit} ≠ 설정 {settings.opensearch_maxsize}')
+
+    def test_maxsize를_빼면_10으로_떨어진다(self):
+        """회귀 감지의 근거 — 우리가 막으려는 기본값이 실제로 10임을 라이브러리에서 확인한다.
+        이 값이 바뀌면(라이브러리 업그레이드 등) 테스트가 알려준다."""
+        from opensearchpy._async.http_aiohttp import AIOHttpConnection
+        assert AIOHttpConnection(host='localhost', port=9200)._limit == 10

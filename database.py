@@ -24,8 +24,10 @@ engine = create_async_engine(
     connect_args={"server_settings": {"search_path": settings.db_search_path}},
     pool_pre_ping=True,   # 대여 전 죽은 커넥션 감지·교체 — idle 후 "connection is closed" 500 해소 (P1-9)
     pool_recycle=1800,    # 30분 넘은 커넥션은 선제 재생성 (DB/네트워크 idle 종료 대비)
-    pool_size=10,         # SSE가 생성 완료까지 세션 점유(생성당 요청+태스크 2커넥션) → 기본 5보다 여유
-    max_overflow=20,      # 순간 초과 허용 (총 상한 30)
+    # SSE가 생성 완료까지 세션을 점유한다(생성당 요청+배경태스크 2커넥션) — 동시성이 곧 커넥션이다.
+    # 값은 config로 뺀다 (#201): 환경마다 PostgreSQL max_connections와 동거 프로세스가 다르다.
+    pool_size=settings.db_pool_size,
+    max_overflow=settings.db_max_overflow,
 )
 
 # 세션 객체를 생성하는 팩토리, AsyncSessionLocal() -> AsyncSession 반환

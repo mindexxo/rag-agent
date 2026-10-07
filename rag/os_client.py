@@ -140,12 +140,18 @@ def client():
     매핑 상수만 보는 테스트가 `opensearchpy` 없이도 import할 수 있게.
 
     커넥션이 이벤트 루프에 묶이므로 프로세스당 루프 1개 전제다(rag/clients.py와 동일 제약).
+
+    maxsize는 반드시 명시한다 — 생략하면 opensearchpy 기본 10이고, 그게 동시 OS 요청의
+    **프로세스 전역 상한**이 된다 (#201). 턴당 3~5회 호출이라 동시 수십이면 바로 줄 선다.
     """
     global _client
     if _client is None:
         from opensearchpy import AsyncOpenSearch
         _client = AsyncOpenSearch([settings.opensearch_url],
                                   timeout=settings.opensearch_timeout,
+                                  # 안 주면 기본 10 — aiohttp TCPConnector(limit=)로 그대로 들어가
+                                  # 프로세스 전체의 동시 OS 요청이 10으로 묶인다 (#201, 런타임 실측).
+                                  maxsize=settings.opensearch_maxsize,
                                   retry_on_timeout=True, max_retries=2)
     return _client
 

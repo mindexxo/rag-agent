@@ -139,6 +139,25 @@ class Settings(BaseSettings):
     opensearch_url: str = "http://localhost:9200"     # 실주소는 .env
     opensearch_index: str = "kms_chunks_v1"
     opensearch_timeout: float = 30.0
+    # 커넥션 풀 상한 (#201). 안 주면 opensearchpy 기본 10이고, 그 값이 곧
+    # aiohttp.TCPConnector(limit=)이라 **프로세스 전체의 동시 OS 요청 상한**이 된다.
+    # 한 턴이 3~5회 부르므로(dense 쿼리별 + BM25 + mget) 동시 40이면 최대 200요청이 10개를
+    # 두고 줄 선다. 게다가 ClientTimeout(total)은 **큐 대기까지 포함**해서, 대기가 길어지면
+    # 타임아웃 → retry_on_timeout 재시도로 부하가 되레 늘어난다(절벽형 붕괴).
+    # 100인 근거: 운영 상한인 DB 풀(30)·앱 동시성보다 넉넉해 여기가 먼저 막히지 않게 하는 값.
+    # 단일 노드라 OpenSearch 쪽 search 스레드풀이 진짜 상한이고, 이건 그 앞에서 **큐만 안 만드는** 역할이다.
+    opensearch_maxsize: int = 100
+
+    # DB 커넥션 풀 (#201). 측정 때마다 환경변수로 임시 패치해 쓰다가 코드로 올린다 —
+    # 서버(PostgreSQL max_connections=1000)는 올려뒀는데 앱이 30만 쥐고 있어서,
+    # 배포된 앱은 실측 한계(앱 경유 동시 35~40)에 **도달조차 못 했다**.
+    # 값의 근거: 앱 동시 192에서 DB 커넥션 피크 126 실측 = 턴당 0.66개
+    #   (한 턴이 세션 2개를 열지만 요청 세션이 먼저 반납돼 동시 점유는 2보다 작다)
+    #   동시 40 → 약 26개, 동시 60 → 약 40개. 총 100은 거기에 2.5배 여유다.
+    # 교차 검증: 풀 30·동시 128 = 84 필요 → QueuePool 에러 371건이 실제로 났다(#114).
+    # 공용 개발계라 앱·워커·사람 세션이 1000을 나눠 쓴다 — 무한정 올리지 않는다.
+    db_pool_size: int = 50
+    db_max_overflow: int = 50        # 총 상한 100
 
     # 컨텍스트 예산 (F100). context_window는 vLLM --max-model-len과 반드시 일치시킬 것.
     context_window: int = 30720

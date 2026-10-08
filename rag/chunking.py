@@ -33,6 +33,7 @@
  """
 
 import re
+import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,8 @@ from docx.text.paragraph import Paragraph as DocxParagraph
 from llama_index.core.node_parser import SentenceSplitter
 
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 _HEADING_RE = re.compile(r'^(#{1,6})\s+(.+)$')
 _DOCX_HEADING_RE = re.compile(r'^Heading (\d+)$')     # python-docx는 빌트인 헤딩을 영문명으로 준다
@@ -86,9 +89,16 @@ _PICTURE_CAPTION_PROMPT = (
     '이미지의 내용을 한국어로 옮겨라.\n'
     '- 이미지 안의 글자를 하나도 빠뜨리지 말고 원문 그대로 옮긴다. 고쳐 쓰거나 요약하지 않는다.\n'
     '- 요소들 사이에 관계가 있으면 그 관계를 함께 적는다.\n'
-    '- 관계가 분명하지 않으면 보이는 위치대로 나열만 한다.\n'
-    '- 이미지에 없는 내용은 쓰지 않는다.'
+    '- 관계가 분명하지 않으면 보이는 위치대로 나열만 한다. 관계가 없다는 말은 쓰지 않는다.\n'
+    '- 이미지에 없는 내용은 쓰지 않는다.\n'
+    '- 머리말·맺음말·질문·제안 없이, 첫 줄부터 이미지 안의 글자로 시작한다.'
 )
+# 셋째 불릿의 뒷문장과 마지막 불릿은 #204 — 7B VLM이 캡션 앞뒤에 "이미지의 내용은 다음과 같습니다:" /
+# "…정확히 기록했습니다. 수정이 필요하시면 알려주세요" / "A 섹션은 B 섹션과 관련이 없습니다"를 붙여 본문으로
+# 색인됐다(타임레포트 12캡션 중 머리말 6·맺음말 1·관계부재 1, 2026-10-08). 실측: 금지 문구를 넣자 맺음말·관계부재는
+# 0/12이 됐고 머리말은 5/12 남았다 — 금지할 문구를 프롬프트에 **인용하면 오히려 유도**하는 것으로 보여 인용 없이
+# 적는다. 문구 목록 후처리는 두지 않는다(모델 말버릇에 맞춘 예외 목록이 자라는 구조 — 리뷰에서 기각). 머리말이
+# 남더라도 캡션당 한 줄 15자라 검색·생성에 무해하다.
 
 @dataclass
 class ChunkData:
@@ -293,6 +303,79 @@ def _docling_runtime():
     return _docling_converter, _docling_semaphore
 
 
+# ── docling 텍스트 정제 (#204) — 각주 표시 인라인·VLM 캡션 잡담 ──────────────────
+
+# 위첨자 각주 참조 번호. docling은 글자 크기를 버리고 'PM 2)'처럼 평문에 섞는다 — 생성기가 그 토큰에
+# 걸려 승인자에서 PM을 빼먹었다(절제 실측: 원본 1/3 → '2)' 제거 3/3, #203 b2_sf004). 열거("1) 직원이 …
+# 2) 회사의 …")와 글자 모양이 같아 정규식 일괄 제거는 출장여비 지침 5청크를 깬다(코퍼스 스캔) — 둘을 가르는
+# 유일한 물리적 차이는 **글자 크기 비율**(각주 0.67~0.73, 열거 1.0)이라 pdfplumber 단어 크기로 판정한다.
+# docling의 정의 줄("2) PM 없는 경우 생략")은 9쪽 중 2쪽에서만 나와(3·6·7쪽 누락) 정의 줄 기반 판정은 기각했다.
+_FOOTNOTE_TOKEN_RE = re.compile(r'^\d{1,2}\)$')
+_FOOTNOTE_SUP_RATIO = 0.8        # 같은 줄 최대 글자 크기 대비. 실측 각주 ≤0.73, 정의 줄·열거 ≥0.81
+_FOOTNOTE_LINE_TOL = 4.0         # 같은 줄로 묶는 top 차이(pt). 위첨자는 본문보다 2~3pt 올라간다
+
+
+def _markers_from_words(words: list[tuple[str, float, float]]) -> set[str]:
+    """(단어, 글자크기, top) 목록 → 위첨자 각주 표시 집합. 한 쪽 분량을 받는다.
+
+    top이 _FOOTNOTE_LINE_TOL 안이면 같은 줄로 묶고, 줄 최대 크기의 _FOOTNOTE_SUP_RATIO 미만인 'N)' 토큰만
+    각주 표시로 본다. 정의 줄("2) PM 없는 경우 생략")은 줄 전체가 작은 글자라 비율 1.0 → 걸리지 않는다(의도 —
+    정의 줄은 본문에 남긴다). I/O 없는 순수 함수라 튜플만으로 테스트한다(_sections_from_docling_elements와 같은 규율).
+    """
+    found: set[str] = set()
+    line: list[tuple[str, float]] = []
+    line_top: float | None = None
+
+    def flush():
+        if not line:
+            return
+        body = max(size for _, size in line)
+        for text, size in line:
+            if _FOOTNOTE_TOKEN_RE.match(text) and size < body * _FOOTNOTE_SUP_RATIO:
+                found.add(text)
+
+    for text, size, top in sorted(words, key=lambda w: (w[2], w[0])):
+        if line_top is None or abs(top - line_top) > _FOOTNOTE_LINE_TOL:
+            flush()
+            line, line_top = [], top
+        line.append((text, size))
+    flush()
+    return found
+
+
+def _footnote_markers(file_path: str | Path) -> dict[int, set[str]]:
+    """쪽 → 위첨자 각주 표시 집합. pdfplumber 사이드카(쪽당 수십 ms) — docling 변환과 별개로 한 번 더 연다.
+
+    **best-effort**: pdfplumber가 못 열거나 글자 크기를 못 읽으면 경고만 남기고 빈 dict — 각주 표시가 본문에
+    남는 것은 #204 이전 동작 그대로라 저품질 색인이 아니고, docling이 이미 연 파일을 보조 파서 오류로
+    failed 처리하는 쪽이 더 나쁘다. 실측(2026-10-08): inticube PDF 23건 중 표시가 잡힌 건 타임레포트 1건뿐.
+    """
+    out: dict[int, set[str]] = {}
+    try:
+        with pdfplumber.open(str(file_path)) as pdf:
+            for page_no, page in enumerate(pdf.pages, start=1):
+                words = [(w['text'], float(w.get('size') or 0.0), float(w['top']))
+                         for w in page.extract_words(extra_attrs=['size'])]
+                found = _markers_from_words(words)
+                if found:
+                    out[page_no] = found
+    except Exception as e:   # noqa: BLE001 — 보조 경로. 사유는 남기고 본 경로는 계속 간다
+        logger.warning('각주 사이드카 실패(각주 표시 제거 없이 진행) %s: %s', file_path, e)
+    return out
+
+
+def _strip_footnote_markers(text: str, markers: set[str]) -> str:
+    """본문에서 각주 참조 'N)'를 뗀다 — 단어·닫는 괄호 **뒤에 붙은 것만**. 줄 머리의 정의 줄("2) PM …")과
+    같은 번호가 아닌 열거, 더 큰 숫자의 일부("12)")는 그대로다. 같은 쪽에 같은 번호의 열거가 공존하면 그것도 지워진다(실측 0건, 감수)."""
+    for marker in sorted(markers, key=len, reverse=True):
+        # 앞의 공백은 같은 줄 안에서만([ \t]) — 줄바꿈을 허용하면 다음 줄 머리의 정의 줄 "2) PM …"까지 지운다.
+        # (?<!\d): "서식 12)"의 "2)"는 각주가 아니라 숫자의 일부다 — 우리 정규식의 안전장치이지 문서에 거는 규칙이 아니다.
+        pattern = (r'(?<=[\w\)\]）」])[ \t]?(?<!\d)' + re.escape(marker)
+                   + r'(?=$|[\s,.;:)>\]）」→])')
+        text = re.sub(pattern, '', text)
+    return text
+
+
 def _docling_norm(text: str) -> str:
     """docling 텍스트의 NBSP(\\xa0)를 보통 공백으로. 표 셀·헤딩에 섞여 들어와 검색 토큰을 깨뜨린다."""
     return re.sub(r'[  ]+', ' ', text).strip()
@@ -334,12 +417,15 @@ def _docling_picture_caption(element) -> str:
     return ''
 
 
-def _docling_elements(doc):
+def _docling_elements(doc, footnote_markers: dict[int, set[str]] | None = None):
     """docling 문서 → (label, text, page, table_markdown) 튜플 흐름. 읽기 순서.
 
     _sections_from_docling_elements가 소비한다. 둘로 나눈 이유: 매핑 규칙(헤딩 층·표·그림)을
     docling 없이 튜플만으로 단위 테스트하기 위해서다 — 모델 다운로드가 필요한 테스트와 분리.
+    footnote_markers: 쪽 → 위첨자 각주 표시(_footnote_markers, #204). 텍스트 요소에서 그 쪽의 표시만 뗀다 —
+    표(셀 구조)·그림(캡션)은 대상이 아니다.
     """
+    footnote_markers = footnote_markers or {}
     for element, _depth in doc.iterate_items():
         label = element.label.value if hasattr(element.label, 'value') else str(element.label)
         page = element.prov[0].page_no if getattr(element, 'prov', None) else None
@@ -357,6 +443,8 @@ def _docling_elements(doc):
             marker = getattr(element, 'marker', '') or ''
             if label == 'list_item' and marker:
                 text = f'{marker} {text}'
+            if page in footnote_markers:
+                text = _strip_footnote_markers(text, footnote_markers[page])
             yield label, text, page, None
 
 
@@ -425,7 +513,10 @@ def _docling_sections(file_path: str | Path) -> list[_Section]:
                            for e in result.errors[:3])
         raise RuntimeError(f'docling 변환 불완전 — status={result.status.value}, '
                            f'errors={len(result.errors)}: {detail}')
-    return _sections_from_docling_elements(_docling_elements(result.document))
+    # 위첨자 각주 표시(#204) — 변환이 성공한 뒤에만 연다(세마포어 밖, 쪽당 수십 ms). 가드보다 뒤에 두는 이유:
+    # 변환 실패 사유가 pdfplumber 오류에 가려지지 않게, 그리고 가짜 컨버터 테스트가 파일 없이도 가드를 검증하게.
+    footnote_markers = _footnote_markers(file_path)
+    return _sections_from_docling_elements(_docling_elements(result.document, footnote_markers))
 
 
 # ── PDF 경로 ② pdfplumber — 비상 스위치 (docling_enabled=False) ─────────────────

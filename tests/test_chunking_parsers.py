@@ -218,3 +218,84 @@ class TestChunkFileDispatch:
         p.write_bytes(b'\x00\x01')
         with pytest.raises(ValueError, match='지원하지 않는 형식'):
             chunk_file(p)
+
+
+class TestDocxFallbackHeadings:
+    """Heading 스타일 없는 docx의 조문 패턴 승격 (#205). 튜플 단위 + python-docx 생성 fixture."""
+
+    def test_스타일_헤딩이_하나라도_있으면_무변경(self):
+        from rag.chunking import _docx_fallback_headings
+        items = [(True, 1, '제목', False), (False, 0, '제1조(목적) 본문', False)]
+        assert _docx_fallback_headings(items) == items
+
+    def test_제목_장_조_3단(self):
+        from rag.chunking import _docx_fallback_headings
+        items = [(False, 0, '장애관리 지침서\n< 컨택센터 사업부문 >', False), (False, 0, '제 1 장 총칙', False),
+                 (False, 0, '제1조(목적)', False), (False, 0, '이 지침은 …', False), (False, 0, '제2조(적용 범위)', False)]
+        assert _docx_fallback_headings(items) == [
+            (True, 1, '장애관리 지침서', False), (False, 0, '< 컨택센터 사업부문 >', False), (True, 2, '제 1 장 총칙', False),
+            (True, 3, '제1조(목적)', False), (False, 0, '이 지침은 …', False), (True, 3, '제2조(적용 범위)', False)]
+
+    def test_장이_없으면_조는_L2_제목_없으면_한_단계_위(self):
+        from rag.chunking import _docx_fallback_headings
+        with_title = [(False, 0, '지침서', False), (False, 0, '제1조(목적)', False), (False, 0, '본문', False)]
+        assert [lv for h, lv, _, _ in _docx_fallback_headings(with_title) if h] == [1, 2]
+        no_title = [(False, 0, '제1조(목적)', False), (False, 0, '본문', False)]
+        assert [lv for h, lv, _, _ in _docx_fallback_headings(no_title) if h] == [1]
+
+    def test_번호_목록과_표_행과_장애_같은_낱말은_승격하지_않는다(self):
+        from rag.chunking import _docx_fallback_headings
+        items = [(False, 0, '제목', False), (False, 0, '1. 출근시간 선택', False), (False, 0, '제3조(장애) | 설명', True),
+                 (False, 0, '제3조의 장애 등급', False), (False, 0, '<표 1. 장애의 분류>', False)]
+        assert [h for h, _, _, _ in _docx_fallback_headings(items)] == [True, False, False, False, False]
+
+    def test_같은_문단에_이어진_본문은_헤딩에서_분리된다(self):
+        from rag.chunking import _docx_fallback_headings
+        items = [(False, 0, '제목', False), (False, 0, '제8조(역할과 책임) ① 운영관리자는 장애를 접수한다.\n② 복구는 담당자가 한다.', False)]
+        assert _docx_fallback_headings(items)[1:] == [
+            (True, 2, '제8조(역할과 책임)', False), (False, 0, '① 운영관리자는 장애를 접수한다.\n② 복구는 담당자가 한다.', False)]
+        # 괄호 제목이 없는 장은 첫 줄 전체가 머리
+        assert _docx_fallback_headings([(False, 0, '제 1 장 총칙\n이 장은 …', False)])[0] == (True, 1, '제 1 장 총칙', False)
+
+    def test_가지_조문과_전각_괄호(self):
+        from rag.chunking import _docx_fallback_headings
+        items = [(False, 0, '제목', False), (False, 0, '제3조의2（특례）', False), (False, 0, '제1장(총칙)', False)]
+        assert [(h, lv, txt) for h, lv, txt, _ in _docx_fallback_headings(items)] == [
+            (True, 1, '제목'), (True, 2, '제3조의2（특례）'), (True, 2, '제1장(총칙)')]
+
+    def test_첫_문단이_길면_제목이_없고_한_단계_위로(self):
+        from rag.chunking import _docx_fallback_headings
+        items = [(False, 0, '가' * 61, False), (False, 0, '제1조(목적)', False), (False, 0, '본문', False)]
+        out = _docx_fallback_headings(items)
+        assert out[0] == (False, 0, '가' * 61, False) and out[1] == (True, 1, '제1조(목적)', False)
+
+    def test_Heading_스타일_문서는_폴백을_타지_않고_첨부_평문도_불변(self):
+        from rag.chunking import _docx_fallback_headings, _docx_items
+        from docx import Document as _Doc
+        items = list(_docx_items(DOCX))                         # corpus 합성 docx — Heading 스타일 있음
+        assert _docx_fallback_headings(items) is items
+        d = _Doc(str(DOCX))
+        expected = [p.text.strip() for p in d.paragraphs if p.text.strip()]
+        assert all(line in _docx_text(DOCX) for line in expected)
+
+    def test_생성한_docx_제목_장_조_3단_경로(self, tmp_path):
+        from docx import Document as _Doc
+        d = _Doc()
+        d.add_paragraph('지침서'); d.add_paragraph('제 1 장 총칙'); d.add_paragraph('제1조(목적) 이 지침은 절차를 정한다.')
+        p = tmp_path / 'three_levels.docx'; d.save(str(p))
+        chunks = chunk_file(p)
+        assert chunks[0].heading_path == ['지침서', '제 1 장 총칙', '제1조(목적)'] and '이 지침은 절차를 정한다.' in chunks[0].text
+
+    def test_생성한_docx에서_조문별_heading_path가_채워지고_표_행이_한_청크에_남는다(self, tmp_path):
+        from docx import Document as _Doc
+        d = _Doc()
+        d.add_paragraph('장애관리 지침서')
+        d.add_paragraph('제1조(목적)'); d.add_paragraph('이 지침은 장애 대응 절차를 정한다.')
+        d.add_paragraph('제8조(역할과 책임)')
+        tbl = d.add_table(rows=2, cols=2)
+        tbl.cell(0, 0).text = '역할'; tbl.cell(0, 1).text = '책임'
+        tbl.cell(1, 0).text = '운영관리'; tbl.cell(1, 1).text = '장애 발생 시 1차 대응하며,\n대응 불가 시 복구 담당자를 지정함'
+        p = tmp_path / 'no_heading_style.docx'; d.save(str(p))
+        chunks = chunk_file(p)
+        assert all(c.heading_path for c in chunks)
+        assert any(c.heading_path[-1] == '제8조(역할과 책임)' and '1차 대응하며' in c.text and '복구 담당자를 지정함' in c.text for c in chunks)

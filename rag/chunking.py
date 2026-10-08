@@ -572,7 +572,7 @@ def _pdf_sections(file_path: str | Path) -> list[_Section]:
 
 
 def _docx_items(file_path: str | Path):
-    """DOCX body를 **문서 원래 순서대로** (is_heading, level, text)로 흘린다.
+    """DOCX body를 **문서 원래 순서대로** (is_heading, level, text, from_table)로 흘린다.
 
     doc.paragraphs와 doc.tables를 따로 훑으면 표가 전부 문서 끝으로 밀린다
     (예: '2.1 기준표' 밑의 표가 자기 섹션에서 떨어져 나와 마지막 청크로 감).
@@ -588,7 +588,7 @@ def _docx_items(file_path: str | Path):
                 continue
             # style이 None인 문단이 실제로 있다 (스타일 정의가 빠진 docx) — getattr로 방어
             m = _DOCX_HEADING_RE.match(getattr(para.style, 'name', None) or '')
-            yield (bool(m), int(m.group(1)) if m else 0, text)
+            yield (bool(m), int(m.group(1)) if m else 0, text, False)
         elif tag == 'tbl':                         # docx 표는 구조화 포맷 → 셀 값 안정 추출
             for row in DocxTable(child, doc).rows:
                 # 빈 셀도 자리를 지킨다 — 걸러내면 뒷 컬럼이 앞으로 당겨져 헤더와 어긋난다.
@@ -596,16 +596,83 @@ def _docx_items(file_path: str | Path):
                 # LLM이 '조건=5000원'으로 읽는다. 완전 빈 행만 스킵 (xlsx 파서와 같은 원리).
                 cells = [c.text.strip() for c in row.cells]
                 if any(cells):
-                    yield (False, 0, ' | '.join(cells))
+                    yield (False, 0, ' | '.join(cells), True)     # from_table — 폴백 헤딩 승격 대상에서 제외
 
 
 def _docx_text(file_path: str | Path) -> str:
     """DOCX 전체를 평문 하나로 (채팅 첨부 — 컨텍스트 직접 주입용). 헤딩 포함, 문서 순서 보존."""
-    return '\n'.join(text for _, _, text in _docx_items(file_path))
+    return '\n'.join(text for _, _, text, _ in _docx_items(file_path))
+
+
+_ARTICLE_RE = re.compile(r'^제\s*\d+\s*조(?:의\s*\d+)?(?=[\s(（]|$)')   # '제8조(역할과 책임)', '제 3 조 (장애)', '제3조의2(…)'
+_DOCX_TITLE_MAX = 60
+_HEADING_HEAD_RE = re.compile(r'^[^\n]*?\s*[(（][^)）\n]*[)）]')   # 첫 줄의 '제N조(제목)'까지 — 괄호 제목이 있을 때
+
+
+def _split_heading_head(text: str) -> tuple[str, str]:
+    """조문 문단 → (헤딩 머리, 나머지 본문). 머리는 첫 줄의 '제N조(제목)'까지(괄호 제목이 없으면 첫 줄 전체).
+
+    문단 전체를 헤딩으로 올리면 "제8조(역할과 책임) ① 운영관리자는 …"처럼 본문이 같은 문단에 이어진 조문의
+    본문이 heading_path로 들어가고, 뒤에 본문 줄이 없으면 섹션이 생기지 않아 **색인에서 사라진다**(리뷰 지적).
+    """
+    first, _, rest_lines = text.partition('\n')
+    m = _HEADING_HEAD_RE.match(first)
+    head = m.group(0) if m else first
+    rest = (first[len(head):] + ('\n' + rest_lines if rest_lines else '')).strip()
+    return head.strip(), rest
+
+
+def _docx_fallback_headings(items: list[tuple[bool, int, str, bool]]) -> list[tuple[bool, int, str, bool]]:
+    """Heading 스타일이 **하나도 없는** docx의 조문 패턴 승격 (#205). 입력에 헤딩이 하나라도 있으면 그대로 돌려준다.
+
+    실문서(장애관리 지침서)는 Heading 스타일 0개(Normal·List Paragraph뿐)에 '제N조(…)' 문단 13개로 절을 나눴다.
+    그러면 문서 전체가 섹션 하나가 되고 SentenceSplitter가 표 행 한가운데를 자른다(#203 b2_sf021: "1차 대응하며," /
+    "대응 불가 시 복구 담당자를 지정함"이 두 청크로). 층은 docling 경로(_sections_from_docling_elements)와 같다:
+      제목 = 첫 문단의 첫 줄(표 행이 아니고 조문 패턴이 아니며 _DOCX_TITLE_MAX자 이하일 때) → L1
+      '제 N 장' → L2 / '제 N 조' → L3(장이 아직 없으면 L2). 제목이 없으면 전부 한 단계 위.
+    'N.'·'N.N' 번호 문단은 승격하지 않는다 — 매뉴얼의 목록 항목("1. 출근시간 선택")을 헤딩으로 오인한다(결정 1=a).
+    표 행(from_table)은 셀 안에 조문이 있어도 승격하지 않는다 — 셀 단위 구조는 이 폴백의 범위 밖.
+    헤딩은 조문 **머리**('제N조(제목)')까지만이고 같은 문단에 이어진 본문은 본문 줄로 분리한다(_split_heading_head).
+    제목 판정(첫 문단 첫 줄 ≤ _DOCX_TITLE_MAX자)은 휴리스틱이다 — "목 차" 같은 줄도 제목이 된다. 가지 조문 '제N조의M'은
+    허용하고, '제N조.'처럼 구두점이 바로 붙는 꼴과 '제N조의 (공백) 단어'는 승격하지 않는다.
+    """
+    if any(is_heading for is_heading, _, _, _ in items):
+        return items
+    out: list[tuple[bool, int, str, bool]] = []
+    has_title = False
+    seen_chapter = False
+    for i, (is_heading, level, text, from_table) in enumerate(items):
+        if from_table:
+            out.append((is_heading, level, text, from_table))
+            continue
+        first_line = text.split('\n', 1)[0].strip()
+        if i == 0 and len(first_line) <= _DOCX_TITLE_MAX and not _CHAPTER_RE.match(first_line) and not _ARTICLE_RE.match(first_line):
+            has_title = True
+            out.append((True, 1, first_line, False))
+            rest = text[len(text.split('\n', 1)[0]):].strip()
+            if rest:
+                out.append((False, 0, rest, False))
+            continue
+        if _CHAPTER_RE.match(text) or _ARTICLE_RE.match(text):
+            if _CHAPTER_RE.match(text):
+                seen_chapter = True
+                level = 2
+            else:
+                level = 3 if seen_chapter else 2
+            head, rest = _split_heading_head(text)
+            out.append((True, level, head, False))
+            if rest:
+                out.append((False, 0, rest, False))
+        else:
+            out.append((False, 0, text, False))
+    if not has_title:
+        out = [(h, (lv - 1 if h else lv), t, ft) for h, lv, t, ft in out]
+    return out
 
 
 def _docx_sections(file_path: str | Path) -> list[_Section]:
-    """DOCX를 (heading_path, 본문) 섹션 목록으로 — Heading 스타일이 경계.
+    """DOCX를 (heading_path, 본문) 섹션 목록으로 — Heading 스타일이 경계. 스타일이 하나도 없으면
+    조문 패턴 폴백(_docx_fallback_headings, #205).
 
     헤딩 텍스트는 본문에 넣지 않는다. heading_path가 들고 있고, 인덱스 입력엔
     rag/index_text가 앞에 붙이므로 본문에까지 넣으면 같은 문구가 두 번 들어간다.
@@ -623,7 +690,7 @@ def _docx_sections(file_path: str | Path) -> list[_Section]:
             sections.append(_Section(list(stack), None, '\n'.join(lines)))   # page는 docx에 없음
             lines.clear()
 
-    for is_heading, level, text in _docx_items(file_path):
+    for is_heading, level, text, _ in _docx_fallback_headings(list(_docx_items(file_path))):
         if is_heading:
             flush()                    # 이전 섹션 마감 후 경로 갱신
             del stack[level - 1:]      # 같은 레벨·하위 레벨 걷어내고

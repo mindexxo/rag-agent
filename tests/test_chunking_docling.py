@@ -251,7 +251,9 @@ class TestRealConversion:
         api = opts.picture_description_options
         assert api.scale == settings.vlm_caption_scale
         assert api.timeout == settings.vlm_caption_timeout_seconds
-        assert api.params == {'model': settings.vlm_caption_model}
+        # temperature 0 = 결정적 캡션(#209): 3회 재변환 25/25 동일 실측. 빠지면 샘플링으로 돌아가 재인제스트마다 캡션이 달라진다
+        assert api.params == {'model': settings.vlm_caption_model, 'temperature': settings.vlm_caption_temperature}
+        assert api.params['temperature'] == 0.0 and api.timeout == 45.0   # .env.dev가 config를 덮으므로 값 자체도 단언
         assert api.prompt == _PICTURE_CAPTION_PROMPT
         assert str(api.url) == settings.vlm_caption_url   # AnyUrl — str 캐스팅 후 비교
 

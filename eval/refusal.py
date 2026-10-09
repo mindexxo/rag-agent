@@ -37,6 +37,7 @@ from database import AsyncSessionLocal
 from eval._turn_cleanup import discard_turn
 from rag.conversation import ensure_conversation
 from eval.generation import load_gold, must_not_contain_violations, row_tenant
+from eval.misinfo_judge import JUDGE_PROMPT_VERSION as MISINFO_JUDGE_VERSION, confirm_violations
 from eval.absence_judge import (JUDGE_PROMPT_VERSION, judge_absence, judge_llm,
                                 save_audit)
 from rag.citation_tail import TailSplitter, resolve_citations
@@ -127,11 +128,19 @@ async def compute() -> dict:
         # 오답단정 (#95) — trap이 "답했는가"만 재던 공백을 메운다: 낚인 값(must_not_contain)이
         # 답변에 실렸는지. route 게이트는 부재단정과 같은 이유(OTHER는 규칙 3 밖) —
         # 그래서 라우팅 정확도가 이 지표의 분모를 조용히 줄일 수 있다(의도된 설계).
-        misinfo = (must_not_contain_violations(answer, g.get("must_not_contain", []))
-                   if route == "knowledge" else None)
+        misinfo_candidates = (must_not_contain_violations(answer, g.get("must_not_contain", []))
+                              if route == "knowledge" else None)
+        # 2단계(#214): 문자열 후보가 있을 때만 LLM이 '단정'인지 '부정·정정'인지 가른다 — 실측 오탐 3/4.
+        # 같은 세마포어 안에서 돈다(LLM 동시 상한). 판정 실패는 위반 유지(fail-closed, misinfo_judge docstring).
+        misinfo, misinfo_audit = misinfo_candidates, []
+        if misinfo_candidates:
+            async with sem:
+                misinfo, misinfo_audit = await confirm_violations(llm, answer, misinfo_candidates)
         return {"id": g["id"], "type": g["type"], "query": g["query"], "answer": answer,
                 "route": route, "refused": refused, "ok": refused == should_refuse,
-                "misinfo": misinfo,
+                "misinfo": misinfo,                        # 2단계 확정 위반
+                "misinfo_candidates": misinfo_candidates,  # 1단계 문자열 후보 — 둘의 차이가 오탐 수
+                "misinfo_audit": misinfo_audit,            # 판정 사유·오류(감사용)
                 "absence": absence, "absence_reason": absence_reason,
                 "absence_error": absence_error}
 
@@ -191,6 +200,8 @@ async def compute() -> dict:
         "misinfo_rate": len(misinfo_violated) / len(misinfo_target) if misinfo_target else None,
         "misinfo_n": len(misinfo_target),
         "misinfo_violated_n": len(misinfo_violated),
+        "misinfo_candidate_n": sum(1 for r in misinfo_target if r["misinfo_candidates"]),   # 1단계 후보 행 수(#214)
+        "misinfo_judge_version": MISINFO_JUDGE_VERSION,
         "misinfo_misses": [{"id": r["id"], "query": r["query"], "violated": r["misinfo"]}
                            for r in misinfo_violated],
         "false_answer": false_answer, "false_answer_n": len(ne),
@@ -238,7 +249,8 @@ async def main() -> None:
     print(f"  감사 로그: {r['absence_audit']}")
 
     if r["misinfo_n"]:
-        print(f"\n[오답단정 (#95)]  must_not_contain 보유·knowledge 라우팅 {r['misinfo_n']}건 중 "
+        print(f"\n[오답단정 (#95)]  1단계 문자열 후보 {r['misinfo_candidate_n']}건 → LLM 확인({MISINFO_JUDGE_VERSION}, #214)")
+        print(f"  must_not_contain 보유·knowledge 라우팅 {r['misinfo_n']}건 중 "
               f"{r['misinfo_violated_n']}건 = {r['misinfo_rate']:.1%}  ← 낚인 값이 답변에 실림")
         for m in r["misinfo_misses"][:20]:
             print(f"  {m['query'][:44]!r} — 검출: {m['violated']}")

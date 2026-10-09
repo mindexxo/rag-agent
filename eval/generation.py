@@ -37,6 +37,8 @@ from rag.llm_schemas import is_schema_rejected
 from rag.prompts import build_citation_constraint, build_knowledge_generation_prompt
 from rag.llm import LlmClient
 from eval.retrieval import resolve_gold
+from eval.absence_judge import judge_llm
+from eval.misinfo_judge import confirm_violations
 
 TENANT = "demo"                      # v1(단일 테넌트) 기본값 — v2 gold는 id 접두로 라우팅
 V2_TENANTS = {"summers", "homeplus", "adererror", "aromanica", "goodpeople", "harim", "inticube"}
@@ -462,6 +464,20 @@ async def judge_faithfulness(answer: str, chunks: list[RetrievedChunk]) -> float
 CONCURRENCY = int(os.getenv("EVAL_CONCURRENCY", "40"))
 
 
+async def _misinfo_scores(judge, answer: str, forbidden: list[str]) -> dict:
+    """오정보 채점 2단계(#214): 문자열 후보(must_not_contain_violations) → 후보가 있을 때만 LLM 확인.
+    scores에 세 키 — 확정 위반(기존 키, 하위 호환), 1단계 후보, 판정 감사(사유·오류).
+    judge는 absence_judge.judge_llm()이다 — 거절축과 **같은 판정자**(ABSENCE_JUDGE=claude 교차채점 포함).
+    생성용 llm을 쓰면 두 축이 같은 지표를 다른 판정자로 재게 된다(리뷰 지적)."""
+    candidates = must_not_contain_violations(answer, forbidden)
+    if not candidates:
+        return {"must_not_contain_violations": candidates, "must_not_contain_candidates": candidates,
+                "must_not_contain_audit": []}
+    confirmed, audit = await confirm_violations(judge, answer, candidates)
+    return {"must_not_contain_violations": confirmed, "must_not_contain_candidates": candidates,
+            "must_not_contain_audit": audit}
+
+
 async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None):
     """oracle / retrieved 한 모드로 생성 + 채점 → row 리스트.
 
@@ -473,6 +489,7 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None):
     재작성까지 바꾸면 무엇의 격차인지 알 수 없게 된다. None이면 llm 그대로(기존 동작).
     """
     gen_llm = gen_llm or llm
+    misinfo_judge_llm = judge_llm()        # 오정보 2단계 판정자(#214) — 거절축과 동일, 모드당 1회 생성
     gen_rows = [g for g in gold_rows if g["type"] in GEN_TYPES]
     sem = asyncio.Semaphore(CONCURRENCY)
 
@@ -536,7 +553,7 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None):
             "scores": {
                 "expected_points_coverage": expected_points_coverage(answer, g.get("expected_points", [])),
                 "citation_accuracy": citation_accuracy(answer, g.get("expected_docs", []), chunks),
-                "must_not_contain_violations": must_not_contain_violations(answer, g.get("must_not_contain", [])),
+                **(await _misinfo_scores(misinfo_judge_llm, answer, g.get("must_not_contain", []))),
                 "answer_relevancy": await judge_relevancy(g["query"], answer),
                 "faithfulness": await judge_faithfulness(answer, chunks),
             },

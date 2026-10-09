@@ -108,7 +108,7 @@ async def compute(expand: bool = False) -> dict:
             if resolved.stale:
                 stale[tenant] = len(resolved.stale)
             for g in items:
-                gold_ids = resolved.chunk_ids.get(g['id']) or []
+                gold_ids = sorted(resolved.scoring_ids.get(g['id']) or [])   # 스니펫 포함 청크 전부 (#209)
                 if not gold_ids:
                     skipped += 1
                     continue
@@ -147,6 +147,7 @@ async def main() -> None:
     # off 기본 결과를 덮어쓰지 않게 expand는 별도 파일 — 두 파일을 나란히 비교
     name = 'retrieval_v2_expand.jsonl' if args.expand else 'retrieval_v2.jsonl'
     out = Path(__file__).resolve().parent / 'results' / name
+    out.parent.mkdir(exist_ok=True)      # 워크트리엔 results/가 없다(gitignore) — generation.py와 같은 처리
     out.write_text('\n'.join(json.dumps(r, ensure_ascii=False) for r in rows) + '\n')
     print(f'\n채점 {len(rows)}문항 (resolve 불가 스킵 {skipped})  →  {out}\n')
     print('[타입별]')

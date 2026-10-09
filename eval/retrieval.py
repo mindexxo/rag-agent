@@ -29,8 +29,39 @@ RETRIEVAL_TYPES = {"single_fact", "paraphrase", "rare_lexical", "multi_doc"}
 class Resolved:
     """gold의 안정 키를 현재 id(문서=PG id, 청크=색인 chunk_id)로 변환한 결과 묶음."""
     doc_ids: dict[str, int] = field(default_factory=dict)
-    chunk_ids: dict[str, list[int]] = field(default_factory=dict)
+    chunk_ids: dict[str, list[int]] = field(default_factory=dict)     # 스니펫당 **첫 매치** 1개 — oracle 주입용(순서 보존)
+    # 스니펫을 포함한 청크 **전부** — 검색축 채점용(#209). 같은 문장이 두 쪽에 중복된 문서(타임레포트 5·6쪽, 계획/실적
+    # Flow 반복)에서 다른 중복 청크가 1위면 chunk_ids만으론 miss로 찍혔다(#203 sf004·pp001, 재인제스트마다 뒤집힘).
+    # oracle엔 쓰지 않는다 — 같은 문장 청크를 두 번 주입하면 토큰 낭비이고 생성 oracle 기준선이 흔들린다.
+    scoring_ids: dict[str, set[int]] = field(default_factory=dict)
     stale: list[str] = field(default_factory=list)
+
+
+def _norm_snippet(text: str) -> str:
+    return re.sub(r"[\s|]+", "", text)     # 검증기와 동일 정규화 (공백+파이프) — PDF/DOCX 추출은 공백 위치가 원본과 다르다
+
+
+def match_expected_chunks(chunk_rows: list[tuple[int, list[str], str]],
+                          expected_chunks: list[dict]) -> tuple[list[int], set[int], list[str]]:
+    """expected_chunks → (주 정답 id 목록, 채점용 id 집합, 못 찾은 스니펫 목록). DB 없는 순수 함수 — 테스트는 튜플만 먹인다.
+
+    주 정답 = 스니펫당 하나: heading_path가 일치하는 매치가 있으면 그것, 없으면 첫 매치(현행 규칙 그대로, oracle용).
+    채점 집합 = 스니펫을 포함한 청크 전부(#209). snippet 포함이 정답 판정의 최종 검증자(§4.1)라는 원칙은 같고,
+    "포함한 청크가 여럿이면 전부 근거"라는 당연한 귀결을 채점에만 적용한다.
+    """
+    primary: list[int] = []
+    all_ids: set[int] = set()
+    missing: list[str] = []
+    for ec in expected_chunks:
+        snip = _norm_snippet(ec["snippet"])
+        hits = [(cid, hp) for cid, hp, text in chunk_rows if snip in _norm_snippet(text)]
+        if not hits:
+            missing.append(ec["snippet"][:20])
+            continue
+        want_hp = ec.get("heading_path")     # v2 스키마엔 없음 (PDF/DOCX 헤딩 미보존)
+        primary.append(next((cid for cid, hp in hits if want_hp and hp == want_hp), hits[0][0]))
+        all_ids.update(cid for cid, _ in hits)
+    return primary, all_ids, missing
 
 
 async def _indexed_chunks(document_id: int) -> list[tuple[int, list[str], str]]:
@@ -72,29 +103,24 @@ async def resolve_gold(session, tenant_id, gold_rows) -> Resolved:
     )).all()
     r.doc_ids = {fn: did for fn, did in doc_rows}
 
-    # 2) expected_chunks -> chunk id (heading_path 일치 + text 에 snippet 포함)
+    # 2) expected_chunks -> chunk id. 매칭 규칙은 match_expected_chunks가 정의점 — 문서별로 색인 청크를 한 번 읽어 넘긴다.
+    chunk_cache: dict[int, list[tuple[int, list[str], str]]] = {}
     for row in gold_rows:
-        cids = []
+        primary: list[int] = []
+        scoring: set[int] = set()
         for ec in row.get("expected_chunks", []):
             doc_id = r.doc_ids.get(ec["filename"])
             if doc_id is None:
                 r.stale.append(f'{row["id"]}: doc 못찾음 {ec["filename"]}')
                 continue
-            chunk_rows = await _indexed_chunks(doc_id)
-            # snippet 포함이 정답 판정의 최종 검증자 (§4.1). heading_path는
-            # 완전일치를 요구하지 않고, 여러 청크가 snippet을 포함할 때 우선순위로만 사용.
-            # 매칭은 공백 무시 — PDF/DOCX 추출 텍스트는 줄바꿈·공백 위치가 원본과 다르다 (v2).
-            snip = re.sub(r"[\s|]+", "", ec["snippet"])     # 검증기와 동일 정규화 (공백+파이프)
-            hits = [(cid, hp) for cid, hp, text in chunk_rows
-                    if snip in re.sub(r"[\s|]+", "", text)]
-            want_hp = ec.get("heading_path")     # v2 스키마엔 없음 (PDF/DOCX 헤딩 미보존)
-            match = next((cid for cid, hp in hits if want_hp and hp == want_hp),
-                         hits[0][0] if hits else None)
-            if match is None:
-                r.stale.append(f'{row["id"]}: chunk 못찾음 {ec["snippet"][:20]}')
-            else:
-                cids.append(match)
-        r.chunk_ids[row["id"]] = cids
+            if doc_id not in chunk_cache:
+                chunk_cache[doc_id] = await _indexed_chunks(doc_id)
+            p, a, missing = match_expected_chunks(chunk_cache[doc_id], [ec])
+            primary.extend(p)
+            scoring.update(a)
+            r.stale.extend(f'{row["id"]}: chunk 못찾음 {m}' for m in missing)
+        r.chunk_ids[row["id"]] = primary
+        r.scoring_ids[row["id"]] = scoring
     return r
 
 
@@ -171,7 +197,7 @@ async def run_config(session, name, gold_rows, resolved, fingerprint):
         got = [c.chunk_id for c in cands.chunks]
 
         # chunk 정답 우선, 없으면 doc 단위 폴백 (§5.2)
-        gold_ids = resolved.chunk_ids.get(row["id"]) or []
+        gold_ids = sorted(resolved.scoring_ids.get(row["id"]) or [])   # v1 레거시 경로도 집합 채점 (#209)
         if gold_ids:
             score = score_one(got, gold_ids)
         else:

@@ -75,7 +75,7 @@ async def compute(multi: bool = False) -> dict:
             if resolved.stale:
                 stale[tenant] = len(resolved.stale)
             for g in items:
-                gold_ids = resolved.chunk_ids.get(g['id']) or []
+                gold_ids = sorted(resolved.scoring_ids.get(g['id']) or [])   # 스니펫 포함 청크 전부 (#209)
                 if not gold_ids:
                     skipped += 1
                     continue

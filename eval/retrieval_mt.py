@@ -20,9 +20,9 @@ from pathlib import Path
 from config import settings
 from database import AsyncSessionLocal
 from eval._gold_history import messages_from_conversation
-from eval.generation import row_tenant
+from eval.generation import load_gold, row_tenant
 from eval.retrieval import resolve_gold, score_one
-from eval.retrieval_v2 import GOLD, METRICS
+from eval.retrieval_v2 import METRICS
 from rag.conversation import (condense_query, condense_to_queries,
                               trim_messages_for_condense)
 from rag.llm import LlmClient
@@ -44,7 +44,7 @@ async def compute(multi: bool = False) -> dict:
     LLM(condense)은 선병렬(vLLM 연속 배칭 활용, #18), 검색·채점은 세션 직렬 —
     AsyncSession은 동시 실행 불가라 gather에 태우지 않는다.
     """
-    gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+    gold = load_gold()      # 정본 + gold_private(실문서 multi_turn 15행) — #199와 같은 이전. GOLD 상수는 8/24에 사라졌는데 이 축만 남아 import가 깨져 있었다(#209)
     target = [g for g in gold if g['type'] in TYPES]
 
     llm = LlmClient()
@@ -105,6 +105,7 @@ async def main() -> None:
 
     name = 'retrieval_mt_multi.jsonl' if args.multi else 'retrieval_mt.jsonl'
     out = Path(__file__).resolve().parent / 'results' / name
+    out.parent.mkdir(exist_ok=True)
     out.write_text('\n'.join(json.dumps(r, ensure_ascii=False) for r in rows) + '\n')
     print(f'\n[multi_turn 검색축 — {"멀티쿼리 on" if args.multi else "condense 단일(off)"}]')
     print(f'채점 {len(rows)}문항 (resolve 불가 스킵 {result["skipped"]})  →  {out}')
@@ -117,4 +118,10 @@ async def main() -> None:
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    async def _run():
+        try:
+            await main()
+        finally:
+            from rag import os_client
+            await os_client.close_client()      # aiohttp 세션 미종료 경고 방지 — retrieval_v2와 같은 처리
+    asyncio.run(_run())

@@ -293,7 +293,8 @@ def _docling_runtime():
             opts.do_picture_description = True
             opts.picture_description_options = PictureDescriptionApiOptions(
                 url=settings.vlm_caption_url,
-                params={'model': settings.vlm_caption_model},
+                params={'model': settings.vlm_caption_model,
+                        'temperature': settings.vlm_caption_temperature},   # 결정적 캡션(#209) — params는 요청 body에 그대로 들어간다
                 prompt=_PICTURE_CAPTION_PROMPT,
                 scale=settings.vlm_caption_scale,
                 timeout=settings.vlm_caption_timeout_seconds)

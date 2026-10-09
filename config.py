@@ -266,7 +266,12 @@ class Settings(BaseSettings):
                                               # 원문에 없는 내용을 지어냈다(3회 재현). 4.0(1736×239px)에서 원문
                                               # 완전 일치(3회 재현). PdfPipelineOptions.images_scale과 **다른 값**이다
                                               # — 그쪽은 캡션 품질과 무관함을 실측으로 분리 확인했다(2026-09-14)
-    vlm_caption_timeout_seconds: float = 20.0 # 요청 하나의 상한(docling 기본값 유지). 예산: 이 값 × 그림 수가
+    vlm_caption_temperature: float = 0.0      # OpenAI 호환 body의 temperature. 0 = greedy → 같은 크롭이면 같은 캡션(#209).
+                                              # 기본(샘플링)에서는 재인제스트마다 표 캡션이 마크다운/평문을 오가 골드 청크
+                                              # 순위가 흔들렸다(sf005 1→2위). 캡션은 "원문 그대로 옮기기"라 다양성이 필요 없다.
+    vlm_caption_timeout_seconds: float = 45.0 # 요청 하나의 상한. docling은 읽기 타임아웃을 **재시도하지 않는다**(Retry read=0)
+                                              # — 넘기면 그 그림은 캡션 없이 자리표시로 남는다. 기본 20초에서 3회 변환 중 1회
+                                              # 1건이 터져 45초로(#209). 그림 20장이어도 900초 문서 예산 안. 예산: 이 값 × 그림 수가
                                               # docling_document_timeout_seconds(900)를 넘으면 문서가 failed 된다.
                                               # 실문서는 최대 2장/문서라 여유가 크지만, 그림 많은 문서가 들어오면 재검토
 

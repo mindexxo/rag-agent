@@ -19,6 +19,11 @@ LlmClient(rag/llm.py)와 acomplete 시그니처를 맞춰 eval/generation.py에 
 - cwd를 빈 임시 디렉터리로 둔다 — 리포에서 돌리면 CLAUDE.md 등 프로젝트 컨텍스트가
   주입돼 "순수 모델" 비교가 오염된다.
 - --tools "" 로 도구를 차단한다(파일 읽기 등 에이전트 행동 없는 순수 생성 콜).
+- **MCP·스킬·설정 로딩을 끈다**(--strict-mcp-config --disable-slash-commands --setting-sources "") —
+  빈 cwd로는 부족했다. 사용자 설정에 등록된 MCP 서버·스킬·플러그인의 도구 정의가 매 호출 시스템 프롬프트에
+  실려, 판정 프롬프트 수백 자에 **입력 77,722토큰**이 붙었다. 끄면 3,756토큰(약 20분의 1, 2026-10-10 실측) —
+  RAGAS 심판이 사용량 한도 한 창에 약 500작업밖에 못 가던 원인(#218). 판정 출력 형식은 동일.
+- 시스템 메시지가 없어도 최소 --system-prompt를 넘긴다 — 없으면 Claude Code 기본 시스템 프롬프트가 붙는다.
 
 스모크: python -m eval.claude_client   (LLM 서버·DB 불필요, claude CLI 로그인만 필요)
 """
@@ -30,6 +35,7 @@ from pathlib import Path
 # 콜당 상한. 생성 프롬프트는 1~2분이면 족하지만 롱컨텍스트(수십만 자)는 읽기만으로도
 # 오래 걸린다 — vLLM 쪽 300s(rag/llm.py)보다 넉넉히 잡되 무한 대기는 막는다.
 TIMEOUT_SECONDS = 600
+_MINIMAL_SYSTEM = "요청한 작업만 지정된 형식으로 수행한다."   # 시스템 메시지 없는 호출(RAGAS 판정 등)의 기본값
 
 
 class ClaudeCliClient:
@@ -54,9 +60,9 @@ class ClaudeCliClient:
         prompt = "\n\n".join(m["content"] for m in messages if m["role"] != "system")
 
         cmd = [self._exe, "-p", "--model", self.model, "--tools", "",
-               "--output-format", "text"]
-        if system:
-            cmd += ["--system-prompt", system]
+               "--output-format", "text",
+               "--strict-mcp-config", "--disable-slash-commands", "--setting-sources", "",
+               "--system-prompt", system or _MINIMAL_SYSTEM]
 
         proc = await asyncio.create_subprocess_exec(
             *cmd, cwd=self._workdir,

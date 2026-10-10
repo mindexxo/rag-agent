@@ -91,6 +91,9 @@ ROWS = [
     # 한계: 구성이 바뀌었는데 n이 우연히 같으면 못 잡는다 — 그런 변경은 커밋 주석으로 고지할 것.
     Row("ragas", "faithfulness", "생성  faithfulness", version_key="n"),
     Row("ragas", "answer_relevancy", "생성  relevancy", version_key="n"),
+    # 정답 대조 2축(#216): 모범답안 보유 문항만이라 분모가 n이 아니라 n_ref — version_key도 그것으로
+    Row("ragas", "answer_correctness", "생성  정답일치", version_key="n_ref"),
+    Row("ragas", "context_recall", "생성  근거재현", version_key="n_ref"),
     # 낮을수록 좋은 유일한 행 (#76) — 부재단정률이 오르는 것이 회귀다.
     # 임계를 전역(0.01)보다 크게 잡는 이유: 분모가 58 내외라 **1건이 1.7%**다. 게다가 같은
     # 프롬프트에서 3회 반복 시 0~2건(0.0~3.5%)으로 흔들린다(#76 실측). 전역 임계를 쓰면
@@ -353,7 +356,10 @@ def main() -> None:
         from eval.ragas_eval import compute as ragas_compute
         r = ragas_compute(smoke=args.smoke)
         summary["ragas"] = {"faithfulness": r["faithfulness"],
-                            "answer_relevancy": r["answer_relevancy"], "n": r["n"]}
+                            "answer_relevancy": r["answer_relevancy"], "n": r["n"],
+                            # 정답 대조 2축(#216) — 분모가 모범답안 보유 문항(n_ref)이라 따로 싣는다
+                            "context_recall": r["context_recall"], "answer_correctness": r["answer_correctness"],
+                            "n_ref": r["n_ref"], "missing": r["missing"]}
 
     prev = _prev_summary()   # 이번 저장 전에 읽어야 '직전'이 맞음
     HISTORY.mkdir(parents=True, exist_ok=True)

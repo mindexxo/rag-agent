@@ -29,10 +29,20 @@ def _load_jsonl(path: Path) -> list[dict]:
 
 
 def build_dataset(mode: str = "retrieved", ref_only: bool = False) -> EvaluationDataset:
-    """저장된 {mode} 생성 결과 → RAGAS EvaluationDataset.
+    """저장된 {mode} 생성 결과 → RAGAS EvaluationDataset (기존 호출부 호환 래퍼 — 정의점은 build_samples).
 
     ref_only=True: 검수된 정답문(expected_answer)이 있는 gold만 — reference 필요 지표
-    (context_recall·answer_correctness)용. 파일럿 30문항부터 (2026-08-08).
+    (context_recall·answer_correctness)용. 파일럿 30문항(2026-08-08) → 551문항(2026-10-10).
+    """
+    rows = build_samples(mode)
+    return EvaluationDataset.from_list([r["sample"] for r in rows if r["has_ref"] or not ref_only])
+
+
+def build_samples(mode: str = "retrieved") -> list[dict]:
+    """저장된 {mode} 생성 결과 → [{"id", "has_ref", "sample"}] (생성 결과 파일 순서).
+
+    #216: 한 번 실행에 '기본 3지표는 전체, 정답 대조 2지표는 has_ref 행만'을 계산하려면 행 id와
+    모범답안 보유 여부가 필요하다 — EvaluationDataset은 id를 실을 자리가 없어 여기서 함께 돌려준다.
     """
     # load_gold()라야 사내 실문서 골드(eval/gold_private/)가 들어온다 — 정본만 읽으면
     # 생성 결과에 실문서 행이 있어도 gold_by_id에 없어서 아래 `g is None`으로 통째 스킵된다.
@@ -45,9 +55,7 @@ def build_dataset(mode: str = "retrieved", ref_only: bool = False) -> Evaluation
         g = gold_by_id.get(r["id"])
         if g is None:                       # gold에 없는 결과 → 스킵
             continue
-        if ref_only and not g.get("expected_answer"):
-            continue
-        samples.append({
+        samples.append({"id": r["id"], "has_ref": bool(g.get("expected_answer")), "sample": {
             # multi_turn은 condense 재작성 질문을 사용 — 원 후속 질문("그건 언제까지?")은
             # 맥락이 없어 answer_relevancy가 부당하게 깎임. 재작성 질문이 답변의 공정한 기준.
             "user_input": r.get("standalone_query") or g["query"],
@@ -55,8 +63,8 @@ def build_dataset(mode: str = "retrieved", ref_only: bool = False) -> Evaluation
             "retrieved_contexts": r.get("retrieved_contexts", []),
             # 검수된 정답문 우선, 없으면 기대 포인트 이어붙임(유사 reference — 참고용 폴백)
             "reference": g.get("expected_answer") or " ".join(g.get("expected_points", [])),
-        })
-    return EvaluationDataset.from_list(samples)
+        }})
+    return samples
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ metric — 한 번 실행에 두 집합을 채점한다(#216):
   [생성축 전체] reference 불필요 3축
 - faithfulness       : 답변 주장이 retrieved_contexts에 근거하는가 (환각)
 - answer_relevancy   : 답변이 질문에 맞는가 (동문서답)
-- context_precision  : top5 각 청크가 답변에 유용했는가 — Hit@1이 못 보는 '비-gold 청크 노이즈' 축
+- context_precision  : top5 각 청크가 답변에 유용했는가 — Hit@1이 못 보는 '비-gold 청크 노이즈' 축 (기본 off, RAGAS_CTX_PRECISION=1)
   [모범답안(expected_answer) 보유 문항만] 정답 대조 2축 — RAGAS_REF=0이면 생략
 - context_recall     : 모범답안의 내용을 검색 청크가 담고 있었나 (검색의 근거 누락)
 - answer_correctness : 답이 모범답안과 사실이 일치하나 (정답률을 직접)
@@ -64,6 +64,9 @@ class LocalBGEEmbeddings(Embeddings):
         return embed_query_sync(text).dense
 
 
+from config import settings
+
+
 def compute(smoke: int | None = None) -> dict:
     """RAGAS 채점 실행 → 요약 반환 (per-sample CSV도 저장). 출력은 main이 담당.
 
@@ -102,7 +105,9 @@ def compute(smoke: int | None = None) -> dict:
         from eval.claude_langchain import ClaudeCliChatModel
         judge = LangchainLLMWrapper(
             ClaudeCliChatModel(client=ClaudeCliClient(model=os.getenv("CLAUDE_MODEL", "sonnet"))))
-        max_workers = 4
+        # 4 → 기본 8(#218): 경량 호출(입력 ~3.7k토큰)이라 토큰은 동시성과 무관. 제약은 로컬 메모리 —
+        # claude -p 1개 최대 RSS 약 240MB, 16GB 기기에서 여유 약 3.4GB(서버·워커·IDE 상주) → 16은 스왑 위험.
+        max_workers = int(os.getenv("CLAUDE_JUDGE_WORKERS", "8"))   # 20까지 실측 근거: 여유 6.3GB 기준 약 4.8GB
     else:
         judge = LangchainLLMWrapper(
             ChatOpenAI(model=OPENAI_JUDGE_MODEL),
@@ -115,25 +120,67 @@ def compute(smoke: int | None = None) -> dict:
     # timeout 180(기본)→600 (#216): 14B judge는 문항당 판정이 길어 180초에 걸려 조용히 NaN이 됐다 — 28행 스모크에서
     # 정답 대조 8/26 결측, #114 때 540건 채점본 결측 수백 건(별도 backfill로 메움). NaN은 평균에서 빠져 분모가 몰래 준다.
     run_config = RunConfig(max_workers=max_workers, max_retries=10, timeout=600)
-    result = evaluate(dataset=ds, metrics=[faithfulness, answer_relevancy, LLMContextPrecisionWithoutReference()],
-                      llm=judge, embeddings=emb, run_config=run_config)
-    df = result.to_pandas()
-    df.insert(0, "id", [r["id"] for r in rows])          # 문항 id — 두 집합을 합치고 사람이 추적할 수 있게
-    ref_result = None
-    if ref_rows:
-        ref_result = evaluate(dataset=EvaluationDataset.from_list([r["sample"] for r in ref_rows]),
-                              metrics=[LLMContextRecall(), answer_correctness],
-                              llm=judge, embeddings=emb, run_config=run_config)
-        rdf = ref_result.to_pandas()[["context_recall", "answer_correctness"]]
-        rdf.insert(0, "id", [r["id"] for r in ref_rows])
-        df = df.merge(rdf, on="id", how="left")          # 모범답안 없는 행은 빈값 — 평균에서 자동 제외
 
-    # 퇴근 후에도 남게 파일로 저장 (per-sample + 집계).
-    # 파일명에 실행 시각·샘플 수 — 고정 이름 덮어쓰기로 본측정 결과를 날린 사고(07-18) 재발 방지
+    # ── 묶음 채점 + 이어 돌리기 (#218) ──────────────────────────────────────────────
+    # evaluate()는 전체가 끝나야 결과를 돌려준다 — 사용량 한도로 중단되면 완료분까지 사라졌다(10/10 A: 765/1974에서 중단).
+    # RAGAS_BATCH문항씩 채점해 묶음마다 진행 파일에 덧붙이고, 재실행 시 지표가 다 찬 문항은 건너뛴다.
+    # 결측(NaN)·미채점 칸만 다시 채점하므로 결측 메우기 스크립트가 따로 필요 없다.
+    # 진행 파일 키 = 심판·모델·생성 결과 파일 해시 — 답변을 재생성하면 새 파일로 시작한다(옛 점수 재사용 방지).
+    import hashlib
+    import pandas as pd
     from datetime import datetime
     from pathlib import Path
+    # context_precision은 기본 off(#218): 문항당 판정 5회(청크 5개 각각)로 호출의 절반 이상인데, 검색 노이즈 지표라
+    # 검색축(Hit@1·R@5·MRR)과 겹치고 '생성기만 교체'하는 상용 비교에선 A·B가 거의 같게 나온다. run_all 이력에도 행이 없다.
+    # 필요하면 RAGAS_CTX_PRECISION=1로 켠다.
+    with_ctx_precision = os.getenv("RAGAS_CTX_PRECISION", "0") == "1"
+    base_cols = ["faithfulness", "answer_relevancy"] + (["llm_context_precision_without_reference"] if with_ctx_precision else [])
+    base_metrics = [faithfulness, answer_relevancy] + ([LLMContextPrecisionWithoutReference()] if with_ctx_precision else [])
+    ref_cols = ["context_recall", "answer_correctness"]
+    gen_hash = hashlib.sha1(Path("eval/results/generation_retrieved.jsonl").read_bytes()).hexdigest()[:10]
+    model_tag = (os.getenv("CLAUDE_MODEL", "sonnet") if JUDGE == "claude" else
+                 (settings.vllm_model if JUDGE == "vllm" else OPENAI_JUDGE_MODEL)).replace("/", "_")
+    progress = Path(f"eval/results/ragas_progress_{JUDGE}_{model_tag}_{gen_hash}.csv")
+    prog = pd.read_csv(progress).set_index("id") if progress.exists() else pd.DataFrame()
+
+    def _missing(r: dict, cols: list[str]) -> bool:
+        if r["id"] not in prog.index:
+            return True
+        return any(c not in prog.columns or pd.isna(prog.at[r["id"], c]) for c in cols)
+
+    need_base = [r for r in rows if _missing(r, base_cols)]
+    need_ref = [r for r in ref_rows if _missing(r, ref_cols)]
+    print(f"진행 파일 {progress.name}: 3지표 남은 {len(need_base)}/{len(rows)} · 정답대조 남은 {len(need_ref)}/{len(ref_rows)}")
+    batch = int(os.getenv("RAGAS_BATCH", "50"))
+
+    def _run(todo: list[dict], metrics: list, cols: list[str], rename: dict | None = None) -> None:
+        nonlocal prog
+        for i in range(0, len(todo), batch):
+            chunk = todo[i:i + batch]
+            res = evaluate(dataset=EvaluationDataset.from_list([r["sample"] for r in chunk]), metrics=metrics,
+                           llm=judge, embeddings=emb, run_config=run_config)
+            part = res.to_pandas()
+            part.insert(0, "id", [r["id"] for r in chunk])
+            part = part.set_index("id")
+            keep = [c for c in part.columns if c in cols or c in ("user_input", "response", "reference")]
+            part = part[keep]
+            for rid in part.index:                     # 칸 단위 갱신 — 다른 지표 칸은 보존
+                for c in part.columns:
+                    prog.loc[rid, c] = part.at[rid, c]
+            prog.reset_index(names="id").to_csv(progress, index=False)   # 묶음마다 저장 — 여기까지는 중단돼도 남는다
+            print(f"  [{'/'.join(cols)[:30]}] {min(i + batch, len(todo))}/{len(todo)} 저장")
+
+    if need_base:
+        _run(need_base, base_metrics, base_cols)
+    if need_ref:
+        _run(need_ref, [LLMContextRecall(), answer_correctness], ref_cols)
+
+    df = prog.reindex([r["id"] for r in rows]).reset_index(names="id")
+    for c in ref_cols:                                  # 모범답안 없는 행은 정답대조 빈값이 정상
+        if c in df.columns:
+            df.loc[~df["id"].isin({r["id"] for r in ref_rows}), c] = float("nan")
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
-    out = Path(f"eval/results/ragas_retrieved_{stamp}_n{len(ds)}.csv")
+    out = Path(f"eval/results/ragas_retrieved_{stamp}_n{len(rows)}.csv")   # 최종 스냅샷(시각·문항수) — 덮어쓰기 사고 방지(07-18)
     df.to_csv(out, index=False)
 
     def _mean(col):
@@ -146,26 +193,22 @@ def compute(smoke: int | None = None) -> dict:
         "context_precision": _mean("llm_context_precision_without_reference"),
         "context_recall": _mean("context_recall"),
         "answer_correctness": _mean("answer_correctness"),
-        "n": len(ds),
+        "n": len(rows),
         "n_ref": len(ref_rows),                          # 정답 대조 2축의 분모(#216)
-        # 지표별 결측(NaN) 수 — 평균은 결측을 빼고 계산되므로 0이 아니면 분모가 몰래 줄어든 것이다
-        "missing": {c: int(df[c].isna().sum()) - (len(rows) - len(ref_rows) if c in ("context_recall", "answer_correctness") else 0)
-                    for c in ("faithfulness", "answer_relevancy", "llm_context_precision_without_reference",
-                              "context_recall", "answer_correctness") if c in df.columns},
+        # 지표별 결측(NaN) 수 — 0이 아니면 같은 명령을 다시 돌리면 그 칸만 다시 채점한다(#218)
+        "missing": {c: int(df[c].isna().sum()) - (len(rows) - len(ref_rows) if c in ref_cols else 0)
+                    for c in base_cols + ref_cols if c in df.columns},
         "csv": str(out),
-        "result": result,
-        "ref_result": ref_result,
+        "progress": str(progress),
     }
 
 
 def main():
     print(f"judge={JUDGE}  |  SMOKE={SMOKE or '0(전체)'}")
     r = compute()
-    print(r["result"])
+    print({k: (round(v, 3) if isinstance(v, float) else v) for k, v in r.items() if k not in ("missing",)})
     if any(r["missing"].values()):
-        print("⚠ 결측(판정 실패·타임아웃):", {k: v for k, v in r["missing"].items() if v})
-    if r["ref_result"] is not None:
-        print(f"[정답 대조 n_ref={r['n_ref']}]", r["ref_result"])
+        print("⚠ 결측(판정 실패·타임아웃) — 같은 명령을 다시 돌리면 그 칸만 다시 채점:", {k: v for k, v in r["missing"].items() if v})
     print(f"→ saved {r['csv']}")
 
 

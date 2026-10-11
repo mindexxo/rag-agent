@@ -188,6 +188,9 @@ async def main():
     for r in rows:
         r["scores"]["expected_points_coverage"] = expected_points_coverage(
             r["answer"], by_id[r["id"]].get("expected_points", []))
+        # 규칙만으로 채점한다(#221 2단계 심판 없음) — 생성 평가의 심판 반영 EPCov와 섞이지 않게 자기서술
+        r["scores"]["expected_points_coverage_rule"] = r["scores"]["expected_points_coverage"]
+        r["epcov_judge"] = "rule-only"
 
     OUT.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows))
     summarize(rows)

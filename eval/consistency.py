@@ -8,7 +8,9 @@
 - 각 문항을 retrieved 모드(운영 경로 그대로: condense→검색→리랭크→생성)로 R회(기본 5) 반복.
   검색까지 매번 다시 탄다 — 재는 것은 생성 LLM 단독이 아니라 **시스템 전체의 재현성**이다
   (TEI 임베딩·리랭커도 콜마다 비결정적임이 실측돼 있다: 1.4e-4 오더).
-- 지표(포인트 단위 — 판정은 eval.generation.expected_points_hits 재사용, 기준 복제 금지):
+- 지표(포인트 단위 — 판정은 eval.generation.expected_points_hits 재사용, 기준 복제 금지).
+  **규칙 판정만 쓴다** — 생성 평가의 EPCov는 #221부터 규칙 + 2단계 심판이지만, 이 축은 심판을 끈다(run_mode
+  epcov_judging=False). 그래서 여기 런별 EPCov는 생성 평가의 `expected_points_coverage_rule`과 같은 눈금이다:
   - **포인트 일치율**: (문항, 포인트) 쌍 중 R런 판정이 전부 같은 비율 (전부 O or 전부 X).
   - **flaky 포인트율**: 런마다 갈리는 쌍의 비율 (= 1 - 일치율). condense flaky와 같은 관점.
   - 참고로 런별 EPCov 평균도 찍는다 — 평균은 같아도 개별 포인트가 출렁일 수 있어서
@@ -47,7 +49,8 @@ async def main() -> None:
         for run in range(1, RUNS + 1):
             print(f"=== run {run}/{RUNS} ({len(sample)}문항, retrieved) ===")
             # retrieved 모드는 resolved(oracle 전용 재료)를 안 쓴다 — 빈 값으로 충분
-            rows = await run_mode(session, llm, "retrieved", sample, Resolved())
+            # EPCov 심판(#221)은 끈다 — 이 축은 규칙 판정(point_hits)의 런간 일치를 재고, 심판까지 R회 부르면 비용이 R배다
+            rows = await run_mode(session, llm, "retrieved", sample, Resolved(), epcov_judging=False)
             for r in rows:
                 r["run"] = run
                 r["point_hits"] = expected_points_hits(r["answer"], points_by_id[r["id"]])

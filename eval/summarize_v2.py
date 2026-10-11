@@ -38,6 +38,8 @@ def main() -> None:
     for mode in ('oracle', 'retrieved'):
         path = RESULT_DIR / f'generation_{mode}.jsonl'
         rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+        # EPCov 판정자(#221) — 다르면 같은 눈금이 아니다(규칙만 vs 규칙+심판, 심판 모델별)
+        print(f'[{mode}] EPCov 판정자: {sorted({str(r.get("epcov_judge")) for r in rows})}')
         print(f'\n{"=" * 44}\nmode: {mode}  ({len(rows)}문항)\n{"=" * 44}')
         print('\n[테넌트별]')
         table(rows, lambda r: tenant_of(r['id']), 'tenant')

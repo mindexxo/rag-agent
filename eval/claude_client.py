@@ -79,8 +79,10 @@ class ClaudeCliClient:
         if proc.returncode != 0:
             # stderr 앞부분만 — 로그인 만료·한도 도달이 여기로 온다. 조용히 삼키면
             # 빈 답변이 채점돼 수치가 오염되므로 시끄럽게 실패한다.
+            # 사유는 stdout으로 오는 경우가 많다(한도·요청 제한 메시지) — stderr만 보면 빈 문자열이라 원인 불명이었다
+            # (10/10 A 실행 실패 268건 전부 사유 공란). 둘 다 싣는다.
             raise RuntimeError(
-                f"claude -p 실패 (exit {proc.returncode}): {err.decode()[:300]}")
+                f"claude -p 실패 (exit {proc.returncode}): stdout={out.decode()[:200]!r} stderr={err.decode()[:200]!r}")
         return out.decode().strip()
 
 

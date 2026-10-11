@@ -35,6 +35,7 @@
 (#139로 파싱이 워커로 옮겨간 뒤 한동안 웹 업로드도 **색인 시점 failed**였다 — 이 모듈
 docstring의 옛 "업로드 거절"은 그 기간 동안 사실이 아니었고, #194로 다시 사실이 됐다.)
 """
+from contextlib import closing
 from io import BytesIO
 
 import openpyxl
@@ -43,8 +44,7 @@ from config import settings
 
 # 표 markdown 조립은 chunking.py가 단일 정의점 — PDF 표(#137 결함 5)도 같은 형태를
 # 내놓아야 프롬프트·리랭커·어휘 채널이 형식에 따라 다른 모양을 보지 않는다.
-from rag.chunking import (ChunkData, _docling_norm, docling_convert, docling_grid_markdown, docling_picture_text,
-                          to_markdown_table as _to_markdown)
+from rag.chunking import ChunkData, docling_block_text, docling_convert, to_markdown_table as _to_markdown
 
 XLSX_MAX_ROWS = 150   # 헤더 제외 데이터 행. 초과 시 거절 (통째 주입 + 임베딩 상한)
 
@@ -165,57 +165,40 @@ def chunk_xlsx_plain(file_path, description: str = '') -> list[ChunkData]:
 
     150행 초과 시트가 있으면 XlsxTooManyRows. 그림은 읽지 않는다.
     """
-    wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
-    chunks = []
-    try:
+    with closing(openpyxl.load_workbook(file_path, read_only=True, data_only=True)) as wb:
+        chunks = []
         for title, header, body in _iter_sheets(wb):
             _check_row_limit(title, body)
             chunks.append(_sheet_chunk(title, _to_markdown(header, body), description, len(chunks)))
-    finally:
-        wb.close()
-    return chunks
+        return chunks
 
 
 def _check_workbook_rows(file_path) -> list[str]:
     """행 상한 검사(openpyxl) — 위반이면 XlsxTooManyRows. 셀이 있는 시트 이름을 문서 순서로 돌려준다."""
-    wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
-    try:
+    with closing(openpyxl.load_workbook(file_path, read_only=True, data_only=True)) as wb:
         titles = []
         for title, _header, body in _iter_sheets(wb):
             _check_row_limit(title, body)
             titles.append(title)
         return titles
-    finally:
-        wb.close()
 
 
 def _docling_sheet_texts(doc) -> dict[str, str]:
     """docling 엑셀 문서 → {시트명: 본문}. 시트는 docling의 'sheet' 그룹이다(그룹 이름 = 시트명, 실측).
 
     한 시트 안의 블록(표·그림 캡션·표 밖 단일 셀 문구)을 읽기 순서대로 빈 줄로 잇는다 — 시트 하나에 표가 여럿이어도
-    청크는 하나다(retriever `_keep_single_table`의 '표 청크 1개 = 시트 1개' 전제 유지). 표는 docling_grid_markdown
-    (가로 병합 반복 제거·세로 병합은 행마다), 그림은 캡션 또는 자리표시(VLM 실패 신호 — count_picture_placeholders가 센다).
+    청크는 하나다(retriever `_keep_single_table`의 '표 청크 1개 = 시트 1개' 전제 유지). 블록 하나의 글자는
+    docling_block_text(표=가로 병합 반복 제거·세로 병합은 행마다, 그림=캡션 또는 자리표시).
+    숨긴 시트의 그룹은 INVISIBLE 층이라 기본 순회가 비워 내고, 블록이 없는 시트는 넣지 않는다.
     """
-    out: dict[str, str] = {}
+    from docling_core.types.doc import GroupLabel   # 지연 import — docling은 톱레벨에 안 들인다
+    sheets: dict[str, str] = {}
     for group in doc.groups:
-        if getattr(group.label, 'value', group.label) != 'sheet':
+        if group.label != GroupLabel.SHEET:
             continue
-        blocks: list[str] = []
-        for element, _depth in doc.iterate_items(root=group):
-            label = getattr(element.label, 'value', element.label)
-            if label == 'table':
-                md = docling_grid_markdown(element, doc)
-                if md:
-                    blocks.append(md)
-            elif label == 'picture':
-                blocks.append(docling_picture_text(element))
-            elif label != 'sheet':
-                text = _docling_norm(getattr(element, 'text', '') or '')
-                if text:
-                    blocks.append(text)
-        if blocks:
-            out[group.name] = '\n\n'.join(blocks)
-    return out
+        if blocks := [b for item, _ in doc.iterate_items(root=group) if (b := docling_block_text(item, doc))]:
+            sheets[group.name] = '\n\n'.join(blocks)
+    return sheets
 
 
 def chunk_xlsx(file_path, description: str = '') -> list[ChunkData]:
@@ -230,8 +213,7 @@ def chunk_xlsx(file_path, description: str = '') -> list[ChunkData]:
         return chunk_xlsx_plain(file_path, description)
     titles = _check_workbook_rows(file_path)
     texts = _docling_sheet_texts(docling_convert(file_path).document)
-    missing = [t for t in titles if t not in texts]
-    if missing:
+    if missing := [t for t in titles if t not in texts]:
         raise RuntimeError(f'docling이 셀이 있는 시트를 비워 냈다: {missing}')
     order = titles + [t for t in texts if t not in titles]
     return [_sheet_chunk(t, texts[t], description, i) for i, t in enumerate(order)]

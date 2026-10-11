@@ -39,6 +39,7 @@ import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import pdfplumber
 from docx import Document as DocxDocument
@@ -403,7 +404,7 @@ def _docling_table_markdown(item, doc) -> str | None:
     return to_markdown_table(header, rows)
 
 
-def docling_grid_markdown(item, doc=None) -> str | None:
+def docling_grid_markdown(table, doc=None) -> str | None:
     """docling 표 → markdown, **셀 원문(grid)에서 직접** 그린다. DOCX·XLSX 표의 정의점(#220).
 
     PDF 표(_docling_table_markdown)와 다른 두 가지:
@@ -423,34 +424,44 @@ def docling_grid_markdown(item, doc=None) -> str | None:
     이 처리 전에는 VLM이 캡션을 만들어 놓고도 칸 글자에 없어 버려졌다(실측: 'LOGIN ID / PASSWORD' 캡션이 색인 0).
     PDF 표는 이 함수를 쓰지 않는다 — #143 이후 실측된 출력을 바꾸지 않는다(동작 보존).
     """
-    grid = item.data.grid
-    if not grid or not grid[0]:
-        return None
-    rows: list[list[str]] = []
-    for r, row in enumerate(grid):
-        cells = [_grid_cell_text(cell, doc) if cell.start_col_offset_idx == c else ''
-                 for c, cell in enumerate(row)]
-        if any(cells):
-            rows.append(cells)
-    if not rows:
-        return None
-    return to_markdown_table(rows[0], rows[1:])
+    rows = [[_grid_cell_text(cell, doc) if cell.start_col_offset_idx == c else '' for c, cell in enumerate(row)]
+            for row in table.data.grid]
+    rows = [row for row in rows if any(row)]
+    return to_markdown_table(rows[0], rows[1:]) if rows else None
 
 
 def _grid_cell_text(cell, doc) -> str:
     """표 칸 하나의 글자 — 칸 원문 + 칸 안 그림의 설명(docling_grid_markdown 참조)."""
-    parts = [_docling_norm(cell.text or '')]
-    ref = getattr(cell, 'ref', None)
-    if doc is not None and ref is not None:
-        for element, _depth in doc.iterate_items(root=ref.resolve(doc)):
-            if getattr(element.label, 'value', element.label) == 'picture':
-                parts.append(re.sub(r'\s+', ' ', docling_picture_text(element)))
+    from docling_core.types.doc import PictureItem, RichTableCell   # 지연 import — docling은 톱레벨에 안 들인다
+    parts = [_docling_norm(cell.text)]
+    if doc is not None and isinstance(cell, RichTableCell):
+        parts += [re.sub(r'\s+', ' ', docling_picture_text(item))
+                  for item, _ in doc.iterate_items(root=cell.ref.resolve(doc)) if isinstance(item, PictureItem)]
     return ' '.join(p for p in parts if p)
 
 
 def docling_picture_text(element) -> str:
     """그림 요소의 본문 한 줄 — 캡션, 없으면 자리표시(VLM 실패 신호). DOCX·XLSX 경로가 공유한다(#220)."""
     return _docling_norm(_docling_picture_caption(element)) or _PICTURE_PLACEHOLDER
+
+
+def docling_block_text(item, doc) -> str:
+    """docling 요소 하나 → 본문 텍스트(내놓을 것이 없으면 ''). DOCX·XLSX가 공유하는 요소 종류 분기의 정의점(#220).
+
+    표는 docling_grid_markdown, 그림은 캡션 또는 자리표시, 목록 항목은 번호를 되붙인 글자(_docling_elements와 같은 규칙 —
+    빠뜨리면 '2.1 얼리버드…'가 번호 없이 색인된다), 그 밖의 글자 요소는 글자. 헤딩 판정은 형식마다 달라 호출부가 한다.
+    """
+    from docling_core.types.doc import ListItem, PictureItem, TableItem, TextItem   # 지연 import
+    match item:
+        case TableItem():
+            return docling_grid_markdown(item, doc) or ''
+        case PictureItem():
+            return docling_picture_text(item)
+        case ListItem(marker=marker) if marker:
+            return _docling_norm(f'{marker} {item.text}')
+        case TextItem():
+            return _docling_norm(item.text)
+    return ''
 
 
 def count_picture_placeholders(chunks) -> int:
@@ -741,19 +752,25 @@ def _docx_fallback_headings(items: list[tuple[bool, int, str, bool]]) -> list[tu
     return out
 
 
-def _inside_table(element, doc) -> bool:
-    """docling 요소가 표 셀 안에 있는가(조상 중 TableItem이 있는가)."""
-    from docling_core.types.doc import TableItem    # 지연 import — docling은 톱레벨에 안 들인다
-    parent = element.parent.resolve(doc) if getattr(element, 'parent', None) else None
-    while parent is not None:
-        if isinstance(parent, TableItem):
-            return True
-        parent = parent.parent.resolve(doc) if getattr(parent, 'parent', None) else None
-    return False
+class _DocxItem(NamedTuple):
+    """DOCX 항목 — _docx_items(python-docx)·_docx_docling_items(docling)가 같은 꼴로 내놓아 #205 폴백·섹션 조립을 공유한다.
+
+    튜플이라 기존 코드·테스트의 (is_heading, level, text, from_table) 풀어 쓰기가 그대로 통한다.
+    """
+    is_heading: bool
+    level: int              # 헤딩 레벨(본문 줄은 0)
+    text: str
+    from_table: bool        # 표·그림 — 폴백 헤딩 승격에서 제외하는 표지
+
+
+def _table_descendants(doc) -> set[str]:
+    """표 칸 안에 든 요소들의 self_ref. 표 자신은 빼고, 중첩 표는 바깥 표의 후손이라 들어간다."""
+    return {item.self_ref for table in doc.tables
+            for item, _ in doc.iterate_items(root=table) if item is not table}
 
 
 def _docx_docling_items(doc):
-    """docling Word 문서 → _docx_items와 같은 (is_heading, level, text, from_table) 흐름(#220).
+    """docling Word 문서 → _DocxItem 흐름(#220).
 
     _docx_items(python-docx)와 같은 형태로 내놓아 #205 폴백·섹션 조립을 그대로 재사용한다. 다른 점은 실측으로 정했다
     (보유 docx 32건 대조, 2026-10-11):
@@ -768,28 +785,16 @@ def _docx_docling_items(doc):
     표와 그림은 from_table=True로 내놓는다 — 폴백 헤딩 승격에서 제외하는 표지다(그림 캡션이 '제1장 …'로 시작해도
     헤딩이 되면 안 된다). 그림은 캡션, 없으면 자리표시(_PICTURE_PLACEHOLDER — VLM 실패 신호).
     """
-    for element, _depth in doc.iterate_items():
-        if _inside_table(element, doc):
+    from docling_core.types.doc import PictureItem, SectionHeaderItem, TableItem   # 지연 import
+    inside_tables = _table_descendants(doc)
+    for item, _ in doc.iterate_items():
+        if item.self_ref in inside_tables:
             continue
-        label = element.label.value if hasattr(element.label, 'value') else str(element.label)
-        if label == 'table':
-            md = docling_grid_markdown(element, doc)
-            if md:
-                yield (False, 0, md, True)
-        elif label == 'picture':
-            yield (False, 0, docling_picture_text(element), True)
-        elif label == 'section_header':
-            text = _docling_norm(getattr(element, 'text', '') or '')
-            if text:
-                yield (True, max(int(getattr(element, 'level', 1) or 1), 1), text, False)
-        else:
-            text = getattr(element, 'text', '') or ''
-            marker = getattr(element, 'marker', '') or ''
-            if label == 'list_item' and marker:       # _docling_elements와 같은 규칙 — 번호를 되붙인다
-                text = f'{marker} {text}'
-            text = _docling_norm(text)
-            if text:
-                yield (False, 0, text, False)
+        if isinstance(item, SectionHeaderItem):
+            if text := _docling_norm(item.text):
+                yield _DocxItem(True, item.level, text, False)
+        elif text := docling_block_text(item, doc):
+            yield _DocxItem(False, 0, text, isinstance(item, (TableItem, PictureItem)))
 
 
 def _docx_sections(file_path: str | Path) -> list[_Section]:

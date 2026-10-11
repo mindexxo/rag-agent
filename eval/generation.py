@@ -39,6 +39,7 @@ from rag.llm import LlmClient
 from eval.retrieval import resolve_gold
 from eval.absence_judge import judge_llm
 from eval.misinfo_judge import confirm_violations
+from eval import epcov_judge
 
 TENANT = "demo"                      # v1(단일 테넌트) 기본값 — v2 gold는 id 접두로 라우팅
 V2_TENANTS = {"summers", "homeplus", "adererror", "aromanica", "goodpeople", "harim", "inticube"}
@@ -171,6 +172,9 @@ _MIN_CLAUSE = 6              # 이보다 짧은 조각은 의미를 못 실어 �
 # '- ' 목록으로 나누라"고 **지시**하므로 이 형태는 예외가 아니라 정상 출력이다.
 _BULLET_HEAD = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
 _MAX_RUN_JOIN = 12           # 한 런에 이 개수를 넘으면 묶지 않는다 — 너무 길면 주제가 뭉개진다
+# 마크다운 강조 표지. 생성기가 금액·결론을 '**240,000원**'처럼 굵게 쓰면 부분문자열 일치가 깨졌다 — 기대
+# "총 240,000원입니다"가 "총 … = **240,000원**입니다"를 놓쳐 미적중(#221 실측, 사람 판정 '담김'). 서식이지 내용이 아니다.
+_MD_EMPHASIS = re.compile(r"\*\*|__|`")
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -268,6 +272,10 @@ def expected_points_coverage(answer: str, points: list[str]) -> float | None:
     게이트는 그대로고, 한 사실이 "머리말 + 불릿 여러 줄"로 쪼개졌을 때만 결합 후보가 더 생긴다.
     모델이 바뀐 것이 아니라 **측정 정의가 바뀐 것**이다(citation_accuracy v3·multi_turn #48과
     같은 종류의 고지). 같은 이유로 eval/consistency.py의 flaky·일치율도 이 날짜로 끊어 읽어라.
+
+    **채점 기준 변경 고지 (#221, 2026-10-11)**: 부분문자열 단계가 답변·포인트 양쪽의 마크다운 강조(`**`·`__`·백틱)를
+    지우고 비교한다. 이 함수(규칙 판정)는 그 외 그대로다. run_mode의 `expected_points_coverage`는 이제 **규칙 + 2단계 심판** 값이고
+    규칙만의 값은 `expected_points_coverage_rule`에 남는다(_epcov_scores).
     """
     if not points:
         return None
@@ -281,8 +289,10 @@ def expected_points_hits(answer: str, points: list[str]) -> list[bool]:
     분리 이유(#97 ②): 생성 일관성 축(eval/consistency.py)은 "런마다 **같은 포인트**를
     맞히는가"를 재야 해서 비율이 아니라 벡터가 필요하다. 채점 기준을 복제하면
     두 축의 판정이 조용히 어긋나므로 여기서만 판정하고 양쪽이 나눠 쓴다."""
-    norm_answer = re.sub(r"\s+", "", answer)
-    hits = [_contains_point(norm_answer, re.sub(r"\s+", "", p)) for p in points]
+    norm_answer = re.sub(r"\s+", "", _MD_EMPHASIS.sub("", answer))
+    # 포인트 쪽도 같이 지운다 — 골드 5행은 포인트 자체에 '**SK-250 베이비**'처럼 강조가 있다(리뷰 지적·확인).
+    # 답변만 지우면 그 포인트들이 부분문자열 단계에서 영영 안 맞는다.
+    hits = [_contains_point(norm_answer, re.sub(r"\s+", "", _MD_EMPHASIS.sub("", p))) for p in points]
 
     remaining_idx = [i for i, h in enumerate(hits) if not h]
     # 금액 게이트 (#119): 포인트에 "원(₩) 단위 금액"이 있으면 그 값이 답변에 실재할 때만
@@ -298,11 +308,7 @@ def expected_points_hits(answer: str, points: list[str]) -> list[bool]:
     # 쏟아진다(실측: harim_pp016·summers_tm002). '원'을 앵커로 삼으면 무게(1000g)·연도(2026)도
     # 자연히 빠지고 진짜 금액 누락만 겨냥한다(harim_md006의 1000g 오인 방지).
     norm_answer_num = _normalize_number_notation(norm_answer)
-    def _amount_ok(idx: int) -> bool:
-        # '만원'→'0000원' 정규화 후 원 앞 숫자만 추출 (콤마는 정규화가 이미 제거)
-        amts = re.findall(r"(\d+)원", _normalize_number_notation(points[idx]))
-        return all(a in norm_answer_num for a in amts)   # 금액 없으면 all([])=True → 폴백 허용
-    gated_idx = [i for i in remaining_idx if _amount_ok(i)]
+    gated_idx = [i for i in remaining_idx if _amounts_present(norm_answer_num, points[i])]
     if gated_idx:
         segments = _split_segments(answer)
         if segments:
@@ -314,6 +320,20 @@ def expected_points_hits(answer: str, points: list[str]) -> list[bool]:
                 if max(_cosine(pv, sv) for sv in s_vecs) >= EPCOV_SIM_THRESHOLD:
                     hits[i] = True
     return hits
+
+
+def _amounts_present(norm_answer_num: str, point: str) -> bool:
+    """금액 게이트(#119) — 포인트의 원 단위 금액이 전부 답변에 있는가. 금액이 없으면 True(all([])).
+    norm_answer_num은 공백 제거·마크다운 강조 제거·숫자 표기 정규화를 거친 답변이다."""
+    # '만원'→'0000원' 정규화 후 원 앞 숫자만 추출 (콤마는 정규화가 이미 제거)
+    amts = re.findall(r"(\d+)원", _normalize_number_notation(_MD_EMPHASIS.sub("", point)))
+    return all(a in norm_answer_num for a in amts)
+
+
+def point_amounts_present(answer: str, point: str) -> bool:
+    """금액 게이트의 공개 진입점 — EPCov 2단계 심판(#221)도 같은 게이트를 건다(eval/epcov_judge.py docstring)."""
+    norm = re.sub(r"\s+", "", _MD_EMPHASIS.sub("", answer))
+    return _amounts_present(_normalize_number_notation(norm), point)
 
 
 # 'N만원'/'N만' → 'N0000' (예: '3만원'→'30000', '18.9만'→'189000'). 콤마 제거와 같은 계층의
@@ -478,7 +498,30 @@ async def _misinfo_scores(judge, answer: str, forbidden: list[str]) -> dict:
             "must_not_contain_audit": audit}
 
 
-async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None):
+EPCOV_JUDGE_WORKERS = int(os.getenv("EPCOV_JUDGE_WORKERS", "8"))   # 심판 동시 호출 — Claude는 호출=프로세스라 너무 올리면 한도에 빨리 닿는다
+
+
+async def _epcov_scores(judge, sem, answer: str, points: list[str], rule_hits: list[bool]) -> dict:
+    """EPCov 2단계(#221): 규칙 히트(rule_hits) → 미적중이면서 금액 게이트를 통과한 포인트만 심판 확인.
+
+    scores에 세 키 — 최종 커버리지(기존 키, 심판 반영), 규칙만의 커버리지(이력 비교용 이중 기록), 판정 감사.
+    포인트가 없으면 셋 다 기존처럼 None/빈 값. 금액이 빠진 미적중은 심판에 넘기지 않는다 — 판정자가 관대하면
+    '9,600원 기대 / 9,000원 답'을 담김으로 보는 오판이 실측됐다(eval/epcov_judge.py docstring)."""
+    if not points:
+        return {"expected_points_coverage": None, "expected_points_coverage_rule": None, "expected_points_audit": [],
+                "expected_points_judge_errors": 0}
+    targets = [] if judge is None else [k for k, h in enumerate(rule_hits)
+                                        if not h and point_amounts_present(answer, points[k])]
+    final, audit = await epcov_judge.confirm_points(judge, answer, points, rule_hits, targets, sem)
+    return {"expected_points_coverage": sum(final) / len(points),
+            "expected_points_coverage_rule": sum(rule_hits) / len(points),
+            "expected_points_audit": audit,
+            # 판정 실패 수 — fail-closed라 실패해도 점수는 규칙 값으로 조용히 남는다. 한도·로그인 만료로 전부 실패하면
+            # '심판 반영' 결과처럼 보이는 규칙 결과가 된다(10/10 RAGAS: 실패 268건이 사유 공란). summarize가 크게 찍는다.
+            "expected_points_judge_errors": sum(1 for a in audit if a["error"])}
+
+
+async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, epcov_judging: bool = True):
     """oracle / retrieved 한 모드로 생성 + 채점 → row 리스트.
 
     LLM 콜(condense·generate)은 병렬(vLLM 연속 배칭, #18), 컨텍스트 조회·채점은 직렬 —
@@ -487,9 +530,16 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None):
     gen_llm: 생성 단계만 다른 클라이언트로 교체 (#96 비교군 (a)). condense는 항상 llm
     (운영 vLLM)이다 — 비교의 공정성은 "파이프라인 고정, 생성기만 교체"에서 나오므로
     재작성까지 바꾸면 무엇의 격차인지 알 수 없게 된다. None이면 llm 그대로(기존 동작).
+
+    epcov_judging: False면 EPCov 2단계 심판(#221)을 부르지 않는다 — 최종 커버리지 = 규칙 커버리지, 판정자는
+    'rule-only'로 기록. 생성 일관성 축(eval/consistency.py)이 끈다: N×R 반복 생성마다 심판을 부르면 비용이 R배다.
     """
     gen_llm = gen_llm or llm
     misinfo_judge_llm = judge_llm()        # 오정보 2단계 판정자(#214) — 거절축과 동일, 모드당 1회 생성
+    # EPCov 2단계 판정자(#221) — 전용 스위치 EPCOV_JUDGE(기본 claude). 끄면 규칙만.
+    epcov_llm = epcov_judge.judge_llm() if epcov_judging else None
+    epcov_label = epcov_judge.judge_label() if epcov_judging else "rule-only"
+    epcov_sem = asyncio.Semaphore(EPCOV_JUDGE_WORKERS)
     gen_rows = [g for g in gold_rows if g["type"] in GEN_TYPES]
     sem = asyncio.Semaphore(CONCURRENCY)
 
@@ -534,9 +584,16 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None):
 
     answers = await asyncio.gather(*(_generate(g, c) for g, c in work))
 
-    # ④ 채점·행 구성 — 직렬 (EPCov의 embed_texts_sync 포함)
+    # ④ EPCov — 규칙(embed_texts_sync 포함)은 직렬, 미적중 포인트의 심판 확인은 전 행에 걸쳐 병렬(#221).
+    # 행마다 순서대로 기다리면 Claude 판정자(호출=프로세스, 수 초)로 모드당 20분 가까이 걸린다.
+    points_l = [g.get("expected_points", []) for g, _ in work]
+    rule_l = [expected_points_hits(a, p) if p else [] for a, p in zip(answers, points_l)]
+    epcov_l = await asyncio.gather(*(_epcov_scores(epcov_llm, epcov_sem, a, p, h)
+                                     for a, p, h in zip(answers, points_l, rule_l)))
+
+    # ⑤ 채점·행 구성 — 직렬
     rows = []
-    for (g, chunks), answer in zip(work, answers):
+    for (g, chunks), answer, epcov in zip(work, answers, epcov_l):
         standalone = turn_ctx[g["id"]][0]
 
         rows.append({
@@ -551,13 +608,14 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None):
                 for c in chunks
             ],
             "scores": {
-                "expected_points_coverage": expected_points_coverage(answer, g.get("expected_points", [])),
+                **epcov,
                 "citation_accuracy": citation_accuracy(answer, g.get("expected_docs", []), chunks),
                 **(await _misinfo_scores(misinfo_judge_llm, answer, g.get("must_not_contain", []))),
                 "answer_relevancy": await judge_relevancy(g["query"], answer),
                 "faithfulness": await judge_faithfulness(answer, chunks),
             },
             "gold_version": GOLD_VERSION,
+            "epcov_judge": epcov_label,          # 판정자·모델·프롬프트 버전 — 다르면 EPCov 수치를 비교하지 않는다
         })
     return rows
 
@@ -662,9 +720,19 @@ def summarize(rows):
         mnc = [v for v in mnc if v is not None]
         misinfo = f"{sum(1 for v in mnc if v)/len(mnc):.2f}" if mnc else "   -"
         cov_avg = sum(cov) / len(cov) if cov else 0.0
-        print(f"{label:<14}{n:>4}{cov_avg:>8.2f}{sum(cite)/n:>7.2f}{misinfo:>9}")
+        rule = [s.get("expected_points_coverage_rule") for s in ss]
+        rule = [v for v in rule if v is not None]
+        rule_avg = f"{sum(rule)/len(rule):>9.2f}" if rule else f"{'-':>9}"   # #221 이전 결과 파일엔 없다
+        print(f"{label:<14}{n:>4}{cov_avg:>8.2f}{rule_avg}{sum(cite)/n:>7.2f}{misinfo:>9}")
 
-    print(f"{'type':<14}{'n':>4}{'EPCov':>8}{'Cite':>7}{'Misinfo':>9}")
+    judges = {r.get("epcov_judge") for r in rows}
+    print(f"EPCov 판정자: {', '.join(sorted(map(str, judges)))}  (EPCov=규칙+심판, EPCov규칙=규칙만)")
+    calls = sum(len(r["scores"].get("expected_points_audit") or []) for r in rows)
+    errors = sum(r["scores"].get("expected_points_judge_errors") or 0 for r in rows)
+    if errors:
+        print(f"⚠⚠ EPCov 심판 실패 {errors}/{calls}건 — 그 포인트는 규칙 판정(미적중) 그대로다. "
+              f"전부 실패면 EPCov = EPCov규칙이다(한도·로그인 확인 후 재실행).")
+    print(f"{'type':<14}{'n':>4}{'EPCov':>8}{'EPCov규칙':>9}{'Cite':>7}{'Misinfo':>9}")
     for t, ss in by_type.items():
         _line(t, ss)
     for label, types in (("[일반]", GEN_TYPES - HARD_TYPES), ("[고난도]", HARD_TYPES)):

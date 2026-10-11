@@ -16,11 +16,13 @@
          모델이 구조적으로 처리하고, 헤딩 층만 한국 규정 번호 체계('제 N 장'/'제 N 조')로 복원한다.
          `docling_enabled=False`면 pdfplumber 글자 크기 휴리스틱(비상 경로). page는 **청크마다 실제 쪽**.
          채팅 첨부(extract_text)는 항상 pdfplumber — 사용자 대기 경로라 콜드 스타트를 안 태운다.
- - DOCX: python-docx로 body를 문서 순서대로 읽어 Heading 스타일 기준 섹션 분할.
+ - DOCX: **docling**(SimplePipeline — 레이아웃·OCR 없음)이 기본(#220). Heading 스타일 레벨 그대로 섹션 분할,
+         스타일이 없으면 조문 패턴 폴백(#205). 그림은 VLM 캡션, 표 셀 안 중첩 표·워드 자동 번호까지 읽는다.
+         `docling_enabled=False`·채팅 첨부는 python-docx(그림·중첩 표·자동 번호를 잃는다).
  - MD  : '#' 헤딩 정규식 + 코드 펜스 가드.
  - TXT : 평문(인코딩 감지 utf-8→cp949). 헤딩 구조가 없어 heading_path는 빈다.
- - XLSX: rag/xlsx_chunking (openpyxl). 시트=1청크라 이 파이프라인 밖 — 분할하지 않고
-         150행 초과면 업로드를 거절한다.
+ - XLSX: rag/xlsx_chunking. 시트=1청크라 이 파이프라인 밖 — 분할하지 않고 150행 초과면 업로드를 거절한다.
+         읽기는 docling(시트 위 그림 캡션·병합 셀), 행 세기는 openpyxl(#220).
 
  공통: SentenceSplitter(chunk_size=512, chunk_overlap=50)로 크기 cap.
    - 큰 섹션이 비대해져 검색 정확도 떨어지는 것 방지 + LLM 컨텍스트 부담 완화
@@ -258,10 +260,12 @@ def _docling_runtime():
         if _docling_converter is None:
             from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
             from docling.datamodel.base_models import InputFormat
-            from docling.datamodel.pipeline_options import (KserveV2OcrOptions, PdfPipelineOptions,
+            from docling.datamodel.pipeline_options import (ConvertPipelineOptions, KserveV2OcrOptions,
+                                                            PdfPipelineOptions,
                                                             PictureDescriptionApiOptions,
                                                             TableFormerMode)
-            from docling.document_converter import DocumentConverter, PdfFormatOption
+            from docling.document_converter import (DocumentConverter, ExcelFormatOption, PdfFormatOption,
+                                                    WordFormatOption)
 
             opts = PdfPipelineOptions(artifacts_path=settings.docling_artifacts_path)
             # 메모리 노브 — config.py 주석 참조. docling_settings(perf.page_batch_size)는 쓰지 않는다:
@@ -289,17 +293,24 @@ def _docling_runtime():
             # 그림 캡션(#162). enable_remote_services를 안 켜면 do_picture_description이 설정
             # 단계에서 OperationNotAllowed로 죽는다 — VLM 다운과 달리 docling이 삼켜주지 않는
             # 경로라 항상 같이 켠다. VLM에 못 닿으면 캡션이 안 붙고 자리표시가 남을 뿐이다.
-            opts.enable_remote_services = True
-            opts.do_picture_description = True
-            opts.picture_description_options = PictureDescriptionApiOptions(
+            caption_opts = PictureDescriptionApiOptions(
                 url=settings.vlm_caption_url,
                 params={'model': settings.vlm_caption_model,
                         'temperature': settings.vlm_caption_temperature},   # 결정적 캡션(#209) — params는 요청 body에 그대로 들어간다
                 prompt=_PICTURE_CAPTION_PROMPT,
                 scale=settings.vlm_caption_scale,
                 timeout=settings.vlm_caption_timeout_seconds)
+            opts.enable_remote_services = True
+            opts.do_picture_description = True
+            opts.picture_description_options = caption_opts
+            # DOCX·XLSX(#220) — 본문이 원래 텍스트라 레이아웃·OCR 없는 SimplePipeline이다. 캡션만 PDF와 같은
+            # 설정을 공유한다(같은 VLM·프롬프트·온도). 이 파이프라인엔 document_timeout이 없다 — 시간 상한은 #223.
+            office_opts = ConvertPipelineOptions(enable_remote_services=True, do_picture_description=True,
+                                                 picture_description_options=caption_opts)
             _docling_converter = DocumentConverter(
-                format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)})
+                format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts),
+                                InputFormat.DOCX: WordFormatOption(pipeline_options=office_opts),
+                                InputFormat.XLSX: ExcelFormatOption(pipeline_options=office_opts)})
             _docling_semaphore = threading.Semaphore(settings.docling_max_concurrency)
     return _docling_converter, _docling_semaphore
 
@@ -390,6 +401,56 @@ def _docling_table_markdown(item, doc) -> str | None:
     header = [_docling_norm(str(c)) for c in df.columns]
     rows = [[_docling_norm('' if v is None else str(v)) for v in row] for row in df.itertuples(index=False)]
     return to_markdown_table(header, rows)
+
+
+def docling_grid_markdown(item, doc=None) -> str | None:
+    """docling 표 → markdown, **셀 원문(grid)에서 직접** 그린다. DOCX·XLSX 표의 정의점(#220).
+
+    PDF 표(_docling_table_markdown)와 다른 두 가지:
+      - **가로 병합은 범위의 첫 열에만, 세로 병합은 행마다 값을 둔다.** grid는 병합 범위의 모든 칸에 같은 셀을 넣는다.
+        가로를 그대로 그리면 양식형 xlsx에서 '업무 인수 인계서'가 칸마다 반복됐다(실문서 2건에서 23·67회, 텍스트 1.1·3.0배).
+        세로는 반복한다 — 첫 행에만 두면 표가 청크 경계에서 잘릴 때 아래 행이 분류어를 잃는다(장애관리 지침서 37행 중
+        7행, 인사규정 18행 중 3행). 대가는 긴 병합 셀의 중복이다(인사규정 +13%·543자 셀 5회, 교통비 양식 +17%) —
+        글자가 늘더라도 행이 제 분류를 지니는 쪽을 택했다(#220 결정 10, 2026-10-11). 짧은 셀만 반복하는 길이 임계안은 기각.
+      - **export_to_dataframe을 쓰지 않는다.** Word의 서식 있는 셀(RichTableCell)을 '**항목**'처럼 마크다운 굵게로
+        내보낸다 — 셀 원문(cell.text)에는 '**'가 없다.
+    가로 연속 칸을 비우고 나면 값이 하나도 없는 행은 뺀다(xlsx _iter_sheets의 빈 행 스킵과 같은 원리). 첫 행이 헤더다.
+    빈 셀은 자리를 지킨다(to_markdown_table — #137 결함 5). 열이 없으면 None.
+    **칸 안의 그림은 그 칸에 설명을 붙인다**(doc가 있을 때) — 서식 있는 칸(RichTableCell)의 ref가 가리키는 묶음 안의
+    그림을 찾아 캡션(없으면 자리표시)을 칸 글자 뒤에 한 줄로 편다. 매뉴얼의 '화면 | 캡처' 표에서 캡처 설명이 제 행과
+    붙어 있게 하려는 것이다(#220 리뷰, 결정 2026-10-11). 표 아래로 빼는 안은 어느 행의 그림인지를 잃어 기각했다.
+    대가: 여러 줄 캡션의 줄바꿈이 사라지고(마크다운 표는 행=한 줄), 긴 캡션이면 그 행이 길어진다.
+    이 처리 전에는 VLM이 캡션을 만들어 놓고도 칸 글자에 없어 버려졌다(실측: 'LOGIN ID / PASSWORD' 캡션이 색인 0).
+    PDF 표는 이 함수를 쓰지 않는다 — #143 이후 실측된 출력을 바꾸지 않는다(동작 보존).
+    """
+    grid = item.data.grid
+    if not grid or not grid[0]:
+        return None
+    rows: list[list[str]] = []
+    for r, row in enumerate(grid):
+        cells = [_grid_cell_text(cell, doc) if cell.start_col_offset_idx == c else ''
+                 for c, cell in enumerate(row)]
+        if any(cells):
+            rows.append(cells)
+    if not rows:
+        return None
+    return to_markdown_table(rows[0], rows[1:])
+
+
+def _grid_cell_text(cell, doc) -> str:
+    """표 칸 하나의 글자 — 칸 원문 + 칸 안 그림의 설명(docling_grid_markdown 참조)."""
+    parts = [_docling_norm(cell.text or '')]
+    ref = getattr(cell, 'ref', None)
+    if doc is not None and ref is not None:
+        for element, _depth in doc.iterate_items(root=ref.resolve(doc)):
+            if getattr(element.label, 'value', element.label) == 'picture':
+                parts.append(re.sub(r'\s+', ' ', docling_picture_text(element)))
+    return ' '.join(p for p in parts if p)
+
+
+def docling_picture_text(element) -> str:
+    """그림 요소의 본문 한 줄 — 캡션, 없으면 자리표시(VLM 실패 신호). DOCX·XLSX 경로가 공유한다(#220)."""
+    return _docling_norm(_docling_picture_caption(element)) or _PICTURE_PLACEHOLDER
 
 
 def count_picture_placeholders(chunks) -> int:
@@ -487,6 +548,28 @@ def _sections_from_docling_elements(elements) -> list[_Section]:
     return _build_sections(items)
 
 
+def docling_convert(file_path: str | Path, **kwargs):
+    """docling 변환 한 번 — 세마포어 + 불완전 결과 가드. PDF·DOCX·XLSX가 공유한다(#220).
+
+    **raises_on_error=True만으로는 부족하다** — docling은 PARTIAL_SUCCESS(문서 타임아웃으로 뒤쪽 쪽이 빠짐,
+    원격 OCR 실패 등)에 예외를 안 던진다(document_converter.py: status not in {SUCCESS, PARTIAL_SUCCESS}일
+    때만). 그래서 status와 errors를 직접 보고 올린다(#168). VLM 캡션 실패는 errors에 안 쌓이므로(로그만)
+    여기 걸리지 않는다 — #162의 '캡션 없이 진행'은 그대로다.
+    kwargs는 converter.convert로 넘긴다(PDF의 max_num_pages — 쪽 개념이 없는 형식엔 주지 않는다).
+    rag/xlsx_chunking이 이 이름을 import한다.
+    """
+    converter, semaphore = _docling_runtime()
+    with semaphore:
+        result = converter.convert(str(file_path), raises_on_error=True, **kwargs)
+    from docling.datamodel.base_models import ConversionStatus   # 지연 import — docling은 톱레벨에 안 들인다
+    if result.status != ConversionStatus.SUCCESS or result.errors:
+        detail = '; '.join(f'{e.category.value}/{e.module_name}: {(e.error_message or "")[:100]}'
+                           for e in result.errors[:3])
+        raise RuntimeError(f'docling 변환 불완전 — status={result.status.value}, '
+                           f'errors={len(result.errors)}: {detail}')
+    return result
+
+
 def _docling_sections(file_path: str | Path) -> list[_Section]:
     """PDF → docling(레이아웃 ML + TableFormer) → _Section. PDF 인제스션의 기본 경로 (#143).
 
@@ -497,23 +580,10 @@ def _docling_sections(file_path: str | Path) -> list[_Section]:
     임계 상수가 0개다. 헤딩 층 복원은 _sections_from_docling_elements가 한다.
 
     실패(예외·타임아웃)는 그대로 올린다 — pdfplumber 폴백 없음. 저품질 색인을 조용히 만들지 않는다
-    (strict-grounded). 호출부(index_pending_document)가 failed로 기록한다. **raises_on_error=True만으로는
-    부족하다** — docling은 PARTIAL_SUCCESS(문서 타임아웃으로 뒤쪽 쪽이 빠짐, 원격 OCR 실패 등)에 예외를
-    안 던진다(document_converter.py: status not in {SUCCESS, PARTIAL_SUCCESS}일 때만). 그래서 status와
-    errors를 직접 보고 올린다(#168). VLM 캡션 실패는 errors에 안 쌓이므로(로그만) 여기 걸리지 않는다 —
-    #162의 '캡션 없이 진행'은 그대로다.
+    (strict-grounded). 호출부(index_pending_document)가 failed로 기록한다. 불완전 결과 가드는 docling_convert.
     이미지 도표는 VLM 캡션으로 읽고(#162), 격자 표 이미지(TableItem)는 원격 한국어 OCR이 셀을 채운다(#168).
     """
-    converter, semaphore = _docling_runtime()
-    with semaphore:
-        result = converter.convert(str(file_path), max_num_pages=settings.docling_max_num_pages,
-                                   raises_on_error=True)
-    from docling.datamodel.base_models import ConversionStatus   # 지연 import — docling은 톱레벨에 안 들인다
-    if result.status != ConversionStatus.SUCCESS or result.errors:
-        detail = '; '.join(f'{e.category.value}/{e.module_name}: {(e.error_message or "")[:100]}'
-                           for e in result.errors[:3])
-        raise RuntimeError(f'docling 변환 불완전 — status={result.status.value}, '
-                           f'errors={len(result.errors)}: {detail}')
+    result = docling_convert(file_path, max_num_pages=settings.docling_max_num_pages)
     # 위첨자 각주 표시(#204) — 변환이 성공한 뒤에만 연다(세마포어 밖, 쪽당 수십 ms). 가드보다 뒤에 두는 이유:
     # 변환 실패 사유가 pdfplumber 오류에 가려지지 않게, 그리고 가짜 컨버터 테스트가 파일 없이도 가드를 검증하게.
     footnote_markers = _footnote_markers(file_path)
@@ -671,9 +741,63 @@ def _docx_fallback_headings(items: list[tuple[bool, int, str, bool]]) -> list[tu
     return out
 
 
+def _inside_table(element, doc) -> bool:
+    """docling 요소가 표 셀 안에 있는가(조상 중 TableItem이 있는가)."""
+    from docling_core.types.doc import TableItem    # 지연 import — docling은 톱레벨에 안 들인다
+    parent = element.parent.resolve(doc) if getattr(element, 'parent', None) else None
+    while parent is not None:
+        if isinstance(parent, TableItem):
+            return True
+        parent = parent.parent.resolve(doc) if getattr(parent, 'parent', None) else None
+    return False
+
+
+def _docx_docling_items(doc):
+    """docling Word 문서 → _docx_items와 같은 (is_heading, level, text, from_table) 흐름(#220).
+
+    _docx_items(python-docx)와 같은 형태로 내놓아 #205 폴백·섹션 조립을 그대로 재사용한다. 다른 점은 실측으로 정했다
+    (보유 docx 32건 대조, 2026-10-11):
+      - **헤딩 레벨은 docling의 section_header.level 그대로** — Heading 스타일 문서 29건 전부 스타일 수·레벨과 일치했다.
+        PDF 매핑(_sections_from_docling_elements)의 제목/장 휴리스틱을 쓰면 3단이 2단으로 눌린다.
+        'title' 라벨은 본문 줄이다 — python-docx 경로도 Title 스타일을 헤딩으로 보지 않았다.
+      - **표 셀 안의 요소는 건너뛴다** — docling은 서식 있는 셀의 내용을 표와 별도 텍스트 요소로 **한 번 더** 내놓는다
+        (표 있는 문서에서 텍스트류의 34~47%가 표 안). 셀 내용은 표 markdown(docling_grid_markdown)에 이미 들어 있다.
+        칸 안의 그림도 여기서 건너뛰지만 버려지지 않는다 — docling_grid_markdown이 그 칸에 설명을 붙인다.
+      - 표 셀 안의 중첩 표, 워드 자동 번호('1.', '제2장')는 python-docx가 잃던 것이다 — docling은 읽는다
+        (인사규정 2건에서 문장 373·435개가 python-docx 경로에 없었다).
+    표와 그림은 from_table=True로 내놓는다 — 폴백 헤딩 승격에서 제외하는 표지다(그림 캡션이 '제1장 …'로 시작해도
+    헤딩이 되면 안 된다). 그림은 캡션, 없으면 자리표시(_PICTURE_PLACEHOLDER — VLM 실패 신호).
+    """
+    for element, _depth in doc.iterate_items():
+        if _inside_table(element, doc):
+            continue
+        label = element.label.value if hasattr(element.label, 'value') else str(element.label)
+        if label == 'table':
+            md = docling_grid_markdown(element, doc)
+            if md:
+                yield (False, 0, md, True)
+        elif label == 'picture':
+            yield (False, 0, docling_picture_text(element), True)
+        elif label == 'section_header':
+            text = _docling_norm(getattr(element, 'text', '') or '')
+            if text:
+                yield (True, max(int(getattr(element, 'level', 1) or 1), 1), text, False)
+        else:
+            text = getattr(element, 'text', '') or ''
+            marker = getattr(element, 'marker', '') or ''
+            if label == 'list_item' and marker:       # _docling_elements와 같은 규칙 — 번호를 되붙인다
+                text = f'{marker} {text}'
+            text = _docling_norm(text)
+            if text:
+                yield (False, 0, text, False)
+
+
 def _docx_sections(file_path: str | Path) -> list[_Section]:
     """DOCX를 (heading_path, 본문) 섹션 목록으로 — Heading 스타일이 경계. 스타일이 하나도 없으면
     조문 패턴 폴백(_docx_fallback_headings, #205).
+
+    읽기는 docling이 기본(#220, _docx_docling_items — 그림 캡션·중첩 표·자동 번호), `docling_enabled=False`면
+    python-docx(_docx_items, 비상 경로이자 채팅 첨부 경로). 둘이 같은 항목 형태라 아래 조립은 하나다.
 
     헤딩 텍스트는 본문에 넣지 않는다. heading_path가 들고 있고, 인덱스 입력엔
     rag/index_text가 앞에 붙이므로 본문에까지 넣으면 같은 문구가 두 번 들어간다.
@@ -691,7 +815,11 @@ def _docx_sections(file_path: str | Path) -> list[_Section]:
             sections.append(_Section(list(stack), None, '\n'.join(lines)))   # page는 docx에 없음
             lines.clear()
 
-    for is_heading, level, text, _ in _docx_fallback_headings(list(_docx_items(file_path))):
+    if settings.docling_enabled:
+        items = list(_docx_docling_items(docling_convert(file_path).document))
+    else:
+        items = list(_docx_items(file_path))
+    for is_heading, level, text, _ in _docx_fallback_headings(items):
         if is_heading:
             flush()                    # 이전 섹션 마감 후 경로 갱신
             del stack[level - 1:]      # 같은 레벨·하위 레벨 걷어내고
@@ -861,8 +989,8 @@ def extract_text(file_path: str | Path) -> str:
     if low.endswith('.docx'):
         return _docx_text(file_path).strip()
     if low.endswith('.xlsx'):
-        from rag.xlsx_chunking import chunk_xlsx     # 첨부 xlsx 지원 유지
-        return '\n'.join(c.text for c in chunk_xlsx(str(file_path))).strip()
+        from rag.xlsx_chunking import chunk_xlsx_plain   # 첨부는 openpyxl — docling 세마포어를 색인과 나누지 않는다(#220 결정 6)
+        return '\n'.join(c.text for c in chunk_xlsx_plain(str(file_path))).strip()
     return _read_text(file_path).strip()  # txt/md/기타
 
 
@@ -931,8 +1059,8 @@ def _md_sections(file_path: str | Path) -> list[_Section]:
 # 형식 → 섹션 파서. 이 넷은 _Section으로 수렴하므로 뒤 단계(묶기·분할)를 공유한다.
 # xlsx만 빠져 있다 — 시트=1청크·분할 없음·행상한 초과 시 거절이라 계약이 근본적으로 다르다.
 _SECTION_PARSERS = {
-    '.pdf': _pdf_sections,      # 글자 크기 휴리스틱
-    '.docx': _docx_sections,    # Heading 스타일
+    '.pdf': _pdf_sections,      # docling(기본) / pdfplumber 글자 크기 휴리스틱(비상)
+    '.docx': _docx_sections,    # docling(기본) / python-docx(비상) — 둘 다 Heading 스타일 레벨
     '.md': _md_sections,        # '#' 정규식 + 펜스 가드
     '.txt': _txt_sections,      # 헤딩 없음 — 통째로 섹션 1개
 }

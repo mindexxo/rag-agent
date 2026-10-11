@@ -344,3 +344,71 @@ def test_F1_쪽수_가드가_타임아웃보다_먼저_걸린다():
     assert (settings.docling_max_num_pages * per_page_seconds
             < settings.docling_document_timeout_seconds
             < WorkerSettings.job_timeout)
+
+
+# ── G. docling 경로 (#220) — 업로드 → 워커 색인까지 실제 경로 ─────────────────────
+
+def _wb_bytes(build) -> bytes:
+    from io import BytesIO
+    import openpyxl
+    wb = openpyxl.Workbook()
+    build(wb)
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_G1_숨긴_시트는_업로드를_막지_않고_색인에서_빠진다(client, tenant_id, fake_queue, blob_tmp):
+    """숨긴 시트가 있으면 문서 전체가 failed였다(리뷰). 서비스 결정: 숨긴 시트는 읽지 않는다 — 행 상한에도 안 센다."""
+    def build(wb):
+        wb.active.title = '보임'
+        wb.active.append(['등급', '적립률'])
+        wb.active.append(['VIP', '2.0'])
+        hidden = wb.create_sheet('참조')
+        hidden.append(['k'])
+        for i in range(XLSX_MAX_ROWS + 5):
+            hidden.append([i])
+        hidden.sheet_state = 'hidden'
+    doc = await _upload_xlsx(client, '숨김표.xlsx', '등급 적립률', _wb_bytes(build))
+    await ingest(doc['document_id'])
+    assert (await get_doc(doc['document_id'])).status == 'ready'
+    texts = await chunk_texts(doc['document_id'])
+    assert len(texts) == 1 and '| VIP | 2.0 |' in texts[0]
+
+
+@pytest.mark.asyncio
+async def test_G2_병합_제목은_한_번만_색인된다(client, tenant_id, fake_queue, blob_tmp):
+    def build(wb):
+        ws = wb.active
+        ws.append(['업무 교통비 청구서', None, None])
+        ws.merge_cells('A1:C1')
+        ws.append(['구분', '항목', '금액'])
+        ws.append(['교통', '버스', 1500])
+    doc = await _upload_xlsx(client, '양식.xlsx', '교통비 양식', _wb_bytes(build))
+    await ingest(doc['document_id'])
+    assert (await get_doc(doc['document_id'])).status == 'ready'
+    texts = await chunk_texts(doc['document_id'])
+    assert len(texts) == 1 and texts[0].count('업무 교통비 청구서') == 1
+
+
+@pytest.mark.asyncio
+async def test_G3_docx_중첩_표_내용이_색인된다(client, tenant_id, fake_queue, blob_tmp):
+    """python-docx 경로는 셀 안의 표를 못 읽었다(인사규정 2건 문장 373·435개 누락) — docling 경로로 색인까지 확인."""
+    from io import BytesIO
+    from docx import Document as Docx
+    d = Docx()
+    d.add_heading('인사규정', level=1)
+    d.add_paragraph('직급 체계는 아래와 같다.')
+    inner = d.add_table(rows=1, cols=1).cell(0, 0).add_table(rows=1, cols=2)
+    inner.cell(0, 0).text = '중첩표고유문구'
+    inner.cell(0, 1).text = 'CL2'
+    buf = BytesIO()
+    d.save(buf)
+    res = await client.post('/kms/documents', files={'file': ('규정.docx', buf.getvalue(),
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document')})
+    assert res.status_code == 200, res.text
+    doc_id = res.json()['document_id']
+    await ingest(doc_id)
+    assert (await get_doc(doc_id)).status == 'ready'
+    assert any('중첩표고유문구' in t for t in await chunk_texts(doc_id))

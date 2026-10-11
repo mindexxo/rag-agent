@@ -161,7 +161,7 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
     # 성공한 건만 기록된다: 실패는 kms_search_index_sync_total{result="error"}가 이미 센다.
     _ext = ext_label(filename)
     _t_start = time.monotonic()
-    # 청킹은 동기 CPU 작업(pdfplumber·python-docx·openpyxl)이라 스레드로 보낸다 — 이벤트
+    # 청킹은 동기 CPU 작업(docling 변환·openpyxl 행 검사, 비상 경로는 pdfplumber·python-docx)이라 스레드로 보낸다 — 이벤트
     # 루프에서 돌리면 PDF 하나에 100~200ms(실문서는 초 단위) 동안 워커가 멈춘다.
     # to_thread(stdlib)를 쓴다 — 이 모듈은 라우터도 import하므로 starlette를 들이지 않는다.
     chunks = await asyncio.to_thread(chunk_file, blob_path, description=description)

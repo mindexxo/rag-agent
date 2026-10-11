@@ -184,12 +184,13 @@ class Settings(BaseSettings):
     # storage
     blob_storage_dir: str = str(PROJECT_ROOT / "docs")
 
-    # PDF 파서 — docling 재도입 (#143). PDF 인제스션(chunk_file) 경로만 대상이고 채팅 첨부
-    # (extract_text)는 pdfplumber 유지 — 첨부는 사용자 대기 경로라 콜드 스타트 4.4초가 그대로 보인다.
-    # 값은 전부 2026-09-11 실측(M3 CPU, 실문서 21건)에서 왔고, **Linux 워커에서 재측정 후 조정한다**
-    # — macOS와 glibc 할당자의 메모리 반납 패턴이 다를 수 있다. 소비처는 rag/chunking.py(연결 예정).
-    docling_enabled: bool = True              # PDF 인제스션의 기본 경로. False = pdfplumber 비상 경로
-                                              # (표·부산물 처리 없음, #141 휴리스틱은 #143에서 제거). 폴백 아님 — 수동 스위치
+    # 문서 파서 — docling (PDF #143, DOCX·XLSX #220). 인제스션(chunk_file) 경로만 대상이고 채팅 첨부
+    # (extract_text)는 pdfplumber·python-docx·openpyxl 유지 — 첨부는 사용자 대기 경로라 콜드 스타트 4.4초가 그대로
+    # 보이고, 변환 세마포어를 색인과 나누면 색인 작업 뒤에 줄을 선다(#220 결정 6).
+    # 아래 메모리·시간 값은 PDF 실측에서 왔다(2026-09-11 M3 → 리눅스 컨테이너 재측정). 소비처는 rag/chunking.py.
+    docling_enabled: bool = True              # 인제스션의 기본 경로. False = 비상 경로 — PDF는 pdfplumber(표·부산물 처리 없음,
+                                              # #141 휴리스틱은 #143에서 제거), DOCX는 python-docx, XLSX는 openpyxl(그림 캡션·
+                                              # 중첩 표·자동 번호 없음). 폴백 아님 — 수동 스위치
     docling_table_mode: str = "accurate"      # fast | accurate. accurate이 병합 셀을 한 셀로 잡는다(출장 지급표
                                               # '부회장/사장' 실측). RAM 차이 +110MB(687→796MB)라 정확도를 택한다
     docling_do_ocr: bool = True               # 이미지로 렌더된 표(TableItem)의 셀을 읽는다(#168). 그림(PictureItem)은
@@ -217,7 +218,9 @@ class Settings(BaseSettings):
     docling_max_concurrency: int = 1          # **arq max_jobs(10)와 별개인 변환 동시 상한.** chunk_file은 to_thread라
                                               # 잡 10개가 겹치면 변환도 10개 겹쳐 메모리가 10배 난다. 세마포어로 막는다.
                                               # 임베딩 I/O는 max_jobs가 계속 겹치게 둔다 — 변환만 직렬화
-    docling_document_timeout_seconds: float = 900.0   # **한 문서 상한. 반드시 arq job_timeout(rag/worker.py, 1200)보다 작아야 한다.**
+    docling_document_timeout_seconds: float = 900.0   # **한 문서 상한(PDF만). 반드시 arq job_timeout(rag/worker.py, 1200)보다 작아야 한다.**
+                                              # **PDF에만 걸린다** — docling이 쪽 처리 루프에서만 검사해 그림 캡션 단계와
+                                              # DOCX·XLSX(SimplePipeline)에는 상한이 없다(#220 확인, 정합은 #223).
                                               # 넘기면 arq가 drain 잡을 취소하는데 rag/outbox.py는 CancelledError를 되던져
                                               # attempts를 안 올린다 — 그 문서는 실패 확정도 못 되고 1분마다 영원히 재시도된다.
                                               # docling 타임아웃이 먼저 끊어야 행이 예외로 실패해 attempts가 쌓인다(#168).
@@ -228,7 +231,8 @@ class Settings(BaseSettings):
                                               # 다른 PDF 변환이 막힌다(docling_max_concurrency=1).
                                               # #194로 docling_max_num_pages를 100으로 내린 뒤로는 쪽수 가드가 **항상 먼저**
                                               # 걸리므로, 이 timeout은 쪽수가 아니라 쪽당 비용이 튀는 경우(OCR 폭증 등)의 안전판이다.
-    docling_max_num_pages: int = 100          # 병적 입력 가드. **초과분을 자르는 게 아니라 문서를 거부한다**.
+    docling_max_num_pages: int = 100          # 병적 입력 가드(PDF만 — DOCX·XLSX엔 쪽 개념이 없어 넘기지 않는다, #220).
+                                              # **초과분을 자르는 게 아니라 문서를 거부한다**.
                                               # 300 → 100 (#194). 300은 **사실상 죽은 상한**이었다 — 위 timeout(900초)이
                                               # 쪽당 약 6.1초에서 약 145쪽에 먼저 걸려, 그 사이 구간 문서는 "900초를 기다린 끝에
                                               # timeout failed"를 받았다. 사유도 불명확하고 그동안 다른 PDF 변환이 막힌다

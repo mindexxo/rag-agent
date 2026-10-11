@@ -10,10 +10,21 @@ import pytest
 from io import BytesIO
 
 from rag.xlsx_chunking import (XLSX_MAX_ROWS, XlsxDescriptionRequired, XlsxTooManyRows, XlsxUploadRejected,
-                               _cell, _to_markdown, chunk_xlsx, description_missing, validate_xlsx_upload)
+                               _cell, _to_markdown, chunk_xlsx, chunk_xlsx_plain, description_missing,
+                               validate_xlsx_upload)
 
 CORPUS_XLSX = (Path(__file__).resolve().parent.parent
                / 'sample_docs' / 'corpus_v2' / 'homeplus' / 'homeplus_10_멤버십혜택표.xlsx')
+
+
+def _gap_xlsx(tmp_path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    for row in (['col'], [1], [None], [2]):
+        ws.append(row)
+    p = tmp_path / 'gap.xlsx'
+    wb.save(p)
+    return p
 
 
 class TestCell:
@@ -84,17 +95,21 @@ class TestChunkXlsx:
             chunk_xlsx(p)
 
     def test_중간_빈_행은_스킵(self, tmp_path):
-        # 빈 행이 표에 끼어도 데이터로 세지 않아야 함 (행 상한 오거절·빈 행 노이즈 방지)
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.append(['col'])
-        ws.append([1])
-        ws.append([None])
-        ws.append([2])
-        p = tmp_path / 'gap.xlsx'
-        wb.save(p)
-        chunks = chunk_xlsx(p)
+        # 빈 행이 표에 끼어도 데이터로 세지 않아야 함 (행 상한 오거절·빈 행 노이즈 방지) — openpyxl 경로
+        p = _gap_xlsx(tmp_path)
+        chunks = chunk_xlsx_plain(p)
         assert chunks[0].text.splitlines()[2:] == ['| 1 |', '| 2 |']
+
+    def test_docling은_완전히_빈_행에서_표를_가르지만_값은_한_청크에_남는다(self, tmp_path):
+        # #220 결정 9 — docling 기본(gap_tolerance=0)은 완전히 빈 행을 표 경계로 본다. 아랫부분은 첫 데이터 행이
+        # 헤더가 되지만 값은 빠지지 않고 같은 시트 청크에 이어진다. 허용치 1은 안내문·양식 시트를 openpyxl처럼
+        # 잘못 읽어(실문서 2건 모두 해당) 기각했다. 이 테스트는 그 대가를 고정한다 — 바뀌면 결정을 다시 볼 것.
+        p = _gap_xlsx(tmp_path)
+        chunks = chunk_xlsx(p)
+        assert len(chunks) == 1
+        lines = chunks[0].text.splitlines()
+        assert lines[:3] == ['| col |', '| --- |', '| 1 |']
+        assert '| 2 |' in lines                 # 갈린 아랫부분 — 값 보존
 
     def test_정확히_상한이면_허용(self, tmp_path):
         # off-by-one(> → >=)으로 정상 상한 파일이 거절되는 회귀 방지

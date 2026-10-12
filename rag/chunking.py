@@ -21,7 +21,7 @@
          `docling_enabled=False`·채팅 첨부는 python-docx(그림·중첩 표·자동 번호를 잃는다).
  - MD  : '#' 헤딩 정규식 + 코드 펜스 가드.
  - TXT : 평문(인코딩 감지 utf-8→cp949). 헤딩 구조가 없어 heading_path는 빈다.
- - XLSX: rag/xlsx_chunking. 시트=1청크라 이 파이프라인 밖 — 분할하지 않고 150행 초과면 업로드를 거절한다.
+ - XLSX: rag/xlsx_chunking. 행 묶음 청크 + 시트 완성본(#222)이라 이 파이프라인 밖 — 크기 상한(내용의 양) 초과면 업로드를 거절한다.
          읽기는 docling(시트 위 그림 캡션·병합 셀), 행 세기는 openpyxl(#220).
 
  공통: SentenceSplitter(chunk_size=512, chunk_overlap=50)로 크기 cap.
@@ -424,10 +424,19 @@ def docling_grid_markdown(table, doc=None) -> str | None:
     이 처리 전에는 VLM이 캡션을 만들어 놓고도 칸 글자에 없어 버려졌다(실측: 'LOGIN ID / PASSWORD' 캡션이 색인 0).
     PDF 표는 이 함수를 쓰지 않는다 — #143 이후 실측된 출력을 바꾸지 않는다(동작 보존).
     """
+    rows = docling_grid_rows(table, doc)
+    return to_markdown_table(rows[0], rows[1:]) if rows else None
+
+
+def docling_grid_rows(table, doc=None) -> list[list[str]]:
+    """docling 표 → 행 목록(첫 행 = 헤더). docling_grid_markdown의 행 단계 — 규칙은 그 docstring(병합·칸 안 그림·빈 행).
+
+    따로 둔 이유(#222 리뷰): 엑셀 행 묶음은 **글로 바꾸기 전에 행 목록에서** 나눠야 한다. 렌더한 markdown을 줄 단위로
+    다시 해석하면 칸 안 줄바꿈("구분⏎(원)" 헤더, "첫줄⏎| 둘째줄" 데이터)에서 헤더가 깨지고 행이 중간에서 잘렸다(실측).
+    """
     rows = [[_grid_cell_text(cell, doc) if cell.start_col_offset_idx == c else '' for c, cell in enumerate(row)]
             for row in table.data.grid]
-    rows = [row for row in rows if any(row)]
-    return to_markdown_table(rows[0], rows[1:]) if rows else None
+    return [row for row in rows if any(row)]
 
 
 def _grid_cell_text(cell, doc) -> str:
@@ -994,8 +1003,8 @@ def extract_text(file_path: str | Path) -> str:
     if low.endswith('.docx'):
         return _docx_text(file_path).strip()
     if low.endswith('.xlsx'):
-        from rag.xlsx_chunking import chunk_xlsx_plain   # 첨부는 openpyxl — docling 세마포어를 색인과 나누지 않는다(#220 결정 6)
-        return '\n'.join(c.text for c in chunk_xlsx_plain(str(file_path))).strip()
+        from rag.xlsx_chunking import xlsx_plain_text   # 첨부는 openpyxl — docling 세마포어를 색인과 나누지 않는다(#220 결정 6)
+        return xlsx_plain_text(str(file_path)).strip()  # 첨부는 행 묶음 없이 시트 전체(#222)
     return _read_text(file_path).strip()  # txt/md/기타
 
 
@@ -1062,7 +1071,7 @@ def _md_sections(file_path: str | Path) -> list[_Section]:
 
 
 # 형식 → 섹션 파서. 이 넷은 _Section으로 수렴하므로 뒤 단계(묶기·분할)를 공유한다.
-# xlsx만 빠져 있다 — 시트=1청크·분할 없음·행상한 초과 시 거절이라 계약이 근본적으로 다르다.
+# xlsx만 빠져 있다 — 행 묶음 + 시트 완성본·크기 상한 초과 시 거절이라 계약이 근본적으로 다르다(#222).
 _SECTION_PARSERS = {
     '.pdf': _pdf_sections,      # docling(기본) / pdfplumber 글자 크기 휴리스틱(비상)
     '.docx': _docx_sections,    # docling(기본) / python-docx(비상) — 둘 다 Heading 스타일 레벨
@@ -1077,7 +1086,7 @@ def chunk_file(file_path: str | Path, *, description: str = '') -> list[ChunkDat
     분기가 두 곳(여기 + 호출부)에 있던 게 CLI로 xlsx를 넣으면 ZIP 바이너리가 색인되던
     버그의 원인이었다(#42). 호출부는 이제 확장자를 보지 않는다.
 
-    xlsx는 `chunk_xlsx`로 위임한다 — 시트=1청크, 분할 없음, 150행 초과 시 업로드 거절,
+    xlsx는 `chunk_xlsx`로 위임한다 — 행 묶음 청크 + 시트 완성본, 크기 상한 초과 시 업로드 거절,
     `description` 병합. 나머지는 섹션 추출 → `_pack_sections` → 크기 분할을 공유한다.
     `description`은 xlsx 전용(다른 형식은 무시).
     """

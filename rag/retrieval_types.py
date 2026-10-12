@@ -23,6 +23,7 @@ class RetrievedChunk:
     version: int
     faq_id: int | None = None       # FAQ 출처면 항목 id (캐시 키·인용 분기용)
     is_table: bool = False          # F1a: xlsx 표 청크 여부 ('한 시트만' 필터용)
+    sheet_text: str | None = None   # xlsx 시트 완성본(#222) — 근거 준비가 이 묶음을 시트 전체로 바꿀 때 쓴다
     folder_name: str | None = None          # 소속 폴더 (미분류·FAQ는 None)
     folder_description: str | None = None   # 폴더 '참조 설명' — 리랭커 입력에만 사용 (임베딩엔 미포함)
 

@@ -97,6 +97,11 @@ INDEX_PICTURE_PLACEHOLDER_TOTAL = Counter(
     labelnames=('ext',),
 )
 
+EVIDENCE_BUDGET_TRIM_TOTAL = Counter(
+    'kms_evidence_budget_trim_total',
+    '근거 예산 초과로 뺀 산문 청크 수 (#222) — 엑셀 상한 7,500토큰이면 평소 0. 늘면 예산·상한 재검토',
+)
+
 SEARCH_INDEX_SYNC_TOTAL = Counter(
     'kms_search_index_sync_total',
     '외부 검색 색인 동기화 (#139), 재시도 단위. error가 늘면 색인이 낡는다 — rag.os_reconcile로 복구',

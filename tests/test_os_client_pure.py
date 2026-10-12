@@ -88,13 +88,21 @@ async def test_이미_있는_인덱스는_건드리지_않고_경합의_already_
             calls.append('create')
             raise RuntimeError('resource_already_exists_exception: index already exists')
 
+        async def get_mapping(self, *a, **k):
+            return {'kms': {'mappings': {'properties': {'text': {}}}}}     # sheet_text 없음
+
+        async def put_mapping(self, *a, index=None, body=None, **k):
+            calls.append(('put_mapping', sorted(body['properties'])))
+
     class _Client:
         def __init__(self, exists):
             self.indices = _Indices(exists)
 
     monkeypatch.setattr(C, 'client', lambda: _Client(True))
     await C.ensure_index()
-    assert calls == []                                   # 있으면 create를 부르지 않는다
+    # 있으면 create를 부르지 않고, 재색인 없이 붙여도 되는 보관 필드만 덧붙인다(#222 sheet_text)
+    assert calls == [('put_mapping', ['sheet_text'])]
+    calls.clear()
     monkeypatch.setattr(C, 'client', lambda: _Client(False))
     await C.ensure_index()                               # 웹·워커 동시 생성 경합 — 예외 아님
     assert calls == ['create']
@@ -158,3 +166,35 @@ class TestConnectionPool:
         이 값이 바뀌면(라이브러리 업그레이드 등) 테스트가 알려준다."""
         from opensearchpy._async.http_aiohttp import AIOHttpConnection
         assert AIOHttpConnection(host='localhost', port=9200)._limit == 10
+
+
+@pytest.mark.asyncio
+async def test_보관_필드가_이미_있으면_추가하지_않고_추가_실패는_색인을_막지_않는다(monkeypatch):
+    # #222 리뷰 — ensure_index는 drain이 매 회차 부른다. 매핑 추가 실패가 예외로 올라가면 색인 전체가 멈췄다
+    calls = []
+
+    class _Indices:
+        def __init__(self, have, fail):
+            self._have, self._fail = have, fail
+
+        async def exists(self, *a, **k):
+            return True
+
+        async def get_mapping(self, *a, **k):
+            return {'kms': {'mappings': {'properties': {f: {} for f in self._have}}}}
+
+        async def put_mapping(self, *a, **k):
+            calls.append('put')
+            if self._fail:
+                raise RuntimeError('mapper_parsing_exception: 형식 충돌')
+
+    class _Client:
+        def __init__(self, have, fail=False):
+            self.indices = _Indices(have, fail)
+
+    monkeypatch.setattr(C, 'client', lambda: _Client({'text', 'sheet_text'}))
+    await C.ensure_index()
+    assert calls == []                                   # 이미 있으면 put을 부르지 않는다
+    monkeypatch.setattr(C, 'client', lambda: _Client({'text'}, fail=True))
+    await C.ensure_index()                               # 실패해도 예외 없이 지나간다
+    assert calls == ['put']

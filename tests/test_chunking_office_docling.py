@@ -208,13 +208,13 @@ class TestXlsxDocling:
             ws.append([None, '택시', 29100])
             ws.merge_cells('A3:A4')
         chunks = chunk_file(_xlsx(tmp_path, build), description='교통비 양식')
-        assert len(chunks) == 1
-        text = chunks[0].text
+        assert {c.heading_path[0] for c in chunks} == {'양식'}          # 묶음(#222)이 여럿이어도 한 시트
+        text = chunks[0].meta['sheet_text']                              # 시트 완성본 — 모델이 보는 본문
         assert text.count('업무 교통비 청구서') == 1
         assert '| 교통 | 버스 | 1500 |' in text and '| 교통 | 택시 | 29100 |' in text
-        assert text.startswith('[교통비 양식]\n')
-        assert chunks[0].meta == {'is_table': True, 'sheet': '양식'}
-        assert chunks[0].heading_path == ['양식']
+        assert text.startswith('[교통비 양식]\n') and text.count('[교통비 양식]') == 1
+        assert all(c.text.startswith('[교통비 양식]\n') for c in chunks)   # 묶음마다 설명 반복(검색 보강)
+        assert all(c.meta['is_table'] and c.meta['sheet'] == '양식' for c in chunks)
 
     def test_시트_위_그림은_그_시트_청크에_들어간다(self, tmp_path):
         from openpyxl.drawing.image import Image as XlImage
@@ -229,12 +229,13 @@ class TestXlsxDocling:
             ws2.append(['항목', '값'])
             ws2.append(['x', '1'])
         chunks = chunk_file(_xlsx(tmp_path, build))
-        assert [c.heading_path for c in chunks] == [['첫시트'], ['둘째']]     # 시트=1청크 유지
-        assert _PICTURE_PLACEHOLDER in chunks[0].text and _PICTURE_PLACEHOLDER not in chunks[1].text
+        by_sheet = {c.heading_path[0]: c.meta['sheet_text'] for c in chunks}
+        assert list(by_sheet) == ['첫시트', '둘째']                          # 시트 순서 유지(#222: 시트당 묶음 여럿 가능)
+        assert _PICTURE_PLACEHOLDER in by_sheet['첫시트'] and _PICTURE_PLACEHOLDER not in by_sheet['둘째']
 
     def test_숨긴_시트는_색인하지_않고_행_상한에도_세지_않는다(self, tmp_path):
         # #220 리뷰 — 숨긴 시트가 있으면 문서 전체가 실패했다(openpyxl은 세고 docling은 비워 냄). 서비스 결정: 숨긴 시트는 건너뛴다
-        from rag.xlsx_chunking import XLSX_MAX_ROWS, validate_xlsx_upload
+        from rag.xlsx_chunking import validate_xlsx_upload
 
         def build(wb):
             wb.active.title = '보임1'
@@ -242,7 +243,7 @@ class TestXlsxDocling:
             wb.active.append(['v1'])
             hidden = wb.create_sheet('참조')
             hidden.append(['k'])
-            for i in range(XLSX_MAX_ROWS + 5):      # 상한 초과 — 숨겼으니 거절 사유가 아니다
+            for i in range(5000):                   # 크기 상한 초과 — 숨겼으니 거절 사유가 아니다
                 hidden.append([i])
             hidden.sheet_state = 'hidden'
             very = wb.create_sheet('내부')
@@ -252,7 +253,7 @@ class TestXlsxDocling:
             wb.create_sheet('보임2').append(['col'])
             wb['보임2'].append(['v2'])
         p = _xlsx(tmp_path, build)
-        assert [c.heading_path for c in chunk_file(p)] == [['보임1'], ['보임2']]
+        assert list(dict.fromkeys(c.heading_path[0] for c in chunk_file(p))) == ['보임1', '보임2']
         validate_xlsx_upload(p.read_bytes(), '설명')        # 예외 없음
 
     def test_공백만_든_시트는_빈_시트로_건너뛴다(self, tmp_path):
@@ -282,7 +283,7 @@ class TestXlsxDocling:
         chunks = chunk_file(_xlsx(tmp_path, build))
         assert chunks[0].heading_path == ['데이터']
         assert {c.heading_path[0] for c in chunks[1:]} == {'그림만', '차트'}
-        assert all(c.meta == {'is_table': True, 'sheet': c.heading_path[0]} for c in chunks)
+        assert all(c.meta['is_table'] and c.meta['sheet'] == c.heading_path[0] for c in chunks)
 
     def test_빈_엑셀은_청크_0개(self, tmp_path):
         assert chunk_file(_xlsx(tmp_path, lambda wb: None)) == []
@@ -304,23 +305,23 @@ class TestXlsxDocling:
         def build(wb):
             wb.active.append(['col'])
             wb.active.append(['1'])
-        monkeypatch.setattr(xc, '_docling_sheet_texts', lambda doc: {})
+        monkeypatch.setattr(xc, '_docling_sheet_blocks', lambda doc: {})
         with pytest.raises(RuntimeError, match='비워 냈다'):
             chunk_file(_xlsx(tmp_path, build))
 
-    def test_행_상한은_docling_변환_전에_openpyxl로_건다(self, tmp_path, monkeypatch):
+    def test_크기_상한은_docling_변환_전에_openpyxl로_건다(self, tmp_path, monkeypatch):
         import rag.xlsx_chunking as xc
-        from rag.xlsx_chunking import XLSX_MAX_ROWS, XlsxTooManyRows
+        from rag.xlsx_chunking import XlsxTableTooLarge
 
         def build(wb):
             wb.active.append(['col'])
-            for i in range(XLSX_MAX_ROWS + 1):
+            for i in range(5000):                   # 추정 ≈ 1만 토큰 이상 — 상한(7,500) 초과
                 wb.active.append([i])
 
         def boom(*a, **k):
-            raise AssertionError('행 상한 위반인데 docling 변환까지 갔다')
+            raise AssertionError('크기 상한 위반인데 docling 변환까지 갔다')
         monkeypatch.setattr(xc, 'docling_convert', boom)
-        with pytest.raises(XlsxTooManyRows):
+        with pytest.raises(XlsxTableTooLarge):
             chunk_file(_xlsx(tmp_path, build))
 
 

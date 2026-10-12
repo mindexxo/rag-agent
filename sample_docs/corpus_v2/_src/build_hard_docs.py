@@ -15,8 +15,8 @@
   첫 행 헤더·A1 시작·수치는 숫자 타입·시트 표 크기 상한 이하(스크립트가 검증 — rag.xlsx_chunking과 같은 판정, #222).
 
 사용: python sample_docs/corpus_v2/_src/build_hard_docs.py
-  _src/<tenant>/<tenant>_1[123]_*.md|.xlsx.json 을 찾아 sample_docs/corpus_v2/<tenant>/ 에 산출.
-  (기존 01~10 문서는 대상 아님 — 파일명 _1[123]_ 패턴만.)
+  _src/<tenant>/<tenant>_1[1-4]_*.md|.xlsx.json 을 찾아 sample_docs/corpus_v2/<tenant>/ 에 산출.
+  (기존 01~10 문서는 대상 아님 — 파일명 _1[1-4]_ 패턴만.)
 """
 import json
 import re
@@ -121,7 +121,7 @@ def main() -> None:
         out_dir = OUT_ROOT / tenant_dir.name
         if not out_dir.is_dir():
             continue
-        for src in sorted(tenant_dir.glob(f"{tenant_dir.name}_1[123]_*")):
+        for src in sorted(tenant_dir.glob(f"{tenant_dir.name}_1[1-4]_*")):
             stem_target = src.name.removesuffix(".md").removesuffix(".xlsx.json")
             if src.name.endswith(".xlsx.json"):
                 out = out_dir / f"{stem_target}.xlsx"
@@ -141,7 +141,7 @@ def main() -> None:
             built.append(out)
             print(f"built {out.relative_to(OUT_ROOT)}")
     if not built:
-        sys.exit("변환 대상 0건 — _src/<tenant>/<tenant>_1[123]_*.{pdf.md,docx.md,xlsx.json} 명명 확인")
+        sys.exit("변환 대상 0건 — _src/<tenant>/<tenant>_1[1-4]_*.{pdf.md,docx.md,xlsx.json} 명명 확인")
 
 
 if __name__ == "__main__":

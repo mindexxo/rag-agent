@@ -315,7 +315,7 @@ class TestXlsxDocling:
 
         def build(wb):
             wb.active.append(['col'])
-            for i in range(5000):                   # 추정 ≈ 1만 토큰 이상 — 상한(7,500) 초과
+            for i in range(5000):                   # 추정 ≈ 1만 토큰 이상 — 상한(6,000) 초과
                 wb.active.append([i])
 
         def boom(*a, **k):

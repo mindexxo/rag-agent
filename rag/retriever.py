@@ -151,7 +151,7 @@ def _keep_single_table(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
 
 # 근거 토큰 예산 — 문맥 창 30,720 − 답변 몫 3,000 − 대화 이력 최대 2,000 − 근거 1칸 뺀 프롬프트 p95 3,045 ≈ 22,675
 # (#222 실측: 골드 658문항을 운영 검색으로 조립해 Qwen3 /tokenize로 셈). 여유를 두고 22,000. 첨부는 이 계산 밖이다.
-# 엑셀 상한이 7,500토큰이라 평소엔 닿지 않는다 — 안전장치다.
+# 엑셀 상한이 6,000토큰이라 평소엔 닿지 않는다 — 안전장치다.
 EVIDENCE_BUDGET_TOKENS = 22000
 
 

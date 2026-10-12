@@ -97,7 +97,7 @@ class TestChunkXlsx:
         ws = wb.active
         ws.title = '단가'
         ws.append(['상품코드', '상품명', '단가'])
-        for i in range(300):
+        for i in range(200):
             ws.append([f'A-{i:04d}', f'상품 {i}', 1000 + i])
         p = tmp_path / 'big.xlsx'
         wb.save(p)

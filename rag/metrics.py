@@ -99,7 +99,7 @@ INDEX_PICTURE_PLACEHOLDER_TOTAL = Counter(
 
 EVIDENCE_BUDGET_TRIM_TOTAL = Counter(
     'kms_evidence_budget_trim_total',
-    '근거 예산 초과로 뺀 산문 청크 수 (#222) — 엑셀 상한 7,500토큰이면 평소 0. 늘면 예산·상한 재검토',
+    '근거 예산 초과로 뺀 산문 청크 수 (#222) — 엑셀 상한 6,000토큰이면 평소 0. 늘면 예산·상한 재검토',
 )
 
 SEARCH_INDEX_SYNC_TOTAL = Counter(

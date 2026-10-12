@@ -144,6 +144,7 @@ async def fetch_chunk_map(ids: list[int]) -> dict:
             version=src.get("version") or 1,
             faq_id=src.get("faq_id"),
             is_table=bool(src.get("is_table")),
+            sheet_text=src.get("sheet_text"),
             folder_name=src.get("folder_name"),
             folder_description=src.get("folder_description"),
         )

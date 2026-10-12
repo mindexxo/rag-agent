@@ -219,7 +219,7 @@ async def upload_document(
     if len(content) > DOC_MAX_FILE_BYTES:
         raise HTTPException(status_code=413, detail='파일이 10MB를 초과합니다.')
 
-    # 1-1. xlsx 사전검증 (#194) — 표 설명 필수 + 150행 상한. **blob을 쓰기 전에** 한다(위 0-1과 같은 이유).
+    # 1-1. xlsx 사전검증 (#194·#222) — 표 설명 필수 + 표 크기 상한. **blob을 쓰기 전에** 한다(위 0-1과 같은 이유).
     #      #139로 파싱이 워커로 옮겨간 뒤 이 둘은 "업로드는 200인데 1분 뒤 failed"였다. 사용자가
     #      성공으로 알고 화면을 떠난 뒤 실패하고, 디스크엔 blob이, 목록엔 failed 행이 남았다.
     #      결정적 실패라 재시도해도 결과가 같으므로 동기 경로로 끌어올린다.

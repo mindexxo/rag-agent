@@ -1,4 +1,4 @@
-"""문서 관리 통합 테스트 — xlsx 표 설명 필수·150행 사전검증·설정 계승 출처·설명 PATCH (#194).
+"""문서 관리 통합 테스트 — xlsx 표 설명 필수·표 크기 사전검증(#222)·설정 계승 출처·설명 PATCH (#194).
 
 공용 헬퍼는 tests/helpers_documents.py. 설정 계승 출처(C절)는 xlsx 전용이 아니지만 여기 둔다 —
 "xlsx 설명을 계승하려면 출처가 ALIVE여야 한다"는 요구가 `latest_alive`로 기준을 좁힌 계기라
@@ -15,8 +15,7 @@ from rag.models import AnswerCache as AnswerCacheRow, Document, SearchIndexOutbo
 from schemas.kms import DOCUMENT_DESCRIPTION_MAX
 from tests.conftest import ingest
 from tests.helpers_documents import MD, chunk_texts, doc_data, get_doc, make_folder, upload
-from tests.test_xlsx_chunking import _xlsx_bytes
-from rag.xlsx_chunking import XLSX_MAX_ROWS
+from tests.test_xlsx_chunking import _max_rows_at_limit, _xlsx_bytes
 
 XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 TABLE = _xlsx_bytes(3)
@@ -150,21 +149,22 @@ async def test_A9_A10_201자_설명은_두_수신_경로_모두_422(client, tena
     assert _blob_names(blob_tmp, tenant_id) == []
 
 
-# ── B. 업로드 — xlsx 150행 ──────────────────────────────────────────────────
+# ── B. 업로드 — xlsx 표 크기 상한(#222, 옛 150행) ─────────────────────────────
 
 @pytest.mark.asyncio
-async def test_B1_151행은_업로드_즉시_400(client, tenant_id, fake_queue, blob_tmp):
-    """전에는 200 pending → 1분 뒤 failed였다(#139 이후). 이제 라우터가 막는다."""
-    res = await _post_xlsx(client, '큰표.xlsx', _xlsx_bytes(XLSX_MAX_ROWS + 1), description='설명')
+async def test_B1_크기_상한_초과는_업로드_즉시_400(client, tenant_id, fake_queue, blob_tmp):
+    """전에는 200 pending → 1분 뒤 failed였다(#139 이후). 이제 라우터가 막는다. 문구는 #222 결정 9 그대로."""
+    res = await _post_xlsx(client, '큰표.xlsx', _xlsx_bytes(_max_rows_at_limit() + 1), description='설명')
     assert res.status_code == 400
-    assert '행' in res.json()['detail'] and str(XLSX_MAX_ROWS) in res.json()['detail']
+    detail = res.json()['detail']
+    assert '허용 크기의' in detail and '%입니다(현재 ' in detail and '토큰' not in detail
     assert _blob_names(blob_tmp, tenant_id) == []
     assert await _doc_count(tenant_id) == 0
 
 
 @pytest.mark.asyncio
-async def test_B2_정확히_150행은_통과(client, tenant_id, fake_queue, blob_tmp):
-    doc = await _upload_xlsx(client, '경계표.xlsx', '설명', _xlsx_bytes(XLSX_MAX_ROWS))
+async def test_B2_정확히_상한이면_통과(client, tenant_id, fake_queue, blob_tmp):
+    doc = await _upload_xlsx(client, '경계표.xlsx', '설명', _xlsx_bytes(_max_rows_at_limit()))
     await ingest(doc['document_id'])
     assert (await get_doc(doc['document_id'])).status == 'ready'
 
@@ -367,7 +367,7 @@ async def test_G1_숨긴_시트는_업로드를_막지_않고_색인에서_빠�
         wb.active.append(['VIP', '2.0'])
         hidden = wb.create_sheet('참조')
         hidden.append(['k'])
-        for i in range(XLSX_MAX_ROWS + 5):
+        for i in range(5000):                       # 크기 상한 초과 — 숨겼으니 거절 사유가 아니다
             hidden.append([i])
         hidden.sheet_state = 'hidden'
     doc = await _upload_xlsx(client, '숨김표.xlsx', '등급 적립률', _wb_bytes(build))
@@ -389,7 +389,34 @@ async def test_G2_병합_제목은_한_번만_색인된다(client, tenant_id, fa
     await ingest(doc['document_id'])
     assert (await get_doc(doc['document_id'])).status == 'ready'
     texts = await chunk_texts(doc['document_id'])
-    assert len(texts) == 1 and texts[0].count('업무 교통비 청구서') == 1
+    assert '\n'.join(texts).count('업무 교통비 청구서') == 1     # 제목 블록·표 묶음으로 나뉘어도(#222) 제목은 한 번
+
+
+@pytest.mark.asyncio
+async def test_G4_큰_시트는_행_묶음으로_색인되고_근거는_시트_완성본이다(client, tenant_id, fake_queue, blob_tmp):
+    """#222 — 색인(행 묶음·묶음마다 완성본) → 조회(fetch_chunk_map이 sheet_text를 돌려줌) → 근거 준비(완성본으로 확장)"""
+    from rag import os_search
+    from rag.retriever import prepare_evidence
+
+    def build(wb):
+        ws = wb.active
+        ws.title = '단가'
+        ws.append(['상품코드', '상품명', '단가'])
+        for i in range(200):
+            ws.append([f'A-{i:04d}', f'상품 {i}', 1000 + i])
+    doc = await _upload_xlsx(client, '단가표.xlsx', '상품 단가표', _wb_bytes(build))
+    await ingest(doc['document_id'])
+    assert (await get_doc(doc['document_id'])).status == 'ready'
+    resp = await os_search.client().search(index=os_search.settings.opensearch_index, body={
+        'size': 100, '_source': ['chunk_id'], 'query': {'term': {'document_id': doc['document_id']}}})
+    ids = sorted(int(h['_source']['chunk_id']) for h in resp['hits']['hits'])
+    assert len(ids) > 1                                              # 행 묶음 여럿
+    cmap = await os_search.fetch_chunk_map(ids)
+    chunks = [cmap[i] for i in ids]
+    assert all(c.is_table and c.sheet_text == chunks[0].sheet_text for c in chunks)
+    ev = prepare_evidence(chunks[::-1], top_k=5)                     # 아무 묶음이 걸려도
+    assert len(ev) == 1                                              # 한 칸으로 접히고
+    assert ev[0].text.count('| 상품코드 |') == 1 and 'A-0000' in ev[0].text and 'A-0199' in ev[0].text   # 시트 전체
 
 
 @pytest.mark.asyncio
@@ -412,3 +439,13 @@ async def test_G3_docx_중첩_표_내용이_색인된다(client, tenant_id, fake
     await ingest(doc_id)
     assert (await get_doc(doc_id)).status == 'ready'
     assert any('중첩표고유문구' in t for t in await chunk_texts(doc_id))
+
+
+@pytest.mark.asyncio
+async def test_G5_첨부_엑셀이_크면_추출_불가가_아니라_첨부_상한_안내가_나간다(client, tenant_id):
+    """#222 리뷰 — 색인용 크기 상한을 첨부에도 걸었더니 라우터의 일반 예외 처리에 걸려 "추출할 수 없는 파일"(422)로
+    사유가 가려졌다. 첨부는 자체 상한(6천 자)의 413 안내를 받아야 한다."""
+    content = _xlsx_bytes(_max_rows_at_limit() + 50)
+    res = await client.post('/kms/attachments/extract', files={'file': ('큰표.xlsx', content, XLSX_MIME)})
+    assert res.status_code == 413, res.text
+    assert '필요한 부분만 잘라 첨부' in res.json()['detail']

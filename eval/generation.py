@@ -30,7 +30,7 @@ from rag.citation_labels import sources_from_chunks
 from rag.citation_tail import TailSplitter, resolve_citations
 from rag.conversation import (build_prior_turns, condense_query,
                               trim_messages_for_condense)
-from rag.retriever import retrieve_candidates
+from rag.retriever import prepare_evidence, retrieve_candidates
 from rag.retrieval_types import RetrievedChunk
 from rag.embeddings import embed_texts_sync
 from rag.llm_schemas import is_schema_rejected
@@ -103,17 +103,19 @@ async def oracle_context(session, chunk_ids: list[int]) -> list[RetrievedChunk]:
         return []
     from rag import os_search
     chunk_map = await os_search.fetch_chunk_map(chunk_ids)
-    return [chunk_map[cid] for cid in chunk_ids if cid in chunk_map]
+    chunks = [chunk_map[cid] for cid in chunk_ids if cid in chunk_map]
+    # 운영과 같은 근거 준비(#222) — 정답 묶음도 시트 완성본으로 바꿔 넣는다(같은 시트 묶음이 여럿이면 하나로 접힌다)
+    return prepare_evidence(chunks, len(chunks))
 
 
 async def retrieved_context(session, tenant: str, query: str) -> list[RetrievedChunk]:
-    """실제 검색기 결과 top-K (옵션: 리랭커 재정렬)."""
+    """실제 검색기 결과 top-K (옵션: 리랭커 재정렬). 자르기는 운영과 같은 prepare_evidence(#222 — 접기·시트 확장 포함)."""
     cands = await retrieve_candidates(session, tenant, query, top_n=20)
     chunks = cands.chunks
     if USE_RERANK and chunks:
         from rag.reranker import rerank
         chunks = await rerank(query, chunks)
-    return chunks[:TOP_K]
+    return prepare_evidence(chunks, TOP_K)
 
 
 # ===== 생성 ==========================================================

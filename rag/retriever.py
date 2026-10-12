@@ -33,12 +33,18 @@ gate 전/후·threshold sweep 을 본다. 운영 /kms/query 는 retrieve() wrapp
 LLM 호출 없음. Stage D의 RagService가 이 결과를 받아 답변 생성 또는
 "확인 불가" 응답으로 분기.
 """
+import logging
+from dataclasses import replace
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from rag import os_search, otel
+from rag import metrics, os_search, otel
 from rag.embeddings import embed_texts
 from rag.retrieval_types import RetrievalCandidates, RetrievalResult, RetrievedChunk
+from rag.tokens import estimate_tokens_conservative
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_TOP_N = 20      # 후보 수 — retrieve_candidates 기본값과 retrieve() 호출부의 단일 출처
                         # (평가가 Recall@N을 보려면 최종 top_k보다 넓어야 한다)
@@ -107,33 +113,76 @@ def _rank_multi(per_query_ids: list[list[int]]) -> list[int]:
     return [cid for cid, _ in sorted(scores.items(), key=lambda x: -x[1])]
 
 
+def _sheet_key(ch: RetrievedChunk) -> tuple:
+    """표 청크가 속한 시트 — (문서 id, 시트명). 시트명은 heading_path[0]이다(rag/xlsx_chunking._sheet_chunks)."""
+    return (ch.document_id, ch.heading_path[0] if ch.heading_path else None)
+
+
 def _keep_single_table(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
-    """표 청크는 최상위 1개만 남기고 나머지 표 청크 제외 (F1a '한 시트만').
+    """표 청크는 최상위 **시트 하나**의 것만 남기고 다른 시트의 표 청크는 제외 (F1a '한 시트만', #222).
 
-    **엑셀(시트=1청크) 기준의 제약이다.** is_table을 세우는 것은 rag/xlsx_chunking뿐이라
-    실제 대상도 엑셀 청크뿐이다. PDF 표는 한 문서에 여러 개가 정상이므로(실측 1쪽에
-    2~6개) 이 필터에 걸리면 안 된다 — PDF 표 청크에 is_table을 붙이지 마라 (#137).
+    #222 이전엔 시트 = 1청크라 "최상위 표 청크 1개"가 곧 "시트 1개"였다. 이제 시트가 행 묶음 여러 청크라, 같은 시트의
+    묶음은 **모두 남긴다** — 여기서 하나로 접으면 검색 지표(Hit@1·R@5)가 정답 묶음을 형제 묶음에 밀려 놓친 것으로 채점한다.
+    같은 시트 묶음을 근거 한 칸으로 접는 일은 그 뒤 prepare_evidence가 한다.
 
-    파일이 달라도 표는 하나만 남는다 — 채널톡 ALF와 같은 제약이다
+    **엑셀 기준의 제약이다.** is_table을 세우는 것은 rag/xlsx_chunking뿐이라 실제 대상도 엑셀 청크뿐이다. PDF 표는 한
+    문서에 여러 개가 정상이므로(실측 1쪽에 2~6개) 이 필터에 걸리면 안 된다 — PDF 표 청크에 is_table을 붙이지 마라 (#137).
+
+    파일이 달라도 시트는 하나만 남는다 — 채널톡 ALF와 같은 제약이다
     ("ALF는 한 번의 답변에서 하나의 시트만 참조합니다. 여러 엑셀 파일이나 한 파일 내
     여러 시트를 동시에 참조하는 것은 현재 지원되지 않습니다", docs.channel.io 지식 ALF v2).
-    산문·FAQ 청크는 무관하게 통과. 시트=1청크(150행 초과는 업로드 거절)라
-    "최상위 표 청크 1개"가 곧 "시트 1개"다.
+    그래서 큰 표를 시트·파일로 나눠 올려도 한 질문엔 한 시트만 근거가 된다(업로드 안내가 나눠 올리라고 하지 않는 이유).
+    산문·FAQ 청크는 무관하게 통과.
 
-    **버린 자리를 채우지 않는다** — top_n 슬라이스 뒤에 돌기 때문에, 표 청크가 상위에
-    여럿이면 최종 후보가 top_n보다 적어진다(21위 이하로 백필하지 않음). 첫 구현부터
-    이 동작이고 eval도 이 위에서 측정됐다.
-    **'최상위'의 기준은 넘겨받은 순서다** — 리랭크가 꺼졌거나 실패하면 리랭커 점수가
-    아니라 dense/RRF 순서로 표 1등이 정해진다.
+    **버린 자리를 채우지 않는다** — top_n 슬라이스 뒤에 돌기 때문에, 다른 시트 표 청크가 상위에 여럿이면 최종 후보가
+    top_n보다 적어진다(21위 이하로 백필하지 않음). **'최상위'의 기준은 넘겨받은 순서다** — 리랭크가 꺼졌거나 실패하면
+    리랭커 점수가 아니라 dense/RRF 순서로 표 1등이 정해진다.
     """
-    kept, table_seen = [], False
+    kept, sheet = [], None
     for ch in chunks:
         if ch.is_table:
-            if table_seen:
-                continue          # 이미 상위 표 청크를 채택 → 다른 표는 버림
-            table_seen = True
+            if sheet is None:
+                sheet = _sheet_key(ch)
+            elif _sheet_key(ch) != sheet:
+                continue          # 다른 시트의 표 → 버림
         kept.append(ch)
     return kept
+
+
+# 근거 토큰 예산 — 문맥 창 30,720 − 답변 몫 3,000 − 대화 이력 최대 2,000 − 근거 1칸 뺀 프롬프트 p95 3,045 ≈ 22,675
+# (#222 실측: 골드 658문항을 운영 검색으로 조립해 Qwen3 /tokenize로 셈). 여유를 두고 22,000. 첨부는 이 계산 밖이다.
+# 엑셀 상한이 6,000토큰이라 평소엔 닿지 않는다 — 안전장치다.
+EVIDENCE_BUDGET_TOKENS = 22000
+
+
+def prepare_evidence(chunks: list[RetrievedChunk], top_k: int) -> list[RetrievedChunk]:
+    """검색 후보(순위순) → 모델에 넣을 근거. **운영(retrieve)과 생성 평가(eval.generation)가 함께 쓰는 정의점**(#222).
+
+    ① 같은 시트의 표 묶음은 가장 위 것 하나로 접는다 — 근거 칸을 같은 시트가 여럿 차지하지 않게(접힌 자리는 아래 순위가 채운다)
+    ② top_k로 자른다
+    ③ 남은 표 묶음을 시트 완성본(sheet_text)으로 바꾼다 — 모델은 언제나 시트 전체를 본다("부분 표" 위험 차단)
+    ④ 근거 추정 토큰(보수적 ÷1.1 — 예산이 실제 토크나이저 기준이라 덜 세면 안 된다)이 EVIDENCE_BUDGET_TOKENS를 넘으면
+       순위가 낮은 산문 청크부터 뺀다(경고 로그·지표)
+    chunk_id·document_id 등은 걸린 묶음의 것을 그대로 둔다 — 인용 번호·의미 캐시는 문서 단위라 바뀌지 않는다.
+    검색 지표는 이 함수 앞(retrieve_candidates)을 채점한다 — ①을 앞에서 하면 정답 묶음이 형제에 밀려 미스로 채점된다.
+    """
+    seen, folded = set(), []
+    for ch in chunks:
+        if ch.is_table:
+            key = _sheet_key(ch)
+            if key in seen:
+                continue
+            seen.add(key)
+        folded.append(ch)
+    out = [replace(ch, text=ch.sheet_text) if ch.is_table and ch.sheet_text else ch for ch in folded[:top_k]]
+    while sum(estimate_tokens_conservative(c.text) for c in out) > EVIDENCE_BUDGET_TOKENS:
+        drop = next((i for i in range(len(out) - 1, -1, -1) if not out[i].is_table), None)
+        if drop is None:
+            break
+        logger.warning('근거 예산 초과 — 순위 %d의 청크(%s)를 뺀다', drop + 1, out[drop].filename)
+        metrics.EVIDENCE_BUDGET_TRIM_TOTAL.inc()
+        del out[drop]
+    return out
 
 
 # ===== 후보 검색 (게이트 미적용) ====================================
@@ -288,7 +337,7 @@ async def retrieve(
         otel.set_documents(sp, candidates.chunks)
     no_evidence, reason = apply_gate(candidates, max_dense_distance)
     return RetrievalResult(
-        chunks=candidates.chunks[:top_k],
+        chunks=prepare_evidence(candidates.chunks, top_k),   # 접기·자르기·시트 확장·예산(#222)
         no_evidence=no_evidence,
         reason=reason,
         # 게이트 판정과 무관하게 항상 옮긴다 — no_evidence면 유일한 소비처(service의

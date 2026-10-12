@@ -103,6 +103,9 @@ MAPPING = {
             # 이중으로 관여한다). 하지만 _source로는 돌려받는다: 검색 결과의 본문이 이 값이다
             # (fetch_chunk_map — PG를 되묻지 않는다).
             "text": {"type": "text", "index": False},
+            # 엑셀 시트 완성본(#222) — 행 묶음 청크마다 그 시트 전체(설명·헤더 한 번)를 싣는다. 검색 대상이 아니다:
+            # 근거 준비(rag.retriever.prepare_evidence)가 걸린 묶음을 이것으로 바꿔 모델에 넣는다. 엑셀 외 청크는 null.
+            "sheet_text": {"type": "text", "index": False},
             # 질의할 때는 반드시 lex_clause()를 쓴다 — 기본 match로 질의하면 2.18 hybrid가
             # 500으로 죽는다(실측 47/450). 사유·실측치는 lex_clause docstring.
             NORI_FIELD: {"type": "text", "analyzer": "nori_ko"},
@@ -166,15 +169,41 @@ async def close_client() -> None:
         _client = None
 
 
+# 기존 인덱스에 **추가만** 하는 필드 — 검색하지 않는 보관 필드라 재색인 없이 붙여도 안전하다(#222 sheet_text).
+# 빠뜨리면 동적 매핑이 이 필드를 분석되는 text로 잡아 쓸데없이 색인한다. 검색 필드의 변경은 여기 넣지 말 것(재색인 절차).
+ADDITIVE_FIELDS = ("sheet_text",)
+
+
+async def _add_missing_fields(os_client) -> None:
+    """기존 인덱스에 ADDITIVE_FIELDS 중 **없는 것만** 덧붙인다. 실패해도 예외를 올리지 않는다(#222 리뷰).
+
+    ensure_index는 워커 drain이 **매 회차** 부른다(rag/outbox.py) — 여기서 예외가 나면 ensure_index_soft가 "연결 실패"로
+    보고 drain 회차를 통째로 건너뛰어 색인 전체가 멈춘다(매핑 권한 없음·동적 매핑과의 형식 충돌이면 매 회차 실패).
+    필드 추가는 부가 작업이라 본업을 막지 않는다: 실패는 경고만 남긴다. 그 상태로 색인되면 동적 매핑이 그 필드를 분석되는
+    text로 잡는다 — 동작은 정상이고 색인 공간만 낭비된다. 이미 있으면 put을 부르지 않는다(정상 상태의 매 회차 비용 = get 1회).
+    """
+    props = MAPPING["mappings"]["properties"]
+    try:
+        current = await os_client.indices.get_mapping(index=settings.opensearch_index)
+        have = next(iter(current.values()), {}).get("mappings", {}).get("properties", {})
+        missing = {f: props[f] for f in ADDITIVE_FIELDS if f not in have}
+        if missing:
+            await os_client.indices.put_mapping(index=settings.opensearch_index, body={"properties": missing})
+    except Exception as e:                       # noqa: BLE001 — 부가 작업 실패로 색인을 막지 않는다
+        logging.getLogger(__name__).warning('검색 저장소 매핑 필드 추가 실패 — 색인은 계속한다(%s): %s',
+                                            ', '.join(ADDITIVE_FIELDS), e)
+
+
 async def ensure_index() -> None:
     """인덱스가 없으면 MAPPING으로 만든다 — 테스트(conftest)와 ensure_index_soft가 부른다.
 
-    있으면 건드리지 않는다: 매핑 변경은 재색인이 따르는 별도 절차다(새 인덱스 + 전량 재색인).
+    있으면 ADDITIVE_FIELDS만 덧붙이고 그 밖엔 건드리지 않는다: 매핑 변경은 재색인이 따르는 별도 절차다(새 인덱스 + 전량 재색인).
     엔진에 못 붙으면 예외를 올린다(엄격 판). 기동 경로는 ensure_index_soft를 쓴다.
     두 프로세스(웹·워커)가 동시에 만들면 한쪽이 already-exists를 받는다 — 그건 성공으로 본다.
     """
     os_client = client()
     if await os_client.indices.exists(settings.opensearch_index):
+        await _add_missing_fields(os_client)
         return
     try:
         await os_client.indices.create(settings.opensearch_index, body=MAPPING)

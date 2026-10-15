@@ -336,14 +336,16 @@ async def test_E1_E2_description_indexed_at이_모든_응답에_나온다(client
 # ── F. PDF 쪽수 — 설정 불변식 ────────────────────────────────────────────────
 
 def test_F1_쪽수_가드가_타임아웃보다_먼저_걸린다():
-    """100쪽 ≈ 610초(쪽당 6.1초, #168 실측) < docling timeout < arq job_timeout. 순서가 깨지면
-    "100쪽 이내" 안내와 실제 동작이 어긋나거나(앞), 취소된 잡이 영원히 재시도된다(뒤)."""
+    """정상 최악 = 100쪽 ≈ 610초(쪽당 6.1초, #168 실측) + 그림 100장 ≈ 200초(동시 1, #223 실측) < 변환 마감
+    ≤ 회차 예산(arq job_timeout) − 꼬리. 순서가 깨지면 상한 안의 정상 문서가 마감에 걸리거나(앞),
+    첫 행조차 회차 예산에 못 들어가 arq 취소로 헛돈다(뒤)."""
     from config import settings
+    from rag import outbox
     from rag.worker import WorkerSettings
-    per_page_seconds = 6.1
-    assert (settings.docling_max_num_pages * per_page_seconds
+    per_page_seconds, per_picture_seconds = 6.1, 2.0
+    assert (settings.docling_max_num_pages * per_page_seconds + settings.docling_max_pictures * per_picture_seconds
             < settings.docling_document_timeout_seconds
-            < WorkerSettings.job_timeout)
+            <= WorkerSettings.job_timeout - outbox.INDEX_TAIL_SECONDS)
 
 
 # ── G. docling 경로 (#220) — 업로드 → 워커 색인까지 실제 경로 ─────────────────────
@@ -449,3 +451,66 @@ async def test_G5_첨부_엑셀이_크면_추출_불가가_아니라_첨부_상�
     res = await client.post('/kms/attachments/extract', files={'file': ('큰표.xlsx', content, XLSX_MIME)})
     assert res.status_code == 413, res.text
     assert '필요한 부분만 잘라 첨부' in res.json()['detail']
+
+
+# ── H. 색인 시간 상한·캡션 실패 (#223) — 업로드 → 워커 drain까지 실제 경로 ─────────────────
+# VLM은 로컬 대역(conftest.fake_vlm). 변환은 변환 프로세스에서, 분류·재시도는 outbox에서 — 둘의 이음매를 본다.
+
+DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+
+
+def _docx_with_pictures(n: int) -> bytes:
+    from io import BytesIO
+    from docx import Document as Docx
+    from PIL import Image
+    png = BytesIO()
+    Image.new('RGB', (120, 80), (200, 30, 30)).save(png, format='PNG')
+    d = Docx()
+    d.add_heading('화면 매뉴얼', level=1)
+    d.add_paragraph('로그인 절차를 설명한다.')
+    for _ in range(n):
+        d.add_picture(BytesIO(png.getvalue()))
+    buf = BytesIO()
+    d.save(buf)
+    return buf.getvalue()
+
+
+async def _outbox_row(doc_id: int) -> SearchIndexOutbox:
+    async with AsyncSessionLocal() as s:
+        return (await s.execute(select(SearchIndexOutbox)
+                                .where(SearchIndexOutbox.op == outbox.INDEX_DOCUMENT)
+                                .where(SearchIndexOutbox.payload['document_id'].as_integer() == doc_id))).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_H1_VLM_장애면_문서는_대기로_재시도되고_복구되면_ready(client, tenant_id, fake_queue, blob_tmp, fake_vlm):
+    """#223 결정 3 — 전에는 VLM이 죽어 있으면 그림이 자리표시로 남은 채 ready가 됐다(조용한 불완전 색인)."""
+    fake_vlm.status = 500
+    res = await client.post('/kms/documents', files={'file': ('매뉴얼.docx', _docx_with_pictures(1), DOCX_MIME)})
+    assert res.status_code == 200, res.text
+    doc_id = res.json()['document_id']
+    await ingest(doc_id)
+    row = await _outbox_row(doc_id)
+    assert (await get_doc(doc_id)).status == 'pending'                     # failed가 아니다 — 일시 실패
+    assert row.status == outbox.PENDING and row.attempts == 1 and '캡션' in row.last_error
+    assert row.next_attempt_at is not None                                 # 백오프가 걸렸다
+
+    fake_vlm.status = 200                                                  # VLM 복구
+    await ingest(doc_id)                                                   # row_ids 경로는 백오프를 무시한다(테스트 계약)
+    assert (await get_doc(doc_id)).status == 'ready'
+    from tests.conftest import FAKE_CAPTION
+    assert any(FAKE_CAPTION in t for t in await chunk_texts(doc_id))
+
+
+@pytest.mark.asyncio
+async def test_H2_그림이_상한을_넘으면_사유와_함께_바로_failed(client, tenant_id, fake_queue, blob_tmp, fake_vlm, monkeypatch):
+    """#223 결정 4 — 결정적 실패라 재시도 없이 1회로 확정되고, 사유가 FE에 그대로 보인다."""
+    from config import settings
+    monkeypatch.setattr(settings, 'docling_max_pictures', 2)
+    res = await client.post('/kms/documents', files={'file': ('캡처.docx', _docx_with_pictures(3), DOCX_MIME)})
+    doc_id = res.json()['document_id']
+    await ingest(doc_id)
+    doc = await get_doc(doc_id)
+    assert doc.status == 'failed' and '그림 3장' in doc.status_reason
+    assert (await _outbox_row(doc_id)).attempts == 1
+    assert fake_vlm.calls == 0                                             # 넘는 문서에 VLM 시간을 쓰지 않았다

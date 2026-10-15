@@ -63,12 +63,14 @@ id 순은 **성향이지 보장이 아니다**(#185). 백오프로 미뤄진 행
 """
 import asyncio
 import logging
+import time
 from datetime import timedelta
 
 import httpx
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import InterfaceError, OperationalError
 
+from config import settings
 from database import AsyncSessionLocal
 from rag import os_client, os_index
 from rag.metrics import INDEX_TOTAL, SEARCH_INDEX_FAILED_TOTAL, SEARCH_INDEX_SYNC_TOTAL, ext_label
@@ -90,6 +92,18 @@ PENDING, DONE, FAILED = 'pending', 'done', 'failed'
 MAX_ATTEMPTS = 24
 BACKOFF_CAP_MINUTES = 60   # 복구 뒤 늦어도 이 안에 반영된다 — 눈금을 키우면 그만큼 낡은 채로 기다린다
 BATCH = 50              # 한 회차가 처리할 최대 행. 다음 회차가 이어받으니 크지 않아도 된다.
+# 회차 예산(#223 결정 2). arq job_timeout(rag/worker.py)이 이 값을 쓴다 — 문서 1건이 아니라 **회차 전체**의 상한이라,
+# 정상 문서 여럿을 이어 처리하다 이 값을 넘기면 arq가 회차를 취소해 처리 중이던 문서가 헛돈다(CancelledError →
+# attempts 그대로, 다음 회차가 처음부터). 그래서 행을 시작하기 전에 "이 행이 최악으로 걸려도 예산 안인가"를 본다.
+# 행 하나의 최악 = 변환 마감(settings.docling_document_timeout_seconds) + 꼬리(변환 뒤 임베딩·엔진 쓰기·커밋).
+# 꼬리 300초 근거(코드상 상한): 임베딩 32청크씩 요청당 embed_timeout 30초 — 100쪽 PDF 약 190청크면 6회 ≈ 180초,
+# OpenSearch bulk opensearch_timeout 30초 × 최대 3회 ≈ 90초. 그 밖(각주 표시·이미지 비율 계산, DB 커밋)은 수 초.
+INDEX_TAIL_SECONDS = 300
+# 첫 행 뒤에도 작은 문서가 이어 흐를 여유. 이만큼 쓴 뒤에는 회차를 접는다(다음 회차까지 최대 1분 틈).
+ROUND_SLACK_SECONDS = 180
+# **마감에서 계산한다**(#223 리뷰) — 고정값이면 마감을 올렸을 때 첫 행조차 예산에 못 들어가 대기열이 로그 없이
+# 멈춘다. 지금 값 900 + 300 + 180 = 1380.
+DRAIN_ROUND_SECONDS = int(settings.docling_document_timeout_seconds) + INDEX_TAIL_SECONDS + ROUND_SLACK_SECONDS
 
 _drain_lock = asyncio.Lock()   # cron 겹침 방지 — 단일 워커 전제(모듈 docstring)
 
@@ -149,6 +163,10 @@ def is_transient(exc: BaseException) -> bool:
       - PG 자체(SQLAlchemy가 asyncpg 예외를 감싼 것): OperationalError·InterfaceError — 핸들러가 같은 세션으로
         PG를 읽고 쓰는 도중 커넥션이 끊긴 경우. 분류 뒤의 attempts UPDATE도 같은 DB라 함께 실패할 수
         있는데, 그때는 예외가 drain 밖으로 나가 이 회차가 끊기고 행은 pending 그대로 남는다 — 무해.
+    docling 변환(rag/chunking, #223)도 이 기준에 맞춰 예외 종류를 고른다 — 문서 마감 초과는 TimeoutError,
+    그림 캡션 실패는 CaptionFailedError(ConnectionError 하위)라 일시, 그림 장수 초과는 PictureLimitError(ValueError
+    하위)라 결정적이다. 마감 초과를 일시로 두는 것은 사용자 결정이다(#223 결정 5 — 병적인 문서 하나가 약 24시간에
+    걸쳐 15분씩 재시도해도 영향이 작다고 봤다).
     그 밖은 전부 **결정적** — 파싱 ValueError, docling RuntimeError, blob 없음(FileNotFoundError),
     프로그래밍 오류. 백 번 돌려도 같으므로 바로 failed로 보이는 것이 사용자에게 싸다(모듈 docstring).
     """
@@ -217,7 +235,10 @@ async def drain(session, limit: int = BATCH, *, row_ids: list[int] | None = None
     rows = (await session.execute(due_pending_stmt(limit, row_ids=row_ids))).all()
 
     done = failed = 0
+    started = time.monotonic()
     for row_id, tenant_id, op, payload in rows:   # 값으로 들고 간다 — rollback이 ORM 객체를 만료시킨다
+        if row_ids is None and not _fits_round(time.monotonic() - started):
+            break                                  # 남은 행은 pending 그대로 — 다음 회차(최대 1분 뒤)가 잇는다
         payload = payload or {}
         try:
             await _apply(session, op, payload, row_id)
@@ -279,6 +300,19 @@ async def drain(session, limit: int = BATCH, *, row_ids: list[int] | None = None
                            op, row_id, attempts,
                            ' → failed 확정' if terminal else f' → {backoff_delay(attempts)} 뒤 재시도', e)
     return {'done': done, 'failed': failed}
+
+
+def _fits_round(elapsed: float) -> bool:
+    """회차를 elapsed초 쓴 지금 행 하나를 더 시작해도 되는가 — 최악(변환 마감 + 꼬리)으로 걸려도 예산 안일 때만.
+
+    예산을 마감에서 계산하므로 첫 행은 항상 시작한다. 작은 문서는 수 초라 여러 건이 한 회차에 흐르고,
+    큰 문서 뒤(ROUND_SLACK_SECONDS 넘게 쓴 뒤)에는 회차를 접는다 — 대가는 다음 회차까지 최대 1분의 틈이다.
+    남는 구멍: 꼬리가 비정상으로 300초를 넘기면(임베딩·엔진이 죽지 않고 느리기만 할 때) arq가 회차를 취소하고, 그 행은
+    attempts가 안 올라 다음 회차가 백오프 없이 다시 잡는다 — 느림이 풀리면 끝난다(#223 리뷰 지적 2, 사용자 결정 b).
+    행 종류를 가리지 않는다: 문서 색인 외의 op는 수 초라 이 판정에 거의 걸리지 않고, 가리면 규칙만 늘어난다.
+    row_ids로 부르는 경로(테스트·eval)는 "지정한 행을 지금 전부 처리"가 계약이라 이 예산을 안 본다.
+    """
+    return elapsed + settings.docling_document_timeout_seconds + INDEX_TAIL_SECONDS <= DRAIN_ROUND_SECONDS
 
 
 async def drain_once(limit: int = BATCH, *, row_ids: list[int] | None = None) -> dict:

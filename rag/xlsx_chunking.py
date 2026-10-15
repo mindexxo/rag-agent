@@ -35,9 +35,9 @@
   openpyxl처럼 잘못 읽는다(실문서 2건 모두 해당) — 0을 유지한다(#220 결정 9). FE 업로드 도움말의 '엑셀 작성 규격'
   (시트당 표 1개·첫 행 헤더)은 안내일 뿐 강제하지 않으며, docling이 나았던 3건은 전부 그 규격을 어긴 파일이었다.
 - **크기 판정**: openpyxl `_iter_sheets`로 렌더한 표 하나로 잰다 — 업로드 검증과 색인이 같은 기준이어야 하고(아래 절),
-  업로드 검증이 docling 변환 대기(세마포어)에 서면 안 된다.
+  업로드 검증이 docling 변환 대기(변환 프로세스)에 서면 안 된다.
 - `docling_enabled=False`(비상 스위치, `chunk_xlsx_plain`)와 채팅 첨부(`xlsx_plain_text`)는 openpyxl로 읽는다 — 첨부는
-  사용자 대기 경로라 색인과 docling 세마포어를 나누지 않는다(#220 결정 6). 첨부는 묶지 않고 시트 전체 텍스트 그대로다.
+  사용자 대기 경로라 색인과 docling 변환 프로세스를 나누지 않는다(#220 결정 6). 첨부는 묶지 않고 시트 전체 텍스트 그대로다.
 
 청크 meta에 {"is_table": True, "sheet": 시트명, "sheet_text": 시트 완성본}을 싣는다 — retriever가 표 청크를 식별하고
 '한 시트만 참조' 필터(시트 = 문서 id + heading_path[0])와 시트 확장을 한다.
@@ -313,7 +313,7 @@ def chunk_xlsx(file_path, description: str = '') -> list[ChunkData]:
     if not settings.docling_enabled:
         return chunk_xlsx_plain(file_path, description)
     titles = _check_workbook_size(file_path)
-    blocks = _docling_sheet_blocks(docling_convert(file_path).document)
+    blocks = _docling_sheet_blocks(docling_convert(file_path))
     if missing := [t for t in titles if t not in blocks]:
         raise RuntimeError(f'docling이 셀이 있는 시트를 비워 냈다: {missing}')
     chunks: list[ChunkData] = []

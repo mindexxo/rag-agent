@@ -85,6 +85,14 @@ MAPPING = {
             "is_table": {"type": "boolean"},
             "filename": {"type": "keyword"},
             "heading_path": {"type": "keyword"},
+            # 식별자 채널(#238) — 두 필드 다 rag/identifiers가 정의한다. 엔진은 정확 일치만 맡는다(terms).
+            #   identifiers: 제목 경로 + 묶음 헤딩을 정규화한 토큰('11조'·'43조의2'·'3장'). 질문도 같은 함수로
+            #                토큰을 뽑아 대조한다 — lex_bigram과 같은 "정의점 함수가 토큰을 만들고 엔진은 자르지
+            #                않는다"는 규율. 분석기로 재현하지 않는 이유: 규칙이 파이썬 한 곳이어야 오리기·eval과 같다.
+            #   headings:    묶음이 본문 줄로 내려보낸 헤딩 원문(rag/chunking meta['headings']) — 근거 준비가
+            #                구간 경계로 쓴다(cut_identifier_span). 검색 대상이 아니다.
+            "identifiers": {"type": "keyword"},
+            "headings": {"type": "keyword", "index": False},
             # 검색 엔진에는 조인이 없다 — 필터·표시에 쓰는 문서 메타를 청크마다 복사한다
             # (실무 표준). 대가는 fan-out update다: 문서·폴더 메타가 바뀌면 그 문서의 모든
             # 청크 문서를 갱신해야 한다(sync_meta_documents·sync_meta_faqs).
@@ -169,9 +177,11 @@ async def close_client() -> None:
         _client = None
 
 
-# 기존 인덱스에 **추가만** 하는 필드 — 검색하지 않는 보관 필드라 재색인 없이 붙여도 안전하다(#222 sheet_text).
-# 빠뜨리면 동적 매핑이 이 필드를 분석되는 text로 잡아 쓸데없이 색인한다. 검색 필드의 변경은 여기 넣지 말 것(재색인 절차).
-ADDITIVE_FIELDS = ("sheet_text",)
+# 기존 인덱스에 **추가만** 하는 필드 — 재색인 없이 붙여도 안전한 것: 검색하지 않는 보관 필드(#222 sheet_text, #238 headings)와
+# **새로 생기는** keyword 정확 일치 필드(#238 identifiers — 값이 없는 옛 청크는 그냥 안 걸릴 뿐이라 채널이 꺼진 것과 같다).
+# 빠뜨리면 동적 매핑이 이 필드를 분석되는 text로 잡아 쓸데없이 색인한다. 기존 검색 필드의 **변경**(분석기 등)은 여기로 못 한다(재색인 절차).
+# 추가는 매핑일 뿐이다 — 값을 채우려면 문서를 재인제스트해야 한다(#238: 청킹이 헤딩을 기록해야 identifiers가 생긴다).
+ADDITIVE_FIELDS = ("sheet_text", "identifiers", "headings")
 
 
 async def _add_missing_fields(os_client) -> None:

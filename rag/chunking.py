@@ -42,7 +42,7 @@ import socket
 import subprocess
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NamedTuple
 
@@ -133,6 +133,10 @@ class _Section:
     # page 하나로는 여러 쪽에 걸친 섹션을 표현할 수 없어 뒤쪽 청크가 앞 쪽 번호를
     # 물려받았다 (#137 결함 6 — 실측 193청크 중 95개가 틀린 쪽을 가리켰다).
     line_pages: list[int | None] | None = None
+    # 묶음(_pack_sections)이 본문 줄로 내려보낸 하위 헤딩 — 원문 그대로. 어느 줄이 헤딩이었는지를
+    # 여기 기록해 두어야 색인이 식별자('11조')를 **추정 없이** 뽑고(rag/identifiers, #238 결정 15),
+    # 분할이 헤딩을 본문과 같은 조각에 둘 수 있다(_split_section). 묶지 않은 섹션은 비어 있다.
+    headings: list[str] = field(default_factory=list)
 
 
 # (page, text, level) — 두 PDF 경로(docling / pdfplumber)가 _build_sections에 흘리는 공통 단위.
@@ -1167,9 +1171,11 @@ def _pack_sections(
         common = _common_prefix([s.heading_path for s in buf])
         lines: list[str] = []
         pages: list[int | None] = []
+        heads: list[str] = []
         for s in buf:
             extra = s.heading_path[len(common):]   # 공통 조상보다 깊은 헤딩은 본문에 보존
             lines.extend(extra)
+            heads.extend(extra)
             pages.extend([s.page] * len(extra))
             lines.append(s.body)
             # 줄별 page를 그대로 이어붙인다. 없으면(docx·md·txt) 섹션 page로 채운다 —
@@ -1180,7 +1186,7 @@ def _pack_sections(
                 pages.extend(s.line_pages)
             else:
                 pages.extend([s.page] * len(body_lines))
-        packed.append(_Section(common, buf[0].page, '\n'.join(lines), pages))
+        packed.append(_Section(common, buf[0].page, '\n'.join(lines), pages, headings=heads))
         buf.clear()
         size = 0
 
@@ -1384,7 +1390,7 @@ def chunk_file(file_path: str | Path, *, description: str = '') -> list[ChunkDat
     out: list[ChunkData] = []
     for section in _pack_sections(parser(file_path)):
         cursor = 0
-        for chunk in splitter.split_text(section.body):
+        for chunk in _split_section(section, splitter):
             # 청크의 실제 시작 위치로 쪽을 고른다. 섹션 page 하나를 모든 청크에
             # 물려주면 여러 쪽에 걸친 섹션의 뒤쪽 청크가 앞 쪽을 가리킨다 (#137 결함 6).
             # 오프셋은 목록 번호 복원(결함 3)의 판정 근거이기도 하므로 손대기 전에 구한다.
@@ -1394,6 +1400,36 @@ def chunk_file(file_path: str | Path, *, description: str = '') -> list[ChunkDat
             text = _strip_orphan_marker(_restore_leading_marker(section.body, offset, chunk))
             if not text.strip():
                 continue
+            # 이 조각에 실린 헤딩만 — 색인이 식별자 사전으로, 근거 준비가 구간 경계로 쓴다(#238 결정 15).
+            lines = {line.strip() for line in text.split('\n')}
+            heads = [h for h in section.headings if h.strip() in lines]
             out.append(ChunkData(text=text, heading_path=list(section.heading_path),
-                                 page=_page_at(section, offset), chunk_index=len(out)))
+                                 page=_page_at(section, offset), chunk_index=len(out),
+                                 meta={'headings': heads} if heads else None))
     return out
+
+
+def _split_section(section: _Section, splitter: SentenceSplitter) -> list[str]:
+    """섹션 본문을 크기 분할하되 **기록된 헤딩은 조각의 마지막 줄이 될 수 없다** (#238 결정 15-2).
+
+    SentenceSplitter는 헤딩을 모른다. 경계가 헤딩 바로 뒤에 떨어지면 헤딩만 앞 조각에 남고 본문은 다음
+    조각으로 가 — 식별자로 그 조를 찾아도 넘길 내용이 없다(실측 1/427, 2026-10-17). 그런 꼬리 헤딩을
+    다음 조각 맨 앞으로 옮긴다. 다음 조각이 (겹침 때문에) 이미 그 줄을 갖고 있으면 앞에서만 뗀다.
+    옮긴 줄은 원문에서 다음 조각과 이어져 있으므로 호출부의 offset 탐색(section.body.find)이 그대로 맞는다.
+    """
+    pieces = splitter.split_text(section.body)
+    heads = {h.strip() for h in section.headings}
+    if not heads:
+        return pieces
+    out = list(pieces)
+    for i in range(len(out) - 1):
+        lines = out[i].split('\n')
+        while lines and not lines[-1].strip():
+            lines.pop()
+        if not lines or lines[-1].strip() not in heads:
+            continue
+        head = lines.pop()
+        out[i] = '\n'.join(lines)
+        if head.strip() not in {line.strip() for line in out[i + 1].split('\n')}:
+            out[i + 1] = head + '\n' + out[i + 1]
+    return [p for p in out if p.strip()]

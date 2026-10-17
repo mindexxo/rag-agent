@@ -53,8 +53,10 @@ def test_엔진이_돌려준_청크에_인용_메타가_다_실린다():
     하나라도 빠지면 인용 표시나 리랭커 입력이 조용히 비어버린다."""
     props = C.MAPPING['mappings']['properties']
     for f in ('chunk_id', 'document_id', 'faq_id', 'text', 'heading_path', 'page',
-              'filename', 'version', 'is_table', 'folder_name', 'folder_description'):
+              'filename', 'version', 'is_table', 'folder_name', 'folder_description',
+              'identifiers', 'headings'):        # 식별자 채널(#238)
         assert f in props, f
+    assert props['identifiers']['type'] == 'keyword'    # 정확 일치(terms) — 분석기로 쪼개면 채널 자체가 무의미
 
 
 @pytest.mark.asyncio
@@ -100,8 +102,8 @@ async def test_이미_있는_인덱스는_건드리지_않고_경합의_already_
 
     monkeypatch.setattr(C, 'client', lambda: _Client(True))
     await C.ensure_index()
-    # 있으면 create를 부르지 않고, 재색인 없이 붙여도 되는 보관 필드만 덧붙인다(#222 sheet_text)
-    assert calls == [('put_mapping', ['sheet_text'])]
+    # 있으면 create를 부르지 않고, 재색인 없이 붙여도 되는 필드(ADDITIVE_FIELDS)만 덧붙인다(#222 sheet_text, #238 identifiers·headings)
+    assert calls == [('put_mapping', sorted(C.ADDITIVE_FIELDS))]
     calls.clear()
     monkeypatch.setattr(C, 'client', lambda: _Client(False))
     await C.ensure_index()                               # 웹·워커 동시 생성 경합 — 예외 아님
@@ -192,7 +194,7 @@ async def test_보관_필드가_이미_있으면_추가하지_않고_추가_실�
         def __init__(self, have, fail=False):
             self.indices = _Indices(have, fail)
 
-    monkeypatch.setattr(C, 'client', lambda: _Client({'text', 'sheet_text'}))
+    monkeypatch.setattr(C, 'client', lambda: _Client({'text', *C.ADDITIVE_FIELDS}))
     await C.ensure_index()
     assert calls == []                                   # 이미 있으면 put을 부르지 않는다
     monkeypatch.setattr(C, 'client', lambda: _Client({'text'}, fail=True))

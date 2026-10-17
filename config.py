@@ -124,6 +124,13 @@ class Settings(BaseSettings):
     hybrid_lexical_inject: int = 15                   # dense 미포함 BM25 상위 주입 수 (어블레이션 조립과 동일)
     rerank_base_url: str = "http://localhost:38890"   # TEI 리랭커 서버 (bge-reranker-v2-m3, /rerank) — 실주소는 .env
     rerank_timeout: float = 30.0
+    # 식별자 채널(#238, 정의점 rag/identifiers·rag/retriever). 질문에 사전 식별자('11조')가 있을 때만 발동:
+    # 정확 일치 조각을 리랭커 풀에 주입하고, 리랭크 **뒤** 점수에 ident_boost를 더해 재정렬한다.
+    # 0.3 = 장·조 혼동 점수 차(0.20~0.25)보다 크고 리랭커 확신(0.3 이상 차이)은 뒤집지 않는 값 — 585문항 실패 11→1,
+    # 실질문 23건 근거5안 15→23, 회귀 0(2026-10-17). 0.5는 묶음·파일명 문제까지 보정치로 덮는 값이라 기각.
+    ident_channel_enabled: bool = True
+    ident_boost: float = 0.3
+    ident_inject: int = 10                            # dense·BM25 미포함 정확 일치 조각 주입 상한
 
     # 검색 저장소 — OpenSearch 하나 (#139 도입 확정 2026-09-12, 사유=확장성). PG는 문서·FAQ·폴더·
     # 대화·캐시·outbox의 정본이고, 청크(본문·메타·벡터·어휘 필드)는 엔진에만 있다. 서빙은 엔진에서

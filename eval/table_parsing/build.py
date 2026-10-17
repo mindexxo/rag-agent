@@ -6,7 +6,7 @@
 경로별 표현 한계(정의의 `paths`로 제한한 축 외에 여기서 조용히 바뀌는 것):
 - pdf(reportlab): 셀 안 줄바꿈은 Paragraph, 병합은 SPAN, 긴 표는 쪽을 넘기며 헤더 반복(repeatRows=1), 표 안의 표는 Table 중첩.
   음영은 BACKGROUND. 글꼴은 CID 한글(HYGothic-Medium) — 글자 모양이 이미지 경로(AppleSDGothicNeo)와 다르다.
-- docx(python-docx): 병합은 cell.merge, 줄바꿈은 문단 추가, 표 안의 표는 cell.add_table. 음영·세로쓰기는 안 넣는다.
+- docx(python-docx): 병합은 cell.merge, 줄바꿈은 문단 추가, 표 안의 표는 cell.add_table. 격자 없음·음영 축은 테두리 없는 표(+짝수 행 w:shd). 세로쓰기는 안 넣는다.
 - xlsx(openpyxl): 병합은 merge_cells, 줄바꿈은 wrap_text, 세로쓰기는 textRotation=90, 날짜·숫자는 **값 타입 그대로**(xlsx_types 축 — 수식은 openpyxl이 캐시값을 못 써 제외).
   '나란히' 축은 한 시트에 빈 열 2개를 두고 두 표를 놓는다(docling gap_tolerance=0이 둘을 가른다 — #220 결정 9).
 """
@@ -63,7 +63,8 @@ def build_img_pdf(spec, out: Path, png_dir: Path) -> Path:
 
 # ── pdf: reportlab 네이티브 표 ──────────────────────────────────────────────────
 
-def _rl_table(rows, *, nested_ok=True):
+def _rl_table(rows, *, nested_ok=True, style_kind='grid'):
+    """style_kind: grid(격자) · hlines(가로선만 — 테두리 없는 표) · striped(헤더 음영 + 짝수 행 연한 회색)."""
     data = []
     for row in rows:
         line = []
@@ -74,8 +75,14 @@ def _rl_table(rows, *, nested_ok=True):
                 line.append(Paragraph(cell_text(cell).replace('\n', '<br/>'), _CELL))
         data.append(line)
     t = Table(data, repeatRows=1)
-    style = [('FONT', (0, 0), (-1, -1), 'HYGothic-Medium', 9), ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')]
+    style = [('FONT', (0, 0), (-1, -1), 'HYGothic-Medium', 9), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')]
+    if style_kind == 'grid':
+        style.append(('GRID', (0, 0), (-1, -1), 0.5, colors.black))
+    elif style_kind == 'hlines':
+        style += [('LINEABOVE', (0, 0), (-1, 0), 0.8, colors.black), ('LINEBELOW', (0, 0), (-1, -1), 0.5, colors.black)]
+    elif style_kind == 'striped':
+        style += [('LINEBELOW', (0, 0), (-1, -1), 0.3, colors.grey)]
+        style += [('BACKGROUND', (0, r), (-1, r), colors.HexColor('#f2f2f2')) for r in range(2, len(rows), 2)]
     for r, c, rs, cs in _span_cells(rows):
         style.append(('SPAN', (c, r), (c + cs - 1, r + rs - 1)))
     for r, row in enumerate(rows):
@@ -96,7 +103,7 @@ def build_text_pdf(spec, out: Path) -> Path:
         wrap.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP'), ('LEFTPADDING', (0, 0), (-1, -1), 12)]))
         story.append(wrap)
     else:
-        story.append(_rl_table(spec['rows']))
+        story.append(_rl_table(spec['rows'], style_kind=spec.get('style', 'grid')))
     if spec.get('note'):
         story += [Spacer(1, 4), Paragraph(spec['note'], _BODY)]
     p = out / f"{spec['id']}.pdf.pdf"
@@ -133,8 +140,15 @@ def build_docx(spec, out: Path) -> Path:
         d.add_paragraph(spec['title'])
     rows = spec['rows']
     t = d.add_table(rows=len(rows), cols=max(len(r) for r in rows))
-    t.style = 'Table Grid'
+    t.style = 'Table Grid' if spec.get('style', 'grid') == 'grid' else None     # 격자 없음·음영: 테두리 없는 표(Word 기본)
     _docx_fill(t, rows)
+    if spec.get('style') == 'striped':
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        for r in range(2, len(rows), 2):
+            for cell in t.rows[r].cells:
+                shd = OxmlElement('w:shd'); shd.set(qn('w:val'), 'clear'); shd.set(qn('w:fill'), 'F2F2F2')
+                cell._tc.get_or_add_tcPr().append(shd)
     if spec.get('note'):
         d.add_paragraph(spec['note'])
     p = out / f"{spec['id']}.docx.docx"
@@ -153,7 +167,7 @@ def _xlsx_value(cell, typed: bool):
     return raw if raw != '' else None
 
 
-def _xlsx_fill(ws, rows, *, typed: bool, col_offset: int = 0):
+def _xlsx_fill(ws, rows, *, typed: bool, col_offset: int = 0, striped: bool = False):
     for r, row in enumerate(rows, start=1):
         for c, cell in enumerate(row, start=1 + col_offset):
             v = _xlsx_value(cell, typed)
@@ -165,6 +179,8 @@ def _xlsx_fill(ws, rows, *, typed: bool, col_offset: int = 0):
                     x.fill = PatternFill('solid', fgColor=cell['bg'].lstrip('#'))
                 if cell.get('v'):
                     x.alignment = Alignment(textRotation=90)
+            if striped and r > 1 and r % 2 == 1:                        # 짝수 데이터 행 음영(0-base r-1이 짝수)
+                x.fill = PatternFill('solid', fgColor='F2F2F2')
             if isinstance(v, str) and '\n' in v:
                 x.alignment = Alignment(wrap_text=True)
     for r, c, rs, cs in _span_cells(rows):
@@ -182,7 +198,7 @@ def build_xlsx(spec, out: Path) -> Path:
             _xlsx_fill(ws, t, typed=typed, col_offset=off)
             off += max(len(r) for r in t) + 2
     else:
-        _xlsx_fill(ws, spec['rows'], typed=typed)
+        _xlsx_fill(ws, spec['rows'], typed=typed, striped=spec.get('style') == 'striped')
     p = out / f"{spec['id']}.xlsx.xlsx"
     wb.save(p)
     return p

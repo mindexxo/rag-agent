@@ -5,15 +5,16 @@
 from types import SimpleNamespace
 
 from eval.table_parsing.expected import Cell, expected_cells, expected_rows, expected_tables, flat
+flat_dims = flat
 from eval.table_parsing.score import ActualTable, chunk_tables, docling_tables, match_tables, score_cells, score_rows
 from eval.table_parsing.specs import BY_ID, SPECS, paths_of
 
-S02 = BY_ID['S02a_colspan']
-S16 = BY_ID['S16a_rowheader']
+S02 = BY_ID['S02_colspan']
+S16 = BY_ID['S16_rowheader']
 
 
 class TestSpecs:
-    def test_정의는_23축_짝으로_있고_격자가_반듯하다(self):
+    def test_정의는_23축_하나씩이고_격자가_반듯하다(self):
         axes = {}
         for s in SPECS:
             axes.setdefault(s['axis'], []).append(s['id'])
@@ -23,7 +24,7 @@ class TestSpecs:
                     assert len(row) == m, (s['id'], r)      # 들쭉날쭉한 행은 격자 비교를 깨뜨린다
                 for c in expected_cells(t):                  # 병합 범위가 격자 밖으로 안 나간다
                     assert c.row + c.row_span <= n and c.col + c.col_span <= m, (s['id'], c)
-        assert all(len(v) == 2 for v in axes.values()), {k: v for k, v in axes.items() if len(v) != 2}
+        assert all(len(v) == 1 for v in axes.values()), {k: v for k, v in axes.items() if len(v) != 1}
         assert len(axes) == 23
         assert all(set(paths_of(s)) <= {'img', 'pdf', 'docx', 'xlsx'} for s in SPECS)
 
@@ -42,13 +43,18 @@ class TestExpectedRows:
     def test_pdf_가로_머리글_표는_열_이름이_숫자가_된다(self):
         # 현재 동작(export_to_dataframe이 column_header 없는 표에 0,1,2…를 붙인다)을 그대로 기대한다 — 보정하지 않는다
         rows = expected_rows(S16, S16['rows'], 'pdf')
-        assert rows[0] == ['0', '1'] and rows[1] == ['성명', '홍길동']
+        assert rows[0] == ['0', '1'] and rows[1] == ['문서명', '휴양시설 이용 안내']
 
-    def test_중첩_표는_바깥_칸을_비우고_안쪽을_별도_표로(self):
-        s = BY_ID['V15a_nested']
-        tables = expected_tables(s)
+    def test_중첩_표는_docx에선_바깥_안쪽_따로_pdf에선_평탄화(self):
+        s = BY_ID['V15_nested']
+        tables = expected_tables(s, 'docx')
         assert len(tables) == 2 and tables[1][0] == ['항목', '배점']
         assert [c.text for c in expected_cells(tables[0]) if c.row == 1 and c.col == 1] == ['']
+        flat, = expected_tables(s, 'pdf')                      # docling PDF 실측 모양(#253): 5×3, 바깥 글자가 안쪽 행마다
+        assert flat_dims(flat) == (5, 3)
+        cells = {(c.row, c.col): (c.text, c.row_span, c.col_span) for c in expected_cells(flat)}
+        assert cells[(0, 1)] == ('세부', 1, 2) and cells[(1, 0)] == ('평가 항목', 3, 1)
+        assert cells[(1, 1)] == ('항목', 1, 1) and cells[(3, 2)] == ('40', 1, 1) and cells[(4, 1)] == ('매년 12월', 1, 2)
 
 
 class TestChunkTables:
@@ -153,7 +159,7 @@ class TestDoclingDrift:
     def test_pdf_규칙은_rag_chunking의_dataframe_렌더와_같다(self):
         import warnings
         from rag.chunking import _docling_table_markdown, to_markdown_table
-        for spec in (S02, BY_ID['S03a_rowspan'], BY_ID['S05a_empty']):
+        for spec in (S02, BY_ID['S03_rowspan'], BY_ID['S05_empty']):
             exp = expected_rows(spec, spec['rows'], 'pdf')
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
@@ -170,7 +176,7 @@ class TestDoclingDrift:
 
     def test_docx_규칙은_rag_chunking의_grid_렌더와_같다(self):
         from rag.chunking import docling_grid_rows
-        for spec in (S02, BY_ID['S03a_rowspan'], BY_ID['S04a_form']):
+        for spec in (S02, BY_ID['S03_rowspan'], BY_ID['S04_form']):
             assert docling_grid_rows(self._item(spec)) == expected_rows(spec, spec['rows'], 'docx'), spec['id']
 
     def test_docling_tables는_병합_원점만_남기고_헤더행을_센다(self):
@@ -187,18 +193,18 @@ class TestBuild:
         import openpyxl
         from docx import Document
         from eval.table_parsing.build import build_all
-        made = build_all(tmp_path, {'S02a_colspan'})
+        made = build_all(tmp_path, {'S02_colspan'})
         assert sorted(p for _, p, _ in made) == ['docx', 'img', 'pdf', 'xlsx']
         assert all(f.exists() and f.stat().st_size > 0 for _, _, f in made)
-        ws = openpyxl.load_workbook(tmp_path / 'S02a_colspan.xlsx.xlsx').active
+        ws = openpyxl.load_workbook(tmp_path / 'S02_colspan.xlsx.xlsx').active
         assert {str(m) for m in ws.merged_cells.ranges} == {'A1:A2', 'B1:C1', 'D1:E1'}
-        t = Document(tmp_path / 'S02a_colspan.docx.docx').tables[0]
+        t = Document(tmp_path / 'S02_colspan.docx.docx').tables[0]
         assert [c.text for c in t.rows[0].cells] == ['직급', '국내 출장', '국내 출장', '해외 출장', '해외 출장']
-        assert (tmp_path / 'png' / 'S02a_colspan.png').exists()
+        assert (tmp_path / 'png' / 'S02_colspan.png').exists()
 
     def test_paths_인자로_경로를_좁힌다(self, tmp_path):
         from eval.table_parsing.build import build_all
-        assert [p for _, p, _ in build_all(tmp_path, {'S01a_basic'}, {'xlsx'})] == ['xlsx']
+        assert [p for _, p, _ in build_all(tmp_path, {'S01_basic'}, {'xlsx'})] == ['xlsx']
 
 
 class TestGallery:
@@ -207,3 +213,110 @@ class TestGallery:
         page = build_gallery(tmp_path)
         html = page.read_text()
         assert html.count('class="c"') == 23 and len(list((tmp_path / 'png').glob('*.png'))) == 23
+
+
+class TestQuestions:
+    def test_정의마다_사실_2개_경로마다_다른_질문이고_정답이_표의_칸_값이다(self):
+        from eval.table_parsing.questions import ALL_QUESTIONS, FACTS
+        from eval.table_parsing.expected import norm
+        from eval.table_parsing.render_image import cell_text
+        for s in SPECS:
+            assert len(FACTS[s['id']]) == 2, s['id']
+            cells = {norm(cell_text(c)) for t in expected_tables(s) for row in t for c in row if c is not None}
+            texts = set()
+            for p, qs in ALL_QUESTIONS[s['id']].items():
+                for q in qs:
+                    assert any(norm(q.expected) in c for c in cells), (s['id'], q.expected)   # 정답은 표 안 글자
+                    texts.add(q.text)
+            n_paths = len(ALL_QUESTIONS[s['id']])
+            assert len(texts) == 2 * n_paths, (s['id'], '경로마다 질문이 달라야 한다')
+
+    def test_판정은_띄어쓰기_쉼표_원_날짜표기를_무시한다(self):
+        from eval.table_parsing.questions import judge
+        assert judge('임원의 국내 출장 일비는 50,000원입니다.', '50,000')
+        assert judge('지원기준은 재직 1년이상입니다', '재직 1년 이상')          # OCR 띄어쓰기 소실
+        assert judge('₩3,250,000입니다', '₩3,250,000') and judge('3250000원', '₩3,250,000')
+        assert judge('복귀일은 2026년 11월 5일입니다', '2026-11-05')
+        assert not judge('해당 내용은 문서에서 확인할 수 없습니다.', '500,000원')
+
+
+class TestE2EPure:
+    def test_SSE_파서는_delta와_done을_뽑고_깨진_줄은_건너뛴다(self):
+        from eval.table_parsing.e2e import _sse
+        text = ('event: meta\ndata: {"conversation_id": 1}\n\n'
+                'event: delta\ndata: {"text": "임원"}\n\n'
+                ': ping\n\n'
+                'event: delta\ndata: {"text": "은 50,000원"}\n\n'
+                'event: done\ndata: {"finish_reason": "done", "citations": [{"filename": "a.pdf"}]}\n')
+        ev = _sse(text)
+        assert ''.join(d['text'] for e, d in ev if e == 'delta') == '임원은 50,000원'
+        assert next(d for e, d in ev if e == 'done')['citations'][0]['filename'] == 'a.pdf'
+
+    def test_리뷰_요약은_축_경로별_정답_인용_수를_센다(self, tmp_path):
+        from eval.table_parsing.e2e import phase_report
+        manifest = [dict(id='S02_colspan', path='pdf', filename='S02_colspan.pdf.pdf', document_id=1, status='ready',
+                         chunks=[{'text': '| a |', 'heading_path': []}]),
+                    dict(id='S02_colspan', path='docx', filename='x', document_id=2, status='failed', chunks=[])]
+        answers = [dict(id='S02_colspan', path='pdf', document_id=1, question='q1', expected='50,000', manual=False,
+                        answer='50,000원', cited=['S02_colspan.pdf.pdf'], cited_ok=True, value_ok=True),
+                   dict(id='S02_colspan', path='pdf', document_id=1, question='q2', expected='40,000', manual=False,
+                        answer='모름', cited=[], cited_ok=False, value_ok=False)]
+        (tmp_path / 'docs' / 'png').mkdir(parents=True)
+        phase_report(tmp_path, manifest, answers)
+        summary = (tmp_path / 'summary.md').read_text()
+        assert '색인 1/1 · 생성 1/2(기계 1) · 인용 1/2' in summary and '색인 0/1 · 생성 0/0' in summary
+        assert (tmp_path / 'review.html').read_text().count('class="c"') == 2
+
+
+class TestLlmJudge:
+    def test_재판정은_기계_실패분만_묻고_결과를_행에_쓴다(self):
+        import asyncio
+        from eval.table_parsing import llm_judge
+        from eval.table_parsing.llm_judge import AnswerJudgment, rejudge, final_ok
+
+        class FakeLlm:
+            calls = []
+            async def acomplete(self, messages, extra_body=None):
+                FakeLlm.calls.append(messages[1]['content'])
+                return AnswerJudgment(label='correct' if '30일' in messages[1]['content'] else 'ungrounded', reason='이유').model_dump_json()
+        rows = [dict(id='S03_rowspan', path='pdf', question='무급 병가 한도?', expected='연 30일', answer='1년에 30일까지', value_ok=False, manual=False),
+                dict(id='S20_symbols', path='img', question='백업 완료?', expected='☑', answer='완료 상태입니다', value_ok=False, manual=True),
+                dict(id='S01_basic', path='pdf', question='x', expected='500,000원', answer='500,000원', value_ok=True, manual=False)]
+        chunks = {('S03_rowspan', 'pdf'): [{'text': '| 병가 | 무급 | 연 30일 |'}], ('S20_symbols', 'img'): [{'text': '| 백업확인 |  | 운영팀 |'}]}
+        done = asyncio.run(rejudge(rows, chunks, llm=FakeLlm()))
+        assert len(done) == 2 and len(FakeLlm.calls) == 2                      # 기계가 맞다고 한 행은 안 묻는다
+        assert '| 병가 | 무급 | 연 30일 |' in FakeLlm.calls[0]                    # 청크를 같이 준다
+        assert rows[0]['llm_label'] == 'correct' and final_ok(rows[0])
+        assert rows[1]['llm_label'] == 'ungrounded' and not final_ok(rows[1])  # 근거 없는 정답은 최종 성공이 아니다
+        assert final_ok(rows[2]) and 'llm_label' not in rows[2]
+        assert rows[0]['judge'] == llm_judge.judge_label()
+
+    def test_판정_실패는_기계_판정을_유지하고_오류를_남긴다(self):
+        import asyncio
+        from eval.table_parsing.llm_judge import rejudge, final_ok
+
+        class BrokenLlm:
+            async def acomplete(self, messages, extra_body=None):
+                raise RuntimeError('한도')
+        rows = [dict(id='a', path='pdf', question='q', expected='e', answer='x', value_ok=False, manual=False)]
+        asyncio.run(rejudge(rows, {}, llm=BrokenLlm()))
+        assert rows[0]['llm_label'] is None and '한도' in rows[0]['llm_error'] and not final_ok(rows[0])
+
+
+class TestDiagnosis:
+    def test_청킹_손실은_청크에_없는_칸_글자만(self):
+        from eval.table_parsing.e2e import chunk_loss
+        spec = BY_ID['V14_vertical']
+        chunks = [{'text': '| 0 | 1 | 2 |\n| --- | --- | --- |\n|  |  |  |\n| 교통비 | 150,000 | 매월25일 |\n| 통신비 | 50,000 | 매월 25일 |\n| 식대 | 200,000 | 매월 25일 |'}]
+        assert chunk_loss(spec, 'img', chunks) == ['정액 항목', '월 지급액', '지급일']       # 세로쓰기 머리글만 없음(띄어쓰기는 무시)
+
+    def test_실패_원인은_인용·청크·답변_모양으로_가른다(self):
+        from eval.table_parsing.e2e import diagnose
+        ch = [{'text': '| 식대 | 200,000 | 매월 25일 |'}]
+        base = dict(expected='매월 25일', cited=[], cited_ok=False, final_ok=False, llm_label=None)
+        assert '후보 0건' in diagnose(dict(base, answer='해당 내용은 제공된 문서에서 확인할 수 없습니다.'), ch)
+        assert '파싱 단계 손실' in diagnose(dict(base, answer='확인할 수 없습니다.'), [{'text': '| 식대 | 200,000 |  |'}])
+        assert '추정' in diagnose(dict(base, answer='완료', llm_label='ungrounded'), ch)
+        assert '파싱 손실' in diagnose(dict(base, answer='매월 30일', llm_label='wrong'), [{'text': '| 식대 | 200,000 | 매월 30일 |'}])
+        assert '생성 모델 오류' in diagnose(dict(base, answer='매월 30일', cited=['x'], cited_ok=True, llm_label='wrong'), ch)
+        assert diagnose(dict(base, final_ok=True, answer='매월 25일'), ch) == ''

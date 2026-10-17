@@ -54,10 +54,44 @@ def expected_cells(rows) -> list[Cell]:
     return out
 
 
-def expected_tables(spec) -> list[list[list]]:
-    """정의 하나가 담는 표(들)의 격자 목록 — 나란히 축은 2개, 중첩 축은 바깥 + 안쪽."""
+def flatten_nested(rows) -> list[list]:
+    """표 안의 표를 **docling PDF(TableFormer)가 내는 모양**으로 편다(#253 확인, 2026-10-17): 안쪽 표가 든 열은 안쪽 열 수만큼
+    넓어지고, 안쪽 표가 든 행은 안쪽 행 수만큼 늘어난다. 그 행의 다른 칸은 세로 병합(안쪽 행 수), 다른 행의 그 열 칸은
+    가로 병합(안쪽 열 수). 예: 3×2(안쪽 3×2) → 5×3 — '평가 항목'이 안쪽 3행에 반복, '세부'·'매년 12월'이 2열에 걸침.
+    값은 전부 보존되고 바깥 칸 글자가 안쪽 행마다 붙는다 — 따로 떼는 것보다 검색에 낫다(수정 대상 아님)."""
+    nested = [(r, c, cell['nested']) for r, row in enumerate(rows) for c, cell in enumerate(row)
+              if isinstance(cell, dict) and cell.get('nested')]
+    if not nested:
+        return rows
+    r0, c0, inner = nested[0]                      # 중첩 하나만 지원(축 15)
+    R, C = len(inner), max(len(x) for x in inner)
+    out = []
+    for r, row in enumerate(rows):
+        if r != r0:
+            new = list(row[:c0]) + [dict(t=cell_text(row[c0]), cs=C) if row[c0] is not None else None] + [None] * (C - 1) + list(row[c0 + 1:])
+            out.append(new)
+            continue
+        for i, irow in enumerate(inner):
+            new = []
+            for c, cell in enumerate(row):
+                if c == c0:
+                    new.extend(list(irow) + [None] * (C - len(irow)))
+                elif i == 0:
+                    new.append(dict(t=cell_text(cell), rs=R) if cell is not None else None)
+                else:
+                    new.append(None)
+            out.append(new)
+    return out
+
+
+def expected_tables(spec, path: str | None = None) -> list[list[list]]:
+    """정의 하나가 담는 표(들)의 격자 목록 — 나란히 축은 2개. 중첩 축은 **경로마다 다르다**: docx는 docling이 바깥·안쪽을
+    따로 내므로 2개, pdf·img는 TableFormer가 평탄화한 1개(flatten_nested). path가 없으면 docx 모양(바깥 + 안쪽)."""
     if spec.get('side_by_side'):
         return list(spec['side_by_side'])
+    has_nested = any(isinstance(cell, dict) and cell.get('nested') for row in spec['rows'] for cell in row)
+    if has_nested and path in ('pdf', 'img'):
+        return [flatten_nested(spec['rows'])]
     tables = [spec['rows']]
     for row in spec['rows']:
         for cell in row:

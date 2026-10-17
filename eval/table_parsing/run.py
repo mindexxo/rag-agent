@@ -2,7 +2,7 @@
 
 용법:
     python -m eval.table_parsing.run                      # 전체(변환 약 4분 + 모델 로딩, OCR·VLM 서버 필요)
-    python -m eval.table_parsing.run --only S01a_basic S02a_colspan --paths img pdf
+    python -m eval.table_parsing.run --only S01_basic S02_colspan --paths img pdf
     python -m eval.table_parsing.run --out eval/results/table_parsing/run2
 
 산출물(<out>/): docs/(생성 문서·png), results.jsonl(건별·즉시 기록), matrix_l1.md·matrix_l2.md(축 × 경로),
@@ -22,13 +22,13 @@ from eval.table_parsing.build import build_all
 from eval.table_parsing.expected import expected_cells, expected_rows, expected_tables, flat
 from eval.table_parsing.score import (Score, all_row_texts, all_texts, chunk_tables, docling_tables, match_rows,
                                       match_tables, score_cells, score_rows)
-from eval.table_parsing.specs import BY_ID, paths_of
+from eval.table_parsing.specs import BY_ID, PATH_LABEL, paths_of
 
 PATHS = ('img', 'pdf', 'docx', 'xlsx')
 
 
 def _score_pair(spec, path, doc, chunks):
-    tables = expected_tables(spec)
+    tables = expected_tables(spec, path)
     actuals = docling_tables(doc)
     pool = all_texts(actuals)
     l1 = [score_cells(expected_cells(t), a, flat(t), pool)
@@ -54,9 +54,9 @@ def _convert_and_chunk(path_file: Path, path: str):
     return doc, chunks
 
 
-def _failed(spec, kind: str, err: Exception) -> list[Score]:
+def _failed(spec, kind: str, err: Exception, path: str = 'docx') -> list[Score]:
     out = []
-    for tbl in expected_tables(spec):
+    for tbl in expected_tables(spec, path):
         s = score_cells(expected_cells(tbl), None, flat(tbl))
         s.mismatches.append(dict(r=-1, c=-1, kind=kind, expected='', actual=f'{type(err).__name__}: {str(err)[:120]}'))
         out.append(s)
@@ -84,7 +84,7 @@ def _matrix(rows, layer) -> str:
         a['kinds'] |= set(r['kinds'])
         a['clean'] &= r['clean']
     axes = sorted({r['axis'] for r in rows})
-    lines = ['| 축 | ' + ' | '.join(PATHS) + ' |', '|---|' + '---|' * len(PATHS)]
+    lines = ['| 축 | ' + ' | '.join(PATH_LABEL[p] for p in PATHS) + ' |', '|---|' + '---|' * len(PATHS)]
     for ax in axes:
         cells = []
         for p in PATHS:
@@ -145,7 +145,7 @@ def main():
                 doc, chunks = _convert_and_chunk(file, path)
             except Exception as e:                                   # noqa: BLE001 — 변환 실패도 결과다
                 sec = time.time() - t
-                for k, s in enumerate(_failed(spec, '변환실패', e)):
+                for k, s in enumerate(_failed(spec, '변환실패', e, path)):
                     emit(_row(spec, path, k, s, 'l1', sec))
                     emit(_row(spec, path, k, s, 'l2', sec))
                 print(f'{spec_id:16} {path:5} 변환 실패 {type(e).__name__}: {str(e)[:80]}', flush=True)
@@ -156,11 +156,11 @@ def main():
                     raise chunks
                 l1, l2, act_rows = _score_pair(spec, path, doc, chunks)
             except Exception as e:                                   # noqa: BLE001 — 청킹·채점 실패를 결과에 남긴다
-                tables = expected_tables(spec)
+                tables = expected_tables(spec, path)
                 actuals = docling_tables(doc)
                 l1 = [score_cells(expected_cells(tb), a, flat(tb), all_texts(actuals))
                       for tb, a in zip(tables, match_tables([expected_cells(tb) for tb in tables], actuals))]
-                l2 = _failed(spec, '청킹실패', e)
+                l2 = _failed(spec, '청킹실패', e, path)
                 act_rows = [None] * len(l2)
             for k, (s1, s2) in enumerate(zip(l1, l2)):
                 emit(_row(spec, path, k, s1, 'l1', sec))

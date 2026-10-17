@@ -253,6 +253,17 @@ class Settings(BaseSettings):
                                               # 경로를 붙이지 않는다 — docling이 /v2/models/{model}/infer를 조립한다. 실주소는 .env
     ocr_kserve_model_name: str = "ocr"        # Triton 모델 리포지토리 이름(serving/triton-ocr/model_repository/ocr)
     ocr_kserve_timeout_seconds: float = 60.0  # 요청 하나(=비트맵 영역 하나) 상한. docling 기본값 유지. 넘으면 그 문서는 failed
+    # 표 이미지 OCR의 한계 — 설정으로 못 고치는 것(#253, 합성 표 23축 실측 2026-10-17. 실문서엔 표 이미지 0건이라 전부 합성):
+    #   · 한글 단어 사이 띄어쓰기 소실("지원 기준"→"지원기준", 오독의 87%). RapidOCR은 글자 사전에 공백을 **항상** 넣으므로
+    #     PaddleOCR의 use_space_char 같은 스위치가 없고, 한국어 v5 모델이 한글↔숫자 사이에서만 공백을 낸다. 서버(Triton)와
+    #     로컬 CPU 동일. 대안 모델 없음(한국어 v5 server 미존재, v6 다국어는 한글 미인식). 검색 영향 작음(셀 코사인 0.93~0.99,
+    #     bigram 겹침 100%), 실제 질문 140건에서 띄어쓰기로 틀린 답 0.
+    #   · 기호: ₩→W, ○→O, △→∆, ☑·☐·→·- 누락(글자 사전 한계). 숫자·금액은 360칸 중 357.
+    #   · 병합 셀 범위 소실(글자는 남음 — 2단 분류 머리글이 둘 다 필요할 때만 답이 틀림), 세로쓰기 헤더 미인식.
+    #   · 작은 글씨·JPEG 재압축·표 안의 표 이미지는 docling 레이아웃이 **표가 아니라 그림**으로 분류 → OCR이 아니라 VLM 캡션
+    #     경로(vlm_caption_*)로 간다. 선명하면 캡션이 값을 거의 다 옮기고(25/25), 작은 글씨·저품질은 틀린다(#247).
+    #   표 이미지 전용 경고는 두지 않는다(실문서 0건, #253 결정 2) — 기존 이미지 비율 경고(rag/documents.py IMAGE_WARN_RATIO)와
+    #   업로드 안내(FE 공유)로 전달한다.
 
     # 그림 캡션 — docling picture description 훅으로 그림을 사내 VLM에 보내 설명을 받아 청크에 싣는다 (#162).
     # 대상은 **PictureItem뿐**이다. 격자가 있는 표 이미지는 docling이 TableItem으로 분류해 이 훅을

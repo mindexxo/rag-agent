@@ -218,8 +218,7 @@ class TestRealConversion:
 
     def test_변환기는_프로세스당_하나(self):
         from rag.chunking import _docling_runtime
-        a, sem_a = _docling_runtime(); b, sem_b = _docling_runtime()
-        assert a is b and sem_a is sem_b
+        assert _docling_runtime() is _docling_runtime()
 
     def test_메모리_설정이_파이프라인에_실제로_전달된다(self):
         # 조용히 무시되는 설정을 잡기 위한 테스트다. docling_page_batch_size가 정확히 그랬다 —
@@ -230,7 +229,7 @@ class TestRealConversion:
         from docling.datamodel.base_models import InputFormat
         from rag.chunking import _docling_runtime
 
-        converter, _ = _docling_runtime()
+        converter = _docling_runtime()
         opts = converter.format_to_options[InputFormat.PDF].pipeline_options
         assert opts.layout_batch_size == settings.docling_layout_batch_size
         assert opts.queue_max_size == settings.docling_queue_max_size
@@ -244,7 +243,7 @@ class TestRealConversion:
         from docling.datamodel.base_models import InputFormat
         from rag.chunking import _PICTURE_CAPTION_PROMPT, _docling_runtime
 
-        converter, _ = _docling_runtime()
+        converter = _docling_runtime()
         opts = converter.format_to_options[InputFormat.PDF].pipeline_options
         assert opts.do_picture_description is True
         assert opts.enable_remote_services is True   # 빠지면 OperationNotAllowed로 변환 자체가 죽는다
@@ -254,37 +253,41 @@ class TestRealConversion:
         # temperature 0 = 결정적 캡션(#209): 3회 재변환 25/25 동일 실측. 빠지면 샘플링으로 돌아가 재인제스트마다 캡션이 달라진다
         assert api.params == {'model': settings.vlm_caption_model, 'temperature': settings.vlm_caption_temperature}
         assert api.params['temperature'] == 0.0 and api.timeout == 45.0   # .env.dev가 config를 덮으므로 값 자체도 단언
+        # 동시 1(#223 결정 7) — 동시로 보내면 vLLM 배치 탓에 온도 0이어도 캡션이 실행마다 갈린다(실문서 실측). 올리기 전에 config 주석부터
+        assert api.concurrency == settings.vlm_caption_concurrency == 1
         assert api.prompt == _PICTURE_CAPTION_PROMPT
         assert str(api.url) == settings.vlm_caption_url   # AnyUrl — str 캐스팅 후 비교
 
-    def test_VLM이_죽어도_예외_없이_자리표시로_끝난다(self, tmp_path, monkeypatch):
-        """캡션 실패 폴백에 우리 try/except가 없는 근거를 고정한다(#162).
+    def test_VLM이_실패하면_문서가_일시_실패한다(self, tmp_path, fake_vlm):
+        """#223 결정 3 — #162 이래 VLM 실패는 자리표시로 ready가 됐다(docling이 오류를 삼켜 빈 캡션을 준다).
+        그림 내용이 빠진 문서가 "완료"로 보이는 조용한 불완전 색인이라, 이제 CaptionFailedError(일시)로 올린다.
+        docling 업그레이드로 실패를 삼키는 방식이 바뀌면(예: 예외로 바뀜) 이 테스트가 먼저 알려준다."""
+        from rag.chunking import CaptionFailedError
+        fake_vlm.status = 500
+        with pytest.raises(CaptionFailedError):
+            chunk_file(_picture_pdf(tmp_path))
 
-        docling이 API 실패를 삼키기 때문에 폴백이 공짜인데, 그건 **docling의 동작**이지 우리 계약이
-        아니다 — 업그레이드로 바뀌면 문서가 통째로 failed 된다. 그때 이 테스트가 먼저 깨지게 둔다.
-        (설정 변경이 먹으려면 컨버터 싱글턴을 비워야 한다 — 전역 캐시라 재생성이 안 된다.)
-        """
-        import rag.chunking as ch
-        from reportlab.lib.pagesizes import A4
-        from reportlab.platypus import Image as RLImage, SimpleDocTemplate
+    def test_VLM이_되면_캡션이_자리표시를_대체한다(self, tmp_path, fake_vlm):
+        from tests.conftest import FAKE_CAPTION
+        chunks = chunk_file(_picture_pdf(tmp_path))
+        assert FAKE_CAPTION in '\n'.join(c.text for c in chunks)
+        assert count_picture_placeholders(chunks) == 0
 
-        png = tmp_path / 'fig.png'
-        png.write_bytes(bytes.fromhex(          # 1×1 PNG — 내용은 무관, 그림 요소가 있으면 된다
-            '89504e470d0a1a0a0000000d494844520000000100000001080200000090'
-            '7753de0000000c4944415408d763f8cfc00000030101003c2f8e3b0000000049454e44ae426082'))
-        p = tmp_path / 'pic.pdf'
-        SimpleDocTemplate(str(p), pagesize=A4).build([RLImage(str(png), width=300, height=200)])
 
-        monkeypatch.setattr(settings, 'vlm_caption_url', 'http://127.0.0.1:1/v1/chat/completions')
-        monkeypatch.setattr(settings, 'vlm_caption_timeout_seconds', 2.0)
-        monkeypatch.setattr(ch, '_docling_converter', None)      # 싱글턴 비우기 — 바뀐 설정으로 재생성
-        monkeypatch.setattr(ch, '_docling_semaphore', None)
-        try:
-            chunks = chunk_file(p)               # 예외가 올라오면 이 줄에서 실패한다
-        finally:
-            ch._docling_converter = None         # 죽은 URL이 박힌 컨버터를 다음 테스트에 남기지 않는다
-            ch._docling_semaphore = None
-        assert ch.count_picture_placeholders(chunks) >= 1   # 캡션 대신 자리표시로 남는다
+def _picture_pdf(tmp_path, pictures: int = 1):
+    """그림이 든 PDF — 1×1 PNG를 300×200pt로(쪽 면적의 약 12%, 캡션 하한 5% 위). 내용은 무관하다."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import Image as RLImage, PageBreak, SimpleDocTemplate
+    png = tmp_path / 'fig.png'
+    png.write_bytes(bytes.fromhex(
+        '89504e470d0a1a0a0000000d494844520000000100000001080200000090'
+        '7753de0000000c4944415408d763f8cfc00000030101003c2f8e3b0000000049454e44ae426082'))
+    p = tmp_path / 'pic.pdf'
+    story = []
+    for i in range(pictures):
+        story += [RLImage(str(png), width=300, height=200), PageBreak()]
+    SimpleDocTemplate(str(p), pagesize=A4).build(story)
+    return p
 
 
 # ── 원격 OCR (#168) ─────────────────────────────────────────────────────────────────
@@ -296,7 +299,6 @@ class TestRealConversion:
 def _reset_converter(ch):
     """설정 변경이 먹으려면 컨버터 싱글턴을 비워야 한다 — 전역 캐시라 재생성이 안 된다."""
     ch._docling_converter = None
-    ch._docling_semaphore = None
 
 
 def _triton_ready(base_url: str) -> bool:
@@ -329,16 +331,16 @@ def _table_image_pdf(tmp_path):
 
 
 class TestConversionGuard:
-    """raises_on_error=True가 못 잡는 불완전 변환을 _docling_sections가 올리는지 — 모델 없이 가짜 컨버터로."""
+    """raises_on_error=True가 못 잡는 불완전 변환을 _convert_local이 올리는지 — 모델 없이 가짜 컨버터로."""
 
+    # 가드는 변환 프로세스 안의 _convert_local에 있다 — 가짜 컨버터는 이 프로세스에서만 보이므로 그것을 직접 부른다.
     def _with_result(self, monkeypatch, status, errors):
-        import threading
         import types
         import rag.chunking as ch
-        doc = types.SimpleNamespace(iterate_items=lambda: iter(()))
-        res = types.SimpleNamespace(status=status, errors=errors, document=doc)
+        self.doc = types.SimpleNamespace(iterate_items=lambda: iter(()))
+        res = types.SimpleNamespace(status=status, errors=errors, document=self.doc)
         conv = types.SimpleNamespace(convert=lambda *a, **k: res)
-        monkeypatch.setattr(ch, '_docling_runtime', lambda: (conv, threading.Semaphore(1)))
+        monkeypatch.setattr(ch, '_docling_runtime', lambda: conv)
         return ch
 
     def test_부분_성공은_실패로_올린다(self, monkeypatch, tmp_path):
@@ -347,7 +349,7 @@ class TestConversionGuard:
         from docling.datamodel.base_models import ConversionStatus
         ch = self._with_result(monkeypatch, ConversionStatus.PARTIAL_SUCCESS, [])
         with pytest.raises(RuntimeError, match='partial_success'):
-            ch._docling_sections(tmp_path / 'x.pdf')
+            ch._convert_local(tmp_path / 'x.pdf')
 
     def test_성공이어도_errors가_있으면_실패로_올린다(self, monkeypatch, tmp_path):
         # 원격 OCR 실패는 status를 안 바꾸고 errors에만 남긴다(kserve_v2_ocr_model.py) — 표가 빈 격자로 색인된다.
@@ -357,12 +359,12 @@ class TestConversionGuard:
                         error_message='connection refused', category=FailureCategory.INFERENCE_FAILURE)
         ch = self._with_result(monkeypatch, ConversionStatus.SUCCESS, [err])
         with pytest.raises(RuntimeError, match='KserveV2OcrModel'):
-            ch._docling_sections(tmp_path / 'x.pdf')
+            ch._convert_local(tmp_path / 'x.pdf')
 
     def test_완전_성공은_통과한다(self, monkeypatch, tmp_path):
         from docling.datamodel.base_models import ConversionStatus
         ch = self._with_result(monkeypatch, ConversionStatus.SUCCESS, [])
-        assert ch._docling_sections(tmp_path / 'x.pdf') == []
+        assert ch._convert_local(tmp_path / 'x.pdf') is self.doc
 
 
 class TestRemoteOcr:
@@ -375,7 +377,7 @@ class TestRemoteOcr:
         monkeypatch.setattr(settings, 'docling_do_ocr', True)
         _reset_converter(ch)
         try:
-            converter, _ = ch._docling_runtime()
+            converter = ch._docling_runtime()
             opts = converter.format_to_options[InputFormat.PDF].pipeline_options
             assert opts.do_ocr is True
             o = opts.ocr_options
@@ -511,3 +513,80 @@ class TestFootnoteSidecarPdf:
         with caplog.at_level(logging.WARNING, logger='rag.chunking'):
             assert _footnote_markers(tmp_path / 'missing.pdf') == {}
         assert any('각주 사이드카 실패' in r.message for r in caplog.records)
+
+
+# ── 변환 프로세스 (#223 결정 1·2) ─────────────────────────────────────────────────────
+# docling에는 취소 API가 없다 — 스레드로 돌면 마감을 넘겨도 멈출 수 없어 고아 스레드가 세마포어를 쥐고 남았다.
+# 그래서 변환을 자식 프로세스로 옮기고 마감에 kill한다. 여기서 고정하는 것:
+#   ① 마감을 넘기면 TimeoutError이고, 자식이 교체돼 다음 변환은 정상이다
+#   ② 자식이 죽어 있어도 다음 요청이 새로 띄운다
+#   ③ 자식을 거쳐 온 문서가 이 프로세스에서 변환한 것과 같다(직렬화 무손실)
+
+class TestConvertProcess:
+    def test_마감을_넘기면_TimeoutError_자식_교체_다음_변환은_정상(self, tmp_path, monkeypatch, fake_vlm):
+        import rag.chunking as ch
+        p = _picture_pdf(tmp_path)
+        deadline = settings.docling_document_timeout_seconds
+        fake_vlm.delay = 30                      # 캡션 단계에서 멈춘다 — #223 전에는 어떤 마감도 이 단계를 못 끊었다
+        monkeypatch.setattr(settings, 'docling_document_timeout_seconds', 3.0)
+        with pytest.raises(TimeoutError, match='3초'):
+            ch.docling_convert(p)
+        assert ch._convert_process._proc is None          # kill하고 비웠다 — 다음 요청이 새로 띄운다
+        fake_vlm.delay = 0
+        monkeypatch.setattr(settings, 'docling_document_timeout_seconds', deadline)
+        assert ch.docling_convert(p).pictures             # 새 자식에서 정상 변환
+
+    def test_자식이_죽어_있으면_다음_요청이_새로_띄운다(self, tmp_path, fake_vlm):
+        import rag.chunking as ch
+        p = _picture_pdf(tmp_path)
+        ch.docling_convert(p)
+        old = ch._convert_process._proc
+        old.kill(); old.wait(10)                          # OOM kill 같은 외부 종료
+        assert ch.docling_convert(p).pictures
+        assert ch._convert_process._proc is not old
+
+    def test_자식을_거친_문서가_이_프로세스_변환과_같다(self, tmp_path, fake_vlm):
+        # 자식은 DoclingDocument를 피클로 돌려준다. 손실이 있으면 청크가 조용히 달라진다 — 형식별로 대조한다
+        # (보유 코퍼스 전수 대조는 #223 PR의 실측 — 이 테스트는 그 회귀 고정).
+        from io import BytesIO
+        import openpyxl
+        from docx import Document
+        from PIL import Image
+        import rag.chunking as ch
+        buf = BytesIO(); Image.new('RGB', (120, 80), (200, 30, 30)).save(buf, format='PNG')
+        d = Document(); d.add_heading('제목', level=1); d.add_paragraph('본문 문단.')
+        t = d.add_table(rows=1, cols=2); t.cell(0, 0).text = '칸'; d.add_picture(BytesIO(buf.getvalue()))
+        docx = tmp_path / 'a.docx'; d.save(docx)
+        wb = openpyxl.Workbook(); wb.active.append(['등급', '적립']); wb.active.append(['VIP', '2.0'])
+        xlsx = tmp_path / 'a.xlsx'; wb.save(xlsx)
+        for path, kw in ((_picture_pdf(tmp_path), {'max_num_pages': settings.docling_max_num_pages}),
+                         (docx, {}), (xlsx, {})):
+            assert ch.docling_convert(path, **kw).export_to_dict() == ch._convert_local(path, **kw).export_to_dict(), path
+
+    def test_abort하면_기다리던_변환이_바로_끝나고_다음_변환은_정상(self, tmp_path, fake_vlm):
+        # 색인 잡이 취소될 때(rag/documents.py) 부른다 — 기다리던 스레드가 마감(900초)까지 잠금을 쥐지 않게(#223 리뷰)
+        import threading
+        import time
+        import rag.chunking as ch
+        p = _picture_pdf(tmp_path)
+        ch.docling_convert(p)                             # 자식 기동(모델 로딩)은 측정에서 뺀다
+        fake_vlm.delay = 60
+        errors = []
+        t = threading.Thread(target=lambda: errors.append(_raises(ch.docling_convert, p)))
+        t.start()
+        time.sleep(3)                                     # 캡션 단계에 들어가 VLM을 기다리는 중
+        started = time.monotonic()
+        ch.abort_conversion()
+        t.join(30)
+        assert not t.is_alive() and time.monotonic() - started < 15
+        assert isinstance(errors[0], RuntimeError) and '비정상 종료' in str(errors[0])
+        fake_vlm.delay = 0
+        assert ch.docling_convert(p).pictures
+
+
+def _raises(fn, *args):
+    try:
+        fn(*args)
+    except Exception as e:      # noqa: BLE001
+        return e
+    return None

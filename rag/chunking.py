@@ -36,6 +36,11 @@
 
 import re
 import logging
+import os
+import pickle
+import socket
+import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,8 +85,9 @@ _CHAPTER_RE = re.compile(r'^제\s*\d+\s*장\b')
 # docling 그림 요소의 자리표시. #137 결함 4 당시 'docling 표 모드·OCR·VLM 셋 다 실측 실패'로 적었는데,
 # 그 OCR은 중국어 모델이었다 — 한국어 RapidOCR은 표 이미지의 셀을 읽는다(#168). 그림은 VLM 캡션(#162)이
 # 읽고, 캡션이 없을 때만 이 자리표시가 남는다. 지우지 않고 남겨 "여기 도표가 있었다"를 알리고,
-# **캡션이 붙으면 이 자리를 캡션이 대체한다**(#162) — 자리표시가 남아 있다는 것은 VLM 호출이
-# 실패했다는 뜻이다(count_picture_placeholders).
+# **캡션이 붙으면 이 자리를 캡션이 대체한다**(#162). #223부터 VLM 실패는 자리표시가 아니라 문서 재시도다
+# (_PictureGuard) — 그래서 남은 자리표시는 **캡션 대상이 아니었던 그림**(면적 하한 picture_area_threshold
+# 미만의 작은 그림, XLSX의 #249)뿐이다(count_picture_placeholders).
 _PICTURE_PLACEHOLDER = '<!-- image -->'
 
 # 그림 캡션 프롬프트(#162). **도형 어휘(박스·화살표·불릿)를 쓰지 않는다** — 하나의 프롬프트가
@@ -239,11 +245,112 @@ def _build_sections(items: list[_Item]) -> list[_Section]:
 
 _DOCLING_LOCK = threading.Lock()
 _docling_converter = None
-_docling_semaphore: threading.Semaphore | None = None
+
+
+class PictureLimitError(ValueError):
+    """캡션 대상 그림이 상한(settings.docling_max_pictures)을 넘는다 — **결정적** 실패(#223 결정 4).
+
+    ValueError라 outbox.is_transient가 결정적으로 분류한다 — 다시 돌려도 그림 수는 같다.
+    """
+
+
+class CaptionFailedError(ConnectionError):
+    """그림 캡션 요청이 실패했다 — **일시** 실패(#223 결정 3).
+
+    docling은 VLM 오류(타임아웃·5xx·연결 거부)를 로그로만 남기고 **빈 캡션**을 돌려준다
+    (api_image_request). 그대로 두면 그림 내용이 빠진 문서가 ready가 된다 — 사용자도 운영자도 모른다.
+    그래서 빈 캡션을 실패로 올린다. ConnectionError 하위라 outbox.is_transient가 일시로 분류해
+    백오프 재시도한다 — VLM이 살아나면 저절로 ready가 된다. 알려진 오분류: VLM이 특정 그림에만
+    4xx를 내는 결정적 경우도 일시로 잡혀 최대 MAX_ATTEMPTS까지 돈다 — 관측된 적 없어 감수한다.
+    """
+
+
+class _PictureGuard:
+    """docling 캡션 모델을 감싸 그림 장수 상한과 캡션 실패를 건다(#223 결정 3·4).
+
+    docling에는 둘 다 옵션이 없다 — 장수 상한도, 캡션 실패를 오류로 올리는 스위치도. 그래서 파이프라인의
+    enrichment_pipe에 든 캡션 모델 인스턴스를 이 대리 객체로 바꿔 끼운다(_guard_picture_models).
+    배치 크기·prepare_element 등 나머지는 __getattr__로 원본에 넘긴다.
+
+    - 장수: 문서의 **첫 배치**에서 캡션 대상 수를 한 번 센다 — 문서가 다 만들어진 뒤라 정확하고, 넘으면
+      캡션을 하나도 붙이기 전에 끝난다(넘는 문서에 VLM 시간을 쓰지 않는다). 대상 = docling이 실제로
+      VLM에 보낼 그림, 즉 면적 하한(picture_area_threshold)을 넘는 것 — 로고·아이콘은 세지 않는다.
+    - 실패: 캡션이 붙은 그림마다 결과를 보고 빈 캡션이면 멈춘다. 동시 1(settings.vlm_caption_concurrency)이면 docling이
+      그림을 하나씩 요청하므로 첫 실패 뒤 요청이 없다 — VLM이 멈췄을 때의 비용은 타임아웃(45초) 한 번이다.
+      동시 N이면 그 배치 안에서 이미 보낸 요청은 끝까지 기다린다(ThreadPoolExecutor 종료 대기).
+      (5xx는 docling의 재시도 세션이 그림당 몇 차례 다시 부른다 — 읽기 타임아웃만 재시도가 없다.)
+    문서 경계는 _convert_local이 arm()으로 알린다 — id(doc)로 가르면 해제된 문서의 id가 재사용될 수 있다.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+        self._counted = False
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def arm(self) -> None:
+        self._counted = False
+
+    def __call__(self, doc, element_batch):
+        if not self._counted:
+            self._counted = True
+            n = _captionable_count(doc, self._inner.options.picture_area_threshold)
+            if n > settings.docling_max_pictures:
+                raise PictureLimitError(f'그림 {n}장 — 문서당 {settings.docling_max_pictures}장을 넘는 문서는 받지 않는다')
+        for item in self._inner(doc, element_batch):
+            desc = item.meta.description if item.meta is not None else None
+            if desc is not None and not (desc.text or '').strip():
+                raise CaptionFailedError('그림 캡션 실패(VLM 응답 없음·오류) — 나중에 다시 시도한다')
+            yield item
+
+
+def _captionable_count(doc, area_threshold: float) -> int:
+    """docling이 캡션을 요청할 그림 수 — PictureDescriptionBaseModel.__call__의 면적 판정을 그대로 따른다.
+
+    순회도 docling과 같은 doc.iterate_items()다(본문 층만 — doc.pictures는 머리글 등 furniture도 담아 더 크다).
+    분류 허용·거부 목록(classification_allow/deny)은 쓰지 않으므로 그 판정은 옮기지 않았다.
+    """
+    from docling_core.types.doc import PictureItem   # 지연 import — docling은 톱레벨에 안 들인다
+    n = 0
+    for item, _ in doc.iterate_items():
+        if not isinstance(item, PictureItem):
+            continue
+        if item.prov:
+            prov = item.prov[0]
+            page = doc.pages.get(prov.page_no)
+            if page is not None:
+                page_area = page.size.width * page.size.height
+                if page_area > 0 and prov.bbox.area() / page_area < area_threshold:
+                    continue
+        n += 1
+    return n
+
+
+_picture_guards: list[_PictureGuard] = []
+
+
+def _guard_picture_models(converter) -> None:
+    """세 형식의 파이프라인을 미리 띄우고 캡션 모델을 _PictureGuard로 바꿔 끼운다.
+
+    initialized_pipelines는 DocumentConverter가 공개 속성으로 둔 파이프라인 캐시다(docling 2.126 docstring).
+    DOCX·XLSX는 옵션이 같아 한 파이프라인을 공유할 수 있다 — 이미 감싼 모델은 건너뛴다.
+    docling 업그레이드로 이 구조가 바뀌면 캡션 실패·장수 테스트가 먼저 깨진다.
+    """
+    from docling.datamodel.base_models import InputFormat
+    from docling.models.picture_description_base_model import PictureDescriptionBaseModel
+    for fmt in (InputFormat.PDF, InputFormat.DOCX, InputFormat.XLSX):
+        converter.initialize_pipeline(fmt)
+    for pipeline in converter.initialized_pipelines.values():
+        for i, model in enumerate(pipeline.enrichment_pipe):
+            if isinstance(model, PictureDescriptionBaseModel):
+                guard = _PictureGuard(model)
+                pipeline.enrichment_pipe[i] = guard
+                _picture_guards.append(guard)
 
 
 def _docling_runtime():
-    """프로세스당 1회: 변환기(모델 로딩)와 변환 동시성 세마포어.
+    """프로세스당 1회: 변환기(모델 로딩). **변환 프로세스(_ConvertProcess) 안에서** 불린다(#223).
 
     모델은 한 번만 올린다 — 이후 쪽당 0.3초(#143 실측). **리눅스 컨테이너 실측(2026-09-13)**:
     변환 피크 1.8GB·상주 1.4GB이고, 같은 프로세스로 12회 반복하면 4~6회차에서 평평해진다(누수 없음).
@@ -252,11 +359,10 @@ def _docling_runtime():
     125건을 한 프로세스로 돌리면 RSS가 2,3xx MB에서 평탄해지고 OCR 유무로 30MB밖에 안 다르다(2026-09-18,
     docker-compose.yml mem_limit 주석). 단일 문서 피크로 상한을 정하면 안 된다.
     다만 작업 전으로 돌아오지도 않는다 — 모델이 상주하고 glibc가 해제분을 OS에 바로 반납하지 않는다.
-    컨테이너 메모리 상한(docker-compose.yml)은 이 피크 위에 잡는다. 세마포어는 arq `max_jobs`(10)와 별개로
-    **변환만** 직렬화한다 — chunk_file은 to_thread로 돌아 잡이 겹치면 변환도 겹쳐 메모리가
-    배수로 난다. 임베딩 I/O는 max_jobs대로 계속 겹치게 둔다.
+    컨테이너 메모리 상한(docker-compose.yml)은 이 피크 위에 잡는다 — 이 메모리는 이제 워커 본체가 아니라
+    변환 프로세스에 있다(합계는 같다). 변환 동시성은 변환 프로세스가 하나라 1이다(옛 세마포어의 역할).
     """
-    global _docling_converter, _docling_semaphore
+    global _docling_converter
     with _DOCLING_LOCK:
         if _docling_converter is None:
             from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
@@ -287,33 +393,36 @@ def _docling_runtime():
             opts.table_structure_options.mode = (TableFormerMode.FAST if settings.docling_table_mode == 'fast'
                                                  else TableFormerMode.ACCURATE)
             opts.table_structure_options.do_cell_matching = settings.docling_do_cell_matching
-            opts.document_timeout = settings.docling_document_timeout_seconds
+            # opts.document_timeout은 걸지 않는다(#223) — 문서 마감은 _ConvertProcess가 프로세스째 끊는다.
+            # docling의 것은 PDF 쪽 루프에서만 검사하고, 걸리면 PARTIAL_SUCCESS(→ 아래 가드가 결정적 실패)로
+            # 끝나 "마감 초과 = 일시 실패"(결정 5)와 어긋난다. 같은 900초 둘이 경쟁하게 두지 않는다.
             opts.accelerator_options = AcceleratorOptions(
                 num_threads=settings.docling_num_threads,
                 device=AcceleratorDevice(settings.docling_device))
             # 그림 캡션(#162). enable_remote_services를 안 켜면 do_picture_description이 설정
-            # 단계에서 OperationNotAllowed로 죽는다 — VLM 다운과 달리 docling이 삼켜주지 않는
-            # 경로라 항상 같이 켠다. VLM에 못 닿으면 캡션이 안 붙고 자리표시가 남을 뿐이다.
+            # 단계에서 OperationNotAllowed로 죽는다 — 항상 같이 켠다. VLM에 못 닿으면 docling은 빈 캡션을
+            # 주는데, _PictureGuard가 그것을 CaptionFailedError(일시)로 올린다(#223 — 조용한 자리표시 색인 폐지).
             caption_opts = PictureDescriptionApiOptions(
                 url=settings.vlm_caption_url,
                 params={'model': settings.vlm_caption_model,
                         'temperature': settings.vlm_caption_temperature},   # 결정적 캡션(#209) — params는 요청 body에 그대로 들어간다
                 prompt=_PICTURE_CAPTION_PROMPT,
                 scale=settings.vlm_caption_scale,
-                timeout=settings.vlm_caption_timeout_seconds)
+                timeout=settings.vlm_caption_timeout_seconds,
+                concurrency=settings.vlm_caption_concurrency)
             opts.enable_remote_services = True
             opts.do_picture_description = True
             opts.picture_description_options = caption_opts
             # DOCX·XLSX(#220) — 본문이 원래 텍스트라 레이아웃·OCR 없는 SimplePipeline이다. 캡션만 PDF와 같은
-            # 설정을 공유한다(같은 VLM·프롬프트·온도). 이 파이프라인엔 document_timeout이 없다 — 시간 상한은 #223.
+            # 설정을 공유한다(같은 VLM·프롬프트·온도). 시간 상한은 PDF와 같은 _ConvertProcess 마감이다(#223).
             office_opts = ConvertPipelineOptions(enable_remote_services=True, do_picture_description=True,
                                                  picture_description_options=caption_opts)
             _docling_converter = DocumentConverter(
                 format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts),
                                 InputFormat.DOCX: WordFormatOption(pipeline_options=office_opts),
                                 InputFormat.XLSX: ExcelFormatOption(pipeline_options=office_opts)})
-            _docling_semaphore = threading.Semaphore(settings.docling_max_concurrency)
-    return _docling_converter, _docling_semaphore
+            _guard_picture_models(_docling_converter)
+    return _docling_converter
 
 
 # ── docling 텍스트 정제 (#204) — 각주 표시 인라인·VLM 캡션 잡담 ──────────────────
@@ -450,7 +559,7 @@ def _grid_cell_text(cell, doc) -> str:
 
 
 def docling_picture_text(element) -> str:
-    """그림 요소의 본문 한 줄 — 캡션, 없으면 자리표시(VLM 실패 신호). DOCX·XLSX 경로가 공유한다(#220)."""
+    """그림 요소의 본문 한 줄 — 캡션, 없으면 자리표시(캡션 대상이 아닌 그림). DOCX·XLSX 경로가 공유한다(#220)."""
     return _docling_norm(_docling_picture_caption(element)) or _PICTURE_PLACEHOLDER
 
 
@@ -476,8 +585,8 @@ def docling_block_text(item, doc) -> str:
 def count_picture_placeholders(chunks) -> int:
     """청크들에 남은 그림 자리표시 수(#162). 캡션이 안 붙은 그림의 개수다.
 
-    캡션이 켜져 있는데 이 값이 0이 아니면 VLM 호출이 실패했다는 뜻이다 — docling이 VLM 실패를
-    삼키므로(예외 없음) 이것이 유일한 관측 창이다. 지표 기록은 호출부(rag/documents.py)가 한다:
+    #223 전에는 VLM 실패 신호였다(docling이 실패를 삼켜 자리표시로 남겼다). 이제 VLM 실패는 _PictureGuard가
+    문서 재시도로 올리므로, 이 값은 **캡션 대상에서 빠진 그림**(면적 하한 미만, XLSX #249) 수다. 지표 기록은 호출부(rag/documents.py)가 한다:
     이 모듈은 0층 leaf라 rag/metrics.py를 import하지 않는다(AGENTS.md 계층 규칙).
 
     **캡션이 붙은 그림은 셀 수 없다** — 캡션은 일반 본문과 구분되지 않게 들어가기 때문이다(설계 결정).
@@ -515,7 +624,7 @@ def _docling_elements(doc, footnote_markers: dict[int, set[str]] | None = None):
             yield label, '', page, _docling_table_markdown(element, doc)
         elif label == 'picture':
             # 캡션(#162)은 element.text가 아니라 annotations에 붙는다 — text만 보면 조용히 버려진다.
-            # VLM이 죽거나 꺼져 있으면 annotations가 비어 빈 문자열이 나가고, 소비자가 자리표시로 되돌린다.
+            # 캡션 대상이 아닌 그림(면적 하한 미만)은 annotations가 비어 빈 문자열이 나가고, 소비자가 자리표시로 되돌린다.
             yield label, _docling_picture_caption(element), page, None
         else:
             text = getattr(element, 'text', '') or ''
@@ -568,26 +677,195 @@ def _sections_from_docling_elements(elements) -> list[_Section]:
     return _build_sections(items)
 
 
-def docling_convert(file_path: str | Path, **kwargs):
-    """docling 변환 한 번 — 세마포어 + 불완전 결과 가드. PDF·DOCX·XLSX가 공유한다(#220).
+def _convert_local(file_path: str | Path, **kwargs):
+    """이 프로세스에서 docling 변환 한 번 → DoclingDocument. 불완전 결과 가드의 정의점.
 
-    **raises_on_error=True만으로는 부족하다** — docling은 PARTIAL_SUCCESS(문서 타임아웃으로 뒤쪽 쪽이 빠짐,
-    원격 OCR 실패 등)에 예외를 안 던진다(document_converter.py: status not in {SUCCESS, PARTIAL_SUCCESS}일
-    때만). 그래서 status와 errors를 직접 보고 올린다(#168). VLM 캡션 실패는 errors에 안 쌓이므로(로그만)
-    여기 걸리지 않는다 — #162의 '캡션 없이 진행'은 그대로다.
+    변환 프로세스(_convert_child_main)가 부른다 — 워커 본체는 docling_convert를 쓴다.
+    **raises_on_error=True만으로는 부족하다** — docling은 PARTIAL_SUCCESS(원격 OCR 실패 등)에 예외를 안
+    던진다(document_converter.py: status not in {SUCCESS, PARTIAL_SUCCESS}일 때만). 그래서 status와
+    errors를 직접 보고 올린다(#168). 캡션 실패·그림 장수는 _PictureGuard가 변환 도중에 올린다(#223) —
+    docling이 그 예외를 RuntimeError('Pipeline … failed')로 감싸므로 원래 예외로 풀어 다시 던진다
+    (감싼 채면 outbox.is_transient가 둘 다 결정적으로 본다).
     kwargs는 converter.convert로 넘긴다(PDF의 max_num_pages — 쪽 개념이 없는 형식엔 주지 않는다).
-    rag/xlsx_chunking이 이 이름을 import한다.
     """
-    converter, semaphore = _docling_runtime()
-    with semaphore:
+    converter = _docling_runtime()
+    for guard in _picture_guards:
+        guard.arm()
+    try:
         result = converter.convert(str(file_path), raises_on_error=True, **kwargs)
+    except Exception as e:
+        cause = e.__cause__
+        while cause is not None:
+            if isinstance(cause, (PictureLimitError, CaptionFailedError)):
+                raise cause from None
+            cause = cause.__cause__
+        raise
     from docling.datamodel.base_models import ConversionStatus   # 지연 import — docling은 톱레벨에 안 들인다
     if result.status != ConversionStatus.SUCCESS or result.errors:
         detail = '; '.join(f'{e.category.value}/{e.module_name}: {(e.error_message or "")[:100]}'
                            for e in result.errors[:3])
         raise RuntimeError(f'docling 변환 불완전 — status={result.status.value}, '
                            f'errors={len(result.errors)}: {detail}')
-    return result
+    return result.document
+
+
+def _picklable(exc: BaseException) -> BaseException:
+    """부모로 보낼 수 있는 예외 — 피클이 안 되면 같은 문구의 RuntimeError(결정적)로 바꾼다."""
+    try:
+        pickle.dumps(exc)
+        return exc
+    except Exception:            # noqa: BLE001 — 직렬화 불가 예외는 종류를 잃는다(문구는 남긴다)
+        return RuntimeError(f'{type(exc).__name__}: {exc}')
+
+
+def _convert_child_main(fd: int) -> None:
+    """변환 프로세스의 본체 — 요청 (경로, kwargs)를 받아 ('ok', DoclingDocument) 또는 ('err', 예외)를 돌려준다.
+
+    첫 메시지는 부모의 설정 스냅숏이다 — 자식은 config를 .env에서 새로 읽으므로, 부모가 바꾼 값
+    (테스트의 monkeypatch 등)이 자식에 닿게 하는 유일한 길이다. 모델 로딩은 'ready' 전에 끝낸다 —
+    기동 시간(첫 실행이면 모델 다운로드까지)이 첫 문서의 마감을 깎지 않게.
+    """
+    from multiprocessing.connection import Connection
+    conn = Connection(fd)
+    for key, value in conn.recv().items():
+        setattr(settings, key, value)
+    try:
+        _docling_runtime()
+    except Exception as e:       # noqa: BLE001 — 기동 실패도 부모에 사유로 돌려준다
+        conn.send(('err', _picklable(e)))
+        return
+    conn.send(('ready', None))
+    while True:
+        try:
+            file_path, kwargs = conn.recv()
+        except EOFError:             # 부모가 끊었다(재기동·종료) — 부모가 죽어도 여기서 빠진다
+            return
+        try:
+            conn.send(('ok', _convert_local(file_path, **kwargs)))
+        except Exception as e:       # noqa: BLE001 — 문서 단위 실패는 부모가 분류한다(outbox.is_transient)
+            conn.send(('err', _picklable(e)))
+
+
+_CHILD_START_TIMEOUT_SECONDS = 300   # 변환 프로세스 기동(모델 로딩) 상한. 맥 실측 콜드 4~5.5초 + 첫 변환 3~4초(#223) —
+                                     # 300은 첫 실행의 모델 다운로드(docling_artifacts_path 미지정)까지 품는 여유다.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+class _ConvertProcess:
+    """docling 변환을 맡는 상주 자식 프로세스 하나(#223 결정 1). 이 모듈을 쓰는 프로세스(워커)마다 하나다.
+
+    왜 프로세스인가: docling에는 취소 API가 없다. 스레드(to_thread)로 돌리면 마감을 넘겨도 멈출 수 없어,
+    arq가 잡을 취소한 뒤에도 고아 스레드가 변환을 계속하며 세마포어를 쥐고 있었다(#223 탐색). 프로세스는
+    죽일 수 있다 — 마감을 넘기면 kill하고 다음 요청 때 새로 띄운다. 자식은 **변환만** 한다: 임베딩·엔진 쓰기·
+    커밋은 부모에서 그 뒤에 일어나므로, 변환 중 kill해도 반쪽 색인은 생기지 않는다.
+
+    - 마감: settings.docling_document_timeout_seconds — PDF·DOCX·XLSX 전 형식, 캡션 단계 포함(결정 2).
+      넘기면 TimeoutError(outbox.is_transient가 일시로 분류 — 결정 5).
+    - 동시성 1: 잠금 하나로 요청을 직렬화한다(옛 docling_max_concurrency 세마포어 대체).
+    - 띄우는 법: multiprocessing(spawn·forkserver)이 아니라 `python -c`로 직접 띄우고 소켓 한 쌍 위에
+      multiprocessing Connection(피클 메시지)을 얹는다. spawn은 자식에서 부모의 __main__ 스크립트를 다시
+      import한다 — `if __name__` 보호가 없는 eval 스크립트면 그 본문이 자식에서 한 번 더 돈다(stdin 실행은
+      아예 죽는다, 2026-10-14 실측). fork는 부모의 스레드·잠금 상태를 복제해 교착 위험이 있다.
+    - 설정이 바뀌면(스냅숏 불일치) 재기동한다 — 자식은 기동 때의 설정으로 변환기를 만들기 때문이다.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._proc: subprocess.Popen | None = None
+        self._conn = None
+        self._snapshot: dict | None = None
+
+    def convert(self, file_path: str | Path, kwargs: dict):
+        with self._lock:
+            snapshot = settings.model_dump()
+            if self._proc is None or self._proc.poll() is not None or snapshot != self._snapshot:
+                self._start(snapshot)
+            deadline = settings.docling_document_timeout_seconds
+            self._conn.send((str(Path(file_path).resolve()), kwargs))   # 자식의 cwd는 저장소 루트다
+            if not self._conn.poll(deadline):
+                self._stop()
+                raise TimeoutError(f'docling 변환이 {deadline:.0f}초를 넘겨 중단했다(변환 프로세스 재기동)')
+            try:
+                kind, value = self._conn.recv()
+            except EOFError:             # 자식이 죽었다(OOM kill 등) — poll은 EOF에도 True다
+                code = self._exit_code()
+                self._stop()
+                raise RuntimeError(f'docling 변환 프로세스가 비정상 종료했다(exitcode={code})') from None
+        if kind == 'ok':
+            return value
+        raise value
+
+    def _start(self, snapshot: dict) -> None:
+        from multiprocessing.connection import Connection
+        self._stop()
+        parent_sock, child_sock = socket.socketpair()
+        env = {**os.environ, 'PYTHONPATH': os.pathsep.join(
+            p for p in (str(_PROJECT_ROOT), os.environ.get('PYTHONPATH')) if p)}
+        try:
+            self._proc = subprocess.Popen(
+                [sys.executable, '-c',
+                 'import sys; from rag.chunking import _convert_child_main; _convert_child_main(int(sys.argv[1]))',
+                 str(child_sock.fileno())],
+                pass_fds=(child_sock.fileno(),), cwd=_PROJECT_ROOT, env=env)
+        except BaseException:
+            parent_sock.close()
+            raise
+        finally:
+            child_sock.close()
+        self._conn = Connection(parent_sock.detach())
+        self._conn.send(snapshot)
+        if not self._conn.poll(_CHILD_START_TIMEOUT_SECONDS):
+            self._stop()
+            raise TimeoutError(f'docling 변환 프로세스 기동이 {_CHILD_START_TIMEOUT_SECONDS}초를 넘겼다')
+        try:
+            kind, value = self._conn.recv()
+        except EOFError:
+            code = self._exit_code()
+            self._stop()
+            raise RuntimeError(f'docling 변환 프로세스가 기동 중 종료했다(exitcode={code})') from None
+        if kind != 'ready':
+            self._stop()
+            raise value
+        self._snapshot = snapshot
+
+    def abort(self) -> None:
+        """진행 중인 변환을 끊는다 — **잠금 없이** 부른다(잠금은 기다리는 스레드가 쥐고 있다). 다른 스레드에서 불려도
+        안전하다: kill만 하고, 기다리던 convert()가 EOF로 깨어나 정리(_stop)하고 잠금을 푼다."""
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+
+    def _exit_code(self):
+        try:
+            return self._proc.wait(5)
+        except subprocess.TimeoutExpired:
+            return None
+
+    def _stop(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+        if self._proc is not None and self._proc.poll() is None:
+            self._proc.kill()            # 자식은 지킬 상태가 없다 — C 코드에 묶여 있어도 끊기는 SIGKILL로
+            self._proc.wait(10)
+        self._proc = self._conn = self._snapshot = None
+
+
+_convert_process = _ConvertProcess()
+
+
+def abort_conversion() -> None:
+    """진행 중인 docling 변환을 끊는다(변환 프로세스 kill). 색인 잡이 취소될 때 rag/documents.py가 부른다(#223)."""
+    _convert_process.abort()
+
+
+def docling_convert(file_path: str | Path, **kwargs):
+    """docling 변환 한 번 → DoclingDocument. PDF·DOCX·XLSX가 공유한다(#220). 변환 프로세스에 맡긴다(#223).
+
+    실패는 예외로 올린다 — 분류(일시/결정적)는 outbox.is_transient: 마감 초과 TimeoutError·캡션 실패
+    CaptionFailedError는 일시, 그림 장수 PictureLimitError·불완전 변환 RuntimeError는 결정적.
+    rag/xlsx_chunking이 이 이름을 import한다.
+    """
+    return _convert_process.convert(file_path, kwargs)
 
 
 def _docling_sections(file_path: str | Path) -> list[_Section]:
@@ -600,14 +878,14 @@ def _docling_sections(file_path: str | Path) -> list[_Section]:
     임계 상수가 0개다. 헤딩 층 복원은 _sections_from_docling_elements가 한다.
 
     실패(예외·타임아웃)는 그대로 올린다 — pdfplumber 폴백 없음. 저품질 색인을 조용히 만들지 않는다
-    (strict-grounded). 호출부(index_pending_document)가 failed로 기록한다. 불완전 결과 가드는 docling_convert.
+    (strict-grounded). 호출부(index_pending_document)가 failed로 기록한다. 불완전 결과 가드는 _convert_local.
     이미지 도표는 VLM 캡션으로 읽고(#162), 격자 표 이미지(TableItem)는 원격 한국어 OCR이 셀을 채운다(#168).
     """
-    result = docling_convert(file_path, max_num_pages=settings.docling_max_num_pages)
-    # 위첨자 각주 표시(#204) — 변환이 성공한 뒤에만 연다(세마포어 밖, 쪽당 수십 ms). 가드보다 뒤에 두는 이유:
+    document = docling_convert(file_path, max_num_pages=settings.docling_max_num_pages)
+    # 위첨자 각주 표시(#204) — 변환이 성공한 뒤에만 연다(변환 프로세스 밖, 쪽당 수십 ms). 가드보다 뒤에 두는 이유:
     # 변환 실패 사유가 pdfplumber 오류에 가려지지 않게, 그리고 가짜 컨버터 테스트가 파일 없이도 가드를 검증하게.
     footnote_markers = _footnote_markers(file_path)
-    return _sections_from_docling_elements(_docling_elements(result.document, footnote_markers))
+    return _sections_from_docling_elements(_docling_elements(document, footnote_markers))
 
 
 # ── PDF 경로 ② pdfplumber — 비상 스위치 (docling_enabled=False) ─────────────────
@@ -830,7 +1108,7 @@ def _docx_sections(file_path: str | Path) -> list[_Section]:
             lines.clear()
 
     if settings.docling_enabled:
-        items = list(_docx_docling_items(docling_convert(file_path).document))
+        items = list(_docx_docling_items(docling_convert(file_path)))
     else:
         items = list(_docx_items(file_path))
     for is_heading, level, text, _ in _docx_fallback_headings(items):
@@ -1003,7 +1281,7 @@ def extract_text(file_path: str | Path) -> str:
     if low.endswith('.docx'):
         return _docx_text(file_path).strip()
     if low.endswith('.xlsx'):
-        from rag.xlsx_chunking import xlsx_plain_text   # 첨부는 openpyxl — docling 세마포어를 색인과 나누지 않는다(#220 결정 6)
+        from rag.xlsx_chunking import xlsx_plain_text   # 첨부는 openpyxl — docling 변환 프로세스를 색인과 나누지 않는다(#220 결정 6)
         return xlsx_plain_text(str(file_path)).strip()  # 첨부는 행 묶음 없이 시트 전체(#222)
     return _read_text(file_path).strip()  # txt/md/기타
 

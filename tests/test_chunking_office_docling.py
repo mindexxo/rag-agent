@@ -1,7 +1,8 @@
 """DOCX·XLSX docling 경로 (#220) — 표 그리기 규칙은 가짜 grid로, 나머지는 생성한 파일을 실제로 변환해 고정한다.
 
-Word·Excel은 SimplePipeline이라 레이아웃 모델이 없어 변환이 빠르다(파일당 1초 안팎). 그림 캡션은 VLM을 죽인 상태로
-돌린다 — 외부 서비스 없이 결정적으로 돌고, '캡션 실패 = 자리표시' 경로를 함께 고정한다.
+Word·Excel은 SimplePipeline이라 레이아웃 모델이 없어 변환이 빠르다(파일당 1초 안팎). 그림 캡션은 로컬 VLM 대역
+(conftest.fake_vlm)이 고정 문장을 준다 — 외부 서비스 없이 결정적이다. #223 전에는 VLM을 죽인 채 '캡션 실패 = 자리표시'를
+고정했지만, 이제 캡션 실패는 문서 재시도(CaptionFailedError)라 그 경로는 따로 단언한다.
 """
 from io import BytesIO
 from types import SimpleNamespace
@@ -10,8 +11,9 @@ import openpyxl
 import pytest
 
 from config import settings
-from rag.chunking import (_PICTURE_PLACEHOLDER, _docx_sections, chunk_file, count_picture_placeholders,
-                          docling_grid_markdown)
+from rag.chunking import (CaptionFailedError, PictureLimitError, _docx_sections, chunk_file,
+                          count_picture_placeholders, docling_grid_markdown)
+from tests.conftest import FAKE_CAPTION
 
 pytest.importorskip('docling')
 
@@ -24,17 +26,10 @@ def _png(size=(120, 80)) -> bytes:
 
 
 @pytest.fixture(autouse=True)
-def _dead_vlm(monkeypatch):
-    """VLM을 죽인 컨버터로 — 설정 변경이 먹으려면 싱글턴을 비워야 한다(test_chunking_docling과 같은 이유)."""
-    import rag.chunking as ch
+def _vlm(fake_vlm, monkeypatch):
+    """캡션은 로컬 대역이 준다. 설정이 바뀌면 변환 프로세스가 스냅숏 불일치로 재기동하므로 싱글턴을 비울 필요가 없다(#223)."""
     monkeypatch.setattr(settings, 'docling_enabled', True)
-    monkeypatch.setattr(settings, 'vlm_caption_url', 'http://127.0.0.1:1/v1/chat/completions')
-    monkeypatch.setattr(settings, 'vlm_caption_timeout_seconds', 2.0)
-    monkeypatch.setattr(ch, '_docling_converter', None)
-    monkeypatch.setattr(ch, '_docling_semaphore', None)
-    yield
-    ch._docling_converter = None        # 죽은 URL이 박힌 컨버터를 다음 테스트에 남기지 않는다
-    ch._docling_semaphore = None
+    return fake_vlm
 
 
 def _both(path, monkeypatch):
@@ -151,27 +146,68 @@ class TestDocxDocling:
 
     def test_표_칸_안의_그림은_그_칸에_설명이_붙는다(self, tmp_path):
         # #220 리뷰 — 표 안 요소를 건너뛰는 규칙에 칸 안 그림까지 걸려 캡션이 버려졌다(자리표시도 없이). 이제 그 칸에 붙는다.
-        # VLM이 죽었으니 자리표시가 칸에 들어가야 하고, 실패 지표도 그것을 센다.
         def build(doc):
             doc.add_heading('매뉴얼', level=1)
             t = doc.add_table(rows=1, cols=2)
             t.cell(0, 0).text = '1. 로그인 화면'
             t.cell(0, 1).paragraphs[0].add_run().add_picture(BytesIO(_png()))
         chunks = chunk_file(_docx(tmp_path, build))
-        assert f'| 1. 로그인 화면 | {_PICTURE_PLACEHOLDER} |' in chunks[0].text
-        assert count_picture_placeholders(chunks) == 1
+        assert f'| 1. 로그인 화면 | {FAKE_CAPTION} |' in chunks[0].text
+        assert count_picture_placeholders(chunks) == 0
 
     def test_빈_워드는_청크_0개(self, tmp_path):
         # 호출부(index_pending_document)가 '추출된 텍스트가 없습니다'로 failed 처리한다 — 여기선 예외 없이 빈 목록
         assert chunk_file(_docx(tmp_path, lambda doc: None)) == []
 
-    def test_그림은_VLM이_죽으면_자리표시로_남는다(self, tmp_path):
+    def test_그림_캡션이_실패하면_문서째_일시_실패한다(self, tmp_path, fake_vlm):
+        # #223 결정 3 — docling은 VLM 오류를 삼키고 빈 캡션을 준다. 그대로 두면 그림 내용이 빠진 문서가 ready가 됐다.
+        # CaptionFailedError(ConnectionError 하위)라 outbox가 일시로 분류해 재시도한다(test_outbox_pure).
+        fake_vlm.status = 500
+
         def build(doc):
             doc.add_paragraph('제1조(목적) 본문.')
             doc.add_picture(BytesIO(_png()))
             doc.add_paragraph('제2조(범위) 본문.')
+        with pytest.raises(CaptionFailedError):
+            chunk_file(_docx(tmp_path, build))
+
+    def test_VLM이_응답하지_않으면_캡션_타임아웃으로_일시_실패한다(self, tmp_path, monkeypatch, fake_vlm):
+        # 장애 주입 — 서버가 살아 있지만 멈춘 경우. docling은 읽기 타임아웃을 재시도하지 않고 빈 캡션을 준다
+        fake_vlm.delay = 5
+        monkeypatch.setattr(settings, 'vlm_caption_timeout_seconds', 1.0)
+
+        def build(doc):
+            doc.add_picture(BytesIO(_png()))
+        with pytest.raises(CaptionFailedError):
+            chunk_file(_docx(tmp_path, build))
+
+    def test_캡션이_되면_그림_자리에_캡션이_들어간다(self, tmp_path):
+        def build(doc):
+            doc.add_paragraph('제1조(목적) 본문.')
+            doc.add_picture(BytesIO(_png()))
         chunks = chunk_file(_docx(tmp_path, build))
-        assert count_picture_placeholders(chunks) == 1
+        assert FAKE_CAPTION in chunks[0].text and count_picture_placeholders(chunks) == 0
+
+    def test_그림이_상한을_넘으면_VLM을_부르기_전에_결정적_실패한다(self, tmp_path, monkeypatch, fake_vlm):
+        # #223 결정 4 — 앞 N장만 캡션하고 나머지를 자리표시로 두는 안은 조용한 불완전 색인이라 기각, 문서를 거부한다.
+        # 셈은 캡션 단계의 첫 배치에서 한 번 — 넘으면 캡션을 하나도 요청하지 않는다(넘는 문서에 VLM 시간을 안 쓴다).
+        monkeypatch.setattr(settings, 'docling_max_pictures', 2)
+
+        def build(doc):
+            for _ in range(3):
+                doc.add_picture(BytesIO(_png()))
+        with pytest.raises(PictureLimitError, match='그림 3장'):
+            chunk_file(_docx(tmp_path, build))
+        assert fake_vlm.calls == 0
+
+    def test_상한과_같은_장수는_통과한다(self, tmp_path, monkeypatch, fake_vlm):
+        monkeypatch.setattr(settings, 'docling_max_pictures', 2)
+
+        def build(doc):
+            for _ in range(2):
+                doc.add_picture(BytesIO(_png()))
+        assert chunk_file(_docx(tmp_path, build))
+        assert fake_vlm.calls == 2
 
     def test_조문처럼_시작하는_그림_캡션은_헤딩이_되지_않는다(self, tmp_path, monkeypatch):
         # 그림은 from_table=True로 #205 폴백 승격에서 빠진다. 자리표시는 원래 조문 패턴에 안 걸리므로 캡션을 바꿔 끼워 본다
@@ -231,7 +267,8 @@ class TestXlsxDocling:
         chunks = chunk_file(_xlsx(tmp_path, build))
         by_sheet = {c.heading_path[0]: c.meta['sheet_text'] for c in chunks}
         assert list(by_sheet) == ['첫시트', '둘째']                          # 시트 순서 유지(#222: 시트당 묶음 여럿 가능)
-        assert _PICTURE_PLACEHOLDER in by_sheet['첫시트'] and _PICTURE_PLACEHOLDER not in by_sheet['둘째']
+        # 작은 시트라 그림이 캡션 대상(면적 하한 5% 위)이다. 긴 시트에서는 하한 미만으로 계산돼 빠진다 — #249
+        assert FAKE_CAPTION in by_sheet['첫시트'] and FAKE_CAPTION not in by_sheet['둘째']
 
     def test_숨긴_시트는_색인하지_않고_행_상한에도_세지_않는다(self, tmp_path):
         # #220 리뷰 — 숨긴 시트가 있으면 문서 전체가 실패했다(openpyxl은 세고 docling은 비워 냄). 서비스 결정: 숨긴 시트는 건너뛴다
@@ -329,7 +366,7 @@ class TestXlsxDocling:
 
 class TestAttachmentStaysPlain:
     def test_첨부_추출은_docling_변환을_부르지_않는다(self, tmp_path, monkeypatch):
-        # 첨부는 사용자 대기 경로 — docling 세마포어를 색인과 나누면 PDF 색인 뒤에 줄을 선다
+        # 첨부는 사용자 대기 경로 — docling 변환 프로세스를 색인과 나누면 PDF 색인 뒤에 줄을 선다
         import rag.chunking as ch
         import rag.xlsx_chunking as xc
         from rag.chunking import extract_text
@@ -357,7 +394,7 @@ class TestConverterOptions:
         from docling.datamodel.base_models import InputFormat
         from rag.chunking import _docling_runtime
 
-        converter, _ = _docling_runtime()
+        converter = _docling_runtime()
         pdf = converter.format_to_options[InputFormat.PDF].pipeline_options
         for fmt in (InputFormat.DOCX, InputFormat.XLSX):
             opts = converter.format_to_options[fmt].pipeline_options

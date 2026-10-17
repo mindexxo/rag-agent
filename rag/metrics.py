@@ -23,10 +23,10 @@ prefix_cache_* 등)를 이미 직접 노출한다 — Prometheus가 그쪽을 �
                         failed(MAX_ATTEMPTS 도달 — 문서가 failed 확정, 사용자가 FE에서 본다).
                         최종 실패율 = failed / (ok + failed). retry만 느는 것은 "버티는 중" 신호다.
   INDEX_PICTURE_PLACEHOLDER_TOTAL
-                        캡션이 안 붙어 자리표시로 남은 그림 수(#162). **docling이 VLM 실패를
-                        예외 없이 삼키므로 이것이 유일한 관측 창이다** — 이 값이 늘면 VLM이
-                        죽었거나 느린 것이다. 성공한 캡션은 셀 수 없다
-                        (일반 본문과 구분되지 않게 들어간다) — 성공률이 아니라 실패 신호다.
+                        캡션이 안 붙어 자리표시로 남은 그림 수(#162). #223부터 VLM 실패는 여기가
+                        아니라 문서 재시도(INDEX_TOTAL result=retry)로 드러난다 — 이 값은 **캡션
+                        대상에서 빠진 그림**(면적 하한 미만의 작은 그림, XLSX #249) 수다.
+                        XLSX에서 크게 늘면 #249(시트가 길면 그림이 하한 미만으로 계산됨)다.
   FINISH_REASON_TOTAL   vLLM 스트림 종료 사유. 'length'가 늘면 max_tokens에 잘렸다는 뜻 —
                         출처 꼬리까지 잘릴 위험 신호(kms.tail_truncated 스팬 속성과 같은
                         문제를 집계 축으로 본다). 완주한 스트림만 집계된다 — 취소·예외
@@ -80,9 +80,11 @@ INDEX_DURATION_SECONDS = Histogram(
     'kms_index_duration_seconds',
     '문서 1건 인제스션 소요(초) — 단계별·형식별 (성공 건만)',
     labelnames=('stage', 'ext'),      # stage=parse|embed|index|total
-    # 상한 300초는 docling_document_timeout_seconds와 같은 눈금이다 — 그 위는 어차피 실패로 끝난다.
+    # 상한 900초 = docling_document_timeout_seconds(변환 마감) — 그 위는 실패로 끝나 기록되지 않는다(성공 건만).
+    # 600·900은 #223에서 더했다: 정상 최악이 약 810초(PDF 100쪽 + 그림 100장)라 300 위를 한 칸에 뭉치면
+    # 큰 문서가 400초인지 850초인지(마감 직전인지) 못 읽는다.
     # 아래쪽이 촘촘한 이유: md·txt·docx는 밀리초대라 1초 버킷만 있으면 전부 첫 버킷에 뭉친다.
-    buckets=(0.1, 0.25, 0.5, 1, 2, 4, 8, 15, 30, 60, 120, 300),
+    buckets=(0.1, 0.25, 0.5, 1, 2, 4, 8, 15, 30, 60, 120, 300, 600, 900),
 )
 
 INDEX_TOTAL = Counter(
@@ -93,7 +95,7 @@ INDEX_TOTAL = Counter(
 
 INDEX_PICTURE_PLACEHOLDER_TOTAL = Counter(
     'kms_index_picture_placeholder_total',
-    '캡션이 안 붙어 자리표시로 남은 그림 수 (#162) — 늘면 VLM에 못 닿는다는 신호',
+    '캡션 대상에서 빠져 자리표시로 남은 그림 수 (#162·#223) — VLM 실패는 문서 재시도로 간다',
     labelnames=('ext',),
 )
 

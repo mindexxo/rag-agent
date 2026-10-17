@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import AsyncSessionLocal
 from rag import cache, os_index, outbox
-from rag.chunking import chunk_file, count_picture_placeholders, pdf_image_area_ratio
+from rag.chunking import abort_conversion, chunk_file, count_picture_placeholders, pdf_image_area_ratio
 from rag.embeddings import embed_texts
 from rag.index_text import build_index_text
 from rag.metrics import (
@@ -164,15 +164,22 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
     # 청킹은 동기 CPU 작업(docling 변환·openpyxl 행 검사, 비상 경로는 pdfplumber·python-docx)이라 스레드로 보낸다 — 이벤트
     # 루프에서 돌리면 PDF 하나에 100~200ms(실문서는 초 단위) 동안 워커가 멈춘다.
     # to_thread(stdlib)를 쓴다 — 이 모듈은 라우터도 import하므로 starlette를 들이지 않는다.
-    chunks = await asyncio.to_thread(chunk_file, blob_path, description=description)
+    # 취소(arq job_timeout)되면 변환 프로세스를 즉시 죽인다(#223 리뷰) — to_thread는 취소돼도 스레드가 계속 돌아,
+    # 자식의 응답을 마감(900초)까지 기다리며 변환 잠금을 쥔다. 그동안 다음 회차가 그 잠금에 서서 회차 예산을 쓰고
+    # 그 회차도 취소되는 연쇄가 난다. 죽이면 기다리던 스레드가 EOF로 깨어나 잠금을 푼다.
+    try:
+        chunks = await asyncio.to_thread(chunk_file, blob_path, description=description)
+    except asyncio.CancelledError:
+        abort_conversion()
+        raise
     image_ratio = await asyncio.to_thread(pdf_image_area_ratio, blob_path)   # #137 결함 4 경고용
     if not chunks:      # 빈 파일·텍스트레이어 없는 PDF → ready 승격 대신 실패 (유령 ready 방지)
         raise ValueError('추출된 텍스트가 없습니다 (빈 파일이거나 파싱 결과가 비어 있음)')
     # 네 단계가 같은 분모(성공한 문서)를 갖도록 실패 분기 뒤에서 기록한다 — 단계별 p95를
     # 나란히 읽으려면 분모가 같아야 한다.
     INDEX_DURATION_SECONDS.labels(stage='parse', ext=_ext).observe(time.monotonic() - _t_start)
-    # 캡션이 안 붙은 그림 수(#162). docling이 VLM 실패를 예외 없이 삼키므로 이 값이 유일한
-    # 관측 창이다 — 캡션이 켜져 있는데 늘면 VLM이 죽었거나 느린 것이다.
+    # 캡션이 안 붙은 그림 수(#162) — 캡션 대상에서 빠진 작은 그림(면적 하한 미만)·XLSX(#249).
+    # VLM 실패는 여기까지 오지 않는다 — 변환에서 CaptionFailedError로 문서 재시도가 된다(#223).
     if (placeholders := count_picture_placeholders(chunks)):
         INDEX_PICTURE_PLACEHOLDER_TOTAL.labels(ext=_ext).inc(placeholders)
     _t_parse_done = time.monotonic()

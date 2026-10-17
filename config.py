@@ -215,32 +215,31 @@ class Settings(BaseSettings):
                                                # 맥에서는 효과가 편차 내로 묻힌다 — 플랫폼 의존적이다.
     docling_queue_max_size: int = 4            # 스테이지 간 큐 길이(기본 100). 긴 문서에서 처리 대기 쪽이
                                                # 쌓이는 상한 — layout_batch와 함께 내려야 효과가 있다
-    docling_max_concurrency: int = 1          # **arq max_jobs(10)와 별개인 변환 동시 상한.** chunk_file은 to_thread라
-                                              # 잡 10개가 겹치면 변환도 10개 겹쳐 메모리가 10배 난다. 세마포어로 막는다.
-                                              # 임베딩 I/O는 max_jobs가 계속 겹치게 둔다 — 변환만 직렬화
-    docling_document_timeout_seconds: float = 900.0   # **한 문서 상한(PDF만). 반드시 arq job_timeout(rag/worker.py, 1200)보다 작아야 한다.**
-                                              # **PDF에만 걸린다** — docling이 쪽 처리 루프에서만 검사해 그림 캡션 단계와
-                                              # DOCX·XLSX(SimplePipeline)에는 상한이 없다(#220 확인, 정합은 #223).
-                                              # 넘기면 arq가 drain 잡을 취소하는데 rag/outbox.py는 CancelledError를 되던져
-                                              # attempts를 안 올린다 — 그 문서는 실패 확정도 못 되고 1분마다 영원히 재시도된다.
-                                              # docling 타임아웃이 먼저 끊어야 행이 예외로 실패해 attempts가 쌓인다(#168).
-                                              # (옛 주석의 DOC_STALE_SECONDS는 코드에 없다 — 문서 pending을 정리하는 스윕은 없다.)
-                                              # 값 근거(#168 실측, 리눅스 워커 + worker15 GPU OCR): 쪽당 CPU 3.3초 + OCR 요청
-                                              # 약 5.9건/쪽 × 0.47초(CUDA EP 튜닝 후, 141건 평균; 튜닝 전 0.96) → 약 6.1초/쪽.
-                                              # 900초면 약 145쪽(튜닝 전 기준 100쪽). 더 올리면 그만큼
-                                              # 다른 PDF 변환이 막힌다(docling_max_concurrency=1).
-                                              # #194로 docling_max_num_pages를 100으로 내린 뒤로는 쪽수 가드가 **항상 먼저**
-                                              # 걸리므로, 이 timeout은 쪽수가 아니라 쪽당 비용이 튀는 경우(OCR 폭증 등)의 안전판이다.
+    docling_document_timeout_seconds: float = 900.0   # **문서 1건의 변환 마감 — PDF·DOCX·XLSX 전 형식, 그림 캡션 단계 포함(#223).**
+                                              # rag/chunking._ConvertProcess가 변환 프로세스를 kill해 끊는다(docling의
+                                              # document_timeout은 PDF 쪽 루프에서만 검사해 캡션·DOCX·XLSX를 못 막았다 — 그래서 안 쓴다).
+                                              # 넘기면 TimeoutError → outbox가 일시 실패로 백오프 재시도(#223 결정 5, 최대 약 24시간).
+                                              # 값 근거: 정상 최악 = PDF 100쪽(#168 리눅스 실측 쪽당 약 6.1초 → 약 610초)
+                                              # + 그림 100장(docling_max_pictures, 장당 약 2초 → 약 200초) ≈ 810초.
+                                              # 쪽당 6.1초 = CPU 3.3초 + OCR 요청 약 5.9건/쪽 × 0.47초(#168, CUDA EP 튜닝 후).
+                                              # drain 회차 예산·arq job_timeout(rag/outbox.py DRAIN_ROUND_SECONDS)이 이 값에서 계산된다
+                                              # (마감 + 꼬리 300 + 여유 180). 변환 동시성은 프로세스가 하나라 1이다(옛 docling_max_concurrency).
     docling_max_num_pages: int = 100          # 병적 입력 가드(PDF만 — DOCX·XLSX엔 쪽 개념이 없어 넘기지 않는다, #220).
                                               # **초과분을 자르는 게 아니라 문서를 거부한다**.
                                               # 300 → 100 (#194). 300은 **사실상 죽은 상한**이었다 — 위 timeout(900초)이
                                               # 쪽당 약 6.1초에서 약 145쪽에 먼저 걸려, 그 사이 구간 문서는 "900초를 기다린 끝에
                                               # timeout failed"를 받았다. 사유도 불명확하고 그동안 다른 PDF 변환이 막힌다
-                                              # (docling_max_concurrency=1). 100이면 가드가 **항상 먼저** 걸려 즉시·명확히 거절한다.
+                                              # (변환 동시성 1). 100이면 가드가 **항상 먼저** 걸려 즉시·명확히 거절한다.
                                               # 대가는 처리 가능한 100~145쪽 문서도 거부하는 것 — 처리율을 예측 가능성과 바꾼
                                               # 제품 결정이다(#194, 2026-10-03). 되돌릴 땐 timeout부터 재실측할 것.
                                               # (ConversionError → failed, 2026-09-13 실측). 파일 크기 상한은 라우터(DOC_MAX_FILE_BYTES 10MB)가
                                               # 업로드 시점에 이미 막으므로 여기선 쪽 수만. 10MB 텍스트 PDF ≈ 100~200쪽
+    docling_max_pictures: int = 100           # 문서당 캡션 대상 그림 상한(#223 결정 4). **넘으면 문서를 거부한다**(결정적 실패 —
+                                              # 앞 N장만 캡션하고 나머지를 자리표시로 두는 안은 조용한 불완전 색인이라 기각).
+                                              # 대상 = docling이 VLM에 보낼 그림(면적 하한 picture_area_threshold 통과분) — 로고·아이콘은
+                                              # 안 센다. 셈은 rag/chunking._PictureGuard. 전 형식 공통(PDF·DOCX·XLSX).
+                                              # 값 근거: 그림 100장 DOCX 캡션 199~214초(2026-10-15 실측, 동시 1) — PDF 100쪽 최악(약 610초)과
+                                              # 합쳐 약 810초 < 마감 900초. 실문서는 문서당 1~2장, 화면 캡처 매뉴얼(수십 장)까지 받는다.
     docling_artifacts_path: str | None = None # 모델 가중치 디렉터리. None이면 첫 변환 때 HF에서 내려받는다 —
                                               # NCP VM은 외부망 확인 필요. 이미지에 미리 굽고 경로를 주는 쪽이 안전
 
@@ -258,10 +257,10 @@ class Settings(BaseSettings):
     # 그림 캡션 — docling picture description 훅으로 그림을 사내 VLM에 보내 설명을 받아 청크에 싣는다 (#162).
     # 대상은 **PictureItem뿐**이다. 격자가 있는 표 이미지는 docling이 TableItem으로 분류해 이 훅을
     # 타지 않는다(실측 2026-09-14: 표 이미지 PDF → PictureItem 0·TableItem 1). 그쪽은 위 ocr_kserve_*의 원격 OCR이 읽는다(#168).
-    # VLM이 죽어도 docling이 예외를 삼킨다(실측: 닫힌 포트 조준 → 예외 없이 7.5초, 캡션 0개) —
-    # 그래서 실패 폴백(자리표시 유지)에 우리 try/except가 필요 없다. 문서는 그대로 ready로 진행한다.
-    # **on/off 스위치를 두지 않는다**(사용자 결정): VLM이 없거나 못 닿으면 캡션이 안 붙을 뿐이고
-    # 그 상태가 곧 기존 동작이라, 끄는 것과 결과가 같다.
+    # VLM이 죽어도 docling은 예외를 삼키고 빈 캡션을 준다(실측: 닫힌 포트 조준 → 예외 없이 7.5초, 캡션 0개).
+    # #223 전까지는 그대로 자리표시로 ready가 됐다 — 그림 내용이 빠진 문서가 "완료"로 보이는 조용한 불완전 색인.
+    # 이제 rag/chunking._PictureGuard가 빈 캡션을 CaptionFailedError(일시 실패)로 올려 문서를 백오프 재시도한다 —
+    # VLM이 살아나면 저절로 ready가 된다. **on/off 스위치는 두지 않는다**(사용자 결정, #162).
     vlm_caption_url: str = "http://localhost:18892/v1/chat/completions"   # **base가 아니라 전체 엔드포인트다**
                                               # — docling이 이 값을 그대로 POST 대상으로 쓴다. 실주소는 .env
     vlm_caption_model: str = "qwen25-vl"      # OpenAI 호환 body의 model 필드. Qwen2.5-VL-7B-Instruct(Apache 2.0)
@@ -274,10 +273,17 @@ class Settings(BaseSettings):
                                               # 기본(샘플링)에서는 재인제스트마다 표 캡션이 마크다운/평문을 오가 골드 청크
                                               # 순위가 흔들렸다(sf005 1→2위). 캡션은 "원문 그대로 옮기기"라 다양성이 필요 없다.
     vlm_caption_timeout_seconds: float = 45.0 # 요청 하나의 상한. docling은 읽기 타임아웃을 **재시도하지 않는다**(Retry read=0)
-                                              # — 넘기면 그 그림은 캡션 없이 자리표시로 남는다. 기본 20초에서 3회 변환 중 1회
-                                              # 1건이 터져 45초로(#209). 그림 20장이어도 900초 문서 예산 안. 예산: 이 값 × 그림 수가
-                                              # docling_document_timeout_seconds(900)를 넘으면 문서가 failed 된다.
-                                              # 실문서는 최대 2장/문서라 여유가 크지만, 그림 많은 문서가 들어오면 재검토
+                                              # — 넘기면 빈 캡션 → CaptionFailedError로 문서째 재시도(#223). 기본 20초에서 3회 변환 중
+                                              # 1회 1건이 터져 45초로(#209). 실패가 보인 그림에서 멈춘다(동시 1이라 배치 안에서도 순서대로라
+                                              # 첫 실패 뒤 요청이 없다) — VLM이 멈췄을 때의 비용은 이 값 한 번이다(rag/chunking._PictureGuard).
+    vlm_caption_concurrency: int = 1          # 문서 하나 안에서 동시에 보내는 캡션 요청 수(docling 기본 1, #223 결정 7).
+                                              # **1이어야 캡션이 결정적이다.** 동시로 보내면 vLLM이 요청을 묶어 계산하고, 묶음 크기에 따라
+                                              # 부동소수 합산 순서가 달라져 온도 0이어도 확률이 비슷한 토큰에서 갈린다 — 재색인마다 캡션이
+                                              # 바뀌어 #209(골드 순위 흔들림)가 되살아난다. 실측(2026-10-15, 실문서 화면 캡처 PDF 그림 25장,
+                                              # worker15 Qwen2.5-VL-7B): 동시 1 3/3 동일·main과 동일, 동시 2 10회 중 5회 1~2장 다름,
+                                              # 동시 4 매회 2~3장 다름. 합성 표 그림 100장에선 동시 4도 100/100 같아 처음엔 4로 정했다가 뒤집었다.
+                                              # 속도 대가: 그림 100장 DOCX 199초(동시 4면 68초), 보유 코퍼스 106건 합계로는 약 7%.
+                                              # 올리려면 vLLM의 배치 불변(batch-invariant) 모드 같은 서버 쪽 결정성부터 확인할 것.
 
 
 # 모듈 import가 곧 프로세스당 1회이므로 이 전역 자체가 싱글톤이다 (팩토리·캐시 불필요).

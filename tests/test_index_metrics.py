@@ -43,13 +43,14 @@ class TestHistogram:
             assert samples.get((stage, 'pdf'), 0) >= 1
 
     def test_버킷_상한이_docling_타임아웃과_같은_눈금이다(self):
-        # 300초 위는 어차피 docling_document_timeout_seconds에서 잘린다 — 눈금이 어긋나면
-        # "타임아웃 직전 구간"을 히스토그램에서 못 읽는다.
+        # 변환 마감(docling_document_timeout_seconds) 위는 실패로 끝나 기록되지 않는다 — 눈금 상한이 마감과 같아야
+        # "마감 직전 구간"을 읽는다. #223 전에는 '... or 300.0'이 붙어 있어 마감이 900으로 바뀐 뒤에도 통과했다
+        # (300 위가 한 칸에 뭉쳤다). 이제 마감 값 자체가 유한 버킷의 최댓값이어야 한다.
         from config import settings
-        buckets = [s.labels['le'] for m in INDEX_DURATION_SECONDS.collect()
-                   for s in m.samples if s.name.endswith('_bucket')]
-        assert str(settings.docling_document_timeout_seconds) in {b.rstrip('0').rstrip('.') + '.0' for b in buckets} \
-            or '300.0' in buckets
+        finite = [float(s.labels['le']) for m in INDEX_DURATION_SECONDS.collect()
+                  for s in m.samples if s.name.endswith('_bucket') and s.labels['le'] != '+Inf']
+        assert max(finite) == settings.docling_document_timeout_seconds
+        assert 600.0 in finite          # 정상 최악(약 810초)까지 300~900 사이에서 갈리게
 
 
 class TestResultCounter:

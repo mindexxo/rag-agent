@@ -33,6 +33,15 @@ def test_normalize(text, tokens):
     assert normalize_identifiers(text) == tokens
 
 
+def test_헤딩_줄의_본문_속_인용은_이름표가_아니다():
+    # 제목과 본문이 한 줄에 붙은 헤딩 — 줄 머리 '93조'만. 본문의 '제10조'는 인용이다(회계 규정 실측 꼴)
+    line = "제93조 (지점서류의 인계 및 보관) 각 지점은 이 규정 제10조에 의하여 서류를 보관한다."
+    assert chunk_identifiers(["가나 규정", "제 8 장 결산"], [line]) == ["8장", "93조"]
+    text = "제92조 (채권)\n채권 본문\n" + line
+    assert cut_identifier_span(text, ["제92조 (채권)", line], "10조") == text      # '10조'로는 안 잘린다
+    assert cut_identifier_span(text, ["제92조 (채권)", line], "93조") == line
+
+
 def test_chunk_identifiers_는_제목_경로와_기록_헤딩만_본다():
     # 본문 속 "제18조의2에 따른"은 인수로 넘어오지 않는다 — 인용이 사전에 들어가면 안 된다(참조 문구 오인)
     assert chunk_identifiers(["가나 규칙", "제 2 장 인 사"], ["제 9 조(고용관계)", "제 11 조(사무인계)"]) == ["2장", "9조", "11조"]

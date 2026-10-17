@@ -74,12 +74,21 @@ def effective_headings(headings: list[str], text: str) -> list[str]:
     return list(dict.fromkeys(out))
 
 
+def heading_identifier(line: str) -> str | None:
+    """헤딩 한 줄의 식별자 — **줄 머리의 것 하나만**. 없으면 None.
+
+    헤딩 줄에 제목과 본문이 붙어 오는 문서가 있다: "제93조 (지점서류의 인계 및 보관) 각 지점은 이 규정 제10조에 의하여 …".
+    줄 전체를 정규화하면 본문 속 인용 '10조'까지 이 조각의 이름표가 되어, "10조" 질문에 엉뚱한 조각이 가산을 받고
+    오리기도 이 줄에서 잘린다(#238 골드 작성 중 실측, 회계 규정). 질문은 이 함수가 아니라 normalize_identifiers를 쓴다.
+    """
+    tokens = normalize_identifiers(line)
+    return tokens[0] if tokens and re.match(r'^\s*제?\s*\d', line) else None
+
+
 def chunk_identifiers(heading_path: list[str], headings: list[str]) -> list[str]:
-    """조각의 식별자 사전 — 제목 경로 + 헤딩 줄(effective_headings의 결과를 넘긴다). 본문 전체는 보지 않는다."""
-    out: list[str] = []
-    for h in [*(heading_path or []), *(headings or [])]:
-        out.extend(normalize_identifiers(h))
-    return list(dict.fromkeys(out))
+    """조각의 식별자 사전 — 제목 경로 + 헤딩 줄(effective_headings의 결과)에서 줄마다 줄 머리 식별자 하나씩."""
+    out = [heading_identifier(h) for h in [*(heading_path or []), *(headings or [])]]
+    return list(dict.fromkeys(t for t in out if t))
 
 
 def cut_identifier_span(text: str, headings: list[str], token: str) -> str:
@@ -93,7 +102,7 @@ def cut_identifier_span(text: str, headings: list[str], token: str) -> str:
     heads = {h.strip() for h in headings or ()}
     idx = [i for i, line in enumerate(lines) if line.strip() in heads]
     for n, i in enumerate(idx):
-        if token in normalize_identifiers(lines[i]):
+        if heading_identifier(lines[i]) == token:
             j = idx[n + 1] if n + 1 < len(idx) else len(lines)
             return '\n'.join(lines[i:j])
     return text

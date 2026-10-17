@@ -199,3 +199,11 @@ class TestBuild:
     def test_paths_인자로_경로를_좁힌다(self, tmp_path):
         from eval.table_parsing.build import build_all
         assert [p for _, p, _ in build_all(tmp_path, {'S01a_basic'}, {'xlsx'})] == ['xlsx']
+
+
+class TestGallery:
+    def test_샘플_갤러리는_축마다_카드_하나와_이미지를_만든다(self, tmp_path):
+        from eval.table_parsing.gallery import build_gallery
+        page = build_gallery(tmp_path)
+        html = page.read_text()
+        assert html.count('class="c"') == 23 and len(list((tmp_path / 'png').glob('*.png'))) == 23

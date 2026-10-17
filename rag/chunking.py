@@ -53,6 +53,7 @@ from docx.text.paragraph import Paragraph as DocxParagraph
 from llama_index.core.node_parser import SentenceSplitter
 
 from config import settings
+from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +125,7 @@ class _Section:
     """형식별 파서 → _pack_sections 사이의 내부 계약. 이 모듈 밖으로 나가지 않는다.
 
     파서 넷(_pdf/_docx/_md/_txt_sections)이 전부 이 형태를 내놓기 때문에 그 뒤 단계
-    (묶기 → 크기 분할 → ChunkData)를 형식과 무관하게 한 번만 쓴다.
+    (묶기 → 크기 분할 → ChunkData)를 형식과 무관하게 한 번만 쓴다. 표는 blocks에 _TableBlock으로 운반된다(#252).
     """
     heading_path: list[str]
     page: int | None            # PDF만 채운다 — 나머지는 파일에 페이지 개념이 없다
@@ -137,11 +138,80 @@ class _Section:
     # 여기 기록해 두어야 색인이 식별자('11조')를 **추정 없이** 뽑고(rag/identifiers, #238 결정 15),
     # 분할이 헤딩을 본문과 같은 조각에 둘 수 있다(_split_section). 묶지 않은 섹션은 비어 있다.
     headings: list[str] = field(default_factory=list)
+    # 본문을 이루는 블록 목록(#252 결정 1 = b′): 글 블록(str) 또는 표 블록(_TableBlock). body·line_pages는 이 목록에서
+    # 파생된 값이다(파서가 둘 다 채운다 — body 문자열을 없애는 일은 #230). None이면(txt·md·pdfplumber 비상 경로) 본문 전체가
+    # 글 블록 하나다. 크기 분할(chunk_file)은 이 목록을 보고 표만 행 단위로 나눈다 — 표를 글줄에서 추측하지 않는다.
+    blocks: list['str | _TableBlock'] | None = None
+
+
+class _TableBlock(NamedTuple):
+    """표 하나 — 첫 행이 헤더인 행 목록. 파서(PDF·DOCX)가 표를 글로 바꾸지 않고 이대로 chunk_file까지 운반한다(#252).
+
+    글로 바꾸는 시점은 둘뿐이다: 섹션 body(검색·쪽 매핑·테스트가 보는 파생 문자열)와 행 묶음 청크(batch_table_rows).
+    둘 다 to_markdown_table을 쓰므로 같은 표는 어디서든 같은 글이다.
+    row_pages — 행마다의 쪽 번호(헤더 포함, PDF만). 쪽을 넘긴 표를 이으면(#252 E) 뒷 쪽 행이 앞 쪽 번호를 물려받는 #137
+    결함 6이 되살아나므로 행 단위로 들고 다닌다(리뷰 지적). None이면 블록 전체가 한 쪽.
+    """
+    rows: list[list[str]]
+    row_pages: list[int | None] | None = None
+
+    def render(self) -> str:
+        return to_markdown_table(self.rows[0], self.rows[1:])
+
+    def line_pages(self, page: int | None) -> list[int | None]:
+        """렌더한 줄(헤더·구분선·행)마다의 쪽 번호 — 구분선은 헤더 쪽을 따른다."""
+        rp = self.row_pages or [page] * len(self.rows)
+        return [rp[0], rp[0]] + list(rp[1:])
+
+
+def _blocks_of(section: '_Section') -> list['str | _TableBlock']:
+    return section.blocks if section.blocks is not None else [section.body]
+
+
+def _join_blocks(blocks: list['str | _TableBlock']) -> list['str | _TableBlock']:
+    """이웃한 글 블록을 '\n'으로 합친다 — 글 블록 경계는 의미가 없고(분할기가 다시 나눈다) 표 블록 경계만 의미가 있다."""
+    out: list[str | _TableBlock] = []
+    for b in blocks:
+        if isinstance(b, str) and out and isinstance(out[-1], str):
+            out[-1] = f'{out[-1]}\n{b}'
+        else:
+            out.append(b)
+    return out
 
 
 # (page, text, level) — 두 PDF 경로(docling / pdfplumber)가 _build_sections에 흘리는 공통 단위.
-# level이 None이면 본문 줄, 정수면 그 레벨의 헤딩. text는 여러 줄일 수 있다(표 markdown).
-_Item = tuple[int | None, str, int | None]
+# level이 None이면 본문 줄, 정수면 그 레벨의 헤딩. text는 여러 줄일 수 있고(pdfplumber 경로의 표 markdown), docling 경로의
+# 표는 _TableBlock으로 온다(#252 — 행 목록 그대로 운반).
+_Item = tuple[int | None, 'str | _TableBlock', int | None]
+
+
+# 표 행 묶음 하나의 크기(#222 XLSX_BATCH_TOKENS가 원본 — 측정 근거 없음, 기획 메모 "20~30행씩 + 헤더 반복" 규모). #252부터
+# PDF·DOCX 표도 같은 값으로 나눈다. 글자 수 환산은 보수적 계수(rag/tokens).
+TABLE_BATCH_TOKENS = 1000
+TABLE_BATCH_CHARS = int(TABLE_BATCH_TOKENS * CONSERVATIVE_CHARS_PER_TOKEN)
+
+
+def batch_table_rows(header: list[str], body: list[list[str]], budget_chars: int = TABLE_BATCH_CHARS) -> list[str]:
+    """표(헤더 + 행 목록) → 행 묶음 markdown들. 묶음마다 헤더 전체와 구분선을 반복한다. **형식 공통 정의점**(#252 — #222의
+    xlsx 행 묶음을 옮겨 옴; rag/xlsx_chunking이 이 이름을 import한다).
+
+    **글로 바꾸기 전에 행 목록에서 나눈다**(#222 리뷰) — 렌더한 글을 줄 단위로 다시 해석하던 첫 구현은 칸 안 줄바꿈에서
+    헤더가 깨지고(헤더 칸 "구분⏎(원)") 행이 중간에서 잘렸다(데이터 칸 "첫줄⏎| 둘째줄", 8묶음 중 6개). PDF·DOCX는 #252 전까지
+    표가 글줄로 SentenceSplitter를 타서 45행 표의 경계 행이 `30,` / `148원 | 5 |`로 쪼개졌다(#246 실측). 행 목록 단계에서
+    나누면 경계가 항상 행과 행 사이다. 묶음 크기는 렌더한 길이로 잰다(행 하나를 따로 렌더해 더한다 — 행마다 독립적으로
+    렌더되므로 정확하다). 행 하나가 예산보다 길면 그 행 혼자 한 묶음이다(자르지 않는다). 데이터 행이 없으면 헤더만.
+    """
+    head_len = len(to_markdown_table(header, []))
+    batches, cur, size = [], [], head_len
+    for row in body:
+        row_len = len(to_markdown_table(header, [row])) - head_len      # '\n' + 그 행 한 줄(들)
+        if cur and size + row_len > budget_chars:
+            batches.append(to_markdown_table(header, cur))
+            cur, size = [], head_len
+        cur.append(row)
+        size += row_len
+    batches.append(to_markdown_table(header, cur))
+    return batches
 
 
 def to_markdown_table(header: list[str], body: list[list[str]]) -> str:
@@ -201,21 +271,28 @@ def _build_sections(items: list[_Item]) -> list[_Section]:
     stack: list[str] = []
     buf: list[str] = []
     buf_pages: list[int | None] = []
+    buf_blocks: list[str | _TableBlock] = []
     orphans: list[str] = []
     start_page: int | None = items[0][0] if items else None
     last_page: int | None = start_page
 
-    def add(text: str, page: int | None) -> None:
-        buf.append(text)
-        buf_pages.extend([page] * (text.count('\n') + 1))
+    def add(text: 'str | _TableBlock', page: int | None) -> None:
+        if isinstance(text, _TableBlock):
+            buf.append(text.render())
+            buf_pages.extend(text.line_pages(page))
+        else:
+            buf.append(text)
+            buf_pages.extend([page] * (text.count('\n') + 1))
+        buf_blocks.append(text)
 
     def flush() -> bool:
         """섹션을 만들었으면 True. 본문 없는 헤딩은 섹션이 되지 않는다 (docx·md도 같은 가드)."""
         if not buf:
             return False
-        sections.append(_Section(list(stack), start_page, '\n'.join(buf), list(buf_pages)))
+        sections.append(_Section(list(stack), start_page, '\n'.join(buf), list(buf_pages), blocks=_join_blocks(buf_blocks)))
         buf.clear()
         buf_pages.clear()
+        buf_blocks.clear()
         return True
 
     for page, text, level in items:
@@ -507,35 +584,30 @@ def _docling_norm(text: str) -> str:
     return re.sub(r'[  ]+', ' ', text).strip()
 
 
-def _docling_table_markdown(item, doc) -> str | None:
-    """docling 표 → markdown. 헤더는 dataframe 컬럼, 빈 셀은 ''로 자리를 지킨다(xlsx와 같은 규약)."""
-    df = item.export_to_dataframe(doc)
-    if df.shape[1] == 0:
-        return None
-    header = [_docling_norm(str(c)) for c in df.columns]
-    rows = [[_docling_norm('' if v is None else str(v)) for v in row] for row in df.itertuples(index=False)]
-    return to_markdown_table(header, rows)
-
-
 def docling_grid_markdown(table, doc=None) -> str | None:
-    """docling 표 → markdown, **셀 원문(grid)에서 직접** 그린다. DOCX·XLSX 표의 정의점(#220).
+    """docling 표 → markdown, **셀 원문(grid)에서 직접** 그린다. PDF·DOCX·XLSX 표의 정의점(#220, #252부터 PDF도).
 
-    PDF 표(_docling_table_markdown)와 다른 두 가지:
-      - **가로 병합은 범위의 첫 열에만, 세로 병합은 행마다 값을 둔다.** grid는 병합 범위의 모든 칸에 같은 셀을 넣는다.
-        가로를 그대로 그리면 양식형 xlsx에서 '업무 인수 인계서'가 칸마다 반복됐다(실문서 2건에서 23·67회, 텍스트 1.1·3.0배).
-        세로는 반복한다 — 첫 행에만 두면 표가 청크 경계에서 잘릴 때 아래 행이 분류어를 잃는다(장애관리 지침서 37행 중
+    #252 결정 2까지 PDF는 export_to_dataframe 경로였다 — docling이 column_header 표시를 안 붙인 표(단순 표에서 흔함: 실문서
+    PDF 표 40개 중 22개)에 열 이름 0,1,2…를 붙여 헤더가 `| 0 | 1 | 2 |`로 색인됐다. 이 함수는 첫 행을 헤더로 보므로 그 결함이
+    없다. 대가로 2단 헤더를 점으로 잇던 것('국내 출장.일비')이 사라지고 둘째 헤더 행이 데이터 행으로 들어간다(사용자 결정).
+    옛 dataframe 경로와 다른 두 가지:
+      - **병합 칸은 범위의 모든 칸에 값을 둔다(가로·세로 모두).** grid는 병합 범위의 모든 칸에 같은 셀을 넣으므로 그대로 그린다.
+        #220~#252 결정 9 전까지 가로 병합은 첫 열에만 두었다 — 양식형 xlsx에서 '업무 인수 인계서'가 칸마다 반복됐기
+        때문이다(실문서 2건에서 23·67회, 텍스트 1.1·3.0배). 그런데 PDF까지 이 규칙을 쓰자(#252 결정 2) '근무기간 7년 이상·
+        7년 미만' 두 칸에 걸친 `1 년`이 `1 년 |  `이 되어 7년 미만 칸이 빈칸으로 읽혔다(휴직 안내 3행, 정답 라벨 1건 소실).
+        제목 반복의 잡음보다 값이 빈칸으로 읽히는 쪽이 위험하다고 보고 전부 반복한다(사용자 결정, 2026-10-17).
+        세로는 #220부터 반복한다 — 첫 행에만 두면 표가 청크 경계에서 잘릴 때 아래 행이 분류어를 잃는다(장애관리 지침서 37행 중
         7행, 인사규정 18행 중 3행). 대가는 긴 병합 셀의 중복이다(인사규정 +13%·543자 셀 5회, 교통비 양식 +17%) —
         글자가 늘더라도 행이 제 분류를 지니는 쪽을 택했다(#220 결정 10, 2026-10-11). 짧은 셀만 반복하는 길이 임계안은 기각.
       - **export_to_dataframe을 쓰지 않는다.** Word의 서식 있는 셀(RichTableCell)을 '**항목**'처럼 마크다운 굵게로
         내보낸다 — 셀 원문(cell.text)에는 '**'가 없다.
-    가로 연속 칸을 비우고 나면 값이 하나도 없는 행은 뺀다(xlsx _iter_sheets의 빈 행 스킵과 같은 원리). 첫 행이 헤더다.
+    값이 하나도 없는 행은 뺀다(xlsx _iter_sheets의 빈 행 스킵과 같은 원리). 첫 행이 헤더다.
     빈 셀은 자리를 지킨다(to_markdown_table — #137 결함 5). 열이 없으면 None.
     **칸 안의 그림은 그 칸에 설명을 붙인다**(doc가 있을 때) — 서식 있는 칸(RichTableCell)의 ref가 가리키는 묶음 안의
     그림을 찾아 캡션(없으면 자리표시)을 칸 글자 뒤에 한 줄로 편다. 매뉴얼의 '화면 | 캡처' 표에서 캡처 설명이 제 행과
     붙어 있게 하려는 것이다(#220 리뷰, 결정 2026-10-11). 표 아래로 빼는 안은 어느 행의 그림인지를 잃어 기각했다.
     대가: 여러 줄 캡션의 줄바꿈이 사라지고(마크다운 표는 행=한 줄), 긴 캡션이면 그 행이 길어진다.
     이 처리 전에는 VLM이 캡션을 만들어 놓고도 칸 글자에 없어 버려졌다(실측: 'LOGIN ID / PASSWORD' 캡션이 색인 0).
-    PDF 표는 이 함수를 쓰지 않는다 — #143 이후 실측된 출력을 바꾸지 않는다(동작 보존).
     """
     rows = docling_grid_rows(table, doc)
     return to_markdown_table(rows[0], rows[1:]) if rows else None
@@ -547,15 +619,25 @@ def docling_grid_rows(table, doc=None) -> list[list[str]]:
     따로 둔 이유(#222 리뷰): 엑셀 행 묶음은 **글로 바꾸기 전에 행 목록에서** 나눠야 한다. 렌더한 markdown을 줄 단위로
     다시 해석하면 칸 안 줄바꿈("구분⏎(원)" 헤더, "첫줄⏎| 둘째줄" 데이터)에서 헤더가 깨지고 행이 중간에서 잘렸다(실측).
     """
-    rows = [[_grid_cell_text(cell, doc) if cell.start_col_offset_idx == c else '' for c, cell in enumerate(row)]
-            for row in table.data.grid]
+    rows = [[_grid_cell_text(cell, doc) for cell in row] for row in table.data.grid]
     return [row for row in rows if any(row)]
 
 
+_XLSX_MIDNIGHT_RE = re.compile(r'^(\d{4}-\d{2}-\d{2}) 00:00:00$')
+
+
+def _cell_text_norm(text: str) -> str:
+    """칸 글자 정리(#252 C·F): 줄바꿈은 공백으로 — markdown 표는 행 = 한 줄이라 `\n`이 남으면 그 행이 깨져 뒤 열이 다음
+    줄로 밀린다(장애관리 docx 24칸·xlsx 3칸 실측). 엑셀 날짜 칸의 `00:00:00` 꼬리는 뗀다(docling이 datetime을 str로 바꾸며
+    붙인다 — 교통비 양식 2칸). 자정이 아닌 실제 시각은 그대로 둔다."""
+    text = _docling_norm(text.replace('\n', ' '))
+    return _XLSX_MIDNIGHT_RE.sub(r'\1', text)
+
+
 def _grid_cell_text(cell, doc) -> str:
-    """표 칸 하나의 글자 — 칸 원문 + 칸 안 그림의 설명(docling_grid_markdown 참조)."""
+    """표 칸 하나의 글자 — 칸 원문(_cell_text_norm) + 칸 안 그림의 설명(docling_grid_markdown 참조)."""
     from docling_core.types.doc import PictureItem, RichTableCell   # 지연 import — docling은 톱레벨에 안 들인다
-    parts = [_docling_norm(cell.text)]
+    parts = [_cell_text_norm(cell.text)]
     if doc is not None and isinstance(cell, RichTableCell):
         parts += [re.sub(r'\s+', ' ', docling_picture_text(item))
                   for item, _ in doc.iterate_items(root=cell.ref.resolve(doc)) if isinstance(item, PictureItem)]
@@ -613,7 +695,8 @@ def _docling_picture_caption(element) -> str:
 
 
 def _docling_elements(doc, footnote_markers: dict[int, set[str]] | None = None):
-    """docling 문서 → (label, text, page, table_markdown) 튜플 흐름. 읽기 순서.
+    """docling 문서 → (label, text, page, table_rows) 튜플 흐름. 읽기 순서. table_rows는 행 목록(첫 행 헤더, docling_grid_rows —
+    #252부터 PDF도 DOCX·XLSX와 같은 렌더)이고 표가 아니면 None.
 
     _sections_from_docling_elements가 소비한다. 둘로 나눈 이유: 매핑 규칙(헤딩 층·표·그림)을
     docling 없이 튜플만으로 단위 테스트하기 위해서다 — 모델 다운로드가 필요한 테스트와 분리.
@@ -625,7 +708,7 @@ def _docling_elements(doc, footnote_markers: dict[int, set[str]] | None = None):
         label = element.label.value if hasattr(element.label, 'value') else str(element.label)
         page = element.prov[0].page_no if getattr(element, 'prov', None) else None
         if label == 'table':
-            yield label, '', page, _docling_table_markdown(element, doc)
+            yield label, '', page, docling_grid_rows(element, doc) or None     # #252 결정 2 — DOCX·XLSX와 같은 렌더
         elif label == 'picture':
             # 캡션(#162)은 element.text가 아니라 annotations에 붙는다 — text만 보면 조용히 버려진다.
             # 캡션 대상이 아닌 그림(면적 하한 미만)은 annotations가 비어 빈 문자열이 나가고, 소비자가 자리표시로 되돌린다.
@@ -644,13 +727,15 @@ def _docling_elements(doc, footnote_markers: dict[int, set[str]] | None = None):
 
 
 def _sections_from_docling_elements(elements) -> list[_Section]:
-    """(label, text, page, table_markdown) 흐름 → _Section. 헤딩 층 복원 규칙의 정의점.
+    """(label, text, page, table) 흐름 → _Section. 헤딩 층 복원 규칙의 정의점. table은 행 목록(첫 행 헤더, #252 — _TableBlock으로
+    운반)이거나 옛 계약의 markdown 문자열(그대로 글 블록).
 
     docling은 장·조를 구분하지 않으므로(_CHAPTER_RE 참조) 여기서 층을 만든다:
       첫 헤딩 = 문서 제목(L1) / '제 N 장' = L2 / 그 외 헤딩 = L3 (장이 아직 없으면 L2).
     그러면 _pack_sections의 joinable(공통 조상 깊이 ≥2)이 현행과 같이 동작해 같은 장 아래
     조항끼리 묶인다. 이 규칙 없이 두면 26쪽 규정이 73→170청크로 갈렸다(#143 실측).
-    표는 markdown 그대로, 그림은 캡션(없으면 _PICTURE_PLACEHOLDER), 나머지 텍스트 요소는 본문 줄.
+    표는 _TableBlock(행 목록 — chunk_file이 행 단위로 나눈다, #252), 그림은 캡션(없으면 _PICTURE_PLACEHOLDER), 나머지 텍스트
+    요소는 본문 줄. 비상 경로(pdfplumber·python-docx)는 표를 markdown 글줄로 그대로 흘린다 — 거긴 행 묶음 분할이 없다(의도).
     """
     items: list[_Item] = []
     seen_title = False
@@ -668,8 +753,21 @@ def _sections_from_docling_elements(elements) -> list[_Section]:
                 level = 3 if seen_chapter else 2
             items.append((page, text, level))
         elif label == 'table':
-            if table_markdown:
+            if not table_markdown:
+                continue
+            if isinstance(table_markdown, str):               # 옛 계약(markdown 문자열) — 테스트·pdfplumber 호환
                 items.append((page, table_markdown, None))
+                continue
+            block = _TableBlock(table_markdown, [page] * len(table_markdown))
+            # 쪽을 넘긴 표 잇기(#252 결정 5 = E): 바로 앞 항목이 표이고(사이에 글·그림 없음) 첫 행(헤더)이 같으면 뒤 표의
+            # 헤더를 떼고 행을 잇는다. docling은 쪽마다 표를 따로 내므로 45행 표가 36 + 10행으로 갈렸다(#246). 헤더가 같을
+            # 때만 — 열 수만 같은 연속 표를 붙이는 안은 오판 위험으로 기각. 행별 쪽 번호는 각자 것을 지킨다(row_pages).
+            if items and isinstance(items[-1][1], _TableBlock) and items[-1][1].rows[0] == block.rows[0]:
+                prev_page, prev_block, _ = items[-1]
+                items[-1] = (prev_page, _TableBlock(prev_block.rows + block.rows[1:],
+                                                    prev_block.row_pages + block.row_pages[1:]), None)
+                continue
+            items.append((page, block, None))
         elif label == 'picture':
             # 캡션이 있으면 그것이 본문이다(#162). 없으면 자리표시 — 둘 다 한 줄 항목으로 들어간다.
             caption = _docling_norm(text)
@@ -1054,8 +1152,55 @@ class _DocxItem(NamedTuple):
     from_table: bool        # 표·그림 — 폴백 헤딩 승격에서 제외하는 표지
 
 
+def _docx_table_rows(table, doc) -> list[list[str]]:
+    """DOCX 표 → 행 목록(첫 행 헤더), **표 안의 표는 평탄화**(#252 결정 4 = D).
+
+    docling은 안쪽 표를 바깥 표의 후손 항목으로 따로 내놓는데, 우리는 표 안 요소를 건너뛰므로(아래 _table_descendants) 안쪽
+    표가 통째로 사라졌다(#246: 청크에 `평가 항목 | (빈칸)`). PDF는 TableFormer가 같은 표를 '안쪽 행 수만큼 펴고 바깥 칸 글자를
+    행마다 반복'한 5×3으로 내 값이 보존됐고 질문도 맞혔다 — 그 모양을 그대로 따른다: 안쪽 표가 든 열은 안쪽 열 수만큼 넓어지고,
+    그 행은 안쪽 행 수만큼 늘며, 같은 행의 다른 칸은 세로로 반복, 다른 행의 그 열 칸은 넓어진 열마다 반복한다
+    (docling_grid_rows의 병합 반복 규칙 — #252 결정 9). 안쪽 표가 둘 이상인 칸은 위아래로 이어 붙인다.
+    """
+    from docling_core.types.doc import RichTableCell, TableItem   # 지연 import
+    grid = table.data.grid
+    nested: dict[tuple[int, int], list[list[str]]] = {}
+    for r, row in enumerate(grid):
+        for c, cell in enumerate(row):
+            if not (isinstance(cell, RichTableCell) and cell.start_row_offset_idx == r and cell.start_col_offset_idx == c):
+                continue
+            inner = [it for it, _ in doc.iterate_items(root=cell.ref.resolve(doc)) if isinstance(it, TableItem)]
+            deeper = {d.self_ref for it in inner for d, _ in doc.iterate_items(root=it) if d is not it}
+            inner = [it for it in inner if it.self_ref not in deeper]        # 3단 중첩은 재귀가 맡는다 — 중복 금지(리뷰 지적)
+            rows = [row2 for it in inner for row2 in _docx_table_rows(it, doc)]
+            if rows:
+                own = _cell_text_norm(cell.text)                            # 칸에 안쪽 표와 함께 적힌 글자(라벨)는 첫 행으로 남긴다
+                nested[(r, c)] = ([[own] + [''] * (len(rows[0]) - 1)] if own else []) + rows
+    base = [[_grid_cell_text(cell, doc) for cell in row] for row in grid]
+    if not nested:
+        return [row for row in base if any(row)]
+    width = {c: max(len(x) for (_, cc), rows in nested.items() if cc == c for x in rows)        # 열 c → 안쪽 열 수(최대)
+             for c in {c for (_, c) in nested}}
+    out: list[list[str]] = []
+    for r, row in enumerate(base):
+        inner_rows = max((len(rows) for (rr, _), rows in nested.items() if rr == r), default=0)
+        for i in range(max(inner_rows, 1)):
+            line: list[str] = []
+            for c, text in enumerate(row):
+                if c in width:
+                    rows = nested.get((r, c))
+                    if rows:
+                        cells = rows[i] if i < len(rows) else []
+                        line.extend((cells + [''] * width[c])[:width[c]])
+                    else:
+                        line.extend([text] * width[c])     # 넓어진 열에 걸친 칸 = 가로 병합 — 칸마다 반복(결정 9)
+                else:
+                    line.append(text)                      # 안쪽 행마다 반복 — 세로 병합 반복 규칙(docling_grid_rows)과 같다
+            out.append(line)
+    return [row for row in out if any(row)]
+
+
 def _table_descendants(doc) -> set[str]:
-    """표 칸 안에 든 요소들의 self_ref. 표 자신은 빼고, 중첩 표는 바깥 표의 후손이라 들어간다."""
+    """표 칸 안에 든 요소들의 self_ref. 표 자신은 빼고, 중첩 표는 바깥 표의 후손이라 들어간다(_docx_table_rows가 평탄화해 싣는다)."""
     return {item.self_ref for table in doc.tables
             for item, _ in doc.iterate_items(root=table) if item is not table}
 
@@ -1071,10 +1216,11 @@ def _docx_docling_items(doc):
       - **표 셀 안의 요소는 건너뛴다** — docling은 서식 있는 셀의 내용을 표와 별도 텍스트 요소로 **한 번 더** 내놓는다
         (표 있는 문서에서 텍스트류의 34~47%가 표 안). 셀 내용은 표 markdown(docling_grid_markdown)에 이미 들어 있다.
         칸 안의 그림도 여기서 건너뛰지만 버려지지 않는다 — docling_grid_markdown이 그 칸에 설명을 붙인다.
-      - 표 셀 안의 중첩 표, 워드 자동 번호('1.', '제2장')는 python-docx가 잃던 것이다 — docling은 읽는다
-        (인사규정 2건에서 문장 373·435개가 python-docx 경로에 없었다).
-    표와 그림은 from_table=True로 내놓는다 — 폴백 헤딩 승격에서 제외하는 표지다(그림 캡션이 '제1장 …'로 시작해도
-    헤딩이 되면 안 된다). 그림은 캡션, 없으면 자리표시(_PICTURE_PLACEHOLDER — VLM 실패 신호).
+      - 워드 자동 번호('1.', '제2장')는 python-docx가 잃던 것이다 — docling은 읽는다(인사규정 2건에서 문장 373·435개가
+        python-docx 경로에 없었다). 표 셀 안의 중첩 표는 #252 전까지 건너뛰기에 걸려 통째로 사라졌다 — 이제 _docx_table_rows가
+        바깥 표에 평탄화해 싣는다.
+    표는 _TableBlock(행 목록)으로 내놓는다(#252 — chunk_file이 행 단위로 나눈다). 표와 그림은 from_table=True — 폴백 헤딩
+    승격에서 제외하는 표지다(그림 캡션이 '제1장 …'로 시작해도 헤딩이 되면 안 된다). 그림은 캡션, 없으면 자리표시.
     """
     from docling_core.types.doc import PictureItem, SectionHeaderItem, TableItem   # 지연 import
     inside_tables = _table_descendants(doc)
@@ -1084,8 +1230,11 @@ def _docx_docling_items(doc):
         if isinstance(item, SectionHeaderItem):
             if text := _docling_norm(item.text):
                 yield _DocxItem(True, item.level, text, False)
+        elif isinstance(item, TableItem):
+            if rows := _docx_table_rows(item, doc):
+                yield _DocxItem(False, 0, _TableBlock(rows), True)
         elif text := docling_block_text(item, doc):
-            yield _DocxItem(False, 0, text, isinstance(item, (TableItem, PictureItem)))
+            yield _DocxItem(False, 0, text, isinstance(item, PictureItem))
 
 
 def _docx_sections(file_path: str | Path) -> list[_Section]:
@@ -1105,11 +1254,13 @@ def _docx_sections(file_path: str | Path) -> list[_Section]:
     sections: list[_Section] = []
     stack: list[str] = []      # 현재 헤딩 경로 — 인덱스가 곧 레벨-1
     lines: list[str] = []
+    blocks: list[str | _TableBlock] = []
 
     def flush() -> None:
         if lines:
-            sections.append(_Section(list(stack), None, '\n'.join(lines)))   # page는 docx에 없음
+            sections.append(_Section(list(stack), None, '\n'.join(lines), None, blocks=_join_blocks(blocks)))   # page는 docx에 없음
             lines.clear()
+            blocks.clear()
 
     if settings.docling_enabled:
         items = list(_docx_docling_items(docling_convert(file_path)))
@@ -1121,7 +1272,8 @@ def _docx_sections(file_path: str | Path) -> list[_Section]:
             del stack[level - 1:]      # 같은 레벨·하위 레벨 걷어내고
             stack.append(text)
         else:
-            lines.append(text)
+            lines.append(text.render() if isinstance(text, _TableBlock) else text)
+            blocks.append(text)
     flush()
     return sections
 
@@ -1172,11 +1324,14 @@ def _pack_sections(
         lines: list[str] = []
         pages: list[int | None] = []
         heads: list[str] = []
+        blocks: list[str | _TableBlock] = []
         for s in buf:
             extra = s.heading_path[len(common):]   # 공통 조상보다 깊은 헤딩은 본문에 보존
             lines.extend(extra)
             heads.extend(extra)
             pages.extend([s.page] * len(extra))
+            blocks.extend(extra)
+            blocks.extend(_blocks_of(s))
             lines.append(s.body)
             # 줄별 page를 그대로 이어붙인다. 없으면(docx·md·txt) 섹션 page로 채운다 —
             # 묶음 page를 buf[0].page 하나로만 두면 뒤 섹션 본문이 앞 쪽 번호를
@@ -1186,7 +1341,8 @@ def _pack_sections(
                 pages.extend(s.line_pages)
             else:
                 pages.extend([s.page] * len(body_lines))
-        packed.append(_Section(common, buf[0].page, '\n'.join(lines), pages, headings=heads))
+        packed.append(_Section(common, buf[0].page, '\n'.join(lines), pages,
+                               headings=heads, blocks=_join_blocks(blocks)))
         buf.clear()
         size = 0
 
@@ -1389,17 +1545,7 @@ def chunk_file(file_path: str | Path, *, description: str = '') -> list[ChunkDat
 
     out: list[ChunkData] = []
     for section in _pack_sections(parser(file_path)):
-        cursor = 0
-        for chunk in _split_section(section, splitter):
-            # 청크의 실제 시작 위치로 쪽을 고른다. 섹션 page 하나를 모든 청크에
-            # 물려주면 여러 쪽에 걸친 섹션의 뒤쪽 청크가 앞 쪽을 가리킨다 (#137 결함 6).
-            # 오프셋은 목록 번호 복원(결함 3)의 판정 근거이기도 하므로 손대기 전에 구한다.
-            found = section.body.find(chunk, cursor)
-            offset = found if found >= 0 else cursor
-            cursor = max(cursor, offset)
-            text = _strip_orphan_marker(_restore_leading_marker(section.body, offset, chunk))
-            if not text.strip():
-                continue
+        for text, offset in _split_section(section, splitter):
             # 이 조각에 실린 헤딩만 — 색인이 식별자 사전으로, 근거 준비가 구간 경계로 쓴다(#238 결정 15).
             lines = {line.strip() for line in text.split('\n')}
             heads = [h for h in section.headings if h.strip() in lines]
@@ -1409,27 +1555,91 @@ def chunk_file(file_path: str | Path, *, description: str = '') -> list[ChunkDat
     return out
 
 
-def _split_section(section: _Section, splitter: SentenceSplitter) -> list[str]:
-    """섹션 본문을 크기 분할하되 **기록된 헤딩은 조각의 마지막 줄이 될 수 없다** (#238 결정 15-2).
+_TABLE_LEAD_MAX = 150   # 큰 표 묶음마다 붙이는 '표 바로 위 한 줄'의 최대 길이 — 이보다 길면 표 설명이 아니라 본문 문단으로 본다
+
+
+def _split_section(section: _Section, splitter) -> list[tuple[str, int]]:
+    """섹션 → (청크 글, 본문 오프셋). **표 블록은 행 묶음으로, 글 블록만 SentenceSplitter로** 나눈 뒤 블록 사이를 다시 잇는다
+    (#252 결정 1 = b′, 결정 7 = c).
+
+    #252 전에는 표 markdown이 글줄에 섞인 채 분할기를 타서 45행 표가 셀 한가운데(`30,` / `148원 | 5 |`)에서 잘리고 뒷 청크엔
+    헤더가 없었다(#246 L2 실측 — XLSX만 행 묶음이라 무사). 이제 표는 batch_table_rows가 행 경계에서만 자르고 묶음마다 헤더를
+    반복한다. 그런데 블록마다 따로 자르기만 하면 표 위의 소제목·단위 줄('2. 사이즈 스펙 (단위: cm)')이 혼자 남는 작은 청크가
+    되고 표는 그 맥락을 잃었다(실문서 98건 diff — 청크 1,269→1,408). 그래서 두 규칙으로 다시 잇는다:
+      - **작은 표(묶음 하나)**: 앞뒤 조각과 합쳐 TABLE_BATCH_CHARS 안이면 한 청크로 — #252 전과 같은 모양.
+        같은 글 블록에서 나온 조각끼리는 합치지 않는다(분할기 겹침 50토큰이 중복되므로).
+      - **큰 표(묶음 둘 이상)**: 표 바로 위 글의 마지막 줄(_TABLE_LEAD_MAX자 이하)을 모든 묶음 머리에 붙인다 — XLSX 묶음마다
+        설명을 반복하는 것과 같은 방식. 큰 표의 묶음은 이웃과 합치지 않는다(이미 예산에 가깝다).
+    오프셋은 section.body 안의 위치다 — 쪽 매핑(_page_at)과 목록 번호 복원의 근거. 표 묶음은 첫 데이터 행 위치(행별 쪽).
+    """
+    pieces: list[tuple[str, int, int, bool]] = []          # (글, 오프셋, 블록 번호, 이웃과 합칠 수 있나)
+    cursor = 0
+    last_text = ''
+    for bi, block in enumerate(_blocks_of(section)):
+        rendered = block.render() if isinstance(block, _TableBlock) else block
+        start = section.body.find(rendered, cursor)
+        start = start if start >= 0 else cursor
+        if isinstance(block, _TableBlock):
+            batches = batch_table_rows(block.rows[0], block.rows[1:])
+            head_len = len(to_markdown_table(block.rows[0], [])) + 1
+            pos = start + head_len
+            lead = last_text.strip().split('\n')[-1].strip() if last_text.strip() else ''
+            lead = lead if len(batches) > 1 and len(lead) <= _TABLE_LEAD_MAX else ''
+            if lead and pieces and pieces[-1][0].strip() == lead:
+                pieces.pop()        # 그 줄만 든 조각은 묶음마다 머리로 들어가므로 혼자 남기지 않는다(실문서: '[ 별표 1] 징계 양정 기준')
+            for batch in batches:
+                pieces.append((f'{lead}\n{batch}' if lead else batch, pos, bi, len(batches) == 1))
+                pos += len(batch) - head_len + 1
+            last_text = ''
+        else:
+            inner = start
+            for chunk in splitter.split_text(rendered):
+                # 청크의 실제 시작 위치로 쪽을 고른다. 섹션 page 하나를 모든 청크에
+                # 물려주면 여러 쪽에 걸친 섹션의 뒤쪽 청크가 앞 쪽을 가리킨다 (#137 결함 6).
+                # 오프셋은 목록 번호 복원(결함 3)의 판정 근거이기도 하므로 손대기 전에 구한다.
+                found = section.body.find(chunk, inner)
+                offset = found if found >= 0 else inner
+                inner = max(inner, offset)
+                text = _strip_orphan_marker(_restore_leading_marker(section.body, offset, chunk))
+                if text.strip():
+                    pieces.append((text, offset, bi, True))
+            last_text = rendered
+        cursor = start + len(rendered)
+    out: list[tuple[str, int]] = []
+    prev_block, prev_mergeable = None, False
+    for text, offset, bi, mergeable in pieces:
+        if (out and mergeable and prev_mergeable and bi != prev_block
+                and len(out[-1][0]) + 1 + len(text) <= TABLE_BATCH_CHARS):
+            out[-1] = (f'{out[-1][0]}\n{text}', out[-1][1])
+        else:
+            out.append((text, offset))
+        prev_block, prev_mergeable = bi, mergeable
+    return _carry_tail_headings(section, out)
+
+
+def _carry_tail_headings(section: _Section, pieces: list[tuple[str, int]]) -> list[tuple[str, int]]:
+    """**기록된 헤딩은 조각의 마지막 줄이 될 수 없다** (#238 결정 15-2).
 
     SentenceSplitter는 헤딩을 모른다. 경계가 헤딩 바로 뒤에 떨어지면 헤딩만 앞 조각에 남고 본문은 다음
     조각으로 가 — 식별자로 그 조를 찾아도 넘길 내용이 없다(실측 1/427, 2026-10-17). 그런 꼬리 헤딩을
     다음 조각 맨 앞으로 옮긴다. 다음 조각이 (겹침 때문에) 이미 그 줄을 갖고 있으면 앞에서만 뗀다.
-    옮긴 줄은 원문에서 다음 조각과 이어져 있으므로 호출부의 offset 탐색(section.body.find)이 그대로 맞는다.
+    #252 이후로는 다음 조각이 표 묶음일 수도 있다 — 헤딩이 표 앞으로 가는 것이므로 같은 규칙이 맞다.
+    옮긴 줄이 다음 조각의 머리가 되면 그 조각의 오프셋도 헤딩 위치로 당긴다(쪽 매핑이 헤딩 쪽을 따르게).
     """
-    pieces = splitter.split_text(section.body)
     heads = {h.strip() for h in section.headings}
     if not heads:
         return pieces
     out = list(pieces)
     for i in range(len(out) - 1):
-        lines = out[i].split('\n')
+        lines = out[i][0].split('\n')
         while lines and not lines[-1].strip():
             lines.pop()
         if not lines or lines[-1].strip() not in heads:
             continue
         head = lines.pop()
-        out[i] = '\n'.join(lines)
-        if head.strip() not in {line.strip() for line in out[i + 1].split('\n')}:
-            out[i + 1] = head + '\n' + out[i + 1]
-    return [p for p in out if p.strip()]
+        out[i] = ('\n'.join(lines), out[i][1])
+        nxt, off = out[i + 1]
+        if head.strip() not in {line.strip() for line in nxt.split('\n')}:
+            found = section.body.rfind(head, 0, off + 1)
+            out[i + 1] = (head + '\n' + nxt, found if found >= 0 else off)
+    return [p for p in out if p[0].strip()]

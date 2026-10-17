@@ -52,12 +52,12 @@ def _table(grid):
 
 
 class TestGridMarkdown:
-    def test_가로_병합은_첫_열에만(self):
-        title = _cell('업무 인수 인계서', 0, 0)
-        md = docling_grid_markdown(_table([[title, title, title],
-                                           [_cell('a', 1, 0), _cell('b', 1, 1), _cell('c', 1, 2)]]))
-        assert md.splitlines()[0] == '| 업무 인수 인계서 |  |  |'
-        assert md.count('업무 인수 인계서') == 1
+    def test_가로_병합은_칸마다_반복한다(self):
+        # #252 결정 9 — 첫 열에만 두면 '7년 이상·7년 미만'에 걸친 `1 년`이 7년 미만 칸에서 빈칸으로 읽혔다(휴직 안내 3행)
+        span = _cell('1 년', 1, 1)
+        md = docling_grid_markdown(_table([[_cell('구분', 0, 0), _cell('7년 이상', 0, 1), _cell('7년 미만', 0, 2)],
+                                           [_cell('육아휴직', 1, 0), span, span]]))
+        assert md.splitlines()[2] == '| 육아휴직 | 1 년 | 1 년 |'
 
     def test_세로_병합은_행마다_반복한다(self):
         # #220 결정 10 — 첫 행에만 두면 표가 청크 경계에서 잘릴 때 아래 행이 분류어를 잃는다(실문서 37행 중 7행)
@@ -233,7 +233,7 @@ def _xlsx(tmp_path, build, name='t.xlsx'):
 
 
 class TestXlsxDocling:
-    def test_가로_병합_제목은_한_번만_세로_병합_분류는_행마다(self, tmp_path):
+    def test_표_위_병합_제목은_한_번_세로_병합_분류는_행마다(self, tmp_path):
         def build(wb):
             ws = wb.active
             ws.title = '양식'
@@ -246,7 +246,8 @@ class TestXlsxDocling:
         chunks = chunk_file(_xlsx(tmp_path, build), description='교통비 양식')
         assert {c.heading_path[0] for c in chunks} == {'양식'}          # 묶음(#222)이 여럿이어도 한 시트
         text = chunks[0].meta['sheet_text']                              # 시트 완성본 — 모델이 보는 본문
-        assert text.count('업무 교통비 청구서') == 1
+        # 표 폭 전체에 걸친 첫 행 제목은 docling이 표 밖 글로 뺀다(실측) — 가로 병합 반복(#252 결정 9)과 무관하게 한 번
+        assert text.count('업무 교통비 청구서') == 1 and '\n업무 교통비 청구서\n' in text
         assert '| 교통 | 버스 | 1500 |' in text and '| 교통 | 택시 | 29100 |' in text
         assert text.startswith('[교통비 양식]\n') and text.count('[교통비 양식]') == 1
         assert all(c.text.startswith('[교통비 양식]\n') for c in chunks)   # 묶음마다 설명 반복(검색 보강)
@@ -401,3 +402,59 @@ class TestConverterOptions:
             assert opts.do_picture_description is True
             assert opts.enable_remote_services is True   # 빠지면 OperationNotAllowed로 변환 자체가 죽는다
             assert opts.picture_description_options == pdf.picture_description_options
+
+
+class TestNestedAndLong:
+    def test_표_안의_표는_평탄화돼_바깥_글자가_안쪽_행마다_붙는다(self, tmp_path):
+        # #252 결정 4(D) — 전에는 안쪽 표가 통째로 사라졌다(청크에 `평가 항목 | (빈칸)`). PDF(TableFormer)와 같은 5×3 모양
+        def build(doc):
+            t = doc.add_table(rows=3, cols=2)
+            t.cell(0, 0).text, t.cell(0, 1).text = '구분', '세부'
+            t.cell(1, 0).text = '평가 항목'
+            inner = t.cell(1, 1).add_table(rows=3, cols=2)
+            for r, (a, b) in enumerate((('항목', '배점'), ('업적', '60'), ('역량', '40'))):
+                inner.cell(r, 0).text, inner.cell(r, 1).text = a, b
+            t.cell(2, 0).text, t.cell(2, 1).text = '평가 시기', '매년 12월'
+        chunks = chunk_file(_docx(tmp_path, build))
+        text = '\n'.join(c.text for c in chunks)
+        assert '| 평가 항목 | 항목 | 배점 |' in text and '| 평가 항목 | 업적 | 60 |' in text and '| 평가 항목 | 역량 | 40 |' in text
+        assert '| 평가 시기 | 매년 12월 |' in text
+
+    def test_긴_docx_표는_행_묶음으로_나뉘고_묶음마다_헤더가_있다(self, tmp_path):
+        def build(doc):
+            t = doc.add_table(rows=46, cols=3)
+            for c, h in enumerate(('번호', '품목', '단가')):
+                t.cell(0, c).text = h
+            for i in range(1, 46):
+                t.cell(i, 0).text, t.cell(i, 1).text, t.cell(i, 2).text = str(i), f'품목-{i:03d}', f'{i * 1234 % 97000 + 1000:,}원'
+        chunks = chunk_file(_docx(tmp_path, build))
+        assert len(chunks) >= 2
+        assert all(c.text.startswith('| 번호 | 품목 | 단가 |') for c in chunks)                      # 묶음마다 헤더
+        rows = [l for c in chunks for l in c.text.split('\n')[2:]]
+        assert rows == [f'| {i} | 품목-{i:03d} | {i * 1234 % 97000 + 1000:,}원 |' for i in range(1, 46)]   # 행 절단 없음
+
+    def test_셀_안_줄바꿈은_공백으로_접혀_행이_깨지지_않는다(self, tmp_path):
+        def build(doc):
+            t = doc.add_table(rows=2, cols=3)
+            t.cell(0, 0).text, t.cell(0, 1).text, t.cell(0, 2).text = '단계', '처리 내용', '담당'
+            t.cell(1, 0).text = '접수'
+            t.cell(1, 1).text = '1. 요청서 수신'
+            t.cell(1, 1).add_paragraph('2. 담당자 배정')
+            t.cell(1, 2).text = '총무팀'
+        chunks = chunk_file(_docx(tmp_path, build))
+        assert '| 접수 | 1. 요청서 수신 2. 담당자 배정 | 총무팀 |' in chunks[0].text
+
+    def test_중첩_칸에_적힌_글자는_첫_행으로_남고_3단_중첩은_한_번만(self, tmp_path):
+        # 리뷰 지적 둘: 칸의 라벨 글자가 사라지던 것, 깊은 중첩이 두 번 들어가던 것
+        def build(doc):
+            t = doc.add_table(rows=1, cols=2)
+            t.cell(0, 0).text = '구성'
+            t.cell(0, 1).text = '세부 라벨'
+            mid = t.cell(0, 1).add_table(rows=2, cols=2)
+            mid.cell(0, 0).text, mid.cell(0, 1).text = '항목', '값'
+            mid.cell(1, 0).text = '깊은'
+            deep = mid.cell(1, 1).add_table(rows=1, cols=2)
+            deep.cell(0, 0).text, deep.cell(0, 1).text = '최하', '99'
+        text = '\n'.join(c.text for c in chunk_file(_docx(tmp_path, build)))
+        assert '| 구성 | 세부 라벨 |' in text                      # 칸의 라벨
+        assert text.count('99') == 1 and '| 구성 | 깊은 | 최하 | 99 |' in text   # 3단 값은 한 번, 바깥 글자 반복

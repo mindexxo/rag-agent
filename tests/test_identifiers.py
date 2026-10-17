@@ -142,21 +142,26 @@ def test_pack_sections_는_내려보낸_헤딩을_기록한다():
     assert chunking._pack_sections([secs[0]])[0].headings == []     # 안 묶이면 비어 있다
 
 
+def _texts(sec, splitter):
+    """_split_section은 (글, 오프셋)을 돌려준다(#252) — 이 규칙은 글만 본다."""
+    return [text for text, _ in chunking._split_section(sec, splitter)]
+
+
 def test_split_section_은_기록된_헤딩을_조각_끝에_두지_않는다():
     class _Splitter:
         def split_text(self, body):          # 경계가 헤딩 바로 뒤에 떨어지는 분할기 흉내
             return ["본문9 첫 줄\n제 10 조(발령)", "본문10 긴 줄"]
     sec = chunking._Section(["문서", "제 2 장"], None, "본문9 첫 줄\n제 10 조(발령)\n본문10 긴 줄",
                             headings=["제 10 조(발령)"])
-    assert chunking._split_section(sec, _Splitter()) == ["본문9 첫 줄", "제 10 조(발령)\n본문10 긴 줄"]
+    assert _texts(sec, _Splitter()) == ["본문9 첫 줄", "제 10 조(발령)\n본문10 긴 줄"]
     # 다음 조각이(겹침으로) 이미 그 줄을 갖고 있으면 앞에서만 뗀다
     class _Overlap(_Splitter):
         def split_text(self, body):
             return ["본문9 첫 줄\n제 10 조(발령)", "제 10 조(발령)\n본문10 긴 줄"]
-    assert chunking._split_section(sec, _Overlap()) == ["본문9 첫 줄", "제 10 조(발령)\n본문10 긴 줄"]
+    assert _texts(sec, _Overlap()) == ["본문9 첫 줄", "제 10 조(발령)\n본문10 긴 줄"]
     # 기록된 헤딩이 없으면 분할기 출력 그대로
     plain = chunking._Section(["문서"], None, "a\nb")
-    assert chunking._split_section(plain, _Splitter()) == ["본문9 첫 줄\n제 10 조(발령)", "본문10 긴 줄"]
+    assert _texts(plain, _Splitter()) == ["본문9 첫 줄\n제 10 조(발령)", "본문10 긴 줄"]
 
 
 def test_chunk_file_은_조각마다_실린_헤딩을_meta에_싣는다(tmp_path):
@@ -168,3 +173,14 @@ def test_chunk_file_은_조각마다_실린_헤딩을_meta에_싣는다(tmp_path
     packed = [c for c in chunks if c.meta and c.meta.get("headings")]
     assert packed and packed[0].meta["headings"] == ["제 9 조(고용관계)", "제 10 조(인사발령)"]
     assert chunk_identifiers(packed[0].heading_path, packed[0].meta["headings"]) == ["2장", "9조", "10조"]
+
+
+def test_꼬리_헤딩을_옮기면_다음_조각_오프셋도_헤딩_위치로_당긴다():
+    # #252: _split_section이 오프셋을 직접 나른다 — 헤딩이 다음 조각 머리가 되면 쪽 매핑도 헤딩 줄을 따라야 한다
+    class _Splitter:
+        def split_text(self, body):
+            return ["본문9 첫 줄\n제 10 조(발령)", "본문10 긴 줄"]
+    body = "본문9 첫 줄\n제 10 조(발령)\n본문10 긴 줄"
+    sec = chunking._Section(["문서"], 1, body, [1, 2, 2], headings=["제 10 조(발령)"])
+    pieces = chunking._split_section(sec, _Splitter())
+    assert pieces[1] == ("제 10 조(발령)\n본문10 긴 줄", body.index("제 10 조"))

@@ -68,7 +68,7 @@ from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN, estimate_tokens_conservativ
 
 # 표 markdown 조립은 chunking.py가 단일 정의점 — PDF 표(#137 결함 5)도 같은 형태를
 # 내놓아야 프롬프트·리랭커·어휘 채널이 형식에 따라 다른 모양을 보지 않는다.
-from rag.chunking import (ChunkData, docling_block_text, docling_convert, docling_grid_rows,
+from rag.chunking import (ChunkData, TABLE_BATCH_TOKENS, batch_table_rows as _batch_rows, docling_block_text, docling_convert, docling_grid_rows,
                           to_markdown_table as _to_markdown)
 
 logger = logging.getLogger(__name__)
@@ -80,7 +80,7 @@ XLSX_MAX_TABLE_TOKENS = 6000   # 시트 표 하나당 생성 모델 토큰 상�
 CHARS_PER_TOKEN = CONSERVATIVE_CHARS_PER_TOKEN
 # 행 묶음 하나의 크기. 측정 근거가 없다 — 보유 엑셀은 시트가 대부분 1천 토큰 미만이라 묶음 크기의 효과를 잴 표가 없었다
 # (#222 결정 11). 기획 메모의 "20~30행씩 + 헤더 반복"과 같은 규모(5열 표 ≈ 30행)로 잡았다. 큰 표가 실제로 들어오면 잴 것.
-XLSX_BATCH_TOKENS = 1000
+XLSX_BATCH_TOKENS = TABLE_BATCH_TOKENS   # 정의점은 rag/chunking(#252 — PDF·DOCX 표도 같은 묶음 크기)
 
 
 class XlsxUploadRejected(Exception):
@@ -192,27 +192,6 @@ def validate_xlsx_upload(content: bytes, description: str | None) -> None:
             _check_sheet_size(title, header, body)
 
 
-def _batch_rows(header: list[str], body: list[list[str]], budget_chars: int) -> list[str]:
-    """표(헤더 + 행 목록) → 행 묶음 markdown들. 묶음마다 헤더 전체와 구분선을 반복한다.
-
-    **글로 바꾸기 전에 행 목록에서 나눈다**(#222 리뷰) — 렌더한 글을 줄 단위로 다시 해석하던 첫 구현은 칸 안 줄바꿈에서
-    헤더가 깨지고(헤더 칸 "구분⏎(원)") 행이 중간에서 잘렸다(데이터 칸 "첫줄⏎| 둘째줄", 8묶음 중 6개). 행 목록 단계에서
-    나누면 경계가 항상 행과 행 사이다. 묶음 크기는 렌더한 길이로 잰다(행 하나를 따로 렌더해 더한다 — 행마다 독립적으로
-    렌더되므로 정확하다). 행 하나가 예산보다 길면 그 행 혼자 한 묶음이다(자르지 않는다). 데이터 행이 없으면 헤더만.
-    """
-    head_len = len(_to_markdown(header, []))
-    batches, cur, size = [], [], head_len
-    for row in body:
-        row_len = len(_to_markdown(header, [row])) - head_len      # '\n' + 그 행 한 줄(들)
-        if cur and size + row_len > budget_chars:
-            batches.append(_to_markdown(header, cur))
-            cur, size = [], head_len
-        cur.append(row)
-        size += row_len
-    batches.append(_to_markdown(header, cur))
-    return batches
-
-
 # 시트 블록: ('table', 행 목록[첫 행 = 헤더]) 또는 ('text', 본문) — 표는 행 목록 그대로 들고 다닌다(행 묶음은 행 단계에서 나눈다).
 Block = tuple[str, object]
 
@@ -280,7 +259,7 @@ def _check_workbook_size(file_path) -> list[str]:
 def _docling_sheet_blocks(doc) -> dict[str, list[Block]]:
     """docling 엑셀 문서 → {시트명: [블록, …]}. 시트는 docling의 'sheet' 그룹이다(그룹 이름 = 시트명, 실측).
 
-    블록은 읽기 순서다. 표는 docling_grid_rows의 행 목록(가로 병합 반복 제거·세로 병합은 행마다), 그 밖은
+    블록은 읽기 순서다. 표는 docling_grid_rows의 행 목록(병합 칸은 가로·세로 모두 칸마다 반복 — #252 결정 9), 그 밖은
     docling_block_text의 글자(그림=캡션 또는 자리표시, 표 밖 단일 셀 문구). 한 시트에 표가 여럿이면(시트 1개 = 표 1개는
     안내만 하고 강제하지 않는다, #222 결정 2) 표마다 자기 헤더로 묶음을 만든다. 숨긴 시트의 그룹은 INVISIBLE 층이라 기본
     순회가 비워 내고, 블록이 없는 시트는 넣지 않는다.

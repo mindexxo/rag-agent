@@ -28,11 +28,12 @@ PATHS = ('img', 'pdf', 'docx', 'xlsx')
 
 
 def _score_pair(spec, path, doc, chunks):
-    tables = expected_tables(spec, path)
+    tables_l1 = expected_tables(spec, path, 'l1')
+    tables = expected_tables(spec, path, 'l2')
     actuals = docling_tables(doc)
     pool = all_texts(actuals)
     l1 = [score_cells(expected_cells(t), a, flat(t), pool)
-          for t, a in zip(tables, match_tables([expected_cells(t) for t in tables], actuals))]
+          for t, a in zip(tables_l1, match_tables([expected_cells(t) for t in tables_l1], actuals))]
     exp_rows = [expected_rows(spec, t, path) for t in tables]
     found = chunk_tables(chunks)
     pool2 = all_row_texts(found)
@@ -56,7 +57,7 @@ def _convert_and_chunk(path_file: Path, path: str):
 
 def _failed(spec, kind: str, err: Exception, path: str = 'docx') -> list[Score]:
     out = []
-    for tbl in expected_tables(spec, path):
+    for tbl in expected_tables(spec, path, 'l1'):
         s = score_cells(expected_cells(tbl), None, flat(tbl))
         s.mismatches.append(dict(r=-1, c=-1, kind=kind, expected='', actual=f'{type(err).__name__}: {str(err)[:120]}'))
         out.append(s)
@@ -156,14 +157,15 @@ def main():
                     raise chunks
                 l1, l2, act_rows = _score_pair(spec, path, doc, chunks)
             except Exception as e:                                   # noqa: BLE001 — 청킹·채점 실패를 결과에 남긴다
-                tables = expected_tables(spec, path)
+                tables = expected_tables(spec, path, 'l1')
                 actuals = docling_tables(doc)
                 l1 = [score_cells(expected_cells(tb), a, flat(tb), all_texts(actuals))
                       for tb, a in zip(tables, match_tables([expected_cells(tb) for tb in tables], actuals))]
                 l2 = _failed(spec, '청킹실패', e, path)
                 act_rows = [None] * len(l2)
-            for k, (s1, s2) in enumerate(zip(l1, l2)):
+            for k, s1 in enumerate(l1):                       # L1·L2 표 수가 다를 수 있다(DOCX 중첩: L1 2개, L2 1개)
                 emit(_row(spec, path, k, s1, 'l1', sec))
+            for k, s2 in enumerate(l2):
                 emit(_row(spec, path, k, s2, 'l2', sec, act_rows[k]))
             print(f"{spec_id:16} {path:5} {sec:5.1f}s L1 {sum(s.cells_ok for s in l1)}/{sum(s.cells_total for s in l1)} "
                   f"L2 {sum(s.cells_ok for s in l2)}/{sum(s.cells_total for s in l2)} "

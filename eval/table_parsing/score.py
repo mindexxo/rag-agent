@@ -173,8 +173,9 @@ def all_texts(actuals: list[ActualTable]) -> set[str]:
 # ── L2: 청크 markdown ──────────────────────────────────────────────────────────
 
 def chunk_tables(chunks) -> list[list[list[str]]]:
-    """청크 목록 → markdown 표(행 목록)들. 구분선('---')이 나오면 그 윗줄이 헤더인 새 표. 긴 표가 청크 경계에서
-    갈려 뒷 청크가 '|' 행으로 바로 시작하면 앞 표에 잇는다. xlsx는 시트 완성본(meta.sheet_text)이 전체라 그것만 읽는다."""
+    """청크 목록 → markdown 표(행 목록)들. 구분선('---')이 나오면 그 윗줄이 헤더인 새 표 — 단 **직전 표와 헤더가 같으면 같은
+    표의 다음 행 묶음**으로 잇는다(#252: 긴 표는 행 묶음마다 헤더를 반복한다). 긴 표가 청크 경계에서 갈려 뒷 청크가 '|' 행으로
+    바로 시작하면 앞 표에 잇는다. xlsx는 시트 완성본(meta.sheet_text)이 전체라 그것만 읽는다."""
     if chunks and chunks[0].meta and chunks[0].meta.get('sheet_text'):
         texts = []
         seen = set()
@@ -196,8 +197,11 @@ def chunk_tables(chunks) -> list[list[list[str]]]:
             if prev is not None:               # 구분선: 직전 행이 헤더 → 새 표. 그 행이 cur에 붙어 있었으면 뗀다
                 if cur and cur[-1] is prev:
                     cur.pop()
-                cur = [prev]
-                tables.append(cur)
+                if cur is not None and cur and cur[0] == prev:
+                    pass                       # 같은 헤더가 반복되면 같은 표의 다음 행 묶음(#252 — batch_table_rows가 헤더를 반복) → 잇는다
+                else:
+                    cur = [prev]
+                    tables.append(cur)
             prev = None
             continue
         if cur is not None:

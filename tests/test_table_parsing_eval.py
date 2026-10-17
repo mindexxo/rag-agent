@@ -30,31 +30,28 @@ class TestSpecs:
 
 
 class TestExpectedRows:
-    def test_pdf_2단_헤더는_점으로_잇고_세로병합은_반복된다(self):
-        rows = expected_rows(S02, S02['rows'], 'pdf')
-        assert rows[0] == ['직급.직급', '국내 출장.일비', '국내 출장.숙박비', '해외 출장.일비', '해외 출장.숙박비']
-        assert rows[1] == ['임원', '50,000', '150,000', '$80', '$250'] and len(rows) == 4
+    def test_전_경로_공통_grid_규칙_병합은_가로_세로_모두_칸마다(self):
+        # #252 결정 2: PDF도 docling_grid_rows — 2단 헤더를 점으로 잇지 않고 첫 행이 헤더, 둘째 헤더 행은 데이터 행
+        for path in ('pdf', 'docx', 'xlsx', 'img'):
+            rows = expected_rows(S02, S02['rows'], path)
+            assert rows[0] == ['직급', '국내 출장', '국내 출장', '해외 출장', '해외 출장']   # 결정 9
+            assert rows[1] == ['직급', '일비', '숙박비', '일비', '숙박비'] and len(rows) == 5
 
-    def test_docx_가로병합은_첫_열만_세로병합은_행마다(self):
-        rows = expected_rows(S02, S02['rows'], 'docx')
-        assert rows[0] == ['직급', '국내 출장', '', '해외 출장', '']
-        assert rows[1] == ['직급', '일비', '숙박비', '일비', '숙박비']
-
-    def test_pdf_가로_머리글_표는_열_이름이_숫자가_된다(self):
-        # 현재 동작(export_to_dataframe이 column_header 없는 표에 0,1,2…를 붙인다)을 그대로 기대한다 — 보정하지 않는다
+    def test_가로_머리글_표도_첫_행이_헤더다(self):
+        # #252 전 PDF는 열 이름이 0,1,2…였다(결함 A). 이제 어느 경로든 첫 행
         rows = expected_rows(S16, S16['rows'], 'pdf')
-        assert rows[0] == ['0', '1'] and rows[1] == ['문서명', '휴양시설 이용 안내']
+        assert rows[0] == ['문서명', '휴양시설 이용 안내'] and rows[1] == ['개정일', '2026-03-01']
 
-    def test_중첩_표는_docx에선_바깥_안쪽_따로_pdf에선_평탄화(self):
+    def test_중첩_표는_L2에선_어느_경로든_평탄화_L1_docx만_바깥_안쪽_따로(self):
         s = BY_ID['V15_nested']
-        tables = expected_tables(s, 'docx')
-        assert len(tables) == 2 and tables[1][0] == ['항목', '배점']
-        assert [c.text for c in expected_cells(tables[0]) if c.row == 1 and c.col == 1] == ['']
-        flat, = expected_tables(s, 'pdf')                      # docling PDF 실측 모양(#253): 5×3, 바깥 글자가 안쪽 행마다
-        assert flat_dims(flat) == (5, 3)
+        for path in ('pdf', 'docx', 'img'):
+            flat, = expected_tables(s, path)                      # L2: docling PDF 실측 모양(#253) 5×3 — DOCX도 #252 D로 같은 모양
+            assert flat_dims(flat) == (5, 3)
+        assert len(expected_tables(s, 'docx', 'l1')) == 2 and len(expected_tables(s, 'pdf', 'l1')) == 1
         cells = {(c.row, c.col): (c.text, c.row_span, c.col_span) for c in expected_cells(flat)}
         assert cells[(0, 1)] == ('세부', 1, 2) and cells[(1, 0)] == ('평가 항목', 3, 1)
         assert cells[(1, 1)] == ('항목', 1, 1) and cells[(3, 2)] == ('40', 1, 1) and cells[(4, 1)] == ('매년 12월', 1, 2)
+        assert expected_rows(s, flat, 'docx')[1] == ['평가 항목', '항목', '배점']   # grid 규칙: 세로 병합 반복
 
 
 class TestChunkTables:
@@ -68,6 +65,11 @@ class TestChunkTables:
     def test_청크_경계에서_갈린_긴_표는_앞_표에_잇는다(self):
         t = chunk_tables(self._chunks('| a | b |\n| --- | --- |\n| 1 | 2 |', '| 3 | 4 |\n| 5 | 6 |'))
         assert t == [[['a', 'b'], ['1', '2'], ['3', '4'], ['5', '6']]]
+
+    def test_같은_헤더가_반복되는_행_묶음은_한_표다(self):
+        # #252: 긴 표는 행 묶음마다 헤더를 반복한다 — 묶음 둘을 표 하나로 읽어야 셀 대조가 된다. 다른 헤더면 새 표
+        t = chunk_tables(self._chunks('| a | b |\n| --- | --- |\n| 1 | 2 |', '| a | b |\n| --- | --- |\n| 3 | 4 |', '| c |\n| --- |\n| 9 |'))
+        assert t == [[['a', 'b'], ['1', '2'], ['3', '4']], [['c'], ['9']]]
 
     def test_xlsx는_시트_완성본만_읽는다(self):
         c = [SimpleNamespace(text='[표]\n| a |\n| --- |\n| 1 |', meta={'sheet_text': '[표]\n| a |\n| --- |\n| 1 |\n| 2 |'}),
@@ -156,28 +158,12 @@ class TestDoclingDrift:
         n, m = flat(spec['rows'])
         return TableItem(self_ref='#/tables/0', data=TableData(num_rows=n, num_cols=m, table_cells=cells))
 
-    def test_pdf_규칙은_rag_chunking의_dataframe_렌더와_같다(self):
-        import warnings
-        from rag.chunking import _docling_table_markdown, to_markdown_table
-        for spec in (S02, BY_ID['S03_rowspan'], BY_ID['S05_empty']):
-            exp = expected_rows(spec, spec['rows'], 'pdf')
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                md = _docling_table_markdown(self._item(spec, spec.get('header_rows', 1)), None)
-            assert md == to_markdown_table(exp[0], exp[1:]), spec['id']
-
-    def test_pdf_헤더_표시가_없으면_열_이름이_숫자다(self):
-        import warnings
-        from rag.chunking import _docling_table_markdown
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            md = _docling_table_markdown(self._item(S16, header_rows=0), None)
-        assert md.startswith('| 0 | 1 |') and expected_rows(S16, S16['rows'], 'pdf')[0] == ['0', '1']
-
-    def test_docx_규칙은_rag_chunking의_grid_렌더와_같다(self):
+    def test_기대_규칙은_rag_chunking의_grid_렌더와_같다(self):
+        # #252부터 PDF·DOCX·XLSX 모두 docling_grid_rows 하나다 — 하네스 기대 규칙이 그 함수와 어긋나면 여기서 잡힌다
         from rag.chunking import docling_grid_rows
-        for spec in (S02, BY_ID['S03_rowspan'], BY_ID['S04_form']):
-            assert docling_grid_rows(self._item(spec)) == expected_rows(spec, spec['rows'], 'docx'), spec['id']
+        for spec in (S02, BY_ID['S03_rowspan'], BY_ID['S04_form'], S16):
+            for path in ('pdf', 'docx'):
+                assert docling_grid_rows(self._item(spec)) == expected_rows(spec, spec['rows'], path), (spec['id'], path)
 
     def test_docling_tables는_병합_원점만_남기고_헤더행을_센다(self):
         from docling_core.types.doc import DoclingDocument

@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from rag import metrics, os_search, otel
 from rag.embeddings import embed_texts
+from rag.identifiers import cut_identifier_span, normalize_identifiers
 from rag.retrieval_types import RetrievalCandidates, RetrievalResult, RetrievedChunk
 from rag.tokens import estimate_tokens_conservative
 
@@ -155,6 +156,28 @@ def _keep_single_table(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
 EVIDENCE_BUDGET_TOKENS = 22000
 
 
+def apply_identifier_boost(chunks: list[RetrievedChunk], scores: list[float], query_idx: list[int],
+                           tokens: list[str], boost: float):
+    """리랭커 점수에 식별자 일치 가산(+boost)을 더해 재정렬한다 — 식별자 채널(#238)의 순위 정의점.
+
+    질문 토큰이 조각의 `identifiers`(제목 경로 + 묶음 헤딩, rag/identifiers)에 **정확히** 있으면 가산하고
+    `matched_ident`에 그 토큰을 적는다 — prepare_evidence가 이 표시로 묶음에서 그 구간만 오린다.
+    가산은 리랭크 뒤에만 더한다: 리랭커가 제목의 장 번호를 조 번호로 보는 약점(실측 "제3장"→"제9장" 0.90→0.09)을
+    리랭커 입력으로는 못 고치고, 점수 뒤 보정으로만 넘을 수 있었다. 0.3의 근거는 config.ident_boost 주석.
+    같은 번호가 여러 문서에 있으면 전부 같은 가산을 받는다 — 어느 문서인지는 생성이 파일명으로 가린다(결정 16).
+    """
+    tok = set(tokens)
+    rows = []
+    for ch, score, qi in zip(chunks, scores, query_idx):
+        hit = next((t for t in ch.identifiers if t in tok), None)
+        if hit is not None:
+            ch = replace(ch, matched_ident=hit)
+            score = score + boost
+        rows.append((ch, score, qi))
+    rows.sort(key=lambda r: -r[1])
+    return [r[0] for r in rows], [r[1] for r in rows], [r[2] for r in rows]
+
+
 def prepare_evidence(chunks: list[RetrievedChunk], top_k: int) -> list[RetrievedChunk]:
     """검색 후보(순위순) → 모델에 넣을 근거. **운영(retrieve)과 생성 평가(eval.generation)가 함께 쓰는 정의점**(#222).
 
@@ -163,6 +186,7 @@ def prepare_evidence(chunks: list[RetrievedChunk], top_k: int) -> list[Retrieved
     ③ 남은 표 묶음을 시트 완성본(sheet_text)으로 바꾼다 — 모델은 언제나 시트 전체를 본다("부분 표" 위험 차단)
     ④ 근거 추정 토큰(보수적 ÷1.1 — 예산이 실제 토크나이저 기준이라 덜 세면 안 된다)이 EVIDENCE_BUDGET_TOKENS를 넘으면
        순위가 낮은 산문 청크부터 뺀다(경고 로그·지표)
+    ⑤ 식별자 채널로 걸린 묶음 조각(matched_ident)은 그 식별자 구간만 남긴다(#238) — 구간 정의는 rag/identifiers
     chunk_id·document_id 등은 걸린 묶음의 것을 그대로 둔다 — 인용 번호·의미 캐시는 문서 단위라 바뀌지 않는다.
     검색 지표는 이 함수 앞(retrieve_candidates)을 채점한다 — ①을 앞에서 하면 정답 묶음이 형제에 밀려 미스로 채점된다.
     """
@@ -175,6 +199,10 @@ def prepare_evidence(chunks: list[RetrievedChunk], top_k: int) -> list[Retrieved
             seen.add(key)
         folded.append(ch)
     out = [replace(ch, text=ch.sheet_text) if ch.is_table and ch.sheet_text else ch for ch in folded[:top_k]]
+    # ⑤ 식별자로 걸린 묶음 조각은 그 구간만(#238 결정 13·18) — 색인·순위·라벨은 그대로, 넘기는 글만 바뀐다.
+    #    묶음을 통째로 주면 모델이 옆 조를 읽는다(실측: 실질문 23건 18→21 정답, 회귀 0). 조 하나짜리 조각은 불변.
+    out = [replace(ch, text=cut_identifier_span(ch.text, ch.headings, ch.matched_ident))
+           if ch.matched_ident and ch.headings else ch for ch in out]
     while sum(estimate_tokens_conservative(c.text) for c in out) > EVIDENCE_BUDGET_TOKENS:
         drop = next((i for i in range(len(out) - 1, -1, -1) if not out[i].is_table), None)
         if drop is None:
@@ -240,6 +268,15 @@ async def retrieve_candidates(
         seen = set(top_ids)
         top_ids = top_ids + [cid for cid in lex_ids if cid not in seen][:settings.hybrid_lexical_inject]
 
+    # 식별자 채널 주입(#238) — 질문에 사전 식별자('11조')가 있을 때만. 정확 일치 조각 중 dense·BM25가 놓친 것을
+    # 뒤에 붙인다(순서 계약은 BM25 주입과 같다). 주입만으로는 부족하고(585문항 실패 15→6, 실질문 1위 7/23)
+    # 아래 리랭크 뒤 가산이 있어야 "제11장" 조각을 넘는다 — 리랭커가 장·조를 못 가리기 때문(실측 0.90→0.09).
+    ident_tokens = normalize_identifiers(query) if settings.ident_channel_enabled else []
+    if ident_tokens:
+        ident_ids = await os_search.search_identifiers(tenant_id, ident_tokens, settings.ident_inject)
+        seen = set(top_ids)
+        top_ids = top_ids + [cid for cid in ident_ids if cid not in seen][:settings.ident_inject]
+
     chunk_map = await _chunk_map(top_ids)
     # 순위 순서 그대로 재배열. `if cid in chunk_map`은 필수다 — 검색과 본문 조회가 다른
     # 호출이라 그 사이에 문서가 지워지면 mget에서 빠지고, 가드가 없으면 KeyError로 검색
@@ -260,7 +297,12 @@ async def retrieve_candidates(
             if best is None:
                 # 점수 실패 → 넘겨받은 순서 유지 (멀티=RRF 융합, 단일=dense)
                 otel.set_attrs(sp, {'kms.fallback': 'rrf' if multi else 'dense'})
-            elif sp.is_recording():   # 채택 점수·기여 쿼리 — DB에 안 남는 진단 정보 (#5·#7·#54)
+            elif ident_tokens:
+                # 식별자 가산(#238 결정 12·17) — 리랭커 **뒤**, 리랭커 입력은 불변. 점수 실패 시엔 가산도 없다(주입만 남는다).
+                result, best, best_qi = apply_identifier_boost(result, best, best_qi, ident_tokens, settings.ident_boost)
+                otel.set_attrs(sp, {'kms.ident_tokens': list(ident_tokens),
+                                    'kms.ident_matched': [str(c.chunk_id) for c in result if c.matched_ident]})
+            if best is not None and sp.is_recording():   # 채택 점수·기여 쿼리 — DB에 안 남는 진단 정보 (#5·#7·#54)
                 for i, (ch, score, qi) in enumerate(zip(result[:top_n], best[:top_n], best_qi[:top_n])):
                     sp.set_attribute(f'reranker.output_documents.{i}.document.id', str(ch.chunk_id))
                     sp.set_attribute(f'reranker.output_documents.{i}.document.score', float(score))

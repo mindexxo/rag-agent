@@ -71,6 +71,17 @@ def test_어휘_필드는_본문에서_만든다():
     assert doc[C.LEX_BIGRAM_FIELD] == ' '.join(lexical.bigrams(expected))
 
 
+def test_식별자_필드는_제목_경로와_기록_헤딩에서_만든다():
+    """식별자 채널(#238) — identifiers는 rag.identifiers.chunk_identifiers와 같고, headings는 meta['headings'] 원문."""
+    ch = _Chunk(dense=[0.5] * 1024)
+    ch.heading_path, ch.meta = ['가나 규칙', '제 2 장 인 사'], {'headings': ['제 9 조(고용)', '제 11 조(인계)']}
+    ch.text = "제 9 조(고용)\n본문\n제 10 조(발령)\n본문\n제 11 조(인계)\n본문"     # 제10조는 기록에 없는 본문 헤딩 꼴(15-3)
+    doc = I.build_doc(ch, '규칙.pdf', 1)
+    assert doc['headings'] == ['제 9 조(고용)', '제 10 조(발령)', '제 11 조(인계)']
+    assert doc['identifiers'] == ['2장', '9조', '10조', '11조']
+    assert I.build_doc(_Chunk(dense=[0.5] * 1024), '정책.pdf', 2)['identifiers'] == []   # 번호 헤딩 없음
+
+
 def test_chunk_os_id는_결정적이고_충돌이_없다():
     """PG 시퀀스 없이 (부모 id, chunk_index)로 만드는 id — 재색인이 같은 _id로 덮여 멱등하려면
     결정적이어야 하고, 문서·청크 조합마다 달라야 한다."""

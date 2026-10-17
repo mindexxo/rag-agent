@@ -30,6 +30,7 @@ from sqlalchemy import select
 from config import settings
 from rag.embeddings import embed_texts
 from rag.faq_indexing import build_faq_chunk_text
+from rag.identifiers import chunk_identifiers, effective_headings
 from rag.index_text import build_index_text
 from rag.lexical import bigrams
 from rag.models import Document, Faq, Folder
@@ -92,6 +93,8 @@ def build_doc(chunk, filename: str | None, version: int | None, *,
     벡터는 chunk.dense에 실려 와야 한다 — 인제스션이 방금 계산한 임베딩이다.
     """
     lex = lex_text(chunk.text, filename, chunk.heading_path)
+    # 헤딩 줄 = 청킹이 기록한 묶음 헤딩 ∪ 본문의 헤딩 꼴 줄(#238 결정 15·15-3) — 식별자 사전과 오리기 경계의 재료
+    headings = effective_headings(list((chunk.meta or {}).get("headings") or []), chunk.text)
     vec = getattr(chunk, 'dense', None)
     if vec is None:
         # 조용히 벡터 없는 문서를 색인하면 kNN에서 안 잡히는 유령이 된다 — 크게 실패한다.
@@ -106,6 +109,8 @@ def build_doc(chunk, filename: str | None, version: int | None, *,
         "is_table": bool((chunk.meta or {}).get("is_table")),
         "filename": filename or "FAQ",
         "heading_path": list(chunk.heading_path or []),
+        "headings": headings,
+        "identifiers": chunk_identifiers(list(chunk.heading_path or []), headings),   # #238 식별자 채널
         "searchable": bool(searchable),
         "folder_id": folder_id,
         "folder_name": folder_name,

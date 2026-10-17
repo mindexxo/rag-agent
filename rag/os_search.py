@@ -147,8 +147,29 @@ async def fetch_chunk_map(ids: list[int]) -> dict:
             sheet_text=src.get("sheet_text"),
             folder_name=src.get("folder_name"),
             folder_description=src.get("folder_description"),
+            identifiers=list(src.get("identifiers") or []),
+            headings=list(src.get("headings") or []),
         )
     return out
+
+
+async def search_identifiers(tenant_id: str, tokens: list[str], limit: int) -> list[int]:
+    """식별자 채널(#238) — `identifiers` 필드에 토큰이 **정확히** 있는 조각 id. 점수 순(일치 토큰 수).
+
+    의미·키워드 검색이 조 번호를 놓친 조각(묶음 속·개정 날짜 숫자에 묻힌 조)을 리랭커 풀에 넣는 용도다.
+    순서는 리랭커가 정하므로 여기 순서는 무관하다. 토큰은 rag.identifiers.normalize_identifiers(질문)로 만든다.
+    """
+    if not tokens:
+        return []
+    resp = await client().search(index=settings.opensearch_index, body={
+        "size": limit,
+        "_source": ["chunk_id"],
+        "query": {"bool": {
+            "filter": [tenant_filter(tenant_id)],
+            "must": [{"terms": {"identifiers": tokens}}],
+        }},
+    })
+    return _ids(resp)
 
 
 async def search_lexical(tenant_id: str, query: str, limit: int) -> list[int]:

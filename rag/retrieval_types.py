@@ -26,6 +26,10 @@ class RetrievedChunk:
     sheet_text: str | None = None   # xlsx 시트 완성본(#222) — 근거 준비가 이 묶음을 시트 전체로 바꿀 때 쓴다
     folder_name: str | None = None          # 소속 폴더 (미분류·FAQ는 None)
     folder_description: str | None = None   # 폴더 '참조 설명' — 리랭커 입력에만 사용 (임베딩엔 미포함)
+    # 식별자 채널(#238, 정의점 rag/identifiers). 색인 필드 그대로 — 가산 판정·구간 오리기가 읽는다.
+    identifiers: list[str] = field(default_factory=list)   # '11조'·'43조의2'·'3장'
+    headings: list[str] = field(default_factory=list)      # 묶음이 본문으로 내려보낸 헤딩 원문
+    matched_ident: str | None = None   # 질문의 식별자와 일치해 가산을 받았으면 그 토큰 — prepare_evidence가 이걸 보고 오린다
 
 # 아래 두 자료형이 함께 실어 나르는 필드 — 검색 "결과"가 아니라 입력의 파생물이다 (#50).
 #

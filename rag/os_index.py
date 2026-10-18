@@ -116,7 +116,8 @@ def build_doc(chunk, filename: str | None, version: int | None, *,
         "folder_name": folder_name,
         "folder_description": folder_description,
         "text": chunk.text,
-        "sheet_text": (chunk.meta or {}).get("sheet_text"),   # 엑셀 시트 완성본(#222) — 그 밖은 None
+        "table_key": (chunk.meta or {}).get("table_key"),     # 표 묶음(#222 엑셀·#257 PDF·DOCX)만 — 그 밖은 None
+        "table_text": (chunk.meta or {}).get("table_text"),
         NORI_FIELD: lex,
         LEX_BIGRAM_FIELD: " ".join(bigrams(lex)),
         "dense": [float(x) for x in vec],      # float32 → float: json 직렬화 때문

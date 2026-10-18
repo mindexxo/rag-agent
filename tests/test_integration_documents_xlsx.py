@@ -396,7 +396,7 @@ async def test_G2_병합_제목은_한_번만_색인된다(client, tenant_id, fa
 
 @pytest.mark.asyncio
 async def test_G4_큰_시트는_행_묶음으로_색인되고_근거는_시트_완성본이다(client, tenant_id, fake_queue, blob_tmp):
-    """#222 — 색인(행 묶음·묶음마다 완성본) → 조회(fetch_chunk_map이 sheet_text를 돌려줌) → 근거 준비(완성본으로 확장)"""
+    """#222 — 색인(행 묶음·묶음마다 완성본) → 조회(fetch_chunk_map이 table_text를 돌려줌) → 근거 준비(완성본으로 확장)"""
     from rag import os_search
     from rag.retriever import prepare_evidence
 
@@ -415,7 +415,7 @@ async def test_G4_큰_시트는_행_묶음으로_색인되고_근거는_시트_�
     assert len(ids) > 1                                              # 행 묶음 여럿
     cmap = await os_search.fetch_chunk_map(ids)
     chunks = [cmap[i] for i in ids]
-    assert all(c.is_table and c.sheet_text == chunks[0].sheet_text for c in chunks)
+    assert all(c.is_table and c.table_text == chunks[0].table_text for c in chunks)
     ev = prepare_evidence(chunks[::-1], top_k=5)                     # 아무 묶음이 걸려도
     assert len(ev) == 1                                              # 한 칸으로 접히고
     assert ev[0].text.count('| 상품코드 |') == 1 and 'A-0000' in ev[0].text and 'A-0199' in ev[0].text   # 시트 전체

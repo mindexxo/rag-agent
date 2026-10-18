@@ -622,7 +622,7 @@ class TestTableBlocks:
         block = _TableBlock(rows)
         sec = _Section(['문서'], 1, '머리말\n' + block.render(), None, blocks=['머리말', block])
         chunks = _split_section(sec, SentenceSplitter(chunk_size=512, chunk_overlap=50))
-        tables = [t.removeprefix('머리말\n') for t, _ in chunks if '| 번호 |' in t]   # 큰 표는 묶음마다 표 위 한 줄(결정 7)
+        tables = [t.removeprefix('머리말\n') for t, *_ in chunks if '| 번호 |' in t]   # 큰 표는 묶음마다 표 위 한 줄(결정 7)
         assert len(tables) >= 2                                            # 1,000토큰 예산이라 둘 이상
         body_lines = [l for t in tables for l in t.split('\n')[2:]]        # 헤더·구분선 뺀 데이터 행
         assert body_lines == to_markdown_table(rows[0], rows[1:]).split('\n')[2:]   # 행이 하나도 안 잘리고 순서 그대로
@@ -635,7 +635,7 @@ class TestTableBlocks:
         body = '앞 글.\n' + block.render() + '\n뒤 글.'
         sec = _Section(['문서'], 1, body, [1, 1, 1, 2, 2], blocks=['앞 글.', block, '뒤 글.'])
         chunks = _split_section(sec, SentenceSplitter(chunk_size=512, chunk_overlap=50))
-        assert chunks == [(body, 0)]                                       # 결정 7(c): 예산 안이면 블록 사이를 다시 잇는다
+        assert chunks == [(body, 0, None)]                                       # 결정 7(c): 예산 안이면 블록 사이를 다시 잇는다
 
     def test_쪽을_넘긴_표는_헤더가_같으면_하나로_이어진다(self):
         # #252 결정 5(E): docling은 쪽마다 표를 따로 낸다(45행 → 36 + 10). 바로 이어지고 첫 행이 같으면 뒤 표 헤더를 떼고 잇는다
@@ -683,7 +683,7 @@ class TestTableBlocks:
         rows = self._long(60)
         secs = _sections_from_docling_elements([_h('제목'), ('table', '', 1, rows[:31]), ('table', '', 2, [rows[0]] + rows[31:])])
         chunks = _split_section(secs[0], SentenceSplitter(chunk_size=512, chunk_overlap=50))
-        pages = [_page_at(secs[0], off) for _, off in chunks]
+        pages = [_page_at(secs[0], off) for _, off, _ in chunks]
         assert pages[0] == 1 and pages[-1] == 2 and pages == sorted(pages)      # 앞 묶음은 1쪽, 뒷 묶음은 2쪽
         assert secs[0].line_pages[:2] == [1, 1] and secs[0].line_pages[-1] == 2
 
@@ -694,7 +694,7 @@ class TestTableBlocks:
         body = block.render() + '\n1. 항목 하나\n2. 항목 둘'
         sec = _Section(['문서'], None, body, None, blocks=[block, '1. 항목 하나\n2. 항목 둘'])
         chunks = _split_section(sec, SentenceSplitter(chunk_size=512, chunk_overlap=50))
-        assert chunks == [(body, len(to_markdown_table(['a', 'b'], [])) + 1)]   # 표 + 뒤 글이 한 청크, 오프셋은 첫 데이터 행
+        assert chunks == [(body, len(to_markdown_table(['a', 'b'], [])) + 1, None)]   # 표 + 뒤 글이 한 청크, 오프셋은 첫 데이터 행
 
     def test_그림이_사이에_있으면_잇지_않는다(self):
         from rag.chunking import _TableBlock, _sections_from_docling_elements
@@ -710,7 +710,7 @@ class TestTableBlocks:
         intro = '2. 품목별 사이즈 스펙 (단위: cm)'
         sec = _Section(['문서'], None, intro + '\n' + block.render(), None, blocks=[intro, block])
         chunks = _split_section(sec, SentenceSplitter(chunk_size=512, chunk_overlap=50))
-        assert [t for t, _ in chunks] == [intro + '\n' + block.render()] and chunks[0][1] == 0
+        assert [t for t, *_ in chunks] == [intro + '\n' + block.render()] and chunks[0][1] == 0
 
     def test_큰_표는_묶음마다_표_위_한_줄을_머리에_붙인다(self):
         from llama_index.core.node_parser import SentenceSplitter
@@ -718,7 +718,7 @@ class TestTableBlocks:
         block = _TableBlock(self._long(60))
         intro = '본문 문단입니다.\n별첨 1) 품목 단가표'
         sec = _Section(['문서'], None, intro + '\n' + block.render(), None, blocks=[intro, block])
-        chunks = [t for t, _ in _split_section(sec, SentenceSplitter(chunk_size=512, chunk_overlap=50))]
+        chunks = [t for t, *_ in _split_section(sec, SentenceSplitter(chunk_size=512, chunk_overlap=50))]
         tables = [t for t in chunks if '| 번호 |' in t]
         assert len(tables) >= 2 and all(t.startswith('별첨 1) 품목 단가표\n| 번호 |') for t in tables)
         assert chunks[0] == intro                                          # 앞 글은 따로(큰 표와는 합치지 않음)
@@ -729,7 +729,7 @@ class TestTableBlocks:
         text = '\n'.join(f'{i}번째 문장은 충분히 길어서 분할기가 여러 조각으로 나누게 만든다 반복 반복 반복.' for i in range(60))
         sec = _Section(['문서'], None, text, None, blocks=[text])
         splitter = SentenceSplitter(chunk_size=512, chunk_overlap=50)
-        assert [t for t, _ in _split_section(sec, splitter)] == [c for c in splitter.split_text(text)]
+        assert [t for t, *_ in _split_section(sec, splitter)] == [c for c in splitter.split_text(text)]
 
     def test_큰_표_위_한_줄뿐인_글은_혼자_남지_않는다(self):
         from llama_index.core.node_parser import SentenceSplitter
@@ -737,5 +737,71 @@ class TestTableBlocks:
         block = _TableBlock(self._long(60))
         intro = '[ 별표 1] 품목 단가표'
         sec = _Section(['문서'], None, intro + '\n' + block.render(), None, blocks=[intro, block])
-        chunks = [t for t, _ in _split_section(sec, SentenceSplitter(chunk_size=512, chunk_overlap=50))]
+        chunks = [t for t, *_ in _split_section(sec, SentenceSplitter(chunk_size=512, chunk_overlap=50))]
         assert all(t.startswith(intro + '\n| 번호 |') for t in chunks) and len(chunks) >= 2
+
+
+# ── 큰 표 묶음의 표 정보·크기 상한 (#257) ────────────────────────────────────────────
+
+class TestTableExpansionMeta:
+    def _long(self, n=60, head=('번호', '품목', '단가')):
+        return [list(head)] + [[str(i), f'품목-{i:03d}', f'{i * 1234 % 97000 + 1000:,}원'] for i in range(1, n + 1)]
+
+    def _sec(self, blocks, page=None):
+        from rag.chunking import _Section, _TableBlock
+        body = '\n'.join(b.render() if isinstance(b, _TableBlock) else b for b in blocks)
+        return _Section(['문서'], page, body, None, blocks=blocks)
+
+    def test_큰_표의_묶음은_표_전체를_함께_돌려주고_작은_표는_안_붙인다(self):
+        from llama_index.core.node_parser import SentenceSplitter
+        from rag.chunking import _TableBlock, _split_section
+        big, small = _TableBlock(self._long()), _TableBlock([['a', 'b'], ['1', '2']])
+        pieces = _split_section(self._sec(['별첨 1) 단가표', big, '설명 문단.', small]),
+                                SentenceSplitter(chunk_size=512, chunk_overlap=50))
+        refs = [p.table for p in pieces if p.table is not None]
+        assert len(refs) >= 2 and len({r.block for r in refs}) == 1            # 묶음 전부 같은 표
+        assert refs[0].text == '별첨 1) 단가표\n' + big.render()              # 표 위 한 줄 + 헤더 한 번 + 전체 행
+        assert pieces[-1].table is None and small.render() in pieces[-1].text   # 작은 표는 한 조각 안에 이미 다 있다
+
+    def test_chunk_file은_문서_안_표_순번을_table_key로_싣는다(self, monkeypatch, tmp_path):
+        import rag.chunking as C
+        from rag.chunking import _TableBlock
+        t1, t2 = _TableBlock(self._long()), _TableBlock(self._long(head=('번호', '품목', '원가')))
+        sections = [self._sec(['1장 본문', t1]), self._sec(['2장 본문', t2, '끝.', _TableBlock([['a'], ['1']])])]
+        sections[1].heading_path = ['문서', '2장']                             # 묶이지 않게 다른 경로
+        monkeypatch.setitem(C._SECTION_PARSERS, '.pdf', lambda _p: sections)
+        monkeypatch.setattr(C, '_pack_sections', lambda secs: secs)
+        chunks = C.chunk_file(tmp_path / 'x.pdf')
+        tables = [c for c in chunks if c.meta and c.meta.get('is_table')]
+        assert {c.meta['table_key'] for c in tables} == {'t1', 't2'}
+        assert {c.meta['table_text'] for c in tables if c.meta['table_key'] == 't2'} == {'2장 본문\n' + t2.render()}
+        assert all(not (c.meta or {}).get('is_table') for c in chunks if '| a |' in c.text)   # 작은 표 청크는 표 묶음이 아니다
+
+    def test_상한을_넘는_표는_TableTooLargeError_결정적_실패(self):
+        from llama_index.core.node_parser import SentenceSplitter
+        from rag.chunking import TABLE_MAX_TOKENS, TableTooLargeError, _TableBlock, _split_section
+        from rag.outbox import is_transient
+        from rag.tokens import estimate_tokens_conservative
+        rows = self._long(400)
+        assert estimate_tokens_conservative(_TableBlock(rows).render()) > TABLE_MAX_TOKENS   # 시험 표가 실제로 상한 위
+        with pytest.raises(TableTooLargeError) as e:
+            _split_section(self._sec([_TableBlock(rows, [7] * len(rows))], page=7),
+                           SentenceSplitter(chunk_size=512, chunk_overlap=50))
+        msg = str(e.value)
+        assert msg.startswith("7쪽 표('번호 | 품목 | 단가')가 허용 크기의 ") and '(현재 400행 × 3열)' in msg
+        assert '토큰' not in msg                                              # 엑셀 거절 문구 규칙(#222)
+        assert not is_transient(e.value)                                      # 재시도 없이 바로 failed(#257 결정 3)
+
+    def test_상한_바로_아래_표는_통과한다(self):
+        from llama_index.core.node_parser import SentenceSplitter
+        from rag.chunking import TABLE_MAX_TOKENS, _TableBlock, _split_section
+        from rag.tokens import estimate_tokens_conservative
+        n = 60
+        while estimate_tokens_conservative(_TableBlock(self._long(n + 1)).render()) <= TABLE_MAX_TOKENS:
+            n += 1
+        pieces = _split_section(self._sec([_TableBlock(self._long(n))]), SentenceSplitter(chunk_size=512, chunk_overlap=50))
+        assert pieces and all(p.table is not None for p in pieces)
+
+    def test_DOCX처럼_쪽이_없으면_표_이름만_말한다(self):
+        from rag.chunking import TableTooLargeError
+        assert str(TableTooLargeError(None, ['구분', '', '금액'], 150, 500, 3)).startswith("표('구분 | 금액')가 허용 크기의 150%")

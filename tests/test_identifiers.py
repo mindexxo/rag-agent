@@ -182,8 +182,8 @@ def test_pack_sections_는_내려보낸_헤딩을_기록한다():
 
 
 def _texts(sec, splitter):
-    """_split_section은 (글, 오프셋)을 돌려준다(#252) — 이 규칙은 글만 본다."""
-    return [text for text, _ in chunking._split_section(sec, splitter)]
+    """_split_section은 (글, 오프셋, 표 정보)를 돌려준다(#252·#257) — 이 규칙은 글만 본다."""
+    return [p.text for p in chunking._split_section(sec, splitter)]
 
 
 def test_split_section_은_기록된_헤딩을_조각_끝에_두지_않는다():
@@ -222,7 +222,7 @@ def test_꼬리_헤딩을_옮기면_다음_조각_오프셋도_헤딩_위치로_
     body = "본문9 첫 줄\n제 10 조(발령)\n본문10 긴 줄"
     sec = chunking._Section(["문서"], 1, body, [1, 2, 2], headings=["제 10 조(발령)"])
     pieces = chunking._split_section(sec, _Splitter())
-    assert pieces[1] == ("제 10 조(발령)\n본문10 긴 줄", body.index("제 10 조"))
+    assert pieces[1][:2] == ("제 10 조(발령)\n본문10 긴 줄", body.index("제 10 조"))
 
 
 # ----- 제목 머리 정규식: 소유 수량자(#233 리뷰 지적 1) -------------------------------------------------

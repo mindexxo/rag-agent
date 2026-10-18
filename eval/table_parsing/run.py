@@ -35,7 +35,7 @@ def _score_pair(spec, path, doc, chunks):
     l1 = [score_cells(expected_cells(t), a, flat(t), pool)
           for t, a in zip(tables_l1, match_tables([expected_cells(t) for t in tables_l1], actuals))]
     exp_rows = [expected_rows(spec, t, path) for t in tables]
-    found = chunk_tables(chunks)
+    found = chunk_tables(chunks, xlsx=path == 'xlsx')
     pool2 = all_row_texts(found)
     actual_l2 = match_rows(exp_rows, found)
     l2 = [score_rows(e, a, pool2) for e, a in zip(exp_rows, actual_l2)]

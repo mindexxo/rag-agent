@@ -22,8 +22,9 @@ class RetrievedChunk:
     filename: str                   # FAQ 청크는 'FAQ' — 컨텍스트 라벨·인용 표기가 이 값을 따름
     version: int
     faq_id: int | None = None       # FAQ 출처면 항목 id (캐시 키·인용 분기용)
-    is_table: bool = False          # F1a: xlsx 표 청크 여부 ('한 시트만' 필터용)
-    sheet_text: str | None = None   # xlsx 시트 완성본(#222) — 근거 준비가 이 묶음을 시트 전체로 바꿀 때 쓴다
+    is_table: bool = False          # 표 묶음 여부 — 엑셀 시트 묶음(#222)·PDF·DOCX 큰 표 묶음(#257). 근거 준비가 접고 확장한다
+    table_key: str | None = None    # 문서 안에서 어느 표인가 — 엑셀은 시트명, PDF·DOCX는 표 순번('t1'…). 접기 키 = (document_id, table_key)
+    table_text: str | None = None   # 표 전체 — 근거 준비가 이 묶음을 표 전체로 바꿀 때 쓴다
     folder_name: str | None = None          # 소속 폴더 (미분류·FAQ는 None)
     folder_description: str | None = None   # 폴더 '참조 설명' — 리랭커 입력에만 사용 (임베딩엔 미포함)
     # 식별자 채널(#238, 정의점 rag/identifiers). 색인 필드 그대로 — 가산 판정·구간 오리기가 읽는다.

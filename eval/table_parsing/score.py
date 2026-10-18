@@ -172,15 +172,17 @@ def all_texts(actuals: list[ActualTable]) -> set[str]:
 
 # ── L2: 청크 markdown ──────────────────────────────────────────────────────────
 
-def chunk_tables(chunks) -> list[list[list[str]]]:
+def chunk_tables(chunks, *, xlsx: bool = False) -> list[list[list[str]]]:
     """청크 목록 → markdown 표(행 목록)들. 구분선('---')이 나오면 그 윗줄이 헤더인 새 표 — 단 **직전 표와 헤더가 같으면 같은
     표의 다음 행 묶음**으로 잇는다(#252: 긴 표는 행 묶음마다 헤더를 반복한다). 긴 표가 청크 경계에서 갈려 뒷 청크가 '|' 행으로
-    바로 시작하면 앞 표에 잇는다. xlsx는 시트 완성본(meta.sheet_text)이 전체라 그것만 읽는다."""
-    if chunks and chunks[0].meta and chunks[0].meta.get('sheet_text'):
+    바로 시작하면 앞 표에 잇는다. xlsx는 시트 완성본(meta.table_text)이 전체라 그것만 읽는다. PDF·DOCX 큰 표 묶음도 #257부터
+    table_text를 갖지만 읽지 않는다 — 이 하네스가 재는 것이 묶음 분할(헤더 반복·행 경계)이라 묶음에서 다시 잇는다. 형식은 청크로
+    가르지 않고 호출부가 알려 준다: 표만 있는 PDF는 모든 청크가 표 묶음이라 청크 모양으로는 xlsx와 구별되지 않는다(#257 리뷰)."""
+    if xlsx and chunks and chunks[0].meta and chunks[0].meta.get('table_text'):
         texts = []
         seen = set()
         for c in chunks:                                   # 시트마다 완성본 하나
-            st = c.meta.get('sheet_text')
+            st = c.meta.get('table_text')
             if st and st not in seen:
                 seen.add(st)
                 texts.append(st)

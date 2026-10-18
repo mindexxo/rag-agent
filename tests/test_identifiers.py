@@ -2,11 +2,14 @@
 
 문서 텍스트는 전부 가짜다(저장소 공개). 실문서에서 관측된 **표기 꼴**만 옮겼다.
 """
+import re
+
 import pytest
 from llama_index.core.node_parser import SentenceSplitter
 
 from rag import chunking
-from rag.identifiers import chunk_identifiers, cut_identifier_span, effective_headings, is_heading_line, normalize_identifiers
+from rag.identifiers import (chunk_identifiers, cut_identifier_span, effective_headings, is_heading_line, normalize_identifiers,
+                             split_heading_line)
 from rag.retrieval_types import RetrievedChunk
 from rag.retriever import apply_identifier_boost, prepare_evidence
 
@@ -58,9 +61,45 @@ def test_chunk_identifiers_는_제목_경로와_기록_헤딩만_본다():
     ("제10조 2항에 의거 보관한다.", False),        # 인용 — 괄호 제목 없음
     ("제18조의2제1항을 위반하여", False),
     ("① 사원이 다음에 해당할 경우(정년)", False),  # 줄 머리가 식별자가 아님
+    # #233 — 인용 꼴(전부 본문이어야 한다)
+    ("제98조에 의한 처리를 따른다.", False),
+    ("제98조 및 제99조에 따라 처리한다.", False),
+    ("제98조 제2항의 규정에 의한다.", False),
+    ("제98조(이하 \"보상조항\"이라 한다)에 따라 지급한다.", False),   # 괄호 안 '이하' = 정의 꼴
+    ("제98조(보상)에 따라 지급한다.", False),                          # 닫는 괄호에 조사가 바로 붙음
+    ("제98조", False),
+    # #233 — 제목 꼴
+    ("제5조（근무시간）", True),                                       # 전각 괄호
+    ("제2조(시향 예약(단체))", True),                                  # 괄호 중첩
+    ("제 7 조 ( 징계종류", True),                                      # 닫는 괄호가 다음 줄로 떨어진 실문서 꼴
+    ("제 107 조1(고객 불만 처리)", True),                              # '의' 생략 가지 조(#250)
+    ("3조(정의)", True),                                               # '제' 생략도 같은 규칙
+    # #233 결정 2의 알려진 한계 — 바뀌면 의도한 변경인지 확인할 것
+    ("제98조(보상) 규정에 따라 지급한다.", True),                      # 괄호 뒤 공백 = 워드 꼴 제목+본문과 구분 불가
+    ("제8조 목적", False),                                             # 괄호 없는 제목 = 인용과 구분 불가
+    ("제12조(휴가)(연차)", False),                                     # 닫는 괄호 뒤에 바로 붙은 괄호·기호 = 조사 붙은 인용과 같은 규칙
+    ("제5조(목적)[개정 2020]", False),
 ])
 def test_is_heading_line(line, ok):
     assert is_heading_line(line) is ok
+
+
+@pytest.mark.parametrize("line,expected", [
+    ("제8조(역할과 책임) ① 운영관리자는 관리한다.", ("제8조(역할과 책임)", "① 운영관리자는 관리한다.")),
+    ("제2조(시향 예약(단체)) 예약은 전화로 받는다.", ("제2조(시향 예약(단체))", "예약은 전화로 받는다.")),
+    ("제 7 조 ( 징계종류", ("제 7 조 ( 징계종류", "")),
+    ("제98조에 따라", None),
+])
+def test_split_heading_line_은_괄호_짝까지가_머리다(line, expected):
+    assert split_heading_line(line) == expected
+
+
+def test_이하_정의_꼴_인용은_이름표가_되지_않는다():
+    # #233: 본문 보충(effective_headings)이 이 줄을 헤딩으로 잡아 문서에 없는 '98조' 이름표가 생겼다
+    text = "제4조(반납)\n제98조(이하 \"보상조항\"이라 한다)에 따라 지급한다."
+    heads = effective_headings([], text)
+    assert heads == ["제4조(반납)"]
+    assert chunk_identifiers([], heads) == ["4조"]
 
 
 def test_effective_headings_는_기록과_본문_꼴을_합친다():
@@ -184,3 +223,45 @@ def test_꼬리_헤딩을_옮기면_다음_조각_오프셋도_헤딩_위치로_
     sec = chunking._Section(["문서"], 1, body, [1, 2, 2], headings=["제 10 조(발령)"])
     pieces = chunking._split_section(sec, _Splitter())
     assert pieces[1] == ("제 10 조(발령)\n본문10 긴 줄", body.index("제 10 조"))
+
+
+# ----- 제목 머리 정규식: 소유 수량자(#233 리뷰 지적 1) -------------------------------------------------
+
+# 바꾸기 전 패턴(되돌려 나누기 허용) — 판정이 같아야 하는 기준. 속도만 다르다.
+_BACKTRACKING_HEAD = re.compile(r'^제?\s*\d+\s*조(?:\s*의?\s*\d+)*\s*[(（]')
+
+
+@pytest.mark.parametrize("line", [
+    "제1조(목적)", "제43조의3의2(가)", "제 43 조 3의 2(가)", "제 107 조1(가)", "제10조의 2 (가)", "제3조의2（가）",
+    "제1조 2 3(가)", "제1조의(가)", "제1조의 (가)", "제 1 조\t(가)", "3조(정의)", "제 7 조 ( 징계",
+    "제10조 2항에 의거", "제18조의2제1항을", "제98조에", "제1조의2의", "제1조 의 2(가)", "조(가)", "제조(가)", "",
+])
+def test_제목_머리_판정은_되돌려_나누기_패턴과_같다(line):
+    from rag.identifiers import _HEADING_HEAD
+    assert bool(_HEADING_HEAD.match(line)) == bool(_BACKTRACKING_HEAD.match(line))
+
+
+def test_제목_머리_판정은_무작위_줄에서도_같다():
+    # 제·조·의·숫자·공백·괄호만으로 만든 짧은 줄 — 가지 번호 반복이 갈릴 수 있는 조합을 넓게 훑는다(시드 고정)
+    import random
+    from rag.identifiers import _HEADING_HEAD
+    rnd = random.Random(233)
+    alphabet = '제조의 \t0123456789(（)가'
+    lines = [''.join(rnd.choice(alphabet) for _ in range(rnd.randint(1, 16))) for _ in range(50_000)]
+    lines += ['제' + ''.join(rnd.choice(' 의0123456789') for _ in range(rnd.randint(0, 12))) + '조'
+              + ''.join(rnd.choice(' 의0123456789') for _ in range(rnd.randint(0, 12))) + rnd.choice(['(', '（', '', '가'])
+              for _ in range(50_000)]
+    assert [line for line in lines if bool(_HEADING_HEAD.match(line)) != bool(_BACKTRACKING_HEAD.match(line))] == []
+
+
+@pytest.mark.parametrize("line", [
+    "제1조 " + "1" * 40 + "x",            # 조 뒤 숫자열 — 되돌려 나누기 패턴은 22자에 0.56초, 2자마다 ×4
+    "제1조" + " 1" * 40 + "x",
+    "제1조" + "의1" * 40 + "x",
+    "제1조" + " 의 1" * 40 + "x",
+])
+def test_조_번호_뒤_긴_숫자열도_즉시_판정한다(line):
+    import time
+    t = time.perf_counter()
+    split_heading_line(line), effective_headings([], line), normalize_identifiers(line)
+    assert time.perf_counter() - t < 0.1

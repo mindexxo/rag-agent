@@ -6,12 +6,17 @@
 `chunk_file` 하나만 부른다 — 형식 분기는 그 안에 한 곳뿐이다(#42). 여기서 확장자를
 다시 보면, 이 스크립트가 잡아야 할 바로 그 유형(분기가 두 곳이라 갈리는 버그)을 놓친다.
 
-sample_docs·docs 아래 294파일 2347청크를 13초에 훑는다. TEI·DB 불필요.
+TEI·DB 불필요. 건수·소요 시간은 적지 않는다 — 문서가 늘 때마다 낡는다(docling 변환이 들어간 뒤로는 분 단위다).
 
 사용:
     python -m eval._golden_chunks > before.json               # 변경 전
     python -m eval._golden_chunks > after.json                # 변경 후
-    python -m eval._golden_chunks --diff before.json after.json   # 형식별 변화량 요약
+    python -m eval._golden_chunks --diff before.json after.json   # 형식별 변화량 요약 + 파일별 사라진 줄
+    python -m eval._golden_chunks --files ../consult-agent/docs/inticube > before.json   # 대상 지정(파일·디렉터리)
+
+`--files`는 워크트리에 없는 실문서(gitignore된 docs/)를 **읽기만** 하려고 둔다 — 복사하지 않는다(#233 설계 5).
+"사라진 줄"은 전 청크의 줄 중 후 청크의 제목 경로·본문 어디에도 없는 것이다. 판정은 eval/chunk_invariants
+(원문 소실 0의 정의점)와 같은 함수다 — 테스트와 이 도구가 "소실"을 다르게 세면 PR 수치를 테스트로 재현할 수 없다.
 """
 import argparse
 import json
@@ -20,6 +25,8 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from eval.chunk_invariants import missing_lines   # noqa: E402 — "소실"의 정의점(위 docstring)
 
 
 ROOTS = ('sample_docs', 'docs')
@@ -32,15 +39,16 @@ def chunks_for(path: Path):
     return chunk_file(path)
 
 
-def capture() -> dict:
+def capture(targets: list[str] | None = None) -> dict:
     base = Path(__file__).resolve().parent.parent
     out = {}
-    files = sorted(
-        p for root in ROOTS for p in (base / root).rglob('*')
+    roots = [Path(t).resolve() for t in targets] if targets else [base / root for root in ROOTS]
+    files = sorted({
+        p for root in roots for p in ([root] if root.is_file() else root.rglob('*'))
         if p.suffix.lower() in EXTS and p.is_file()
-    )
+    })
     for p in files:
-        rel = str(p.relative_to(base))
+        rel = str(p.relative_to(base)) if p.is_relative_to(base) else str(p)
         try:
             cs = chunks_for(p)
             out[rel] = [
@@ -82,22 +90,30 @@ def show_diff(before_path: str, after_path: str) -> None:
         print('\n✅ 전 형식 바이트 동일')
         return
 
-    print(f'\n변한 파일 {len(changed_files)}개. 예시 1건 상세:')
-    rel = changed_files[0]
-    bv, av = b.get(rel, []), a.get(rel, [])
-    print(f'  {rel}: 청크 {len(bv)} → {len(av)}')
-    bt = {c['t'] for c in bv if isinstance(c, dict)}
-    at = {c['t'] for c in av if isinstance(c, dict)}
-    for t in sorted(bt - at)[:3]:
-        print(f'    − {t[:70]!r}')
-    for t in sorted(at - bt)[:3]:
-        print(f'    + {t[:70]!r}')
+    print(f'\n변한 파일 {len(changed_files)}개 — 청크 수 변화 / 사라진 줄(전 청크에 있고 후 청크에 없음):')
+    total_lost = 0
+    for rel in changed_files:
+        bv, av = b.get(rel), a.get(rel)
+        if bv is None or av is None:
+            print(f'  {rel}: {"새 파일" if bv is None else "없어진 파일"}')
+            continue
+        if not (isinstance(bv, list) and isinstance(av, list)):
+            print(f'  {rel}: 파싱 오류 {bv if isinstance(bv, dict) else "정상"} → {av if isinstance(av, dict) else "정상"}')
+            continue
+        lines = [x for c in bv for x in (*c['h'], *c['t'].split('\n'))]
+        lost = missing_lines(lines, [h for c in av for h in c['h']], [c['t'] for c in av])
+        total_lost += len(lost)
+        print(f'  {rel}: 청크 {len(bv)} → {len(av)}, 사라진 줄 {len(lost)}')
+        for t in lost[:5]:
+            print(f'    − {t[:80]!r}')
+    print(f'\n사라진 줄 합계 {total_lost}')
 
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--diff', nargs=2, metavar=('BEFORE', 'AFTER'))
+ap.add_argument('--files', nargs='+', metavar='PATH', help='캡처 대상 파일·디렉터리(기본: sample_docs·docs)')
 args = ap.parse_args()
 if args.diff:
     show_diff(*args.diff)
 else:
-    print(json.dumps(capture(), ensure_ascii=False, indent=1, sort_keys=True))
+    print(json.dumps(capture(args.files), ensure_ascii=False, indent=1, sort_keys=True))

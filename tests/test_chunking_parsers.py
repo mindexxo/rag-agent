@@ -263,6 +263,22 @@ class TestDocxFallbackHeadings:
         assert [(h, lv, txt) for h, lv, txt, _ in _docx_fallback_headings(items)] == [
             (True, 1, '제목'), (True, 2, '제3조의2（특례）'), (True, 2, '제1장(총칙)')]
 
+    def test_인용_문단은_승격하지_않는다(self):
+        # #233: 예전 _ARTICLE_RE(조 번호 뒤 공백·괄호·줄끝)가 이 꼴을 전부 제목으로 올려, 뒤에 다른 제목이 오면 문장이 사라졌다
+        from rag.chunking import _docx_fallback_headings
+        cites = ['제98조 및 제99조에 따라 처리한다.', '제98조 제2항의 규정에 의한다.',
+                 '제98조(이하 "보상조항"이라 한다)에 따라 지급한다.', '제98조(보상)에 따라 지급한다.']
+        items = [(False, 0, '제목', False), *((False, 0, c, False) for c in cites), (False, 0, '제2조(정의)', False)]
+        assert [(h, txt) for h, _, txt, _ in _docx_fallback_headings(items)[1:]] == [
+            *((False, c) for c in cites), (True, '제2조(정의)')]
+
+    def test_괄호_중첩_제목은_짝까지가_머리(self):
+        # #233: 예전 머리 정규식은 안쪽 닫는 괄호에서 잘라 '제2조(시향 예약(단체)'와 본문 ')'로 갈랐다
+        from rag.chunking import _docx_fallback_headings
+        items = [(False, 0, '제목', False), (False, 0, '제2조(시향 예약(단체)) 예약은 전화로 받는다.', False)]
+        assert _docx_fallback_headings(items)[1:] == [
+            (True, 2, '제2조(시향 예약(단체))', False), (False, 0, '예약은 전화로 받는다.', False)]
+
     def test_첫_문단이_길면_제목이_없고_한_단계_위로(self):
         from rag.chunking import _docx_fallback_headings
         items = [(False, 0, '가' * 61, False), (False, 0, '제1조(목적)', False), (False, 0, '본문', False)]

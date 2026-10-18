@@ -3,7 +3,7 @@
 ## 행 묶음 청크 + 시트 확장 (#222)
 
 시트 표를 **행 묶음 청크**(약 `XLSX_BATCH_TOKENS`)로 나눠 색인하고, 묶음마다 표 설명과 헤더를 반복한다 — 검색은 작은
-묶음으로 정밀하게 걸리게. 묶음마다 **시트 전체 완성본**(`meta['sheet_text']`, 설명·헤더 한 번)을 함께 실어 두고, 검색
+묶음으로 정밀하게 걸리게. 묶음마다 **시트 전체 완성본**(`meta['table_text']`, 설명·헤더 한 번)을 함께 실어 두고, 검색
 후 근거 준비 단계(`rag.retriever.prepare_evidence`)가 걸린 묶음을 그 완성본으로 바꿔 넣는다 — 모델은 언제나 시트
 전체를 본다("부분 표" 위험 차단, 기획 F1a 원안). 완성본을 묶음마다 중복 저장하는 대가는 저장 공간뿐이다(묶음 수 ×
 시트 크기, 상한 시트 ≈ 6.6천 자 × 약 6). 재색인은 문서 단위로 지우고 다시 쓰므로 완성본과 묶음이 어긋나지 않는다.
@@ -11,7 +11,7 @@
 
 ## 크기 상한 — 행 수가 아니라 내용의 양 (#222 결정 7·8·9)
 
-시트 표 하나당 **약 `XLSX_MAX_TABLE_TOKENS`(6,000) 생성 모델 토큰**. 근거(2026-10-12 실측, 14B 운영 설정, 현실형 합성
+시트 표 하나당 **약 `TABLE_MAX_TOKENS`(6,000, rag/chunking — #257부터 PDF·DOCX 표와 공용) 생성 모델 토큰**. 근거(2026-10-12 실측, 14B 운영 설정, 현실형 합성
 단가표, 단순 조회 크기마다 60문항): 5,070토큰 행 조회 58/60 · **7,638토큰 60/60** · 10,140토큰 55/60(표 중간 행 15/19)
 — 7.6K~10K 사이에서 꺾인다. 처음엔 7,500으로 잡았으나 골드 큰 표 문항(`*_lt*`, 100·200·300행, 2026-10-13)에서
 300행 표(실제 5,954토큰)의 4/5 지점 단가를 3,600→36000으로 옮겨 적는 오답이 나와(17/18) 여유를 두어 6,000으로 낮췄다. 행당 토큰은 표 모양에 따라 33배 차이(2열 ≈ 10, 15열 긴 셀 ≈ 165)라 옛 150행 상한은 좁은
@@ -20,7 +20,8 @@
 표든 추정 ≥ 실제가 되는 보수적 추정이고(근거는 상수 주석), 업로드가 GPU 서버(vLLM /tokenize)에 묶이지 않는다.
 화면 도움말의 "셀 글자 수 합계 약 6천 자"는 이 계수로 환산한 값을 내림한 것이다(6,000 × 1.1 = 6,600).
 사용자에게는 토큰이라는 말을 쓰지 않는다 — 거절 문구는 허용 크기 대비 %와 현재 행×열(`XlsxTableTooLarge`).
-**시트·파일로 나눠 올리라고 안내하지 않는다**: 검색 후 표는 시트 하나만 남아(`rag.retriever`) 나눈 표를 온전히 쓰지 못한다.
+**시트·파일로 나눠 올리라고 안내하지 않는다**: 나눈 시트는 각자 따로 검색되므로 한 질문에 조각이 함께 걸린다는 보장이 없다
+(#257 전에는 검색 후 표가 시트 하나만 남아 아예 함께 쓸 수 없었다).
 상한보다 큰 표는 지금 구조로 받을 방법이 없다(필요해지면 행→문장·text-to-SQL — 기획 문서 승격 단계).
 
 ## 읽기는 docling, 행 세기는 openpyxl (#220)
@@ -39,12 +40,13 @@
 - `docling_enabled=False`(비상 스위치, `chunk_xlsx_plain`)와 채팅 첨부(`xlsx_plain_text`)는 openpyxl로 읽는다 — 첨부는
   사용자 대기 경로라 색인과 docling 변환 프로세스를 나누지 않는다(#220 결정 6). 첨부는 묶지 않고 시트 전체 텍스트 그대로다.
 
-청크 meta에 {"is_table": True, "sheet": 시트명, "sheet_text": 시트 완성본}을 싣는다 — retriever가 표 청크를 식별하고
-'한 시트만 참조' 필터(시트 = 문서 id + heading_path[0])와 시트 확장을 한다.
+청크 meta에 {"is_table": True, "table_key": 시트명, "table_text": 시트 완성본}을 싣는다 — PDF·DOCX 큰 표와 같은 계약(#257).
+근거 준비(rag.retriever.prepare_evidence)가 같은 시트 묶음을 접고 완성본으로 바꾼다. #257 전의 '한 시트만 참조' 필터는 없앴다
+— 여러 시트가 걸리면 시트마다 완성본이 들어가고, 넘치면 근거 예산이 순위 낮은 표를 통째로 뺀다.
 
 ## 상한 위반이 어디서 걸리는가 — 두 층, 정의점은 하나 (#194)
 
-같은 규칙(`XLSX_MAX_TABLE_TOKENS`·`validate_xlsx_upload`)이 두 시점에 강제된다:
+같은 규칙(`TABLE_MAX_TOKENS`·`validate_xlsx_upload`)이 두 시점에 강제된다:
 
 - **웹 업로드**: 라우터가 blob을 쓰기 전에 `validate_xlsx_upload`로 걸러 **400**을 준다.
   사용자가 즉시 사유를 받고, 디스크에 찌꺼기도 DB 행도 남지 않는다.
@@ -68,12 +70,11 @@ from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN, estimate_tokens_conservativ
 
 # 표 markdown 조립은 chunking.py가 단일 정의점 — PDF 표(#137 결함 5)도 같은 형태를
 # 내놓아야 프롬프트·리랭커·어휘 채널이 형식에 따라 다른 모양을 보지 않는다.
-from rag.chunking import (ChunkData, TABLE_BATCH_TOKENS, batch_table_rows as _batch_rows, docling_block_text, docling_convert, docling_grid_rows,
+from rag.chunking import (ChunkData, TABLE_BATCH_TOKENS, TABLE_MAX_TOKENS, batch_table_rows as _batch_rows, docling_block_text, docling_convert, docling_grid_rows,
                           to_markdown_table as _to_markdown)
 
 logger = logging.getLogger(__name__)
 
-XLSX_MAX_TABLE_TOKENS = 6000   # 시트 표 하나당 생성 모델 토큰 상한 — 근거는 모듈 docstring(#222 결정 7)
 # 글자 → 토큰 추정 계수(#222 결정 8) — 정의점은 rag.tokens(근거 예산과 같은 추정기). 처음 고른 1.35는 행 본문만 잰 값
 # (1.36~1.46)이라 보수적이지 않았다(tests/test_xlsx_token_estimate가 잡음). 대가: 보통 표(글자/토큰 ≈ 1.35)의 실제 상한이
 # 약 4,900토큰으로 준다(6,000 × 1.1 ÷ 1.35).
@@ -142,8 +143,8 @@ def estimate_tokens(text: str) -> int:
 def _check_sheet_size(title: str, header: list, body: list) -> None:
     """크기 상한 비교식 — 색인(`chunk_xlsx`)과 사전검증(`validate_xlsx_upload`)이 공유한다(openpyxl 렌더 기준)."""
     tokens = estimate_tokens(_to_markdown(header, body))
-    if tokens > XLSX_MAX_TABLE_TOKENS:
-        raise XlsxTableTooLarge(title, math.ceil(tokens * 100 / XLSX_MAX_TABLE_TOKENS), len(body), len(header))
+    if tokens > TABLE_MAX_TOKENS:
+        raise XlsxTableTooLarge(title, math.ceil(tokens * 100 / TABLE_MAX_TOKENS), len(body), len(header))
 
 
 def _iter_sheets(wb):
@@ -205,20 +206,20 @@ def _sheet_chunks(title: str, blocks: list[Block], description: str, start: int)
     """시트 하나 → 행 묶음 청크들. 두 읽기 경로(docling·openpyxl)가 같은 모양을 내게 하는 단일 조립점(#222).
 
     blocks: 읽기 순서. 표는 행 묶음으로 나누고, 표가 아닌 블록(그림 캡션·표 밖 문구)은 그대로 한 묶음.
-    묶음마다 표 설명을 앞에 붙인다(검색 보강 — 작은 묶음일수록 필요). meta['sheet_text']는 시트 완성본(설명 한 번 +
+    묶음마다 표 설명을 앞에 붙인다(검색 보강 — 작은 묶음일수록 필요). meta['table_text']는 시트 완성본(설명 한 번 +
     블록들을 빈 줄로 이은 것) — 근거 준비 단계가 걸린 묶음을 이것으로 바꾼다.
     """
     prefix = f'[{description}]\n' if description.strip() else ''
     sheet_text = prefix + '\n\n'.join(_render(b) for b in blocks)
-    if (est := estimate_tokens(sheet_text)) > XLSX_MAX_TABLE_TOKENS:
+    if (est := estimate_tokens(sheet_text)) > TABLE_MAX_TOKENS:
         # 크기 판정은 openpyxl 렌더로 한다(업로드·색인이 같은 기준) — docling 완성본은 그림 캡션·세로 병합 반복·설명으로 더
         # 클 수 있다. 거절하면 "업로드 통과·색인 거절"이 생기므로 경고만 남긴다(#222 리뷰). 근거 예산이 안전장치다.
-        logger.warning("시트 '%s' 완성본이 상한을 넘는다(추정 %d > %d토큰) — 색인은 계속한다", title, est, XLSX_MAX_TABLE_TOKENS)
+        logger.warning("시트 '%s' 완성본이 상한을 넘는다(추정 %d > %d토큰) — 색인은 계속한다", title, est, TABLE_MAX_TOKENS)
     budget = int(XLSX_BATCH_TOKENS * CHARS_PER_TOKEN)
     parts = [p for kind, value in blocks
              for p in (_batch_rows(value[0], value[1:], budget) if kind == 'table' else [value])]
     return [ChunkData(text=prefix + p, heading_path=[title], page=None, chunk_index=start + k,
-                      meta={'is_table': True, 'sheet': title, 'sheet_text': sheet_text})
+                      meta={'is_table': True, 'table_key': title, 'table_text': sheet_text})
             for k, p in enumerate(parts)]
 
 

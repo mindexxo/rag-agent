@@ -29,8 +29,9 @@
    - overlap 50으로 경계 의미 단절 완화
 
  결과 ChunkData: text / heading_path / page / chunk_index / meta.
- (PDF 표 청크에 meta['is_table']을 붙이지 마라 — retriever의 '한 시트만' 필터가
-  엑셀 기준이라 PDF 표 여러 개가 1개로 잘린다. rag/retriever.py:_keep_single_table 참조.)
+ 묶음 2개 이상으로 나뉜 표(PDF·DOCX)의 묶음은 meta에 {"is_table": True, "table_key": 문서 안 표 순번, "table_text": 표 전체}를
+ 싣는다 — 근거 준비(rag/retriever.prepare_evidence)가 걸린 묶음을 표 전체로 바꾼다(#257, 엑셀 #222와 같은 계약).
+ 표 하나가 TABLE_MAX_TOKENS를 넘으면 문서를 색인하지 않는다(TableTooLargeError).
  (LlamaIndex 의존성은 이 모듈 안에 격리 — 호출부는 ChunkData 도메인 타입만 본다.)
  """
 
@@ -54,7 +55,7 @@ from llama_index.core.node_parser import SentenceSplitter
 
 from config import settings
 from rag.identifiers import is_heading_line, split_heading_line
-from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN
+from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN, estimate_tokens_conservative
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,7 @@ class ChunkData:
     heading_path: list[str]     # 예: ["3. 배송지연 보상", "3.2 지급 기준"]
     page: int | None            # PDF는 페이지 번호, DOCX는 None
     chunk_index: int            # 문서 내 순서 (0부터)
-    meta: dict | None = None    # F1a: 청크 metadata (xlsx는 {"is_table": True, "sheet": 시트명})
+    meta: dict | None = None    # 청크 metadata — 표 묶음은 {"is_table", "table_key", "table_text"}(#257), 묶음 헤딩은 {"headings"}(#238)
 
 
 @dataclass
@@ -202,6 +203,14 @@ _Item = tuple[int | None, 'str | _TableBlock', int | None]
 # PDF·DOCX 표도 같은 값으로 나눈다. 글자 수 환산은 보수적 계수(rag/tokens).
 TABLE_BATCH_TOKENS = 1000
 TABLE_BATCH_CHARS = int(TABLE_BATCH_TOKENS * CONSERVATIVE_CHARS_PER_TOKEN)
+
+# 표 하나당 생성 모델 토큰 상한 — **형식 공통**(#257 결정 2: 엑셀·PDF·DOCX가 같은 값). 근거 예산은 표를 통째로 넣거나
+# 통째로 빼므로(rag/retriever.prepare_evidence) 상한을 넘는 표는 일부만 보여 줄 길이 없다 — 일부만 보여 주면 모델이 나머지
+# 행을 지어낸다. 그래서 받지 않는다: 엑셀은 업로드 거절(rag/xlsx_chunking), PDF·DOCX는 색인 실패(TableTooLargeError).
+# 값의 근거는 컨텍스트가 아니라 **답의 정확도**다(#222 실측 — rag/xlsx_chunking 모듈 docstring): 300행 표(5,954토큰)에서
+# 단가를 옮겨 적다 틀렸다. 컨텍스트가 정하는 물리 상한(근거 예산 EVIDENCE_BUDGET_TOKENS 22,000)보다 작아야 한다 —
+# 생성 모델을 바꾸면 이 값을 다시 잰다.
+TABLE_MAX_TOKENS = 6000
 
 
 def batch_table_rows(header: list[str], body: list[list[str]], budget_chars: int = TABLE_BATCH_CHARS) -> list[str]:
@@ -354,6 +363,22 @@ def _build_sections(items: list[_Item]) -> list[_Section]:
 
 _DOCLING_LOCK = threading.Lock()
 _docling_converter = None
+
+
+class TableTooLargeError(ValueError):
+    """PDF·DOCX 표 하나가 TABLE_MAX_TOKENS를 넘는다 — **결정적** 실패(#257 결정 2·3).
+
+    ValueError라 outbox.is_transient가 결정적으로 분류해 문서를 바로 failed로 굳히고, 메시지가 status_reason으로 화면에
+    나간다(PictureLimitError와 같은 길). 문구 규칙은 엑셀 거절(XlsxTableTooLarge)과 같다 — 토큰을 말하지 않고 허용 크기
+    대비 %와 행×열로 말한다. 엑셀처럼 업로드 순간 거절하지 못하는 것은 표 크기를 docling 변환 뒤에야 알 수 있어서다.
+    """
+
+    def __init__(self, page: int | None, header: list[str], percent: int, rows: int, cols: int):
+        self.page, self.percent, self.rows, self.cols = page, percent, rows, cols
+        name = ' | '.join(h for h in header if h.strip())[:30]
+        where = f"{page}쪽 표" if page else "표"
+        super().__init__(f"{where}('{name}')가 허용 크기의 {percent}%입니다(현재 {rows}행 × {cols}열). "
+                         "상담에 필요 없는 열이나 긴 설명을 줄여 다시 올려 주세요.")
 
 
 class PictureLimitError(ValueError):
@@ -1568,23 +1593,48 @@ def chunk_file(file_path: str | Path, *, description: str = '') -> list[ChunkDat
         raise ValueError(f'지원하지 않는 형식: {suffix or "확장자 없음"}')
 
     out: list[ChunkData] = []
-    for section in _pack_sections(parser(file_path)):
-        for text, offset in _split_section(section, splitter):
+    table_keys: dict[tuple[int, int], str] = {}     # (섹션 번호, 섹션 안 블록 번호) → 문서 안 표 순번(#257)
+    for si, section in enumerate(_pack_sections(parser(file_path))):
+        for text, offset, table in _split_section(section, splitter):
             # 이 조각에 실린 헤딩만 — 색인이 식별자 사전으로, 근거 준비가 구간 경계로 쓴다(#238 결정 15).
             lines = {line.strip() for line in text.split('\n')}
             heads = [h for h in section.headings if h.strip() in lines]
+            meta = {'headings': heads} if heads else {}
+            if table is not None:
+                key = table_keys.setdefault((si, table.block), f't{len(table_keys) + 1}')
+                meta |= {'is_table': True, 'table_key': key, 'table_text': table.text}
             out.append(ChunkData(text=text, heading_path=list(section.heading_path),
                                  page=_page_at(section, offset), chunk_index=len(out),
-                                 meta={'headings': heads} if heads else None))
+                                 meta=meta or None))
     return out
 
 
 _TABLE_LEAD_MAX = 150   # 큰 표 묶음마다 붙이는 '표 바로 위 한 줄'의 최대 길이 — 이보다 길면 표 설명이 아니라 본문 문단으로 본다
 
 
-def _split_section(section: _Section, splitter) -> list[tuple[str, int]]:
-    """섹션 → (청크 글, 본문 오프셋). **표 블록은 행 묶음으로, 글 블록만 SentenceSplitter로** 나눈 뒤 블록 사이를 다시 잇는다
-    (#252 결정 1 = b′, 결정 7 = c).
+class _TableRef(NamedTuple):
+    """큰 표(묶음 둘 이상) 묶음이 어느 표의 것인가 — chunk_file이 문서 안 표 순번(table_key)으로 바꾼다(#257)."""
+    block: int      # 섹션 안 블록 번호
+    text: str       # 표 전체 — 표 바로 위 한 줄(있으면) + 헤더 한 번 + 전체 행. 근거 준비가 걸린 묶음을 이것으로 바꾼다
+
+
+class _Piece(NamedTuple):
+    text: str
+    offset: int                     # section.body 안의 위치
+    table: _TableRef | None = None  # 큰 표의 묶음일 때만
+
+
+def _check_table_size(block: _TableBlock, table_text: str, page: int | None) -> None:
+    """표 하나가 TABLE_MAX_TOKENS를 넘으면 TableTooLargeError — 크기는 모델이 볼 글(table_text)로 잰다(#257 결정 2)."""
+    tokens = estimate_tokens_conservative(table_text)
+    if tokens > TABLE_MAX_TOKENS:
+        header = block.rows[0]
+        raise TableTooLargeError(page, header, -(-tokens * 100 // TABLE_MAX_TOKENS), len(block.rows) - 1, len(header))
+
+
+def _split_section(section: _Section, splitter) -> list[_Piece]:
+    """섹션 → 조각(청크 글, 본문 오프셋, 큰 표면 표 정보). **표 블록은 행 묶음으로, 글 블록만 SentenceSplitter로** 나눈 뒤
+    블록 사이를 다시 잇는다(#252 결정 1 = b′, 결정 7 = c).
 
     #252 전에는 표 markdown이 글줄에 섞인 채 분할기를 타서 45행 표가 셀 한가운데(`30,` / `148원 | 5 |`)에서 잘리고 뒷 청크엔
     헤더가 없었다(#246 L2 실측 — XLSX만 행 묶음이라 무사). 이제 표는 batch_table_rows가 행 경계에서만 자르고 묶음마다 헤더를
@@ -1595,8 +1645,10 @@ def _split_section(section: _Section, splitter) -> list[tuple[str, int]]:
       - **큰 표(묶음 둘 이상)**: 표 바로 위 글의 마지막 줄(_TABLE_LEAD_MAX자 이하)을 모든 묶음 머리에 붙인다 — XLSX 묶음마다
         설명을 반복하는 것과 같은 방식. 큰 표의 묶음은 이웃과 합치지 않는다(이미 예산에 가깝다).
     오프셋은 section.body 안의 위치다 — 쪽 매핑(_page_at)과 목록 번호 복원의 근거. 표 묶음은 첫 데이터 행 위치(행별 쪽).
+    큰 표의 묶음에는 표 전체(_TableRef)를 함께 돌려준다(#257) — 작은 표는 이미 한 조각 안에 다 있으므로 붙이지 않는다.
+    표 하나가 TABLE_MAX_TOKENS를 넘으면 TableTooLargeError(#257 결정 2).
     """
-    pieces: list[tuple[str, int, int, bool]] = []          # (글, 오프셋, 블록 번호, 이웃과 합칠 수 있나)
+    pieces: list[tuple[str, int, int, bool, _TableRef | None]] = []   # (글, 오프셋, 블록 번호, 이웃과 합칠 수 있나, 표 정보)
     cursor = 0
     last_text = ''
     for bi, block in enumerate(_blocks_of(section)):
@@ -1611,8 +1663,11 @@ def _split_section(section: _Section, splitter) -> list[tuple[str, int]]:
             lead = lead if len(batches) > 1 and len(lead) <= _TABLE_LEAD_MAX else ''
             if lead and pieces and pieces[-1][0].strip() == lead:
                 pieces.pop()        # 그 줄만 든 조각은 묶음마다 머리로 들어가므로 혼자 남기지 않는다(실문서: '[ 별표 1] 징계 양정 기준')
+            table_text = f'{lead}\n{rendered}' if lead else rendered
+            _check_table_size(block, table_text, block.row_pages[0] if block.row_pages else section.page)
+            ref = _TableRef(bi, table_text) if len(batches) > 1 else None
             for batch in batches:
-                pieces.append((f'{lead}\n{batch}' if lead else batch, pos, bi, len(batches) == 1))
+                pieces.append((f'{lead}\n{batch}' if lead else batch, pos, bi, len(batches) == 1, ref))
                 pos += len(batch) - head_len + 1
             last_text = ''
         else:
@@ -1626,22 +1681,22 @@ def _split_section(section: _Section, splitter) -> list[tuple[str, int]]:
                 inner = max(inner, offset)
                 text = _strip_orphan_marker(_restore_leading_marker(section.body, offset, chunk))
                 if text.strip():
-                    pieces.append((text, offset, bi, True))
+                    pieces.append((text, offset, bi, True, None))
             last_text = rendered
         cursor = start + len(rendered)
-    out: list[tuple[str, int]] = []
+    out: list[_Piece] = []
     prev_block, prev_mergeable = None, False
-    for text, offset, bi, mergeable in pieces:
+    for text, offset, bi, mergeable, ref in pieces:
         if (out and mergeable and prev_mergeable and bi != prev_block
-                and len(out[-1][0]) + 1 + len(text) <= TABLE_BATCH_CHARS):
-            out[-1] = (f'{out[-1][0]}\n{text}', out[-1][1])
+                and len(out[-1].text) + 1 + len(text) <= TABLE_BATCH_CHARS):
+            out[-1] = out[-1]._replace(text=f'{out[-1].text}\n{text}')   # 합칠 수 있는 조각은 큰 표가 아니다(ref 없음)
         else:
-            out.append((text, offset))
+            out.append(_Piece(text, offset, ref))
         prev_block, prev_mergeable = bi, mergeable
     return _carry_tail_headings(section, out)
 
 
-def _carry_tail_headings(section: _Section, pieces: list[tuple[str, int]]) -> list[tuple[str, int]]:
+def _carry_tail_headings(section: _Section, pieces: list[_Piece]) -> list[_Piece]:
     """**기록된 헤딩은 조각의 마지막 줄이 될 수 없다** (#238 결정 15-2).
 
     SentenceSplitter는 헤딩을 모른다. 경계가 헤딩 바로 뒤에 떨어지면 헤딩만 앞 조각에 남고 본문은 다음
@@ -1661,9 +1716,9 @@ def _carry_tail_headings(section: _Section, pieces: list[tuple[str, int]]) -> li
         if not lines or lines[-1].strip() not in heads:
             continue
         head = lines.pop()
-        out[i] = ('\n'.join(lines), out[i][1])
-        nxt, off = out[i + 1]
+        out[i] = out[i]._replace(text='\n'.join(lines))
+        nxt, off = out[i + 1].text, out[i + 1].offset
         if head.strip() not in {line.strip() for line in nxt.split('\n')}:
             found = section.body.rfind(head, 0, off + 1)
-            out[i + 1] = (head + '\n' + nxt, found if found >= 0 else off)
-    return [p for p in out if p[0].strip()]
+            out[i + 1] = out[i + 1]._replace(text=head + '\n' + nxt, offset=found if found >= 0 else off)
+    return [p for p in out if p.text.strip()]

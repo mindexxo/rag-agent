@@ -18,7 +18,8 @@ from rag.retrieval_types import RetrievedChunk
 def _chunk(cid, *, table_sheet=None, identifiers=(), text="본문"):
     return RetrievedChunk(chunk_id=cid, document_id=cid // 1000, text=text, heading_path=[table_sheet] if table_sheet else ["절"],
                           page=None, filename=f"d{cid // 1000}.pdf", version=1, is_table=table_sheet is not None,
-                          sheet_text=f"시트 {table_sheet} 전체" if table_sheet else None, identifiers=list(identifiers))
+                          table_key=table_sheet, table_text=f"시트 {table_sheet} 전체" if table_sheet else None,
+                          identifiers=list(identifiers))
 
 
 def _record(query, dense30, bm25_30, ident, rerank, gold, *, set_="v2", token=None):
@@ -37,7 +38,7 @@ CHUNKS = {c: _chunk(c) for c in DENSE + BM25[2:] + [3000]}
 CHUNKS[1001] = _chunk(1001, identifiers=["11조"])
 CHUNKS[3000] = _chunk(3000, identifiers=["11조"])
 CHUNKS[2003] = _chunk(2003, table_sheet="시트A")
-CHUNKS[2004] = _chunk(2004, table_sheet="시트B")                # 다른 시트 — 한 시트만 남긴다
+CHUNKS[2004] = _chunk(2004, table_sheet="시트B")                # 다른 시트 — #257부터 둘 다 남는다
 RERANK = {c: 0.5 - 0.001 * i for i, c in enumerate(DENSE + BM25[2:] + [3000])}
 RERANK.update({2003: 0.95, 2004: 0.94, 3000: 0.70, 1001: 0.69, 1007: 0.69, 2010: 0.69})   # 동점 묶음 포함
 CASES = {
@@ -130,9 +131,10 @@ async def test_가산이_빠진_재생도_동치_검사에서_걸린다(producti
     assert [c.chunk_id for c in hr.assemble(rec, CHUNKS)] != await production(rec)
 
 
-def test_한_시트만_남고_top_n은_시트_필터_앞에서_자른다():
+def test_다른_시트의_표도_남고_top_n개다():
+    # #257 결정 1 — '한 시트만' 필터가 없어졌다(옛 동작: 2004를 버리고 TOP_N - 1개)
     out = [c.chunk_id for c in hr.assemble(CASES["식별자_없음"], CHUNKS)]
-    assert 2003 in out and 2004 not in out and len(out) == hr.TOP_N - 1   # 버린 자리는 채우지 않는다
+    assert 2003 in out and 2004 in out and len(out) == hr.TOP_N
 
 
 def test_캡처에_없는_후보를_요구하면_멈춘다():

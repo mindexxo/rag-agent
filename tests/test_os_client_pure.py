@@ -91,7 +91,7 @@ async def test_이미_있는_인덱스는_건드리지_않고_경합의_already_
             raise RuntimeError('resource_already_exists_exception: index already exists')
 
         async def get_mapping(self, *a, **k):
-            return {'kms': {'mappings': {'properties': {'text': {}}}}}     # sheet_text 없음
+            return {'kms': {'mappings': {'properties': {'text': {}}}}}     # 추가 필드 없음
 
         async def put_mapping(self, *a, index=None, body=None, **k):
             calls.append(('put_mapping', sorted(body['properties'])))
@@ -102,7 +102,7 @@ async def test_이미_있는_인덱스는_건드리지_않고_경합의_already_
 
     monkeypatch.setattr(C, 'client', lambda: _Client(True))
     await C.ensure_index()
-    # 있으면 create를 부르지 않고, 재색인 없이 붙여도 되는 필드(ADDITIVE_FIELDS)만 덧붙인다(#222 sheet_text, #238 identifiers·headings)
+    # 있으면 create를 부르지 않고, 재색인 없이 붙여도 되는 필드(ADDITIVE_FIELDS)만 덧붙인다(#222 sheet_text, #238 identifiers·headings, #257 table_key·table_text)
     assert calls == [('put_mapping', sorted(C.ADDITIVE_FIELDS))]
     calls.clear()
     monkeypatch.setattr(C, 'client', lambda: _Client(False))

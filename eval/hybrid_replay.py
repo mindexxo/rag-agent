@@ -6,8 +6,8 @@
 흔들림(1.4e-4)이 조건 차이에 섞이지 않는다. 캡처·CLI는 eval/hybrid_weights.py.
 
 **재생이 운영과 같다는 보장**: `assemble(BASELINE)`은 운영 rag/retriever.retrieve_candidates의 단일 질의 경로를 그대로 따른다
-— 벡터 30 → BM25 30 중 벡터에 없는 것 15개 뒤에 → 식별자 일치 뒤에 → 리랭커 점수 안정 정렬 → 식별자 +가산 → 상위 20 →
-한 시트만. 재구현은 풀 조립(build_pool)뿐이고 나머지는 운영 함수(apply_identifier_boost·_keep_single_table·prepare_evidence)를
+— 벡터 30 → BM25 30 중 벡터에 없는 것 15개 뒤에 → 식별자 일치 뒤에 → 리랭커 점수 안정 정렬 → 식별자 +가산 → 상위 20
+(#257로 '한 시트만' 필터는 없어졌다). 재구현은 풀 조립(build_pool)뿐이고 나머지는 운영 함수(apply_identifier_boost·prepare_evidence)를
 그대로 부른다. 그래도 재구현이 어긋날 수 있으므로 eval/hybrid_weights의 verify가 **캡처값을 운영 함수에 끼워 실제로 돌린
 결과와 전 문항 완전 일치**를 확인한 뒤에만 측정한다(#128 1차 측정은 조립이 틀려 기준선과 수학적으로 같은 풀이 됐다).
 tests/test_hybrid_replay가 같은 비교를 합성 데이터로 하고, 일부러 망가뜨린 재생이 그 비교에서 실패하는지도 본다.
@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from eval.retrieval import score_one
 from eval.axis_common import evidence_has
 from rag.retrieval_types import RetrievedChunk
-from rag.retriever import _keep_single_table, _sheet_key, apply_identifier_boost, prepare_evidence
+from rag.retriever import _table_key, apply_identifier_boost, prepare_evidence
 
 TOP_N = 20      # 운영 retrieve_candidates 기본 — rag.retriever.DEFAULT_TOP_N
 TOP_K = 5       # 모델이 받는 근거 수 — eval.generation.TOP_K
@@ -129,13 +129,13 @@ def assemble(rec: dict, chunks: dict[int, RetrievedChunk], cond: Condition = BAS
     if rec["ident_tokens"]:
         ranked, _, _ = apply_identifier_boost(ranked, ranked_scores, [0] * len(ranked), rec["ident_tokens"],
                                               cond.ident_boost)
-    return _keep_single_table(ranked[:top_n])
+    return ranked[:top_n]
 
 
 def evaluate(rec: dict, final: list[RetrievedChunk], chunks: dict[int, RetrievedChunk]) -> dict:
     """문항 하나의 지표. in_evidence = 모델이 실제로 받는 근거에 정답이 있나 — 키워드 축은 근거 **글**에 토큰이 있나(evidence_has),
-    나머지는 근거 조각 id에 정답이 있거나 **정답과 같은 시트의 표 조각이 근거에 있나**. 표는 같은 시트 조각을 가장 위 하나로
-    접고 시트 완성본으로 바꿔 넘기므로(prepare_evidence ①③) 정답 행이 든 형제 조각은 id로는 빠져도 모델은 그 행을 본다
+    나머지는 근거 조각 id에 정답이 있거나 **정답과 같은 표의 조각이 근거에 있나**. 표는 같은 표 조각을 가장 위 하나로
+    접고 표 전체로 바꿔 넘기므로(prepare_evidence ①③, #257부터 PDF·DOCX 큰 표도) 정답 행이 든 형제 조각은 id로는 빠져도 모델은 그 행을 본다
     (첫 진단 실측: 최종 2~3위인데 '근거 밖'으로 세진 문장형 문항이 전부 이 꼴, 2026-10-18 — 건수는 eval/report_hybrid_weights). retrieval_article은 조 번호라 표가
     거의 없어 id 기준을 그대로 쓴다 — 이 함수의 셈법이 그보다 정확하다."""
     evidence = prepare_evidence(final, TOP_K)
@@ -143,9 +143,9 @@ def evaluate(rec: dict, final: list[RetrievedChunk], chunks: dict[int, Retrieved
         in_ev = evidence_has(evidence, rec["token"])
     else:
         gold = set(rec["gold_ids"])
-        sheets = {_sheet_key(c) for c in evidence if c.is_table}
+        tables = {_table_key(c) for c in evidence if c.is_table}
         in_ev = float(any(c.chunk_id in gold for c in evidence)
-                      or any(g in chunks and chunks[g].is_table and _sheet_key(chunks[g]) in sheets for g in gold))
+                      or any(g in chunks and chunks[g].is_table and _table_key(chunks[g]) in tables for g in gold))
     return {**score_one([c.chunk_id for c in final], rec["gold_ids"]), "in_evidence": in_ev}
 
 

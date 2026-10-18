@@ -1,6 +1,6 @@
 """xlsx 청커 단위 테스트 — _cell / _to_markdown / chunk_xlsx.
 
-is_table meta와 표 설명 병합은 retriever의 '표는 한 시트만' 필터·검색 보강이 의존한다.
+is_table·table_key·table_text meta와 표 설명 병합은 근거 준비(retriever.prepare_evidence)의 표 접기·확장과 검색 보강이 의존한다.
 """
 from pathlib import Path
 
@@ -9,7 +9,9 @@ import pytest
 
 from io import BytesIO
 
-from rag.xlsx_chunking import (XLSX_BATCH_TOKENS, XLSX_MAX_TABLE_TOKENS, CHARS_PER_TOKEN, XlsxDescriptionRequired,
+from rag.chunking import TABLE_MAX_TOKENS
+
+from rag.xlsx_chunking import (XLSX_BATCH_TOKENS, CHARS_PER_TOKEN, XlsxDescriptionRequired,
                                XlsxTableTooLarge, XlsxUploadRejected, _batch_rows, _cell, _to_markdown, chunk_xlsx,
                                chunk_xlsx_plain, description_missing, estimate_tokens, xlsx_plain_text,
                                validate_xlsx_upload)
@@ -55,7 +57,7 @@ class TestToMarkdown:
 def _max_rows_at_limit() -> int:
     """헤더 'col' + 숫자 1열 표에서 추정 토큰이 상한 이하인 최대 데이터 행 수 — 경계 테스트용(off-by-one 회귀 방지)."""
     n = 1
-    while estimate_tokens(_to_markdown(['col'], [[str(i)] for i in range(n + 1)])) <= XLSX_MAX_TABLE_TOKENS:
+    while estimate_tokens(_to_markdown(['col'], [[str(i)] for i in range(n + 1)])) <= TABLE_MAX_TOKENS:
         n += 1
     return n
 
@@ -65,9 +67,9 @@ class TestChunkXlsx:
         chunks = chunk_xlsx(CORPUS_XLSX)
         # 실제 시트명 고정 — meta==heading_path 자기참조 비교는 둘이 같이 틀려도 통과한다
         assert [c.heading_path for c in chunks] == [['등급기준'], ['등급별쿠폰'], ['포인트정책']]
-        assert [(c.meta['is_table'], c.meta['sheet']) for c in chunks] == [
+        assert [(c.meta['is_table'], c.meta['table_key']) for c in chunks] == [
             (True, '등급기준'), (True, '등급별쿠폰'), (True, '포인트정책')]
-        assert all(c.meta['sheet_text'] == c.text for c in chunks)   # 한 묶음 = 시트 전체(#222 이전과 같은 모양)
+        assert all(c.meta['table_text'] == c.text for c in chunks)   # 한 묶음 = 시트 전체(#222 이전과 같은 모양)
         assert [c.chunk_index for c in chunks] == [0, 1, 2]
 
     def test_표_설명_병합(self):
@@ -108,9 +110,9 @@ class TestChunkXlsx:
             lines = c.text.splitlines()
             assert lines[:3] == ['[단가표]', '| 상품코드 | 상품명 | 단가 |', '| --- | --- | --- |']
             assert len(c.text) <= budget + len('[단가표]\n')
-            assert c.meta['sheet'] == '단가' and c.heading_path == ['단가']
-        whole = chunks[0].meta['sheet_text']
-        assert all(c.meta['sheet_text'] == whole for c in chunks)
+            assert c.meta['table_key'] == '단가' and c.heading_path == ['단가']
+        whole = chunks[0].meta['table_text']
+        assert all(c.meta['table_text'] == whole for c in chunks)
         assert whole.count('| 상품코드 |') == 1 and whole.count('[단가표]') == 1   # 완성본엔 헤더·설명 한 번
         body = [l for c in chunks for l in c.text.splitlines()[3:]]
         assert body == whole.splitlines()[3:]                     # 묶음을 이으면 행이 빠짐·중복 없이 완성본과 같다
@@ -174,7 +176,7 @@ class TestChunkXlsx:
         p = _gap_xlsx(tmp_path)
         chunks = chunk_xlsx(p)
         assert len(chunks) == 2                 # 표 두 개 → 묶음 두 개(#222), 같은 시트 완성본
-        whole = chunks[0].meta['sheet_text'].splitlines()
+        whole = chunks[0].meta['table_text'].splitlines()
         assert whole[:3] == ['| col |', '| --- |', '| 1 |'] and '| 2 |' in whole   # 갈린 아랫부분 — 값 보존
 
     def test_정확히_상한이면_허용(self, tmp_path):

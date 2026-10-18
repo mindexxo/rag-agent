@@ -245,13 +245,13 @@ class TestXlsxDocling:
             ws.merge_cells('A3:A4')
         chunks = chunk_file(_xlsx(tmp_path, build), description='교통비 양식')
         assert {c.heading_path[0] for c in chunks} == {'양식'}          # 묶음(#222)이 여럿이어도 한 시트
-        text = chunks[0].meta['sheet_text']                              # 시트 완성본 — 모델이 보는 본문
+        text = chunks[0].meta['table_text']                              # 시트 완성본 — 모델이 보는 본문
         # 표 폭 전체에 걸친 첫 행 제목은 docling이 표 밖 글로 뺀다(실측) — 가로 병합 반복(#252 결정 9)과 무관하게 한 번
         assert text.count('업무 교통비 청구서') == 1 and '\n업무 교통비 청구서\n' in text
         assert '| 교통 | 버스 | 1500 |' in text and '| 교통 | 택시 | 29100 |' in text
         assert text.startswith('[교통비 양식]\n') and text.count('[교통비 양식]') == 1
         assert all(c.text.startswith('[교통비 양식]\n') for c in chunks)   # 묶음마다 설명 반복(검색 보강)
-        assert all(c.meta['is_table'] and c.meta['sheet'] == '양식' for c in chunks)
+        assert all(c.meta['is_table'] and c.meta['table_key'] == '양식' for c in chunks)
 
     def test_시트_위_그림은_그_시트_청크에_들어간다(self, tmp_path):
         from openpyxl.drawing.image import Image as XlImage
@@ -266,7 +266,7 @@ class TestXlsxDocling:
             ws2.append(['항목', '값'])
             ws2.append(['x', '1'])
         chunks = chunk_file(_xlsx(tmp_path, build))
-        by_sheet = {c.heading_path[0]: c.meta['sheet_text'] for c in chunks}
+        by_sheet = {c.heading_path[0]: c.meta['table_text'] for c in chunks}
         assert list(by_sheet) == ['첫시트', '둘째']                          # 시트 순서 유지(#222: 시트당 묶음 여럿 가능)
         assert FAKE_CAPTION in by_sheet['첫시트'] and FAKE_CAPTION not in by_sheet['둘째']
 
@@ -284,7 +284,7 @@ class TestXlsxDocling:
                 ws.append([i, f'품목-{i:03d}', i * 100])
             ws.add_image(XlImage(BytesIO(_png())), 'E60')
         chunks = chunk_file(_xlsx(tmp_path, build), description='긴 시트')
-        text = chunks[0].meta['sheet_text']
+        text = chunks[0].meta['table_text']
         assert FAKE_CAPTION in text and _PICTURE_PLACEHOLDER not in text
 
     def test_XLSX_그림도_장수_상한에_걸린다(self, tmp_path, monkeypatch):
@@ -352,7 +352,7 @@ class TestXlsxDocling:
         chunks = chunk_file(_xlsx(tmp_path, build))
         assert chunks[0].heading_path == ['데이터']
         assert {c.heading_path[0] for c in chunks[1:]} == {'그림만', '차트'}
-        assert all(c.meta['is_table'] and c.meta['sheet'] == c.heading_path[0] for c in chunks)
+        assert all(c.meta['is_table'] and c.meta['table_key'] == c.heading_path[0] for c in chunks)
 
     def test_빈_엑셀은_청크_0개(self, tmp_path):
         assert chunk_file(_xlsx(tmp_path, lambda wb: None)) == []

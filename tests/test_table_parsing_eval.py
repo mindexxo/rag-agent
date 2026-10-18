@@ -72,9 +72,17 @@ class TestChunkTables:
         assert t == [[['a', 'b'], ['1', '2'], ['3', '4']], [['c'], ['9']]]
 
     def test_xlsx는_시트_완성본만_읽는다(self):
-        c = [SimpleNamespace(text='[표]\n| a |\n| --- |\n| 1 |', meta={'sheet_text': '[표]\n| a |\n| --- |\n| 1 |\n| 2 |'}),
-             SimpleNamespace(text='[표]\n| a |\n| --- |\n| 2 |', meta={'sheet_text': '[표]\n| a |\n| --- |\n| 1 |\n| 2 |'})]
-        assert chunk_tables(c) == [[['a'], ['1'], ['2']]]
+        c = [SimpleNamespace(text='[표]\n| a |\n| --- |\n| 1 |', meta={'table_text': '[표]\n| a |\n| --- |\n| 1 |\n| 2 |'}),
+             SimpleNamespace(text='[표]\n| a |\n| --- |\n| 2 |', meta={'table_text': '[표]\n| a |\n| --- |\n| 1 |\n| 2 |'})]
+        assert chunk_tables(c, xlsx=True) == [[['a'], ['1'], ['2']]]
+
+    def test_PDF_큰_표_묶음은_완성본이_있어도_묶음에서_잇는다(self):
+        # #257 리뷰: 표만 있는 PDF는 모든 청크가 표 묶음(table_text 있음)이라 청크 모양으로 xlsx와 구별되지 않는다 — 형식은 호출부가 준다
+        whole = '| a |\n| --- |\n| 1 |\n| 2 |'
+        c = [SimpleNamespace(text='| a |\n| --- |\n| 1 |', meta={'table_text': whole}),
+             SimpleNamespace(text='| a |\n| --- |\n| 2 |', meta={'table_text': whole})]
+        c[1].text = '| a |\n| --- |\n| 2 | 깨진 칸 |'            # 묶음이 깨지면 그대로 드러나야 한다(완성본으로 가리지 않는다)
+        assert chunk_tables(c) == [[['a'], ['1'], ['2', '깨진 칸']]]
 
 
 class TestScore:

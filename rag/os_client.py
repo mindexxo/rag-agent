@@ -111,8 +111,12 @@ MAPPING = {
             # 이중으로 관여한다). 하지만 _source로는 돌려받는다: 검색 결과의 본문이 이 값이다
             # (fetch_chunk_map — PG를 되묻지 않는다).
             "text": {"type": "text", "index": False},
-            # 엑셀 시트 완성본(#222) — 행 묶음 청크마다 그 시트 전체(설명·헤더 한 번)를 싣는다. 검색 대상이 아니다:
-            # 근거 준비(rag.retriever.prepare_evidence)가 걸린 묶음을 이것으로 바꿔 모델에 넣는다. 엑셀 외 청크는 null.
+            # 표 묶음(#222 엑셀 시트·#257 PDF·DOCX 큰 표) — 행 묶음 청크마다 어느 표인지(table_key)와 그 표 전체(table_text)를
+            # 싣는다. 둘 다 검색 대상이 아니다: 근거 준비(rag.retriever.prepare_evidence)가 같은 표 묶음을 접고 표 전체로 바꿔
+            # 모델에 넣는다. 표 묶음 외 청크는 null.
+            "table_key": {"type": "keyword", "index": False},
+            "table_text": {"type": "text", "index": False},
+            # #222의 옛 이름(엑셀 전용). #257부터 쓰지 않는다 — 매핑 필드는 지울 수 없어(재색인 절차) 남겨 둘 뿐이다.
             "sheet_text": {"type": "text", "index": False},
             # 질의할 때는 반드시 lex_clause()를 쓴다 — 기본 match로 질의하면 2.18 hybrid가
             # 500으로 죽는다(실측 47/450). 사유·실측치는 lex_clause docstring.
@@ -177,11 +181,12 @@ async def close_client() -> None:
         _client = None
 
 
-# 기존 인덱스에 **추가만** 하는 필드 — 재색인 없이 붙여도 안전한 것: 검색하지 않는 보관 필드(#222 sheet_text, #238 headings)와
+# 기존 인덱스에 **추가만** 하는 필드 — 재색인 없이 붙여도 안전한 것: 검색하지 않는 보관 필드(#222 sheet_text, #238 headings,
+# #257 table_key·table_text)와
 # **새로 생기는** keyword 정확 일치 필드(#238 identifiers — 값이 없는 옛 청크는 그냥 안 걸릴 뿐이라 채널이 꺼진 것과 같다).
 # 빠뜨리면 동적 매핑이 이 필드를 분석되는 text로 잡아 쓸데없이 색인한다. 기존 검색 필드의 **변경**(분석기 등)은 여기로 못 한다(재색인 절차).
 # 추가는 매핑일 뿐이다 — 값을 채우려면 문서를 재인제스트해야 한다(#238: 청킹이 헤딩을 기록해야 identifiers가 생긴다).
-ADDITIVE_FIELDS = ("sheet_text", "identifiers", "headings")
+ADDITIVE_FIELDS = ("sheet_text", "identifiers", "headings", "table_key", "table_text")
 
 
 async def _add_missing_fields(os_client) -> None:

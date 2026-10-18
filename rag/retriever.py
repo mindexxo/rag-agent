@@ -10,7 +10,6 @@
       -> os_search.fetch_chunk_map          본문·메타 mget 1회 — 엔진이 서빙 정본 (#139)
       -> rerank / rerank_maxpool     cross-encoder 재정렬 (rag.reranker, settings.rerank_enabled)
       -> [:top_n]                    두 경로 공통 — 슬라이스는 항상 리랭크 뒤다
-      -> _keep_single_table          표는 한 시트만 (F1a)
                                      == retrieve_candidates()
       -> apply_gate                  근거 게이트 (top-1 거리 임계값)
       -> RetrievalResult             == retrieve() 가 위 둘을 조합
@@ -114,45 +113,15 @@ def _rank_multi(per_query_ids: list[list[int]]) -> list[int]:
     return [cid for cid, _ in sorted(scores.items(), key=lambda x: -x[1])]
 
 
-def _sheet_key(ch: RetrievedChunk) -> tuple:
-    """표 청크가 속한 시트 — (문서 id, 시트명). 시트명은 heading_path[0]이다(rag/xlsx_chunking._sheet_chunks)."""
-    return (ch.document_id, ch.heading_path[0] if ch.heading_path else None)
-
-
-def _keep_single_table(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
-    """표 청크는 최상위 **시트 하나**의 것만 남기고 다른 시트의 표 청크는 제외 (F1a '한 시트만', #222).
-
-    #222 이전엔 시트 = 1청크라 "최상위 표 청크 1개"가 곧 "시트 1개"였다. 이제 시트가 행 묶음 여러 청크라, 같은 시트의
-    묶음은 **모두 남긴다** — 여기서 하나로 접으면 검색 지표(Hit@1·R@5)가 정답 묶음을 형제 묶음에 밀려 놓친 것으로 채점한다.
-    같은 시트 묶음을 근거 한 칸으로 접는 일은 그 뒤 prepare_evidence가 한다.
-
-    **엑셀 기준의 제약이다.** is_table을 세우는 것은 rag/xlsx_chunking뿐이라 실제 대상도 엑셀 청크뿐이다. PDF 표는 한
-    문서에 여러 개가 정상이므로(실측 1쪽에 2~6개) 이 필터에 걸리면 안 된다 — PDF 표 청크에 is_table을 붙이지 마라 (#137).
-
-    파일이 달라도 시트는 하나만 남는다 — 채널톡 ALF와 같은 제약이다
-    ("ALF는 한 번의 답변에서 하나의 시트만 참조합니다. 여러 엑셀 파일이나 한 파일 내
-    여러 시트를 동시에 참조하는 것은 현재 지원되지 않습니다", docs.channel.io 지식 ALF v2).
-    그래서 큰 표를 시트·파일로 나눠 올려도 한 질문엔 한 시트만 근거가 된다(업로드 안내가 나눠 올리라고 하지 않는 이유).
-    산문·FAQ 청크는 무관하게 통과.
-
-    **버린 자리를 채우지 않는다** — top_n 슬라이스 뒤에 돌기 때문에, 다른 시트 표 청크가 상위에 여럿이면 최종 후보가
-    top_n보다 적어진다(21위 이하로 백필하지 않음). **'최상위'의 기준은 넘겨받은 순서다** — 리랭크가 꺼졌거나 실패하면
-    리랭커 점수가 아니라 dense/RRF 순서로 표 1등이 정해진다.
-    """
-    kept, sheet = [], None
-    for ch in chunks:
-        if ch.is_table:
-            if sheet is None:
-                sheet = _sheet_key(ch)
-            elif _sheet_key(ch) != sheet:
-                continue          # 다른 시트의 표 → 버림
-        kept.append(ch)
-    return kept
+def _table_key(ch: RetrievedChunk) -> tuple:
+    """표 묶음이 속한 표 — (문서 id, table_key). table_key는 엑셀은 시트명, PDF·DOCX는 문서 안 표 순번이다(#257)."""
+    return (ch.document_id, ch.table_key)
 
 
 # 근거 토큰 예산 — 문맥 창 30,720 − 답변 몫 3,000 − 대화 이력 최대 2,000 − 근거 1칸 뺀 프롬프트 p95 3,045 ≈ 22,675
 # (#222 실측: 골드 658문항을 운영 검색으로 조립해 Qwen3 /tokenize로 셈). 여유를 두고 22,000. 첨부는 이 계산 밖이다.
-# 엑셀 상한이 6,000토큰이라 평소엔 닿지 않는다 — 안전장치다.
+# 표 하나는 TABLE_MAX_TOKENS(6,000, rag/chunking)를 넘지 않으므로 1등 근거는 언제나 들어간다. #257로 표가 여러 개 들어올 수
+# 있게 되어(6,000 × 4 > 22,000) 실제로 닿을 수 있다 — 넘치면 prepare_evidence ④가 뺀다.
 EVIDENCE_BUDGET_TOKENS = 22000
 
 
@@ -181,32 +150,37 @@ def apply_identifier_boost(chunks: list[RetrievedChunk], scores: list[float], qu
 def prepare_evidence(chunks: list[RetrievedChunk], top_k: int) -> list[RetrievedChunk]:
     """검색 후보(순위순) → 모델에 넣을 근거. **운영(retrieve)과 생성 평가(eval.generation)가 함께 쓰는 정의점**(#222).
 
-    ① 같은 시트의 표 묶음은 가장 위 것 하나로 접는다 — 근거 칸을 같은 시트가 여럿 차지하지 않게(접힌 자리는 아래 순위가 채운다)
+    ① 같은 표의 묶음은 가장 위 것 하나로 접는다 — 근거 칸을 같은 표가 여럿 차지하지 않게(접힌 자리는 아래 순위가 채운다).
+       표는 엑셀 시트(#222)와 PDF·DOCX 큰 표(#257)다 — 키는 _table_key. 서로 다른 표는 몇 개든 남는다(#257 결정 1: 옛 '한
+       시트만' 필터를 없앴다 — PDF는 한 문서에 표가 여럿인 게 정상이고, 엑셀만 막을 근거가 없었다)
     ② top_k로 자른다
-    ③ 남은 표 묶음을 시트 완성본(sheet_text)으로 바꾼다 — 모델은 언제나 시트 전체를 본다("부분 표" 위험 차단)
+    ③ 남은 표 묶음을 표 전체(table_text)로 바꾼다 — 모델은 언제나 표 전체를 본다("부분 표" 위험 차단)
+    ⑤ 식별자 채널로 걸린 묶음 조각(matched_ident)은 그 식별자 구간만 남긴다(#238) — 구간 정의는 rag/identifiers.
+       표 전체에는 기록된 헤딩 줄이 없어 그대로 통과한다(cut_identifier_span은 경계를 못 찾으면 글을 바꾸지 않는다)
     ④ 근거 추정 토큰(보수적 ÷1.1 — 예산이 실제 토크나이저 기준이라 덜 세면 안 된다)이 EVIDENCE_BUDGET_TOKENS를 넘으면
-       순위가 낮은 산문 청크부터 뺀다(경고 로그·지표)
-    ⑤ 식별자 채널로 걸린 묶음 조각(matched_ident)은 그 식별자 구간만 남긴다(#238) — 구간 정의는 rag/identifiers
+       순위가 낮은 산문 청크부터 빼고, 산문이 없으면 순위가 낮은 표를 **통째로** 뺀다(경고 로그·지표). 1등은 빼지 않는다 —
+       표 하나는 TABLE_MAX_TOKENS 안이라 늘 들어간다. 표를 묶음으로 되돌려 일부만 넣지 않는다(#257 결정 4 — 일부만 보면
+       나머지 행을 지어낸다)
     chunk_id·document_id 등은 걸린 묶음의 것을 그대로 둔다 — 인용 번호·의미 캐시는 문서 단위라 바뀌지 않는다.
+    **#257 이전에 색인된 표는 재색인해야 한다** — 옛 이름(sheet_text)은 읽지 않는다(대비 코드 없음, #257 리뷰 결정). 재색인 전
+    엑셀은 table_key가 없어 한 파일의 시트가 한 칸으로 접히고 table_text가 없어 걸린 묶음만 들어간다.
     검색 지표는 이 함수 앞(retrieve_candidates)을 채점한다 — ①을 앞에서 하면 정답 묶음이 형제에 밀려 미스로 채점된다.
     """
     seen, folded = set(), []
     for ch in chunks:
         if ch.is_table:
-            key = _sheet_key(ch)
+            key = _table_key(ch)
             if key in seen:
                 continue
             seen.add(key)
         folded.append(ch)
-    out = [replace(ch, text=ch.sheet_text) if ch.is_table and ch.sheet_text else ch for ch in folded[:top_k]]
+    out = [replace(ch, text=ch.table_text) if ch.is_table and ch.table_text else ch for ch in folded[:top_k]]
     # ⑤ 식별자로 걸린 묶음 조각은 그 구간만(#238 결정 13·18) — 색인·순위·라벨은 그대로, 넘기는 글만 바뀐다.
     #    묶음을 통째로 주면 모델이 옆 조를 읽는다(실측: 실질문 23건 18→21 정답, 회귀 0). 조 하나짜리 조각은 불변.
     out = [replace(ch, text=cut_identifier_span(ch.text, ch.headings, ch.matched_ident))
            if ch.matched_ident and ch.headings else ch for ch in out]
-    while sum(estimate_tokens_conservative(c.text) for c in out) > EVIDENCE_BUDGET_TOKENS:
-        drop = next((i for i in range(len(out) - 1, -1, -1) if not out[i].is_table), None)
-        if drop is None:
-            break
+    while len(out) > 1 and sum(estimate_tokens_conservative(c.text) for c in out) > EVIDENCE_BUDGET_TOKENS:
+        drop = next((i for i in range(len(out) - 1, 0, -1) if not out[i].is_table), len(out) - 1)
         logger.warning('근거 예산 초과 — 순위 %d의 청크(%s)를 뺀다', drop + 1, out[drop].filename)
         metrics.EVIDENCE_BUDGET_TRIM_TOTAL.inc()
         del out[drop]
@@ -311,7 +285,6 @@ async def retrieve_candidates(
     # top_n이 확정되는 유일한 지점 — 두 경로 공통이다. 리랭크 뒤라서
     # 리랭커가 하위 후보를 끌어올릴 여지를 슬라이스가 미리 깎지 않는다.
     result = result[:top_n]
-    result = _keep_single_table(result)   # 버린 자리는 백필하지 않는다 (함수 docstring 참조)
 
     # 게이트 신호만 챙겨 반환 (판정은 apply_gate). 원본 쿼리의 top-1 거리다.
     top_dense_dist = dense_results[0][1] if dense_results else 999.0

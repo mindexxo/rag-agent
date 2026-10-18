@@ -257,23 +257,34 @@ def _pdf_pages(file_path: str | Path) -> list[tuple[int, str]]:
 # ── 섹션 조립 — 두 PDF 경로의 공통 후단 ──────────────────────────────────────────
 
 def _build_sections(items: list[_Item]) -> list[_Section]:
-    """(page, text, level) 흐름을 헤딩 스택으로 _Section 목록에 접는다.
+    """(page, text, level) 흐름을 헤딩 스택으로 _Section 목록에 접는다. PDF·DOCX·MD가 이 함수 하나로 조립한다(#233).
 
-    docx·md 파서와 같은 스택 규약(`del stack[level-1:]` + append)이다. 그 위에 #137에서 확인된
-    두 가지를 더한다:
+    스택 규약은 `del stack[level-1:]` + append다. 그 위에 #137·#233에서 확인된 것을 더한다:
       - **줄별 쪽 번호(line_pages)** — 섹션이 여러 쪽에 걸치면 뒤쪽 청크가 앞 쪽을 물려받았다
-        (결함 6). 표 markdown처럼 text가 여러 줄이면 그 줄 수만큼 같은 쪽을 채워 1:1을 지킨다.
-      - **본문 없는 헤딩 보존(orphans)** — 같은 레벨 헤딩이 연달아 오면 `del stack[level-1:]`이
-        직전 것을 지워 흔적 없이 소멸했다(결함 1·2의 소멸 경로). 본문을 한 번도 못 만든 헤딩은
-        붙잡아 다음 섹션 본문에 되살린다. (부모→자식처럼 레벨이 깊어지는 경우는 스택 뒤에 붙으므로
-        원래 안전하다 — _docx_sections docstring의 "정보 손실은 없다"는 그 경우에만 맞다.)
+        (#137 결함 6). 표 markdown처럼 text가 여러 줄이면 그 줄 수만큼 같은 쪽을 채워 1:1을 지킨다.
+      - **본문 없는 헤딩 보존(고아)** — 같은 레벨 헤딩이 연달아 오면 `del stack[level-1:]`이 직전 것을 흔적 없이 지웠다
+        (#137 결함 1·2). 본문을 한 번도 못 만든 헤딩은 붙잡아 다음 섹션 본문 앞에 되살린다(문서 순서). 실제로 생기는 고아는
+        거의 전부 docling PDF가 장 없는 문서에서 '2. 반품 규정'과 '2.1 신청 기한'을 같은 레벨로 잡은 상위 제목이고
+        (#233 실측: 모의 123건 중 고아 82건, 81건이 이 꼴, 삭제 조 0건), 그때는 다음 본문 앞이 맞는 자리다(상위 맥락 유지).
+        알려진 한계: 본문 없는 '제3조(삭제)'도 다음 조 본문 앞에 붙어 경로는 제4조가 된다 — "제3조" 질문의 구간 오리기
+        (rag/identifiers.cut_identifier_span)가 제4조 본문까지 넘긴다. 배치를 바꾸면 위 상위 제목 81건이 함께 흔들려
+        고치지 않았다(#233 설계 9-재).
+      - **이미 경로로 나간 헤딩은 고아가 아니다**(#233) — 예전엔 '제2조(삭제)' 뒤에 다음 장이 오면 앞 조의 경로로 이미 나간
+        '제1장'까지 고아로 잡아 다음 장 첫 본문에 다시 붙였다. 스택은 섹션을 만들 때 통째로 경로가 되므로 "나간 것"은 항상
+        스택의 앞부분이다 — 그 길이(emitted) 하나로 가른다.
+      - **문서 끝 헤딩 보존**(#233 설계 1) — 문서가 본문 없는 헤딩으로 끝나면('제7조(삭제)') 그 헤딩을 본문으로 남긴다. 경로는
+        이미 나간 앞부분이라 같은 글이 경로와 본문에 두 번 들어가지 않는다.
+    (부모→자식처럼 레벨이 깊어지는 경우는 스택 뒤에 붙으므로 원래 안전하다.)
+    본문이 하나도 없는 문서(헤딩만 있는 빈 양식)는 섹션 0개 — 업로드가 "추출된 텍스트 없음"으로 실패한다(rag/documents, 결정 3).
     """
     sections: list[_Section] = []
     stack: list[str] = []
+    stack_pos: list[int] = []         # stack 원소마다 items 속 위치 — 고아를 되살릴 때 문서 순서로 놓으려고
+    orphans: list[tuple[int, str]] = []   # (items 속 위치, 헤딩)
+    emitted = 0                        # stack 앞에서 몇 개가 이미 섹션 경로로 나갔나 — 그 헤딩들은 고아가 될 수 없다
     buf: list[str] = []
     buf_pages: list[int | None] = []
     buf_blocks: list[str | _TableBlock] = []
-    orphans: list[str] = []
     start_page: int | None = items[0][0] if items else None
     last_page: int | None = start_page
 
@@ -286,40 +297,44 @@ def _build_sections(items: list[_Item]) -> list[_Section]:
             buf_pages.extend([page] * (text.count('\n') + 1))
         buf_blocks.append(text)
 
-    def flush() -> bool:
-        """섹션을 만들었으면 True. 본문 없는 헤딩은 섹션이 되지 않는다 (docx·md도 같은 가드)."""
+    def flush(path: list[str]) -> None:
+        """본문이 있으면 섹션을 만든다. 본문 없는 헤딩은 섹션이 되지 않는다."""
+        nonlocal emitted
         if not buf:
-            return False
-        sections.append(_Section(list(stack), start_page, '\n'.join(buf), list(buf_pages), blocks=_join_blocks(buf_blocks)))
+            return
+        sections.append(_Section(list(path), start_page, '\n'.join(buf), list(buf_pages), blocks=_join_blocks(buf_blocks)))
+        emitted = len(path)
         buf.clear()
         buf_pages.clear()
         buf_blocks.clear()
-        return True
 
-    for page, text, level in items:
+    for pos, (page, text, level) in enumerate(items):
         if page is not None:
             last_page = page
         if level is not None:
-            produced = flush()
-            removed = stack[level - 1:]
-            if not produced and removed:
-                orphans.extend(removed)
-            del stack[level - 1:]
+            flush(stack)
+            cut = max(emitted, level - 1)                       # 걷어낼 헤딩 중 경로로 한 번도 안 나간 것
+            orphans.extend(zip(stack_pos[cut:], stack[cut:]))
+            emitted = min(emitted, level - 1)
+            del stack[level - 1:], stack_pos[level - 1:]
             stack.append(text)
+            stack_pos.append(pos)
         else:
             # 섹션의 page는 '첫 본문 줄'의 페이지다 — 헤딩이 페이지 끝에 걸리면
             # 본문은 다음 쪽에서 시작하고, 인용은 본문이 있는 쪽을 가리켜야 맞다.
             if not buf:
                 start_page = page
-                for orphan in orphans:
+                for _, orphan in sorted(orphans):   # 빠진 순서가 아니라 문서 순서 — 상위가 하위보다 늦게 빠질 수 있다
                     add(orphan, page)
                 orphans.clear()
             add(text, page)
-    if orphans and not buf:            # 문서 끝에 남은 것도 버리지 않는다
+    if buf:
+        flush(stack)
+    elif sections:                     # 문서가 본문 없는 헤딩으로 끝났다 — 버리지 않고 본문으로(경로는 이미 나간 앞부분)
         start_page = last_page
-        for orphan in orphans:
-            add(orphan, last_page)
-    flush()
+        for _, heading in sorted([*orphans, *zip(stack_pos[emitted:], stack[emitted:])]):
+            add(heading, last_page)
+        flush(stack[:emitted])
     return sections
 
 

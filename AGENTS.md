@@ -121,6 +121,8 @@ TEI→인덱싱·검색·캐시.
 **모든 측정 축이 읽는 파일은 `eval/gold_set_v2.jsonl` 하나뿐이다**(no_evidence 58 / trap 50).
 예외 하나: 사내 실문서 골드는 원문 발췌라 공개 저장소에 올리지 않고 gitignore된 eval/gold_private 디렉터리에
 두며, `eval/generation.py`의 `load_gold`가 정본과 병합한다 — 검색축 `eval/retrieval_v2.py`가 이걸 읽는다.
+질문셋 파일이 아예 없는 축도 있다 — `eval/retrieval_article.py`(조 번호, #238)·`eval/retrieval_keyword.py`(상담원식 키워드
+질의, #248)는 실행할 때마다 색인에서 질문·정답을 만든다(공용부 `eval/axis_common.py`, 시드 고정).
 테넌트별 분할 `eval/gold_v2/*.jsonl`은 구축용 초안이며 어느 측정 축도 읽지 않는다 —
 읽는 것은 `eval/validate_gold_v2.py` 하나다. 그래서 둘은 어긋날 수 있고 실제로 어긋나 있다
 (#88 실측 15건, 전부 `expected_docs`·`expected_chunks`. 추가로 #95의 고난도 90행과 trap `must_not_contain` 백필은 **정본에만 있다** — 분할본에는 없는 것이 정상이다). **gold를 고칠 때는 정본을 고쳐라.**

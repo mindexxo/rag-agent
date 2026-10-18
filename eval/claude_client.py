@@ -85,6 +85,46 @@ class ClaudeCliClient:
                 f"claude -p 실패 (exit {proc.returncode}): stdout={out.decode()[:200]!r} stderr={err.decode()[:200]!r}")
         return out.decode().strip()
 
+    async def acomplete_image(self, prompt: str, image_png: bytes, system: str | None = None) -> str:
+        """이미지 1장 + 지시문 1콜(#247 그림 캡션 판정). 위생 플래그는 acomplete와 같다.
+
+        `-p` 텍스트 stdin으로는 이미지를 못 넘긴다 — `--input-format stream-json`으로 사용자 메시지의 content에
+        image 블록(base64 PNG)을 싣는다(2026-10-18 실측: 한글·화살표·금액 그림을 그대로 옮겼다). stream-json 입력은
+        출력도 stream-json(+--verbose)을 요구해, 마지막 result 이벤트의 result 문자열만 답으로 취한다.
+        승인 채널은 acomplete와 같은 claude CLI다(모듈 docstring — 외부 전송이 신규가 아니다, 실문서 그림은 #247 결정 1).
+        """
+        import base64
+        import json
+        msg = {"type": "user", "message": {"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                         "data": base64.b64encode(image_png).decode()}},
+            {"type": "text", "text": prompt}]}}
+        cmd = [self._exe, "-p", "--model", self.model, "--tools", "",
+               "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+               "--strict-mcp-config", "--disable-slash-commands", "--setting-sources", "",
+               "--system-prompt", system or _MINIMAL_SYSTEM]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, cwd=self._workdir, stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        try:
+            out, err = await asyncio.wait_for(
+                proc.communicate((json.dumps(msg, ensure_ascii=False) + "\n").encode()), timeout=TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise RuntimeError(f"claude -p(이미지) 타임아웃 ({TIMEOUT_SECONDS}s, model={self.model})")
+        result = None
+        for line in out.decode().splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if event.get("type") == "result":
+                result = event
+        if proc.returncode != 0 or result is None or result.get("is_error"):
+            raise RuntimeError(f"claude -p(이미지) 실패 (exit {proc.returncode}): "
+                               f"result={str(result)[:200]!r} stderr={err.decode()[:200]!r}")
+        return str(result.get("result") or "").strip()
+
 
 async def _smoke():
     client = ClaudeCliClient()

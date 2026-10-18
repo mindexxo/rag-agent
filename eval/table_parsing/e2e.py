@@ -61,8 +61,8 @@ async def _chunks(document_id: int) -> list[dict]:
     return [h['_source'] for h in resp['hits']['hits']]
 
 
-async def phase_upload(base: str, out: Path, only, paths) -> list[dict]:
-    made = build_all(out / 'docs', only, set(paths))
+async def phase_upload(base: str, out: Path, only, paths, context: bool = False) -> list[dict]:
+    made = build_all(out / 'docs', only, set(paths), context=context)
     manifest = []
     async with httpx.AsyncClient(base_url=base, timeout=120) as client:
         for spec_id, path, file in made:
@@ -273,12 +273,13 @@ async def main():
     ap.add_argument('--only', nargs='*')
     ap.add_argument('--paths', nargs='*', default=list(PATHS))
     ap.add_argument('--no-llm', action='store_true', help='기계 판정 실패분의 LLM 재판정을 건너뛴다')
+    ap.add_argument('--context', action='store_true', help='실제 문서처럼 앞뒤 문맥을 둔 문서로(#247, context.py)')
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     manifest = json.loads((out / 'manifest.json').read_text()) if (out / 'manifest.json').exists() else []
     if args.phase in ('all', 'upload'):
-        made = await phase_upload(args.base_url, out, set(args.only) if args.only else None, args.paths)
+        made = await phase_upload(args.base_url, out, set(args.only) if args.only else None, args.paths, args.context)
         if args.phase == 'upload' and args.only:                      # 일부만 다시 올릴 때 기존 manifest에 합친다(같은 id·path는 교체)
             keep = [m for m in manifest if (m['id'], m['path']) not in {(x['id'], x['path']) for x in made}]
             manifest = keep + made

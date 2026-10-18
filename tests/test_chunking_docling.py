@@ -251,7 +251,12 @@ class TestRealConversion:
         assert api.scale == settings.vlm_caption_scale
         assert api.timeout == settings.vlm_caption_timeout_seconds
         # temperature 0 = 결정적 캡션(#209): 3회 재변환 25/25 동일 실측. 빠지면 샘플링으로 돌아가 재인제스트마다 캡션이 달라진다
-        assert api.params == {'model': settings.vlm_caption_model, 'temperature': settings.vlm_caption_temperature}
+        assert api.params == {'model': settings.vlm_caption_model, 'temperature': settings.vlm_caption_temperature,
+                              'max_tokens': settings.vlm_caption_max_tokens}
+        # 출력 상한(#247 결정 16) — 빠지면 7B 반복 고리 폭주(실측 6천 자대)가 색인되고 45초 상한을 넘겨 문서 재시도로 번진다
+        assert 655 * 2 <= api.params['max_tokens'] <= 4000
+        # 면적 하한(#247 결정 17) — 0.05면 내용 있는 작은 캡처(1.2~4.6%)가 캡션 없이 빠졌다. 아이콘(0.39%)은 계속 제외
+        assert api.picture_area_threshold == settings.vlm_caption_area_threshold == 0.01
         assert api.params['temperature'] == 0.0 and api.timeout == 45.0   # .env.dev가 config를 덮으므로 값 자체도 단언
         # 동시 1(#223 결정 7) — 동시로 보내면 vLLM 배치 탓에 온도 0이어도 캡션이 실행마다 갈린다(실문서 실측). 올리기 전에 config 주석부터
         assert api.concurrency == settings.vlm_caption_concurrency == 1

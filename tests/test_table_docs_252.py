@@ -54,5 +54,20 @@ def test_쪽을_넘긴_70행_표는_한_표로_이어져_묶음마다_헤더와_
     # 결정 E·1·7c: 쪽마다 헤더가 반복된 표가 하나로 이어지고, 묶음마다 헤더·표 위 한 줄을 달며, 뒤 묶음은 제 쪽 번호
     batches = [c for c in chunks['goodpeople_15_자원봉사활동규정.pdf'] if '나눔센터-' in c.text]
     assert len(batches) >= 2
-    assert all(c.text.startswith('봉사처별 월 배정 인원은 다음과 같다.\n| 번호 | 봉사처 | 지역 | 월 배정 인원 |') for c in batches)
+    # 도입 줄 = 표 바로 앞 글의 마지막 줄. docling이 앞 문단과 한 줄로 합칠 수 있어(실제 문서 모양, #247 보강 10/18) 끝만 본다
+    leads = {c.text.split('\n')[0] for c in batches}
+    assert len(leads) == 1 and leads.pop().endswith('봉사처별 월 배정 인원은 다음과 같다.')
+    assert all(c.text.split('\n')[1] == '| 번호 | 봉사처 | 지역 | 월 배정 인원 |' for c in batches)
     assert sum(c.text.count('| 나눔센터-') for c in batches) == 70 and batches[-1].page > batches[0].page
+
+
+def test_그림_면적_하한_1퍼센트_경계(fake_vlm):
+    """#247 결정 17 — 0.5% 상자(유니폼)는 캡션 대상이 아니라 자리표시, 1.5% 상자(안전화)는 캡션이 붙는다. 실문서에서 내용 있는 작은
+    캡처(1.2~4.6%)가 5% 하한에 걸려 빠졌다. 그림 생성의 정본은 sample_docs/corpus_v2/_src/build_picture_docs.py(P06·P07)."""
+    from rag.chunking import _PICTURE_PLACEHOLDER
+    from tests.conftest import FAKE_CAPTION
+    chunks = chunk_file(ROOT / 'sample_docs' / 'corpus_v2' / 'homeplus' / 'homeplus_15_매장운영지표안내.pdf')
+    sec = next(c.text for c in chunks if '안전화는 매장 바닥 작업' in c.text)
+    before, after = sec.split('안전화는 매장 바닥 작업', 1)
+    assert _PICTURE_PLACEHOLDER in before and FAKE_CAPTION not in before.split('업무용 물품을 지급한다')[-1]   # 0.5%: 자리표시
+    assert FAKE_CAPTION in after                                                                         # 1.5%: 캡션

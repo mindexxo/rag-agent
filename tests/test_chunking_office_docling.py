@@ -268,7 +268,7 @@ class TestXlsxDocling:
         chunks = chunk_file(_xlsx(tmp_path, build))
         by_sheet = {c.heading_path[0]: c.meta['sheet_text'] for c in chunks}
         assert list(by_sheet) == ['첫시트', '둘째']                          # 시트 순서 유지(#222: 시트당 묶음 여럿 가능)
-        # 작은 시트라 그림이 캡션 대상(면적 하한 5% 위)이다. 긴 시트에서는 하한 미만으로 계산돼 빠진다 — #249
+        # 작은 시트라 그림이 캡션 대상(면적 하한 위 — #247 결정 17로 1%)이다. 긴 시트에서는 하한 미만으로 계산돼 빠진다 — #249
         assert FAKE_CAPTION in by_sheet['첫시트'] and FAKE_CAPTION not in by_sheet['둘째']
 
     def test_숨긴_시트는_색인하지_않고_행_상한에도_세지_않는다(self, tmp_path):

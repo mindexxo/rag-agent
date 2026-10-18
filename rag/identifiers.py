@@ -26,7 +26,7 @@ _RULES = (
     # 제43조의2 / 43조의2  → 43조의2
     (re.compile(r'제?\s*(\d+)\s*조\s*의\s*(\d+)'), r'\1조의\2'),
     # '의' 생략 표기 '제 43 조 2(태아검진…)' — 사내 취업규칙 원본이 실제로 이렇게 적는다(#238 결정 10).
-    # **괄호 제목이 뒤따를 때만** 가지로 읽는다 — '제9조 2항'은 참조다. 운영 DOCX 폴백의 같은 결함은 #250.
+    # **괄호 제목이 뒤따를 때만** 가지로 읽는다 — '제9조 2항'은 참조다. DOCX 폴백도 같은 판정(split_heading_line)이라 제목으로 올린다(#250·#233).
     (re.compile(r'제\s*(\d+)\s*조\s*(\d+)(?=\s*[(（])'), r'\1조의\2'),
     # 제11조 / 제 11 조 / 11조  → 11조. '조건'·'조정'·'조치'… 같은 단어의 '조'는 제외.
     (re.compile(r'제?\s*(\d+)\s*조(?!의\s*\d)'), r'\1조'),
@@ -48,13 +48,48 @@ def normalize_identifiers(text: str) -> list[str]:
     return list(dict.fromkeys(_TOKEN.findall(text)))
 
 
-# 헤딩 꼴 줄 — 줄 머리가 식별자이고 **괄호 제목이 뒤따른다**. 인용("제10조 2항에 의거", "제18조의2제1항을 위반")은
-# 괄호 제목이 없어 걸리지 않는다(실측 585문항·실질문 23건 오인식 0, 2026-10-17).
-_HEADING_LINE = re.compile(r'^제?\s*\d+\s*조(?:\s*의?\s*\d+)*\s*[(（]')
+# 조 제목 줄의 머리 — 줄 머리 조 번호(가지 조 포함) 다음 괄호가 열린다. 괄호 짝과 그 뒤는 split_heading_line이 본다.
+# 가지 번호 반복은 **소유 수량자(`*+`)** 다 — 공백·'의'가 둘 다 생략 가능해 붙은 숫자열("1111…")을 나누는 방법이 지수적으로
+# 많고, 뒤에 괄호가 없으면 엔진이 그걸 전부 되돌려 본다(#233 리뷰: 조 번호 뒤 숫자 22자 0.56초, 2자마다 ×4 — 한 줄로 색인
+# 워커가 멈춘다). 되돌려 나눠도 숫자 뒤에 괄호가 생길 수는 없으므로 판정은 같다(tests/test_identifiers 동치 검사).
+_HEADING_HEAD = re.compile(r'^제?\s*\d+\s*조(?:\s*의?\s*\d+)*+\s*[(（]')
+
+
+def split_heading_line(line: str) -> tuple[str, str] | None:
+    """조 제목 줄이면 (제목 머리, 같은 줄에 이어진 본문), 아니면 None — **조 제목 판정의 정의점**(#233).
+
+    식별자 사전(effective_headings)과 DOCX 조문 폴백(rag/chunking._docx_fallback_headings)이 이 함수 하나를 쓴다.
+    제목 = 줄 머리 조 번호 + 괄호 제목이고, 짝 맞는 닫는 괄호 **뒤가 줄끝이거나 공백**이다(공백이면 그 뒤는 같은 문단에 이어진
+    본문 — "제8조(역할과 책임) ① 운영관리자는 …" 워드 꼴). 괄호는 짝을 세어 넘는다(전각 포함): '제2조(시향 예약(단체))'.
+    괄호가 줄 안에서 안 닫히면 제목이다 — 레이아웃 모델이 닫는 괄호를 다음 줄로 떨어뜨린 실문서 꼴('제 7 조 ( 징계종류').
+    인용으로 보는 것: 괄호 없는 꼴("제98조에 의한", "제98조 및 제99조에", "제98조 제2항의"), 닫는 괄호에 조사가 바로 붙는 꼴
+    ("제98조(보상)에 따라"), 괄호 안이 '이하'로 시작하는 정의 꼴("제98조(이하 '보상조항'이라 한다)에 따라").
+
+    알려진 한계(#233 결정 2 — 테스트가 고정한다): 닫는 괄호 뒤가 공백이면 인용도 제목이 된다("제98조(보상) 규정에 따라") —
+    워드 꼴 제목+본문과 글자 꼴로 가를 수 없다. 괄호 없이 적은 진짜 제목('제8조 목적')은 제목으로 보지 않는다 — 인용
+    ("제98조 및 …")과 가를 수 없다. 닫는 괄호 뒤에 공백 없이 괄호·기호가 붙은 제목('제12조(휴가)(연차)', '제5조(목적)[개정 2020]')은
+    인용으로 본다 — 조사가 붙은 인용과 같은 규칙에 걸린다(#233 리뷰, 실문서 사례 없음). 어느 쪽이든 글은 본문이나 제목 경로에
+    남는다(원문 소실 0 — eval/chunk_invariants).
+    """
+    s = line.strip()
+    m = _HEADING_HEAD.match(s)
+    if not m or s[m.end():].lstrip().startswith('이하'):
+        return None
+    depth = 1
+    for i in range(m.end(), len(s)):
+        if s[i] in '(（':
+            depth += 1
+        elif s[i] in ')）':
+            depth -= 1
+            if depth == 0:
+                rest = s[i + 1:]
+                return (s[:i + 1], rest.strip()) if not rest or rest[0].isspace() else None
+    return s, ''
 
 
 def is_heading_line(line: str) -> bool:
-    return bool(_HEADING_LINE.match(line.strip()))
+    """조 제목 줄인가 — 판정은 split_heading_line."""
+    return split_heading_line(line) is not None
 
 
 def effective_headings(headings: list[str], text: str) -> list[str]:

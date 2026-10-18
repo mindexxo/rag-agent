@@ -180,7 +180,7 @@ def _join_blocks(blocks: list['str | _TableBlock']) -> list['str | _TableBlock']
     return out
 
 
-# (page, text, level) — 두 PDF 경로(docling / pdfplumber)가 _build_sections에 흘리는 공통 단위.
+# (page, text, level) — PDF(docling·pdfplumber)·DOCX·MD 경로가 _build_sections에 흘리는 공통 단위(#233).
 # level이 None이면 본문 줄, 정수면 그 레벨의 헤딩. text는 여러 줄일 수 있고(pdfplumber 경로의 표 markdown), docling 경로의
 # 표는 _TableBlock으로 온다(#252 — 행 목록 그대로 운반).
 _Item = tuple[int | None, 'str | _TableBlock', int | None]
@@ -254,7 +254,7 @@ def _pdf_pages(file_path: str | Path) -> list[tuple[int, str]]:
         return [(i, page.extract_text() or '') for i, page in enumerate(pdf.pages, start=1)]
 
 
-# ── 섹션 조립 — 두 PDF 경로의 공통 후단 ──────────────────────────────────────────
+# ── 섹션 조립 — PDF·DOCX·MD 공통 후단 ──────────────────────────────────────────────
 
 def _build_sections(items: list[_Item]) -> list[_Section]:
     """(page, text, level) 흐름을 헤딩 스택으로 _Section 목록에 접는다. PDF·DOCX·MD가 이 함수 하나로 조립한다(#233).
@@ -1265,35 +1265,16 @@ def _docx_sections(file_path: str | Path) -> list[_Section]:
     헤딩 텍스트는 본문에 넣지 않는다. heading_path가 들고 있고, 인덱스 입력엔
     rag/index_text가 앞에 붙이므로 본문에까지 넣으면 같은 문구가 두 번 들어간다.
 
-    본문이 없는 헤딩(상위 목차처럼 바로 하위 헤딩이 오는 경우)은 섹션을 만들지 않는다 —
-    '헤딩만 있고 내용 없는 청크'가 인덱스에 새는 것을 막는다(md 경로에서 실제로 관측된 노이즈).
-    그 헤딩은 하위 섹션의 heading_path에 조상으로 남으므로 정보 손실은 없다.
+    조립은 PDF와 같은 `_build_sections`다(#233) — 본문 없는 상위 헤딩은 섹션을 만들지 않고(하위 섹션의 heading_path에 조상으로
+    남는다), 본문 없이 같은 레벨 헤딩에 밀린 헤딩('제7조(삭제)')과 문서 끝 헤딩은 본문으로 되살린다. 따로 접던 때는 이 보존이
+    PDF에만 있어서 워드에서 본문 없는 조가 색인에서 사라졌다. page는 docx에 없다(None).
     """
-    sections: list[_Section] = []
-    stack: list[str] = []      # 현재 헤딩 경로 — 인덱스가 곧 레벨-1
-    lines: list[str] = []
-    blocks: list[str | _TableBlock] = []
-
-    def flush() -> None:
-        if lines:
-            sections.append(_Section(list(stack), None, '\n'.join(lines), None, blocks=_join_blocks(blocks)))   # page는 docx에 없음
-            lines.clear()
-            blocks.clear()
-
     if settings.docling_enabled:
         items = list(_docx_docling_items(docling_convert(file_path)))
     else:
         items = list(_docx_items(file_path))
-    for is_heading, level, text, _ in _docx_fallback_headings(items):
-        if is_heading:
-            flush()                    # 이전 섹션 마감 후 경로 갱신
-            del stack[level - 1:]      # 같은 레벨·하위 레벨 걷어내고
-            stack.append(text)
-        else:
-            lines.append(text.render() if isinstance(text, _TableBlock) else text)
-            blocks.append(text)
-    flush()
-    return sections
+    return _build_sections([(None, text, level if is_heading else None)
+                            for is_heading, level, text, _ in _docx_fallback_headings(items)])
 
 
 def _common_prefix(paths: list[list[str]]) -> list[str]:
@@ -1487,24 +1468,23 @@ def _md_sections(file_path: str | Path) -> list[_Section]:
     문구가 두 번 들어간다. 옛 MarkdownNodeParser 경로는 자기 헤딩을 본문 첫 줄에
     남겨서 md만 이 원칙에서 벗어나 있었다.
 
-    **본문 없는 헤딩은 섹션이 되지 않는다** — 헤딩을 버퍼에 안 넣으므로 `flush()`의
-    가드에 자동으로 걸린다. 옛 경로는 이걸 안 해서 md 청크의 19%가 `'## 4. 결제·정산'`
-    같은 헤딩 한 줄뿐이었다(실측 78개 중 15개). `_docx_sections` docstring이 이 노이즈를
-    *"md 경로에서 실제로 관측된"* 이라고 적어두고도 docx에만 가드를 넣었던 것을 맞춘다.
+    **본문 없는 헤딩은 섹션이 되지 않는다** — 옛 경로는 이걸 안 해서 md 청크의 19%가 `'## 4. 결제·정산'`
+    같은 헤딩 한 줄뿐이었다(실측 78개 중 15개). 조립은 PDF·docx와 같은 `_build_sections`라(#233) 같은 레벨 헤딩에 밀린
+    헤딩('### 제7조(삭제)')과 문서 끝 헤딩은 본문으로 되살린다 — 따로 접던 때는 사라졌다.
+
+    헤딩 사이 줄들은 **한 항목**으로 넘긴다(#233 설계 2): 빈 줄도 그대로 둔 채(md는 빈 줄이 문단 구분이다) 앞뒤 줄바꿈만
+    자르고(공백만 있는 줄은 남는다 — 옛 파서와 같은 동작), 빈 줄뿐이면 넘기지 않는다 — 헤딩 사이의 빈 줄이 빈 섹션을 만들지 않게. 그래서 `_build_sections`는 빈 줄을 몰라도 된다.
 
     **코드 펜스 안의 '#'은 헤딩이 아니다.** 백틱과 틸드 둘 다 본다 — 옛 파서는 백틱만
     처리했다. 들여쓰기 코드블록은 `_HEADING_RE`가 열 0을 요구해 공짜로 걸러진다.
     """
-    sections: list[_Section] = []
-    stack: list[str] = []
+    items: list[_Item] = []
     buf: list[str] = []
     fence: str | None = None       # 열려 있는 펜스 마커('```'/'~~~~' 등), 없으면 None
 
     def flush() -> None:
-        # 빈 줄만 남은 버퍼는 섹션이 아니다 — 헤딩 사이의 빈 줄이 빈 섹션을 만들지 않게.
-        # (docx·pdf는 파서가 빈 줄을 애초에 안 흘려서 `if buf:`로 충분하다.)
         if any(line.strip() for line in buf):
-            sections.append(_Section(list(stack), None, '\n'.join(buf).strip('\n')))
+            items.append((None, '\n'.join(buf).strip('\n'), None))
         buf.clear()
 
     for line in _read_text(file_path).splitlines():
@@ -1520,12 +1500,11 @@ def _md_sections(file_path: str | Path) -> list[_Section]:
         m = None if fence else _HEADING_RE.match(line)
         if m:
             flush()
-            del stack[len(m.group(1)) - 1:]
-            stack.append(m.group(2).strip())
+            items.append((None, m.group(2).strip(), len(m.group(1))))
         else:
-            buf.append(line)       # 빈 줄도 보존 — md는 빈 줄이 문단 구분이다
+            buf.append(line)
     flush()
-    return sections
+    return _build_sections(items)
 
 
 # 형식 → 섹션 파서. 이 넷은 _Section으로 수렴하므로 뒤 단계(묶기·분할)를 공유한다.

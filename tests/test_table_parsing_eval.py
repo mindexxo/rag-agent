@@ -306,3 +306,29 @@ class TestDiagnosis:
         assert '파싱 손실' in diagnose(dict(base, answer='매월 30일', llm_label='wrong'), [{'text': '| 식대 | 200,000 | 매월 30일 |'}])
         assert '생성 모델 오류' in diagnose(dict(base, answer='매월 30일', cited=['x'], cited_ok=True, llm_label='wrong'), ch)
         assert diagnose(dict(base, final_ok=True, answer='매월 25일'), ch) == ''
+
+
+class TestContext:
+    """--context 문서(#247 결정 11) — 문맥이 표 값을 흘리면 '문맥 유무'만 비교한다는 전제가 깨진다."""
+
+    def test_모든_정의에_문맥이_있다(self):
+        from eval.table_parsing.context import CONTEXT
+        from eval.table_parsing.specs import SPECS
+        assert {s['id'] for s in SPECS} == set(CONTEXT)
+
+    def test_문맥에는_표의_값_칸이_없다(self):
+        import re
+        from eval.table_parsing.context import blocks
+        from eval.table_parsing.expected import expected_cells, flatten_nested
+        from eval.table_parsing.specs import SPECS, tables_of
+        for s in SPECS:
+            b = blocks(s['id'])
+            # 시행일 줄('2026년 10월 1일')은 모든 문서 공통이라 '월 1일' 같은 짧은 칸에 부분 일치한다(S03) — 표 사실과 무관해 뺀다
+            text = ' '.join(v for k, v in b.items() if k != 'meta')
+            for rows in tables_of(s):
+                if any(isinstance(c, dict) and c.get('nested') for r in rows for c in r):
+                    rows = flatten_nested(rows)
+                for cell in expected_cells(rows):
+                    t = cell.text.strip()
+                    if re.search(r'\d', t) and len(t) >= 3:          # 숫자가 든 칸(금액·날짜·수량)이 문맥에 있으면 안 된다
+                        assert t not in text, (s['id'], t)

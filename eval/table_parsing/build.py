@@ -45,9 +45,25 @@ def _span_cells(rows):
     return out
 
 
+_H1 = ParagraphStyle('h1', fontName='HYGothic-Medium', fontSize=16, leading=22, spaceAfter=4)
+_H2 = ParagraphStyle('h2', fontName='HYGothic-Medium', fontSize=12.5, leading=17, spaceBefore=10, spaceAfter=4)
+_CAPS = ParagraphStyle('caps', fontName='HYGothic-Medium', fontSize=9, leading=12, alignment=1, spaceBefore=2, spaceAfter=6)
+
+
+def _ctx_story(spec, body: list) -> list:
+    """--context 문서(#247): 제목·목적·절 제목·도입 문장 → 표(body) → 표 제목 줄·해설·문의. 문맥에는 표 값을 쓰지 않는다(context.py)."""
+    from eval.table_parsing.context import blocks
+    b = blocks(spec['id'])
+    head = [Paragraph(b['title'], _H1), Paragraph(b['meta'], _BODY), Paragraph('1. 목적', _H2), Paragraph(b['purpose'], _BODY),
+            Paragraph(b['section'], _H2), Paragraph(b['lead'], _BODY), Spacer(1, 4)]
+    tail = ([Paragraph(b['caption'], _CAPS)] if b['caption'] else []) + [Paragraph(b['after'], _BODY),
+                                                                           Paragraph('3. 문의', _H2), Paragraph(b['contact'], _BODY)]
+    return head + body + tail
+
+
 # ── img: PNG를 PDF에 붙인다 ─────────────────────────────────────────────────────
 
-def build_img_pdf(spec, out: Path, png_dir: Path) -> Path:
+def build_img_pdf(spec, out: Path, png_dir: Path, context: bool = False) -> Path:
     im = render_spec(spec)
     png = png_dir / f"{spec['id']}.png"
     im.save(png)
@@ -57,7 +73,8 @@ def build_img_pdf(spec, out: Path, png_dir: Path) -> Path:
         height = A4[1] * 0.75
         width = height * im.width / im.height
     p = out / f"{spec['id']}.img.pdf"
-    SimpleDocTemplate(str(p), pagesize=A4).build([Paragraph(_INTRO, _BODY), Spacer(1, 6), RLImage(str(png), width=width, height=height)])
+    img = [RLImage(str(png), width=width, height=height)]
+    SimpleDocTemplate(str(p), pagesize=A4).build(_ctx_story(spec, img) if context else [Paragraph(_INTRO, _BODY), Spacer(1, 6), *img])
     return p
 
 
@@ -93,8 +110,8 @@ def _rl_table(rows, *, nested_ok=True, style_kind='grid'):
     return t
 
 
-def build_text_pdf(spec, out: Path) -> Path:
-    story = [Paragraph(_INTRO, _BODY), Spacer(1, 6)]
+def build_text_pdf(spec, out: Path, context: bool = False) -> Path:
+    story = [] if context else [Paragraph(_INTRO, _BODY), Spacer(1, 6)]
     if spec.get('title'):
         story.append(Paragraph(spec['title'], _BODY))
     if spec.get('side_by_side'):
@@ -107,7 +124,7 @@ def build_text_pdf(spec, out: Path) -> Path:
     if spec.get('note'):
         story += [Spacer(1, 4), Paragraph(spec['note'], _BODY)]
     p = out / f"{spec['id']}.pdf.pdf"
-    SimpleDocTemplate(str(p), pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm).build(story)
+    SimpleDocTemplate(str(p), pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm).build(_ctx_story(spec, story) if context else story)
     return p
 
 
@@ -133,9 +150,19 @@ def _docx_fill(table, rows):
         table.cell(r, c).merge(table.cell(r + rs - 1, c + cs - 1))
 
 
-def build_docx(spec, out: Path) -> Path:
+def build_docx(spec, out: Path, context: bool = False) -> Path:
     d = DocxDocument()
-    d.add_paragraph(_INTRO)
+    if context:
+        from eval.table_parsing.context import blocks
+        cb = blocks(spec['id'])
+        d.add_heading(cb['title'], level=1)
+        d.add_paragraph(cb['meta'])
+        d.add_heading('1. 목적', level=2)
+        d.add_paragraph(cb['purpose'])
+        d.add_heading(cb['section'], level=2)
+        d.add_paragraph(cb['lead'])
+    else:
+        d.add_paragraph(_INTRO)
     if spec.get('title'):
         d.add_paragraph(spec['title'])
     rows = spec['rows']
@@ -151,6 +178,12 @@ def build_docx(spec, out: Path) -> Path:
                 cell._tc.get_or_add_tcPr().append(shd)
     if spec.get('note'):
         d.add_paragraph(spec['note'])
+    if context:
+        if cb['caption']:
+            d.add_paragraph(cb['caption']).alignment = 1
+        d.add_paragraph(cb['after'])
+        d.add_heading('3. 문의', level=2)
+        d.add_paragraph(cb['contact'])
     p = out / f"{spec['id']}.docx.docx"
     d.save(p)
     return p
@@ -167,8 +200,8 @@ def _xlsx_value(cell, typed: bool):
     return raw if raw != '' else None
 
 
-def _xlsx_fill(ws, rows, *, typed: bool, col_offset: int = 0, striped: bool = False):
-    for r, row in enumerate(rows, start=1):
+def _xlsx_fill(ws, rows, *, typed: bool, col_offset: int = 0, striped: bool = False, row_offset: int = 0):
+    for r, row in enumerate(rows, start=1 + row_offset):
         for c, cell in enumerate(row, start=1 + col_offset):
             v = _xlsx_value(cell, typed)
             if v is None:
@@ -179,36 +212,50 @@ def _xlsx_fill(ws, rows, *, typed: bool, col_offset: int = 0, striped: bool = Fa
                     x.fill = PatternFill('solid', fgColor=cell['bg'].lstrip('#'))
                 if cell.get('v'):
                     x.alignment = Alignment(textRotation=90)
-            if striped and r > 1 and r % 2 == 1:                        # 짝수 데이터 행 음영(0-base r-1이 짝수)
+            if striped and r - row_offset > 1 and (r - row_offset) % 2 == 1:                        # 짝수 데이터 행 음영(0-base r-1이 짝수)
                 x.fill = PatternFill('solid', fgColor='F2F2F2')
             if isinstance(v, str) and '\n' in v:
                 x.alignment = Alignment(wrap_text=True)
     for r, c, rs, cs in _span_cells(rows):
-        ws.merge_cells(start_row=r + 1, start_column=c + 1 + col_offset, end_row=r + rs, end_column=c + cs + col_offset)
+        ws.merge_cells(start_row=r + 1 + row_offset, start_column=c + 1 + col_offset, end_row=r + rs + row_offset,
+                       end_column=c + cs + col_offset)
 
 
-def build_xlsx(spec, out: Path) -> Path:
+def build_xlsx(spec, out: Path, context: bool = False) -> Path:
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = '표'
     typed = bool(spec.get('xlsx_types'))
+    top = 0
+    if context:                                   # 제목·시행일 행 → 빈 행 → 표 → 빈 행 → 해설·문의 (빈 행: docling은 붙은 칸을 한 표로 묶는다)
+        from eval.table_parsing.context import blocks
+        cb = blocks(spec['id'])
+        ws.cell(row=1, column=1, value=cb['title'])
+        ws.cell(row=2, column=1, value=cb['meta'])
+        top = 3
     if spec.get('side_by_side'):
         off = 0
         for t in spec['side_by_side']:
-            _xlsx_fill(ws, t, typed=typed, col_offset=off)
+            _xlsx_fill(ws, t, typed=typed, col_offset=off, row_offset=top)
             off += max(len(r) for r in t) + 2
+        height = max(len(t) for t in spec['side_by_side'])
     else:
-        _xlsx_fill(ws, spec['rows'], typed=typed, striped=spec.get('style') == 'striped')
+        _xlsx_fill(ws, spec['rows'], typed=typed, striped=spec.get('style') == 'striped', row_offset=top)
+        height = len(spec['rows'])
+    if context:
+        ws.cell(row=top + height + 2, column=1, value=cb['after'])
+        ws.cell(row=top + height + 3, column=1, value=cb['contact'])
     p = out / f"{spec['id']}.xlsx.xlsx"
     wb.save(p)
     return p
 
 
-BUILDERS = {'img': lambda s, o: build_img_pdf(s, o, o / 'png'), 'pdf': build_text_pdf,
+BUILDERS = {'img': lambda s, o, context=False: build_img_pdf(s, o, o / 'png', context), 'pdf': build_text_pdf,
             'docx': build_docx, 'xlsx': build_xlsx}
 
 
-def build_all(out: Path, only: set[str] | None = None, paths: set[str] | None = None) -> list[tuple[str, str, Path]]:
+def build_all(out: Path, only: set[str] | None = None, paths: set[str] | None = None,
+              context: bool = False) -> list[tuple[str, str, Path]]:
     out.mkdir(parents=True, exist_ok=True)
     (out / 'png').mkdir(exist_ok=True)
     made = []
@@ -218,7 +265,7 @@ def build_all(out: Path, only: set[str] | None = None, paths: set[str] | None = 
         for path in paths_of(spec):
             if paths and path not in paths:
                 continue
-            made.append((spec['id'], path, BUILDERS[path](spec, out)))
+            made.append((spec['id'], path, BUILDERS[path](spec, out, context=context)))
     return made
 
 

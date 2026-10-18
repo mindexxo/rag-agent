@@ -257,6 +257,17 @@ class TestRealConversion:
         assert 655 * 2 <= api.params['max_tokens'] <= 4000
         # 면적 하한(#247 결정 17) — 0.05면 내용 있는 작은 캡처(1.2~4.6%)가 캡션 없이 빠졌다. 아이콘(0.39%)은 계속 제외
         assert api.picture_area_threshold == settings.vlm_caption_area_threshold == 0.01
+        # XLSX만 하한 0(#249 결정 1) — 엑셀은 시트 칸 단위라 면적 비율이 그림 크기를 반영하지 못한다. DOCX는 1% 그대로
+        office = {fmt: converter.format_to_options[fmt].pipeline_options.picture_description_options
+                  for fmt in (InputFormat.DOCX, InputFormat.XLSX)}
+        assert office[InputFormat.DOCX].picture_area_threshold == 0.01
+        assert office[InputFormat.XLSX].picture_area_threshold == 0.0
+        assert office[InputFormat.XLSX].prompt == _PICTURE_CAPTION_PROMPT          # 하한 말고는 같은 캡션 설정
+        assert office[InputFormat.XLSX].params == api.params
+        # 형식마다 캡션 감시(_PictureGuard)가 따로 붙는다 — XLSX가 DOCX 파이프라인을 공유하지 않으므로
+        from rag.chunking import _PictureGuard
+        guarded = [p for p in converter.initialized_pipelines.values() if any(isinstance(m, _PictureGuard) for m in p.enrichment_pipe)]
+        assert len(guarded) >= 3
         assert api.params['temperature'] == 0.0 and api.timeout == 45.0   # .env.dev가 config를 덮으므로 값 자체도 단언
         # 동시 1(#223 결정 7) — 동시로 보내면 vLLM 배치 탓에 온도 0이어도 캡션이 실행마다 갈린다(실문서 실측). 올리기 전에 config 주석부터
         assert api.concurrency == settings.vlm_caption_concurrency == 1

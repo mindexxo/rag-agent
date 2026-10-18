@@ -436,6 +436,8 @@ def _captionable_count(doc, area_threshold: float) -> int:
     return n
 
 
+_XLSX_PICTURE_AREA_THRESHOLD = 0.0   # 엑셀 그림 캡션 면적 하한(#249 결정 1) — 근거는 _docling_runtime의 xlsx_opts 주석
+
 _picture_guards: list[_PictureGuard] = []
 
 
@@ -443,7 +445,7 @@ def _guard_picture_models(converter) -> None:
     """세 형식의 파이프라인을 미리 띄우고 캡션 모델을 _PictureGuard로 바꿔 끼운다.
 
     initialized_pipelines는 DocumentConverter가 공개 속성으로 둔 파이프라인 캐시다(docling 2.126 docstring).
-    DOCX·XLSX는 옵션이 같아 한 파이프라인을 공유할 수 있다 — 이미 감싼 모델은 건너뛴다.
+    #249부터 XLSX는 캡션 면적 하한이 달라(0) DOCX와 파이프라인을 공유하지 않는다 — 형식마다 따로 감싼다.
     docling 업그레이드로 이 구조가 바뀌면 캡션 실패·장수 테스트가 먼저 깨진다.
     """
     from docling.datamodel.base_models import InputFormat
@@ -528,10 +530,21 @@ def _docling_runtime():
             # 설정을 공유한다(같은 VLM·프롬프트·온도). 시간 상한은 PDF와 같은 _ConvertProcess 마감이다(#223).
             office_opts = ConvertPipelineOptions(enable_remote_services=True, do_picture_description=True,
                                                  picture_description_options=caption_opts)
+            # XLSX만 면적 하한 0(#249 결정 1) — 엑셀은 쪽이 없어 docling이 시트를 칸 단위로 재고(그림 앵커까지 포함한
+            # 최대 행·열) OneCellAnchor 그림을 크기와 무관하게 1×1칸으로 잡는다. 비율이 그림 크기가 아니라 '시트에 데이터가
+            # 얼마나 많은가'를 재게 되어, 칸이 100개만 넘어도 큰 차트가 하한 1%에 걸려 캡션 없이 빠졌다(homeplus_17: 6×26칸
+            # → 0.64%, 하한 0으로 재현하니 두 차트 모두 정확한 캡션). 그래서 엑셀 그림은 전부 캡션한다 — 로고 캡션 한 줄은
+            # 무해하고, 그림 장수 상한(_PictureGuard, docling_max_pictures)은 이 하한을 그대로 읽어 엑셀 그림 전부를 센다.
+            # 엑셀 차트 객체(데이터 칸에 연결된 네이티브 차트)도 그림으로 세지지만 이미지가 없어 캡션되지 않는다 — 값은 시트 칸에
+            # 있어 표로 색인되고 자리표시만 남는다(실측). 차트+그림 100개 넘는 엑셀만 과대 집계로 거절될 수 있어 두었다(리뷰, 결정 2 = a).
+            xlsx_opts = ConvertPipelineOptions(
+                enable_remote_services=True, do_picture_description=True,
+                picture_description_options=caption_opts.model_copy(
+                    update={'picture_area_threshold': _XLSX_PICTURE_AREA_THRESHOLD}))
             _docling_converter = DocumentConverter(
                 format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts),
                                 InputFormat.DOCX: WordFormatOption(pipeline_options=office_opts),
-                                InputFormat.XLSX: ExcelFormatOption(pipeline_options=office_opts)})
+                                InputFormat.XLSX: ExcelFormatOption(pipeline_options=xlsx_opts)})
             _guard_picture_models(_docling_converter)
     return _docling_converter
 

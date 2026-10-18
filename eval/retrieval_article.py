@@ -28,16 +28,15 @@ import asyncio
 import json
 import random
 import re
-import subprocess
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
 from config import settings
+from eval.axis_common import chunk_head, commit, load_chunks   # 색인 읽기·지문 — 키워드 축(#248)과 공용
 from eval.retrieval import score_one
 from rag.identifiers import chunk_identifiers
-from rag.os_client import client, close_client
-from rag.os_search import tenant_filter
+from rag.os_client import close_client
 from rag.retriever import prepare_evidence, retrieve_candidates
 
 TENANTS = ("inticube", "article_test")
@@ -138,24 +137,6 @@ def build_items(chunks: list[dict], gold: dict, tenant: str) -> list[dict]:
     return items
 
 
-# ----- 색인 읽기 ----------------------------------------------------------
-
-async def load_chunks(tenant: str) -> list[dict]:
-    """테넌트의 검색 가능 조각 전부(운영 검색과 같은 필터). FAQ 조각은 조가 없어 뺀다."""
-    resp = await client().search(index=settings.opensearch_index, body={
-        "size": 10000, "track_total_hits": True,
-        "_source": ["chunk_id", "document_id", "filename", "heading_path", "headings", "text"],
-        "query": tenant_filter(tenant),
-    })
-    total = resp["hits"]["total"]["value"]
-    if total > 10000:
-        raise RuntimeError(f"{tenant}: 조각 {total}개 — size 상한 초과, 페이지네이션 필요")
-    return [{"chunk_id": int(s["chunk_id"]), "document_id": s["document_id"], "filename": s["filename"],
-             "heading_path": list(s.get("heading_path") or []), "headings": list(s.get("headings") or []),
-             "text": s.get("text") or ""}
-            for h in resp["hits"]["hits"] if (s := h["_source"]).get("document_id") is not None]
-
-
 # ----- 채점 ---------------------------------------------------------------
 
 def classify_mix(item: dict, top: list, keys_of: dict) -> dict:
@@ -214,18 +195,14 @@ def summarize(rows: list[dict], by: str | None = None) -> dict:
 
 # ----- 사람이 읽을 파일 ----------------------------------------------------
 
-def _chunk_head(text: str, n: int = 120) -> str:
-    return text[:n].replace("\n", " ⏎ ")
-
-
 def write_failures(path: Path, rows: list[dict], text_of: dict) -> None:
     lines = ["# 조 번호 질문 — 근거 상위 5개에 정답이 없는 사례", ""]
     for r in rows:
         if r["in_evidence"]:
             continue
         lines += [f"## [{r['tenant']}] {r['query']}  (정답 {r['filename']} {r['article']}, R@5={int(r['recall_at_5'])})",
-                  f"- 정답 조각: " + " / ".join(_chunk_head(text_of[g]) for g in r["gold_ids"][:2])]
-        lines += [f"- {i}위 [{t['filename']}] {t['articles'][:4]} {_chunk_head(t['head'], 80)}"
+                  f"- 정답 조각: " + " / ".join(chunk_head(text_of[g]) for g in r["gold_ids"][:2])]
+        lines += [f"- {i}위 [{t['filename']}] {t['articles'][:4]} {chunk_head(t['head'], 80)}"
                   for i, t in enumerate(r["top"], 1)]
         lines.append("")
     path.write_text("\n".join(lines))
@@ -237,7 +214,7 @@ def write_gold_sample(path: Path, items: list[dict], text_of: dict, n: int = 20)
     lines = ["# 정답 조각 표본 — 원문의 그 조가 맞는지 대조", ""]
     for it in rng.sample(items, min(n, len(items))):
         lines += [f"## {it['filename']} {it['article']}  (조각 {len(it['gold_ids'])}개)"]
-        lines += [f"- [{g}] {_chunk_head(text_of[g], 300)}" for g in it["gold_ids"]]
+        lines += [f"- [{g}] {chunk_head(text_of[g], 300)}" for g in it["gold_ids"]]
         lines.append("")
     path.write_text("\n".join(lines))
 
@@ -296,13 +273,6 @@ async def run_failed(llm, rows: list[dict], keys_of: dict, path: Path) -> None:
 
 # ----- 진입점 -------------------------------------------------------------
 
-def _commit() -> str:
-    try:
-        return subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
-    except OSError:
-        return "?"
-
-
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--answers", action="store_true",
@@ -331,7 +301,7 @@ async def main() -> None:
 
     summary = {by or "all": summarize(rows, by)
                for by in (None, "tenant", "style", "format", "branch", "gold_packed")}
-    fingerprint = {"commit": _commit(), "rerank": settings.rerank_enabled,
+    fingerprint = {"commit": commit(), "rerank": settings.rerank_enabled,
                    "hybrid_lexical": settings.hybrid_lexical_enabled,
                    "hybrid_inject": settings.hybrid_lexical_inject, "seed": SEED, "at": stamp}
     out = RESULT_DIR / f"article_{stamp}.json"

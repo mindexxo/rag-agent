@@ -268,8 +268,39 @@ class TestXlsxDocling:
         chunks = chunk_file(_xlsx(tmp_path, build))
         by_sheet = {c.heading_path[0]: c.meta['sheet_text'] for c in chunks}
         assert list(by_sheet) == ['첫시트', '둘째']                          # 시트 순서 유지(#222: 시트당 묶음 여럿 가능)
-        # 작은 시트라 그림이 캡션 대상(면적 하한 위 — #247 결정 17로 1%)이다. 긴 시트에서는 하한 미만으로 계산돼 빠진다 — #249
         assert FAKE_CAPTION in by_sheet['첫시트'] and FAKE_CAPTION not in by_sheet['둘째']
+
+    def test_긴_시트의_그림도_캡션이_붙는다(self, tmp_path):
+        # #249 — docling은 시트를 칸 단위로 재고 OneCellAnchor 그림을 1×1칸으로 잡아, 칸이 100개만 넘어도 면적 비율이 하한(1%)
+        # 아래로 떨어져 큰 그림도 캡션 없이 자리표시로 남았다(#223 실측: 41행+그림 10장 전부). XLSX는 하한 0으로 전부 캡션한다
+        from openpyxl.drawing.image import Image as XlImage
+        from rag.chunking import _PICTURE_PLACEHOLDER
+
+        def build(wb):
+            ws = wb.active
+            ws.title = '긴시트'
+            ws.append(['번호', '품목', '단가'])
+            for i in range(1, 121):                                    # 3열 × 121행 = 363칸 → 1칸 그림은 0.28%
+                ws.append([i, f'품목-{i:03d}', i * 100])
+            ws.add_image(XlImage(BytesIO(_png())), 'E60')
+        chunks = chunk_file(_xlsx(tmp_path, build), description='긴 시트')
+        text = chunks[0].meta['sheet_text']
+        assert FAKE_CAPTION in text and _PICTURE_PLACEHOLDER not in text
+
+    def test_XLSX_그림도_장수_상한에_걸린다(self, tmp_path, monkeypatch):
+        # #249 범위 — 하한 0이라 엑셀 그림은 전부 캡션 대상이고, #223 그림 장수 상한도 전부를 센다
+        from openpyxl.drawing.image import Image as XlImage
+        monkeypatch.setattr(settings, 'docling_max_pictures', 2)
+
+        def build(wb):
+            ws = wb.active
+            ws.append(['구분', '값'])
+            for i in range(60):
+                ws.append([f'항목{i}', i])
+            for cell in ('D2', 'D20', 'D40'):
+                ws.add_image(XlImage(BytesIO(_png())), cell)
+        with pytest.raises(PictureLimitError, match='그림 3장'):
+            chunk_file(_xlsx(tmp_path, build), description='그림 많은 시트')
 
     def test_숨긴_시트는_색인하지_않고_행_상한에도_세지_않는다(self, tmp_path):
         # #220 리뷰 — 숨긴 시트가 있으면 문서 전체가 실패했다(openpyxl은 세고 docling은 비워 냄). 서비스 결정: 숨긴 시트는 건너뛴다
@@ -401,7 +432,11 @@ class TestConverterOptions:
             opts = converter.format_to_options[fmt].pipeline_options
             assert opts.do_picture_description is True
             assert opts.enable_remote_services is True   # 빠지면 OperationNotAllowed로 변환 자체가 죽는다
-            assert opts.picture_description_options == pdf.picture_description_options
+            # XLSX는 면적 하한만 0(#249 결정 1 — 시트 칸 단위라 비율이 그림 크기를 반영 못 함), 그 밖의 캡션 설정은 PDF와 같다
+            expected = pdf.picture_description_options
+            if fmt == InputFormat.XLSX:
+                expected = expected.model_copy(update={'picture_area_threshold': 0.0})
+            assert opts.picture_description_options == expected
 
 
 class TestNestedAndLong:

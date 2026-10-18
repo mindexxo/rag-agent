@@ -53,6 +53,7 @@ from docx.text.paragraph import Paragraph as DocxParagraph
 from llama_index.core.node_parser import SentenceSplitter
 
 from config import settings
+from rag.identifiers import is_heading_line, split_heading_line
 from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN
 
 logger = logging.getLogger(__name__)
@@ -1075,22 +1076,20 @@ def _docx_text(file_path: str | Path) -> str:
     return '\n'.join(text for _, _, text, _ in _docx_items(file_path))
 
 
-_ARTICLE_RE = re.compile(r'^제\s*\d+\s*조(?:의\s*\d+)?(?=[\s(（]|$)')   # '제8조(역할과 책임)', '제 3 조 (장애)', '제3조의2(…)'
 _DOCX_TITLE_MAX = 60
-_HEADING_HEAD_RE = re.compile(r'^[^\n]*?\s*[(（][^)）\n]*[)）]')   # 첫 줄의 '제N조(제목)'까지 — 괄호 제목이 있을 때
 
 
 def _split_heading_head(text: str) -> tuple[str, str]:
-    """조문 문단 → (헤딩 머리, 나머지 본문). 머리는 첫 줄의 '제N조(제목)'까지(괄호 제목이 없으면 첫 줄 전체).
+    """조문·장 문단 → (헤딩 머리, 나머지 본문). 조는 첫 줄의 '제N조(제목)'까지(identifiers.split_heading_line, #233),
+    장은 첫 줄 전체.
 
     문단 전체를 헤딩으로 올리면 "제8조(역할과 책임) ① 운영관리자는 …"처럼 본문이 같은 문단에 이어진 조문의
     본문이 heading_path로 들어가고, 뒤에 본문 줄이 없으면 섹션이 생기지 않아 **색인에서 사라진다**(리뷰 지적).
+    괄호 짝을 세므로 '제2조(시향 예약(단체))'가 안쪽 닫는 괄호에서 잘리지 않는다(예전 정규식은 잘랐다).
     """
     first, _, rest_lines = text.partition('\n')
-    m = _HEADING_HEAD_RE.match(first)
-    head = m.group(0) if m else first
-    rest = (first[len(head):] + ('\n' + rest_lines if rest_lines else '')).strip()
-    return head.strip(), rest
+    head, rest = split_heading_line(first) or (first.strip(), '')     # 장('제 N 장 …')은 첫 줄 전체가 머리
+    return head, (rest + ('\n' + rest_lines if rest_lines else '')).strip()
 
 
 def _docx_fallback_headings(items: list[tuple[bool, int, str, bool]]) -> list[tuple[bool, int, str, bool]]:
@@ -1103,9 +1102,10 @@ def _docx_fallback_headings(items: list[tuple[bool, int, str, bool]]) -> list[tu
       '제 N 장' → L2 / '제 N 조' → L3(장이 아직 없으면 L2). 제목이 없으면 전부 한 단계 위.
     'N.'·'N.N' 번호 문단은 승격하지 않는다 — 매뉴얼의 목록 항목("1. 출근시간 선택")을 헤딩으로 오인한다(결정 1=a).
     표 행(from_table)은 셀 안에 조문이 있어도 승격하지 않는다 — 셀 단위 구조는 이 폴백의 범위 밖.
-    헤딩은 조문 **머리**('제N조(제목)')까지만이고 같은 문단에 이어진 본문은 본문 줄로 분리한다(_split_heading_head).
-    제목 판정(첫 문단 첫 줄 ≤ _DOCX_TITLE_MAX자)은 휴리스틱이다 — "목 차" 같은 줄도 제목이 된다. 가지 조문 '제N조의M'은
-    허용하고, '제N조.'처럼 구두점이 바로 붙는 꼴과 '제N조의 (공백) 단어'는 승격하지 않는다.
+    조 제목은 rag.identifiers.split_heading_line(조 번호 + 괄호 제목, 정의점)이 판정하고, 헤딩은 그 **머리**('제N조(제목)')까지만,
+    같은 문단에 이어진 본문은 본문 줄로 분리한다(_split_heading_head). 괄호 없이 적은 조('제8조 목적')는 인용과 가를 수 없어
+    승격하지 않는다(#233 결정 2 — 본문으로 남는다).
+    문서 제목 판정(첫 문단 첫 줄 ≤ _DOCX_TITLE_MAX자)은 휴리스틱이다 — "목 차" 같은 줄도 제목이 된다.
     """
     if any(is_heading for is_heading, _, _, _ in items):
         return items
@@ -1117,14 +1117,17 @@ def _docx_fallback_headings(items: list[tuple[bool, int, str, bool]]) -> list[tu
             out.append((is_heading, level, text, from_table))
             continue
         first_line = text.split('\n', 1)[0].strip()
-        if i == 0 and len(first_line) <= _DOCX_TITLE_MAX and not _CHAPTER_RE.match(first_line) and not _ARTICLE_RE.match(first_line):
+        if i == 0 and len(first_line) <= _DOCX_TITLE_MAX and not _CHAPTER_RE.match(first_line) and not is_heading_line(first_line):
             has_title = True
             out.append((True, 1, first_line, False))
             rest = text[len(text.split('\n', 1)[0]):].strip()
             if rest:
                 out.append((False, 0, rest, False))
             continue
-        if _CHAPTER_RE.match(text) or _ARTICLE_RE.match(text):
+        # 조 제목 판정은 identifiers.split_heading_line 한 곳(#233). 예전 `_ARTICLE_RE`(조 번호 뒤 공백·괄호·줄끝)는
+        # "제98조 및 제99조에 따라"·"제98조 제2항의"·"제98조(이하 …)에 따라" 같은 인용을 제목으로 올려, 뒤에 곧바로 다른
+        # 제목이 오면 그 문장이 색인에서 사라졌다(#233 합성 문서 실측 4건 소실·2건 문장 절단).
+        if _CHAPTER_RE.match(text) or is_heading_line(first_line):
             if _CHAPTER_RE.match(text):
                 seen_chapter = True
                 level = 2

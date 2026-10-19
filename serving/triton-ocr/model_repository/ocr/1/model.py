@@ -4,6 +4,8 @@ docling이 인프로세스 `RapidOcrModel`(artifacts_path=None 분기)로 엔진
 재현한다 — 모델(det: ch PP-OCRv5 mobile / rec: <lang> PP-OCRv5 mobile / cls: ch PP-OCRv4 mobile)과
 text_score가 같아야 원격 결과가 인프로세스 결과와 동일하다. 각도 분류기(cls)는 로드는 하되 호출 시
 use_cls=False로 끈다 — 켜면 한글 표 셀 값이 뒤집혔다('35,000원'→'공000'58', #168 실측).
+**의도적으로 다른 값 하나**: 글자 검출 크기 Det.limit_type='max'(#224 — _rapidocr_params 주석). docling 인프로세스와
+결과가 같아야 한다는 원칙의 예외이며, 그 근거는 같은 엔진으로 잰 실측이다.
 
 계약(입출력 이름·형상)은 config.pbtxt 주석 참조. 좌표는 받은 이미지 픽셀 기준 그대로 돌려준다 —
 scale 나누기·쪽 오프셋 보정은 docling 클라이언트가 한다.
@@ -32,6 +34,16 @@ def _rapidocr_params(lang: str, *, use_cuda: bool, text_score: float) -> dict:
         # docling은 lang→PP-OCR 버전을 푸는데, korean은 v6 다국어 목록에 없어 v5로 풀린다
         # (rapidocr.utils.model_resolver.PP_OCRV6_LANGS 확인). det/cls는 언어 무관하게 'ch'.
         "Det.ocr_version": OCRVersion.PPOCRV5, "Det.lang_type": "ch", "Det.model_type": mobile,
+        # 글자 검출은 이미지를 **키우지 않는다**(#224). rapidocr 기본은 limit_type=min·limit_side_len=736 — 짧은 변을 736px로
+        # 키운다. docling은 쪽을 통째로가 아니라 레이아웃 영역을 잘라 보내므로 납작한 제목 띠(834×118)가 6배 넘게 불어나
+        # 검출이 흔들렸다: 스캔 PDF 제목 "기부금영수증 발급 규정 (GP-CS-003)" → "D 금영 0 밤 D 정 G -003)"(문서 모든
+        # 청크의 heading_path로 퍼짐). 같은 띠를 여백만 바꿔 보내도 결과가 매번 달랐다(0px·30px 깨짐, 9px 정상). 'max'는
+        # 긴 변이 기준(960/1500/2000)을 넘을 때만 줄인다 — 큰 이미지 축소는 그 앞의 Global.max_side_len=2000이 이미 하므로
+        # 사실상 "키우지 않음"만 달라진다. 실측(로컬 CPU, 서버와 표 하네스 셀 단위 완전 일치를 먼저 확인, 2026-10-19):
+        # 합성 스캔 5건 제목 깨짐 2→0·헤딩 일치 0.92/0.75→1.00 / 표 이미지 하네스 셀 430→431·숫자 294→297(533칸, 잃은
+        # 2칸은 띄어쓰기 하나씩) / 실문서 이미지 PDF 4건 거의 불변(로고 잔해 8줄 소멸) / 문서 단위 검색 동일(63문항).
+        # 측정 도구·리포트: eval/scan_quality.
+        "Det.limit_type": "max",
         "Cls.ocr_version": OCRVersion.PPOCRV4, "Cls.lang_type": "ch", "Cls.model_type": mobile,
         "Rec.ocr_version": OCRVersion.PPOCRV5, "Rec.lang_type": lang, "Rec.model_type": mobile,
         "Det.model_path": None, "Cls.model_path": None, "Rec.model_path": None, "Rec.rec_keys_path": None,

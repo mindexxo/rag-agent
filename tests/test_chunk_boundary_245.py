@@ -158,11 +158,15 @@ def _kinds(chunked, name) -> set[str]:
     ('harim_18_협력농가납품단가표.pdf', 'table_lead', 'B1 세 줄 설명 중 마지막만 묶음에'),
     ('homeplus_18_PB품질검사기준표.docx', 'table_lead', 'B2 150자 넘는 설명은 묶음에 안 붙음'),
     ('homeplus_18_PB품질검사기준표.docx', 'table_note', 'B3 표 아래 단위 주석이 묶음 밖'),
-    ('aromanica_18_향료원료입고기준.md', 'table_header', 'B6 MD 표 뒤 조각에 머리 행 없음'),
 ])
 def test_알려진_결함_재현(name, kind, case, chunked):
     """운영 청킹의 현재 동작 — 후속 이슈가 고치면 이 단언을 뒤집는다(eval/report_chunk_boundary.md '후속')."""
     assert kind in _kinds(chunked, name), case
+
+
+def test_B6_MD_표는_묶음마다_열_이름을_단다_267(chunked):
+    """#267로 해소 — MD가 docling을 타 표가 행 묶음(열 이름 반복)이 됐다. 그 전에는 글로 분할기를 타 뒤 조각에 열 이름이 없었다."""
+    assert 'table_header' not in _kinds(chunked, 'aromanica_18_향료원료입고기준.md')
 
 
 def test_TXT_긴_문단은_문장_중간에서_잘리지만_오버랩이_다시_싣는다(chunked):

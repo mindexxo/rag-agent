@@ -197,7 +197,8 @@ class Settings(BaseSettings):
     # 아래 메모리·시간 값은 PDF 실측에서 왔다(2026-09-11 M3 → 리눅스 컨테이너 재측정). 소비처는 rag/chunking.py.
     docling_enabled: bool = True              # 인제스션의 기본 경로. False = 비상 경로 — PDF는 pdfplumber(표·부산물 처리 없음,
                                               # #141 휴리스틱은 #143에서 제거), DOCX는 python-docx, XLSX는 openpyxl(그림 캡션·
-                                              # 중첩 표·자동 번호 없음). 폴백 아님 — 수동 스위치
+                                              # 중첩 표·자동 번호 없음). 폴백 아님 — 수동 스위치. MD는 무관 — 항상 docling(#267),
+                                              # 스위치 자체를 없앨 예정(#272)
     docling_table_mode: str = "accurate"      # fast | accurate. accurate이 병합 셀을 한 셀로 잡는다(출장 지급표
                                               # '부회장/사장' 실측). RAM 차이 +110MB(687→796MB)라 정확도를 택한다
     docling_do_ocr: bool = True               # 이미지로 렌더된 표(TableItem)의 셀을 읽는다(#168). 그림(PictureItem)은

@@ -19,7 +19,8 @@
  - DOCX: **docling**(SimplePipeline — 레이아웃·OCR 없음)이 기본(#220). Heading 스타일 레벨 그대로 섹션 분할,
          스타일이 없으면 조문 패턴 폴백(#205). 그림은 VLM 캡션, 표 셀 안 중첩 표·워드 자동 번호까지 읽는다.
          `docling_enabled=False`·채팅 첨부는 python-docx(그림·중첩 표·자동 번호를 잃는다).
- - MD  : '#' 헤딩 정규식 + 코드 펜스 가드.
+ - MD  : **docling**(MD 백엔드, #267) — 헤딩(밑줄식 포함)·표를 문법대로. 표 칸 '\\|'·'<br>', 링크 주소, 인라인 서식
+         조각을 보정한다(_md_sections). 채팅 첨부는 원문 그대로.
  - TXT : 평문(인코딩 감지 utf-8→cp949). 헤딩 구조가 없어 heading_path는 빈다.
  - XLSX: rag/xlsx_chunking. 행 묶음 청크 + 시트 완성본(#222)이라 이 파이프라인 밖 — 크기 상한(내용의 양) 초과면 업로드를 거절한다.
          읽기는 docling(시트 위 그림 캡션·병합 셀), 행 세기는 openpyxl(#220).
@@ -59,9 +60,7 @@ from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN, estimate_tokens_conservativ
 
 logger = logging.getLogger(__name__)
 
-_HEADING_RE = re.compile(r'^(#{1,6})\s+(.+)$')
 _DOCX_HEADING_RE = re.compile(r'^Heading (\d+)$')     # python-docx는 빌트인 헤딩을 영문명으로 준다
-_MD_FENCE_RE = re.compile(r'^(`{3,}|~{3,})')          # 코드 펜스 — 안쪽 '#'은 헤딩이 아니다
 # 섹션 묶음 예산(문자). 섹션 하나하나는 보통 100~150자라, 섹션=청크로 두면 top_k=5가
 # 실어 나르는 컨텍스트가 옛 방식의 1/3로 줄어든다(실측 2211자→707자).
 # 주의: 이 값이 상한으로 작동하는 일은 드물다 — _pack_sections의 경계 규칙(같은 대분류
@@ -366,7 +365,7 @@ _docling_converter = None
 
 
 class TableTooLargeError(ValueError):
-    """PDF·DOCX 표 하나가 TABLE_MAX_TOKENS를 넘는다 — **결정적** 실패(#257 결정 2·3).
+    """PDF·DOCX·MD 표 하나가 TABLE_MAX_TOKENS를 넘는다 — **결정적** 실패(#257 결정 2·3, MD는 #267부터).
 
     ValueError라 outbox.is_transient가 결정적으로 분류해 문서를 바로 failed로 굳히고, 메시지가 status_reason으로 화면에
     나간다(PictureLimitError와 같은 길). 문구 규칙은 엑셀 거절(XlsxTableTooLarge)과 같다 — 토큰을 말하지 않고 허용 크기
@@ -891,7 +890,7 @@ def _picklable(exc: BaseException) -> BaseException:
 def _convert_child_main(fd: int) -> None:
     """변환 프로세스의 본체 — 요청 (경로, kwargs)를 받아 ('ok', DoclingDocument) 또는 ('err', 예외)를 돌려준다.
 
-    첫 메시지는 부모의 설정 스냅숏이다 — 자식은 config를 .env에서 새로 읽으므로, 부모가 바꾼 값
+    첫 메시지는 부모의 설정 스냅숏이다(변환에 쓰는 설정만 — _CHILD_SETTING_PREFIXES) — 자식은 config를 .env에서 새로 읽으므로, 부모가 바꾼 값
     (테스트의 monkeypatch 등)이 자식에 닿게 하는 유일한 길이다. 모델 로딩은 'ready' 전에 끝낸다 —
     기동 시간(첫 실행이면 모델 다운로드까지)이 첫 문서의 마감을 깎지 않게.
     """
@@ -921,6 +920,18 @@ _CHILD_START_TIMEOUT_SECONDS = 300   # 변환 프로세스 기동(모델 로딩)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+# 변환 프로세스가 쓰는 설정의 접두사 — 부모는 이 설정만 자식에 넘기고, 이것이 바뀌었을 때만 자식을 다시 띄운다(#267).
+# 설정 전체를 비교하던 때는 테스트가 임베딩 주소·한도처럼 변환과 무관한 값을 바꿔 끼울 때마다 콜드 기동(맥 실측 8.5초)이 났다 —
+# MD가 변환 프로세스를 타면서 통합 테스트 75개가 2분 8초 → 5분 55초(2026-10-19). 운영은 설정이 고정이라 차이 없다.
+# 이 모듈이 읽는 settings 필드가 모두 이 접두사 안인지는 tests/test_chunking_md.py가 검사한다 — 새 접두사의 설정을 자식에서
+# 읽으면서 여기 안 넣으면, 값을 바꿔도 자식이 옛 값으로 계속 돈다.
+_CHILD_SETTING_PREFIXES = ('docling_', 'ocr_kserve_', 'vlm_caption_')
+
+
+def _child_settings() -> dict:
+    return {k: v for k, v in settings.model_dump().items() if k.startswith(_CHILD_SETTING_PREFIXES)}
+
+
 class _ConvertProcess:
     """docling 변환을 맡는 상주 자식 프로세스 하나(#223 결정 1). 이 모듈을 쓰는 프로세스(워커)마다 하나다.
 
@@ -947,7 +958,7 @@ class _ConvertProcess:
 
     def convert(self, file_path: str | Path, kwargs: dict):
         with self._lock:
-            snapshot = settings.model_dump()
+            snapshot = _child_settings()
             if self._proc is None or self._proc.poll() is not None or snapshot != self._snapshot:
                 self._start(snapshot)
             deadline = settings.docling_document_timeout_seconds
@@ -1509,53 +1520,88 @@ def _txt_sections(file_path: str | Path) -> list[_Section]:
     return [_Section([], None, text)] if text.strip() else []
 
 
+# MD 표 칸에서 docling(2.126)이 망가뜨리는 두 표기 — 변환 전에 유니코드 사용자 영역 문자로 숨겼다가 결과에서 되돌린다(#267).
+# 이스케이프 '\|'는 칸 구분으로 읽어 넘친 칸을 **버리고**(실측: '협업 라벨 홀로그램 확인' 칸이 출력 어디에도 없음), '<br>'은 그 행의
+# 값을 표 밖 글 한 줄로 내보낸다(구조 손상). 되돌릴 때 '<br>' 변형('<br/>'·'<BR />')은 '<br>' 하나로 적는다 — 뜻이 같다.
+_MD_PIPE_MARK, _MD_BR_MARK = '\uE000', '\uE001'
+_MD_BR_RE = re.compile(r'<br\s*/?>', re.IGNORECASE)
+
+
+def _md_unmask(text: str) -> str:
+    return text.replace(_MD_PIPE_MARK, '\\|').replace(_MD_BR_MARK, '<br>')
+
+
 def _md_sections(file_path: str | Path) -> list[_Section]:
-    """마크다운을 (heading_path, page=None, 본문) 섹션으로 — '#' 헤딩이 경계.
+    """마크다운 → docling(MD 백엔드) → 섹션(#267). PDF·DOCX와 같은 변환 프로세스(docling_convert — 마감·실패 분류 공유).
 
-    docx·pdf와 같은 스택 관리(`del stack[level-1:]`)를 쓴다. 세 파서가 같은 계약을
-    내놓아야 `_pack_sections` 이후를 공유할 수 있다.
+    #42의 '#' 정규식 파서를 대신한다. 정규식은 '#' 헤딩·코드 펜스만 알고 나머지를 글로 넘겨, 큰 MD 표가 행 한가운데서 잘리고
+    뒤 조각에 열 이름이 없었다(#245 B6). 밑줄식 헤딩('===·---')은 헤딩이 아니었고 닫는 '##'은 제목에 남았다. docling은 마크다운을
+    문법대로 읽으므로 표는 _TableBlock(행 묶음·열 이름 반복·#257 표 전체 확장)으로, 헤딩은 문법대로 나온다.
+    A/B(main 1750ba2, 합성 27문항 2회): Hit@1 0.852→0.963, EPCov 0.85→0.91, 정규식보다 나빠진 문항 0. 기존 MD 48문항은 노이즈 안.
 
-    **헤딩은 본문에 넣지 않는다** — `_docx_sections`와 같은 이유로, heading_path가
-    들고 있고 인덱스 입력엔 `rag/index_text`가 앞에 붙이므로 본문에까지 넣으면 같은
-    문구가 두 번 들어간다. 옛 MarkdownNodeParser 경로는 자기 헤딩을 본문 첫 줄에
-    남겨서 md만 이 원칙에서 벗어나 있었다.
+    docling 출력을 그대로 쓰면 지는 곳이 있어 세 가지를 보정한다(보정 없는 docling은 같은 측정에서 EPCov 0.80):
+      ① 표 칸 안 '\\|'·'<br>' — 위 _MD_PIPE_MARK 주석
+      ② 링크 — docling은 주소를 글에서 빼 hyperlink 속성에만 둔다. '글(주소)'로 붙인다(주소를 묻는 질문에 답이 없었다)
+      ③ 굵게·링크 같은 인라인 서식 — docling은 한 문장을 서식 단위 조각(같은 InlineGroup)으로 쪼갠다. 한 줄로 다시 잇고, 조각
+         사이 띄어쓰기는 원문을 보고 정한다('**접수**로만' → '접수로만')
+    레벨: '#'은 TitleItem(헤딩 1단), '##'부터는 SectionHeaderItem(level 1부터) → +1 — 정규식 파서의 '#' 개수 레벨과 같다.
+    DOCX(_docx_docling_items)는 'title'을 본문으로 보지만 MD의 '#'은 문서 제목이라 헤딩이다. 빈 헤딩(YAML 앞머리)은 버린다.
+    본문 없는 헤딩·문서 끝 헤딩 처리는 PDF·DOCX와 같은 _build_sections다(#233). 글자 소실은 테스트가 지킨다
+    (tests/test_chunking_md.py — 운영 가드는 두지 않았다, #267 결정 4). 코드 블록은 들여쓰기를 그대로 둔다.
 
-    **본문 없는 헤딩은 섹션이 되지 않는다** — 옛 경로는 이걸 안 해서 md 청크의 19%가 `'## 4. 결제·정산'`
-    같은 헤딩 한 줄뿐이었다(실측 78개 중 15개). 조립은 PDF·docx와 같은 `_build_sections`라(#233) 같은 레벨 헤딩에 밀린
-    헤딩('### 제7조(삭제)')과 문서 끝 헤딩은 본문으로 되살린다 — 따로 접던 때는 사라졌다.
-
-    헤딩 사이 줄들은 **한 항목**으로 넘긴다(#233 설계 2): 빈 줄도 그대로 둔 채(md는 빈 줄이 문단 구분이다) 앞뒤 줄바꿈만
-    자르고(공백만 있는 줄은 남는다 — 옛 파서와 같은 동작), 빈 줄뿐이면 넘기지 않는다 — 헤딩 사이의 빈 줄이 빈 섹션을 만들지 않게. 그래서 `_build_sections`는 빈 줄을 몰라도 된다.
-
-    **코드 펜스 안의 '#'은 헤딩이 아니다.** 백틱과 틸드 둘 다 본다 — 옛 파서는 백틱만
-    처리했다. 들여쓰기 코드블록은 `_HEADING_RE`가 열 0을 요구해 공짜로 걸러진다.
+    알려진 한계(#267 리뷰 — 모양만 원문과 다르고 내용은 남아 두었다):
+      - ③ 띄어쓰기는 원문에서 조각을 찾아 정한다. 못 찾으면 띄운다 — 원문이 문장 중간에서 줄을 바꾼 경우(docling이 공백으로
+        바꿔 준다)와, 표 바로 뒤 조각이 표 안의 같은 낱말을 먼저 맞힌 경우 조사 앞에 빈칸이 생긴다('확인 은')
+      - 서식이 섞인 목록 항목은 docling이 번호만 든 항목과 조각으로 나눠 줘 번호가 따로 한 줄이 된다('1.' / '양식(…) 받기')
+      - 그림('![대체 글](주소)')은 파일 안에 그림이 없어(주소일 뿐) 캡션하지 않는다 — 대체 글 한 줄과 자리표시가 남는다.
+        자리표시 수 지표(count_picture_placeholders)에 MD 그림도 섞인다
+      - 큰 MD 표도 PDF·DOCX와 같이 TABLE_MAX_TOKENS를 넘으면 색인하지 않는다(#257 — 정규식 시절에는 글로 색인됐다)
     """
+    import tempfile
+    from docling_core.types.doc import (CodeItem, InlineGroup, SectionHeaderItem, TableItem, TextItem,   # 지연 import
+                                        TitleItem)
+    source = _MD_BR_RE.sub(_MD_BR_MARK, _read_text(file_path).replace('\\|', _MD_PIPE_MARK))
+    with tempfile.NamedTemporaryFile('w', suffix='.md', encoding='utf-8', delete=False) as tmp:
+        tmp.write(source)
+    try:
+        doc = docling_convert(tmp.name)
+    finally:
+        os.unlink(tmp.name)
+
+    inside = _table_descendants(doc)
     items: list[_Item] = []
-    buf: list[str] = []
-    fence: str | None = None       # 열려 있는 펜스 마커('```'/'~~~~' 등), 없으면 None
-
-    def flush() -> None:
-        if any(line.strip() for line in buf):
-            items.append((None, '\n'.join(buf).strip('\n'), None))
-        buf.clear()
-
-    for line in _read_text(file_path).splitlines():
-        marker = _MD_FENCE_RE.match(line.strip())
-        if marker:
-            token = marker.group(1)
-            if fence is None:
-                fence = token
-            elif token[0] == fence[0] and len(token) >= len(fence):
-                fence = None       # 같은 문자·같은 길이 이상으로만 닫힌다 (CommonMark)
-            buf.append(line)
+    cursor = 0              # 원문에서 직전 글 조각이 끝난 자리 — ③ 띄어쓰기 판정
+    group = None            # 직전 조각이 속한 InlineGroup
+    for item, _ in doc.iterate_items():
+        if item.self_ref in inside:
             continue
-        m = None if fence else _HEADING_RE.match(line)
-        if m:
-            flush()
-            items.append((None, m.group(2).strip(), len(m.group(1))))
+        parent = item.parent.resolve(doc) if item.parent else None
+        inline = parent.self_ref if isinstance(parent, InlineGroup) else None
+        raw = getattr(item, 'text', '') or ''
+        found = source.find(raw, cursor) if raw else -1
+        spaced = found < 0 or any(ch.isspace() for ch in source[cursor:found])
+        if found >= 0:
+            cursor = found + len(raw)
+        if isinstance(item, (TitleItem, SectionHeaderItem)):
+            if text := _md_unmask(_docling_norm(item.text)):
+                items.append((None, text, 1 if isinstance(item, TitleItem) else item.level + 1))
+        elif isinstance(item, TableItem):
+            if rows := _docx_table_rows(item, doc):
+                items.append((None, _TableBlock([[_md_unmask(c) for c in row] for row in rows]), None))
+        elif isinstance(item, CodeItem):
+            # 코드 블록은 들여쓰기가 구조다(YAML·Python) — 공백을 접는 _docling_norm을 태우지 않는다(#267 리뷰 A)
+            if text := _md_unmask('\n'.join(line.rstrip() for line in item.text.strip('\n').split('\n'))):
+                items.append((None, text, None))
         else:
-            buf.append(line)
-    flush()
+            text = docling_block_text(item, doc)
+            if isinstance(item, TextItem) and item.hyperlink:
+                text = f'{text}({item.hyperlink})'
+            if text := _md_unmask(text):
+                if inline and inline == group and items and items[-1][2] is None and isinstance(items[-1][1], str):
+                    items[-1] = (None, items[-1][1] + (' ' if spaced else '') + text, None)
+                else:
+                    items.append((None, text, None))
+        group = inline
     return _build_sections(items)
 
 
@@ -1564,7 +1610,7 @@ def _md_sections(file_path: str | Path) -> list[_Section]:
 _SECTION_PARSERS = {
     '.pdf': _pdf_sections,      # docling(기본) / pdfplumber 글자 크기 휴리스틱(비상)
     '.docx': _docx_sections,    # docling(기본) / python-docx(비상) — 둘 다 Heading 스타일 레벨
-    '.md': _md_sections,        # '#' 정규식 + 펜스 가드
+    '.md': _md_sections,        # docling MD 백엔드 + 보정 3개(#267)
     '.txt': _txt_sections,      # 헤딩 없음 — 통째로 섹션 1개
 }
 

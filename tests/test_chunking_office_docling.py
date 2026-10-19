@@ -416,6 +416,9 @@ class TestAttachmentStaysPlain:
             doc.add_paragraph('첨부 본문')
         assert '첨부값' in extract_text(_xlsx(tmp_path, build_x))
         assert '첨부 본문' in extract_text(_docx(tmp_path, build_d))
+        md = tmp_path / 'a.md'                            # MD 색인은 #267부터 docling — 첨부는 원문 그대로다
+        md.write_text('# 제목\n\n| 칸 | 값 |\n| --- | --- |\n| A\\|B | 1<br>2 |\n', encoding='utf-8')
+        assert extract_text(md) == md.read_text(encoding='utf-8').strip()
 
 
 # ── 변환기 설정 ────────────────────────────────────────────────────────────────────

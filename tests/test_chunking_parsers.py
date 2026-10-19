@@ -1,8 +1,11 @@
 """청킹 파서 단위 테스트 — _pdf_pages / _docx_text / chunk_file (비ML 파서 리팩토링 검증).
 
+MD만 예외다 — #267부터 MD 파서는 docling(MD 백엔드)이라 MD 케이스(_needs_docling 표시)는 docling 변환 프로세스를 탄다.
+
 입력은 corpus_v2 합성 문서 실물. heading_path는 pdf·docx·md 모두 채워진다
 (txt만 헤딩 개념이 없어 빈다).
 """
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -14,7 +17,7 @@ from config import settings
 @pytest.fixture(autouse=True)
 def _pdfplumber_path(monkeypatch):
     """PDF 케이스는 pdfplumber **비상 경로**(docling_enabled=False)를 검사한다 — 이 파일은 형식 분기와
-    파서 계약이 대상이고 모델 의존이 없어야 한다. docling 경로는 tests/test_chunking_docling.py."""
+    파서 계약이 대상이다. docling 경로는 tests/test_chunking_docling.py. MD는 이 스위치와 무관하게 docling이다(#267)."""
     monkeypatch.setattr(settings, 'docling_enabled', False)
 
 CORPUS = Path(__file__).resolve().parent.parent / 'sample_docs' / 'corpus_v2'
@@ -22,6 +25,7 @@ CORPUS = Path(__file__).resolve().parent.parent / 'sample_docs' / 'corpus_v2'
 PDF = CORPUS / 'summers' / 'summers_01_환불반품정책.pdf'
 DOCX = CORPUS / 'goodpeople' / 'goodpeople_02_정기후원신청변경해지.docx'
 MD = CORPUS / 'harim' / 'harim_06_대량주문B2B.md'
+_needs_docling = pytest.mark.skipif(importlib.util.find_spec('docling') is None, reason='MD 파서는 docling(#267)')
 
 
 class TestPdfPages:
@@ -120,26 +124,28 @@ class TestChunkFile:
         assert table_chunks, '표 청크를 못 찾음'
         assert any('결제수단별 출금일' in h for h in table_chunks[0].heading_path)
 
+    @_needs_docling
     def test_md는_heading_path_채움(self):
         chunks = chunk_file(MD)
         assert any(c.heading_path for c in chunks)         # md만 헤딩 구조 보존
         heads = [h for c in chunks for h in c.heading_path]
         assert any('대량주문' in h for h in heads)
 
+    @_needs_docling
     def test_chunk_index_순차(self):
         chunks = chunk_file(MD)
         assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
 
+    @_needs_docling
     def test_긴_문서는_여러_청크로(self):
         assert len(chunk_file(MD)) > 1                     # 3,600자 문서 — 512자 분할
 
 
+@_needs_docling
 class TestMdSections:
-    """md 섹션 파서 — pdf·docx와 같은 계약을 지키는지 (#42).
-
-    기존 md 테스트 3개(heading_path 채움 / chunk_index 순차 / 분할)는 `any(...)`,
-    `len(...) > 1`로 헐거워 청킹이 나빠져도 통과한다. 이 클래스가 이번 변경의
-    실제 계약(헤딩 제외·빈 섹션 스킵·펜스 가드)을 못박는다.
+    """md 섹션 파서가 pdf·docx와 같은 계약(헤딩은 본문 밖·본문 없는 헤딩은 섹션 아님·코드 펜스 안 '#'은 헤딩 아님·레벨 건너뛰기)을
+    지키는지. 위 TestChunkFile의 md 케이스는 `any(...)`·`len(...) > 1`로 헐거워 이 클래스가 계약을 못박는다(#42에서 세움).
+    파서는 #267부터 docling(MD 백엔드) — 이 클래스가 정규식 시절 계약의 회귀 검사다. docling 보정은 tests/test_chunking_md.py.
     """
 
     def _write(self, tmp_path, text):
@@ -161,10 +167,11 @@ class TestMdSections:
         assert section.heading_path == ['제목', '1. 절']
         assert '#' not in section.body
 
-    def test_빈_줄은_보존된다(self, tmp_path):
-        # md는 빈 줄이 문단 구분 — 걷어내면 문단이 붙어버린다
+    def test_문단은_줄로_나뉜다(self, tmp_path):
+        # md는 빈 줄이 문단 구분 — 걷어내면 문단이 붙어버린다. docling은 문단을 요소 하나씩 주고 조립(_build_sections)이 줄바꿈
+        # 하나로 잇는다 — PDF·DOCX와 같은 모양(#267 전 정규식 파서는 빈 줄까지 그대로 뒀다)
         p = self._write(tmp_path, '# 제목\n\n첫 문단.\n\n둘째 문단.\n')
-        assert _md_sections(p)[0].body == '첫 문단.\n\n둘째 문단.'
+        assert _md_sections(p)[0].body == '첫 문단.\n둘째 문단.'
 
     def test_백틱_펜스_안의_샾은_헤딩이_아니다(self, tmp_path):
         p = self._write(tmp_path, '# 제목\n\n```bash\n# 이건 셸 주석이다\necho hi\n```\n끝.\n')
@@ -183,7 +190,7 @@ class TestMdSections:
         assert [s.heading_path for s in _md_sections(p)] == [['제목']]
 
     def test_들여쓰기_코드블록의_샾도_헤딩이_아니다(self, tmp_path):
-        # _HEADING_RE가 열 0을 요구해 공짜로 걸러진다 — 그 사실을 고정
+        # CommonMark상 들여쓴 줄은 코드블록이다 — docling이 문법대로 거른다(#267 전 정규식은 열 0 요구로 걸렀다)
         p = self._write(tmp_path, '# 제목\n\n    # 들여쓴 코드\n\n본문.\n')
         assert [s.heading_path for s in _md_sections(p)] == [['제목']]
 

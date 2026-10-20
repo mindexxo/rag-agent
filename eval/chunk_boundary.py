@@ -12,10 +12,13 @@ eval/report_chunk_boundary.md). 그래서 두 가지를 센다.
    - reference  : 뒤 조각이 앞 글을 가리키는 말('이 경우'·'단,'·'다만'…)로 시작한다 — 가리키는 대상이 앞 조각에만(T5)
    - table_lead : 표 앞 설명 줄(최대 3줄)이 어느 묶음에 없다(B1 여러 줄 중 마지막만 붙음·B2 150자 넘어 안 붙음)
    - table_note : 표 뒤 단위·주석 줄('※ …')이 어느 묶음에 없다(B3 — 마지막 묶음이나 표 밖에만)
+     두 종류는 **모델이 받는 글**로 판정한다 — 큰 표 묶음은 근거 준비에서 '걸린 묶음 + 표 전체(table_text)'로 바뀌므로(#257·#268)
+     조각에 table_text가 있으면 그것을, 없으면 조각 본문을 본다. #268이 표 전체에만 설명·주석을 넣었다(묶음 본문=검색 입력은 그대로).
+     table_header는 묶음 본문으로 본다 — 걸린 묶음도 모델에 그대로 가므로(#268 결정 4) 머리 행이 빠진 묶음은 여전히 결함이다.
    - table_header: 뒤 묶음 첫 표 줄이 첫 묶음의 머리 행과 다르다 — MD/TXT 표는 글로 분할기를 타 머리 행을 반복하지 않는다(B6)
 
 판정은 규칙(정규식)이라 후보다 — 리포트의 수치는 "후보 건수"이고 사람이 예시를 읽어 확정했다. 입력은 조각 dict
-{'heading_path': list, 'text': str}의 문서 순 목록 하나(한 문서). 색인(eval.axis_common.load_chunks)과 chunk_file 둘 다 받는다.
+{'heading_path': list, 'text': str, 'table_text': str | None(선택)}의 문서 순 목록 하나(한 문서). 색인(eval.axis_common.load_chunks)과 chunk_file 둘 다 받는다.
 
 사용:
     python -m eval.chunk_boundary                       # 개발계 색인 전 테넌트(V2_TENANTS) — OpenSearch 필요
@@ -33,6 +36,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from eval.chunk_invariants import _stitch, norm   # noqa: E402 — 비교 정규화·이어 붙이기의 정의점
+from rag.chunking import TABLE_NOTE   # noqa: E402 — 표 주석 표지의 정의점(#268)
 from rag.identifiers import is_heading_line   # noqa: E402 — 조 제목 판정의 정의점(#233)
 
 # 한국어 문장 끝 — 종결 어미(+마침표) 또는 문장 부호, 닫는 따옴표·괄호 허용
@@ -41,7 +45,7 @@ SENTENCE_END = re.compile(r'(다|요|음|함|됨|임|것|니다|까|죠)[.!?]?["
 ITEM = re.compile(r'^\s*(\d+[.)](?!\d)|\(\d+\)|[①-⑳]|[가나다라마바사아자차카타파하][.)]|[-•·]\s)')
 LABEL = re.compile(r'^\s*(\[[^\]]{1,40}\]|[■□◆●▶]|\d+(\.\d+)+\s|<[^>]{1,30}>)')
 LIST_HEAD = re.compile(r'다음 각 호|다음과 같[다이]|아래와 같[다이]|[:：]\s*$')
-NOTE = re.compile(r'^\s*(※|\*\s|주\)|\(?단위)')
+NOTE = TABLE_NOTE   # 표 주석 표지 — 운영(rag/chunking, #268)과 같은 정의여야 고친 것을 0건으로 확인할 수 있다
 REFERENCE = re.compile(r'^\s*(이 경우|이때|이 때|단,|다만|그러나|위의|앞의)')   # '해당 …'은 대상을 새로 지시하는 독립 문장이 많아 뺐다
 _MIN_OVERLAP = 5   # 이보다 짧은 일치는 꼬리·머리 글자가 우연히 같은 것(진짜 잘림을 가린다). 오버랩은 마지막 분할 조각을 통째로 싣는 거라 짧을 수 있다 — 실문서에 7자(쉼표 조각 하나)가 있었다(10/18)
 
@@ -151,8 +155,8 @@ def _table_runs(chunks: list[dict]) -> list[list[int]]:
 
 
 def _table_losses(chunks: list[dict]) -> list[dict]:
-    """XLSX는 보지 않는다 — 시트 조각은 근거 조립에서 시트 완성본으로 바뀌어(rag.retriever.prepare_evidence) 묶음 경계가 모델에
-    닿지 않는다. 호출부(census)가 확장자로 거른다."""
+    """XLSX는 보지 않는다 — 시트 조각은 근거 조립에서 '걸린 묶음 + 시트 완성본'이 되어(rag.retriever.prepare_evidence, #268)
+    모델이 언제나 시트 전체를 받는다(묶음은 헤더·설명을 반복하는 독립 묶음이라 경계 결함이 없다). 호출부(census)가 확장자로 거른다."""
     out = []
     for run in _table_runs(chunks):
         first = _lines(chunks[run[0]]['text'])
@@ -171,7 +175,7 @@ def _table_losses(chunks: list[dict]) -> list[dict]:
         if run[-1] + 1 < len(chunks) and chunks[run[-1] + 1]['heading_path'] == chunks[run[-1]]['heading_path']:
             notes += [l for l in _lines(chunks[run[-1] + 1]['text'])[:2] if NOTE.match(l)]
         for i in run:
-            n = norm(chunks[i]['text'])
+            n = norm(chunks[i].get('table_text') or chunks[i]['text'])      # 모델이 받는 글(#257 표 전체)
             out += [{'kind': 'table_lead', 'at': i, 'line': l} for l in lead if norm(l) not in n]
             out += [{'kind': 'table_note', 'at': i, 'line': l} for l in notes if norm(l) not in n]
             if next(l for l in _lines(chunks[i]['text']) if _is_row(l)) != header:
@@ -239,7 +243,8 @@ async def _from_index() -> dict[str, list[dict]]:
 def _from_files(paths: list[str]) -> dict[str, list[dict]]:
     from rag.chunking import chunk_file
     files = sorted({p for t in paths for p in ([Path(t)] if Path(t).is_file() else Path(t).rglob('*.*'))})
-    return {str(p): [{'heading_path': c.heading_path, 'text': c.text} for c in chunk_file(p)] for p in files}
+    return {str(p): [{'heading_path': c.heading_path, 'text': c.text, 'table_text': (c.meta or {}).get('table_text')}
+                     for c in chunk_file(p)] for p in files}
 
 
 def main() -> None:

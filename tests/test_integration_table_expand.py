@@ -27,6 +27,7 @@ def _docx(n_rows: int) -> bytes:
     for i in range(1, n_rows + 1):
         for c, v in enumerate([f'P-{i:04d}', f'납품 품목 {i}번', f'{1000 + i * 7:,}원']):
             t.cell(i, c).text = v
+    d.add_paragraph('※ 단가는 부가세 별도이다.')
     d.add_paragraph('단가는 분기마다 다시 정한다.')
     small = d.add_table(rows=2, cols=2)
     for r, row in enumerate([('구분', '납기'), ('일반', '7일')]):
@@ -62,7 +63,9 @@ async def test_큰_표는_묶음마다_표_키와_표_전체가_색인되고_근
     assert len(batches) >= 2                                              # 큰 표는 행 묶음 여럿
     assert {c.table_key for c in batches} == {'t1'} and len({c.table_text for c in batches}) == 1
     whole = batches[0].table_text
-    assert whole.startswith('협력사별 납품 단가는 아래와 같다.\n| 품목코드 |')    # 표 바로 위 한 줄 + 헤더 한 번
+    assert whole.startswith('이 기준은 협력사별 납품 단가와 납기를 정한다.\n협력사별 납품 단가는 아래와 같다.\n| 품목코드 |')   # 표 앞 설명 여러 줄(#268)
+    assert whole.endswith('| P-0150 | 납품 품목 150번 | 2,050원 |\n※ 단가는 부가세 별도이다.')   # 표 아래 주석(#268) — 표지 없는 다음 문장은 안 붙는다
+    assert all(b.text.startswith('협력사별 납품 단가는 아래와 같다.\n| 품목코드 |') and '※' not in b.text for b in batches)   # 묶음 본문은 그대로
     assert whole.count('| 품목코드 |') == 1 and 'P-0001' in whole and 'P-0150' in whole
     small = [c for c in chunks if '| 구분 | 납기 |' in c.text]
     assert small and not any(c.is_table for c in small)                  # 작은 표는 표 묶음이 아니다

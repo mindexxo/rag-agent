@@ -128,7 +128,7 @@ def chunked():
 
 
 def _dicts(chunks) -> list[dict]:
-    return [{'heading_path': c.heading_path, 'text': c.text} for c in chunks]
+    return [{'heading_path': c.heading_path, 'text': c.text, 'table_text': (c.meta or {}).get('table_text')} for c in chunks]
 
 
 def test_골드는_합성_다섯_문서를_덮는다():
@@ -155,14 +155,21 @@ def _kinds(chunked, name) -> set[str]:
 @pytest.mark.parametrize('name, kind, case', [
     ('goodpeople_18_해외봉사단복무지침.txt', 'list_head', 'T6 목록 머리와 뒤 항목 분리'),
     ('summers_18_매장운영매뉴얼.docx', 'reference', "T5 '이 경우' 문장만 따로"),
-    ('harim_18_협력농가납품단가표.pdf', 'table_lead', 'B1 세 줄 설명 중 마지막만 묶음에'),
-    ('homeplus_18_PB품질검사기준표.docx', 'table_lead', 'B2 150자 넘는 설명은 묶음에 안 붙음'),
-    ('homeplus_18_PB품질검사기준표.docx', 'table_note', 'B3 표 아래 단위 주석이 묶음 밖'),
     ('aromanica_18_향료원료입고기준.md', 'table_header', 'B6 MD 표 뒤 조각에 머리 행 없음'),
 ])
 def test_알려진_결함_재현(name, kind, case, chunked):
     """운영 청킹의 현재 동작 — 후속 이슈가 고치면 이 단언을 뒤집는다(eval/report_chunk_boundary.md '후속')."""
     assert kind in _kinds(chunked, name), case
+
+
+@pytest.mark.parametrize('name, kind, case', [
+    ('harim_18_협력농가납품단가표.pdf', 'table_lead', 'B1 세 줄 설명 중 마지막만 묶음에'),
+    ('homeplus_18_PB품질검사기준표.docx', 'table_lead', 'B2 150자 넘는 설명은 묶음에 안 붙음'),
+    ('homeplus_18_PB품질검사기준표.docx', 'table_note', 'B3 표 아래 단위 주석이 묶음 밖'),
+])
+def test_표_설명과_주석은_모델이_받는_표_전체에_있다(name, kind, case, chunked):
+    # #268 — 큰 표 묶음은 근거 준비에서 표 전체(table_text)로 바뀐다(#257). 그 표 전체에 앞 설명 여러 줄·아래 주석을 싣는다
+    assert kind not in _kinds(chunked, name), case
 
 
 def test_TXT_긴_문단은_문장_중간에서_잘리지만_오버랩이_다시_싣는다(chunked):

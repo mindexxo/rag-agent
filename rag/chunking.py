@@ -30,7 +30,8 @@
 
  결과 ChunkData: text / heading_path / page / chunk_index / meta.
  묶음 2개 이상으로 나뉜 표(PDF·DOCX)의 묶음은 meta에 {"is_table": True, "table_key": 문서 안 표 순번, "table_text": 표 전체}를
- 싣는다 — 근거 준비(rag/retriever.prepare_evidence)가 걸린 묶음을 표 전체로 바꾼다(#257, 엑셀 #222와 같은 계약).
+ 싣는다(표 전체 = 앞 설명 + 표 + 아래 주석, #268) — 근거 준비(rag/retriever.prepare_evidence)가 걸린 묶음을 표 전체로
+ 바꾼다(#257, 엑셀 #222와 같은 계약).
  표 하나가 TABLE_MAX_TOKENS를 넘으면 문서를 색인하지 않는다(TableTooLargeError).
  (LlamaIndex 의존성은 이 모듈 안에 격리 — 호출부는 ChunkData 도메인 타입만 본다.)
  """
@@ -1611,11 +1612,50 @@ def chunk_file(file_path: str | Path, *, description: str = '') -> list[ChunkDat
 
 _TABLE_LEAD_MAX = 150   # 큰 표 묶음마다 붙이는 '표 바로 위 한 줄'의 최대 길이 — 이보다 길면 표 설명이 아니라 본문 문단으로 본다
 
+# 표 전체(table_text)에 함께 싣는 표 앞뒤 글(#268 결정 1·2) — 묶음 청크 본문(검색 입력)은 그대로 두고 모델이 받는 표 전체에만 넣는다.
+# 설명이 여러 줄이면 마지막 줄만(B1 '단위: kg당 원' 유실), 150자를 넘으면 아예(B2) 표와 떨어졌고, 표 아래 '※ 단위 ‰' 주석은 다른
+# 청크였다(B3) — 모델이 숫자만 보고 단위를 모른 채 답했다(#245 합성 재현: 거절 2·오답 1).
+#   앞: 표 바로 위 글의 끝에서 최대 _TABLE_CONTEXT_LINES줄·합계 _TABLE_CONTEXT_CHARS자, 제목 줄을 만나면 멈춘다(#245 진단 도구의
+#       '표 앞 최대 3줄'과 같은 기준 — 그래야 그 도구로 0건을 확인할 수 있다). 200자 = 실측 결함을 고치는 최소선(B2 한 문단 196자,
+#       B1 세 줄 106자)이자 무관한 글이 섞일 때의 상한(#268 결정 3 — 처음 600자에서 낮춤). 한계: 설명이 200자를 넘으면 안 붙는다.
+#       알려진 잡음: 규정의 별표가 부칙 바로 뒤에 오면 부칙 글(시행일 등)이 설명으로 잡힌다(실문서 징계 양정표 184자) — 답을 틀리게
+#       할 내용이 아니라 받아들였다(결정 3 = a, '부칙'에서 멈추는 단어 규칙은 두지 않음).
+#   뒤: 표 바로 아래 글의 첫 줄부터 TABLE_NOTE 표지로 시작하는 줄이 이어지는 동안 최대 _TABLE_CONTEXT_LINES줄·합계 _TABLE_NOTE_CHARS자
+#       (#268 리뷰 1 — 상한이 없으면 긴 '※' 문단이 표 전체를 키우고 크기 검사에 합산돼 업로드 거절까지 바꾼다. 실측 주석은 25자). 표지 없는 문장은
+#       잡지 않는다 — '표 아래 첫 줄은 무조건'으로 넓히면 다음 조 본문이 딸려 온다.
+# 원래 자리의 줄은 그대로 남는다(복사본이 하나 더 생길 뿐 — 원문 소실 없음).
+_TABLE_CONTEXT_LINES = 3
+_TABLE_CONTEXT_CHARS = 200
+_TABLE_NOTE_CHARS = 100
+# '* 항목' 글머리표 목록도 걸린다 — 띄어 쓴 별표 주석('* 재검사는 1회')이 흔해 받아들였다(#268 리뷰 2: 잘못 잡혀도 100자 상한 안의 복사본뿐).
+TABLE_NOTE = re.compile(r'^\s*(※|\*(?!\*)|주\s*[)）:：]|[(（]\s*단위|단위\s*[:：]|출처\s*[:：])')   # 표 주석 표지 — eval/chunk_boundary가 import한다
+
+
+def _table_lead_lines(text: str, headings: set[str]) -> list[str]:
+    """표 바로 위 글 블록 → 표 설명 줄(문서 순). 끝에서부터 모으고 제목 줄·줄 수·글자 수 한도에서 멈춘다(#268 결정 2)."""
+    out: list[str] = []
+    for line in reversed([l.strip() for l in text.split('\n') if l.strip()]):
+        if line in headings or is_heading_line(line) or len(out) >= _TABLE_CONTEXT_LINES \
+                or sum(map(len, out)) + len(line) > _TABLE_CONTEXT_CHARS:
+            break
+        out.append(line)
+    return out[::-1]
+
+
+def _table_note_lines(text: str) -> list[str]:
+    """표 바로 아래 글 블록 → 주석 줄. 첫 줄부터 TABLE_NOTE 표지로 시작하는 줄이 이어지는 동안만(#268 결정 2)."""
+    out: list[str] = []
+    for line in (l.strip() for l in text.split('\n') if l.strip()):
+        if not TABLE_NOTE.match(line) or len(out) >= _TABLE_CONTEXT_LINES or sum(map(len, out)) + len(line) > _TABLE_NOTE_CHARS:
+            break
+        out.append(line)
+    return out
+
 
 class _TableRef(NamedTuple):
     """큰 표(묶음 둘 이상) 묶음이 어느 표의 것인가 — chunk_file이 문서 안 표 순번(table_key)으로 바꾼다(#257)."""
     block: int      # 섹션 안 블록 번호
-    text: str       # 표 전체 — 표 바로 위 한 줄(있으면) + 헤더 한 번 + 전체 행. 근거 준비가 걸린 묶음을 이것으로 바꾼다
+    text: str       # 표 전체 — 표 앞 설명 줄(최대 3줄) + 헤더 한 번 + 전체 행 + 표 아래 주석 줄(#268). 근거 준비가 걸린 묶음을 이것으로 바꾼다
 
 
 class _Piece(NamedTuple):
@@ -1646,12 +1686,15 @@ def _split_section(section: _Section, splitter) -> list[_Piece]:
         설명을 반복하는 것과 같은 방식. 큰 표의 묶음은 이웃과 합치지 않는다(이미 예산에 가깝다).
     오프셋은 section.body 안의 위치다 — 쪽 매핑(_page_at)과 목록 번호 복원의 근거. 표 묶음은 첫 데이터 행 위치(행별 쪽).
     큰 표의 묶음에는 표 전체(_TableRef)를 함께 돌려준다(#257) — 작은 표는 이미 한 조각 안에 다 있으므로 붙이지 않는다.
+    표 전체에는 표 앞 설명 여러 줄과 표 아래 주석 줄도 싣는다(#268 — _table_lead_lines·_table_note_lines). 묶음 본문은 그대로다.
     표 하나가 TABLE_MAX_TOKENS를 넘으면 TableTooLargeError(#257 결정 2).
     """
     pieces: list[tuple[str, int, int, bool, _TableRef | None]] = []   # (글, 오프셋, 블록 번호, 이웃과 합칠 수 있나, 표 정보)
     cursor = 0
     last_text = ''
-    for bi, block in enumerate(_blocks_of(section)):
+    blocks = _blocks_of(section)
+    heading_set = {h.strip() for h in section.headings}
+    for bi, block in enumerate(blocks):
         rendered = block.render() if isinstance(block, _TableBlock) else block
         start = section.body.find(rendered, cursor)
         start = start if start >= 0 else cursor
@@ -1663,7 +1706,8 @@ def _split_section(section: _Section, splitter) -> list[_Piece]:
             lead = lead if len(batches) > 1 and len(lead) <= _TABLE_LEAD_MAX else ''
             if lead and pieces and pieces[-1][0].strip() == lead:
                 pieces.pop()        # 그 줄만 든 조각은 묶음마다 머리로 들어가므로 혼자 남기지 않는다(실문서: '[ 별표 1] 징계 양정 기준')
-            table_text = f'{lead}\n{rendered}' if lead else rendered
+            after = blocks[bi + 1] if bi + 1 < len(blocks) and isinstance(blocks[bi + 1], str) else ''
+            table_text = '\n'.join([*_table_lead_lines(last_text, heading_set), rendered, *_table_note_lines(after)])
             _check_table_size(block, table_text, block.row_pages[0] if block.row_pages else section.page)
             ref = _TableRef(bi, table_text) if len(batches) > 1 else None
             for batch in batches:

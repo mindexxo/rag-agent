@@ -805,3 +805,47 @@ class TestTableExpansionMeta:
     def test_DOCX처럼_쪽이_없으면_표_이름만_말한다(self):
         from rag.chunking import TableTooLargeError
         assert str(TableTooLargeError(None, ['구분', '', '금액'], 150, 500, 3)).startswith("표('구분 | 금액')가 허용 크기의 150%")
+
+
+# ── 표 전체에 싣는 표 앞뒤 글 (#268) ──────────────────────────────────────────────────
+
+class TestTableContext:
+    def test_앞_설명은_끝에서_최대_3줄이고_제목에서_멈춘다(self):
+        from rag.chunking import _table_lead_lines
+        text = '제5조(단가)\n첫째 줄.\n둘째 줄.\n셋째 줄.\n넷째 줄.'
+        assert _table_lead_lines(text, set()) == ['둘째 줄.', '셋째 줄.', '넷째 줄.']
+        assert _table_lead_lines('제5조(단가)\n유일한 설명.', set()) == ['유일한 설명.']        # 조 제목 꼴은 안 가져온다
+        assert _table_lead_lines('2. 반품 규정\n설명.', {'2. 반품 규정'}) == ['설명.']            # 기록된 헤딩도 멈춘다
+
+    def test_앞_설명은_합계_200자를_넘기지_않는다(self):
+        from rag.chunking import _TABLE_CONTEXT_CHARS, _table_lead_lines
+        assert _TABLE_CONTEXT_CHARS == 200                     # B2 실측 문단 196자를 덮는 최소선(#268 결정 3)
+        long = '가' * 150
+        assert _table_lead_lines(f'{long}\n{long}', set()) == [long]
+        assert _table_lead_lines('가' * 196, set()) == ['가' * 196]
+        assert _table_lead_lines('가' * (_TABLE_CONTEXT_CHARS + 1), set()) == []
+
+    def test_아래_주석은_표지로_시작하는_줄이_이어지는_동안만(self):
+        from rag.chunking import _table_note_lines
+        text = '※ 단위는 퍼밀이다.\n* 재검사는 1회.\n주) 부가세 별도.\n(단위: 원)\n불합격 업체는 공지한다.'
+        assert _table_note_lines(text) == ['※ 단위는 퍼밀이다.', '* 재검사는 1회.', '주) 부가세 별도.']   # 최대 3줄
+        assert _table_note_lines('불합격 업체는 공지한다.\n※ 뒤에 와도 안 가져온다') == []
+        assert _table_note_lines('단위: kg당 원\n출처: 구매팀') == ['단위: kg당 원', '출처: 구매팀']
+        assert _table_note_lines('**굵은 글씨 문장**') == []                                         # 마크다운 강조는 표지가 아니다
+        assert _table_note_lines(f'※ {"가" * 120}\n※ 짧은 주석') == []                              # 합계 100자 상한(#268 리뷰 1)
+        assert _table_note_lines('※ 짧은 주석\n※ ' + '가' * 120) == ['※ 짧은 주석']
+
+    def test_큰_표의_표_전체에만_앞뒤_글이_붙고_묶음_본문은_그대로다(self):
+        from llama_index.core.node_parser import SentenceSplitter
+        from rag.chunking import _Section, _TableBlock, _split_section
+        rows = [['번호', '품목', '단가']] + [[str(i), f'품목-{i:03d}', f'{i * 1234 % 97000 + 1000:,}원'] for i in range(1, 61)]
+        block = _TableBlock(rows)
+        intro, notes = '아래 단가는 2027년 1월 1일부터 적용한다.\n단가 단위는 kg당 원이다.', '※ 부가세는 포함하지 않는다.\n그 밖의 안내 문장.'
+        sec = _Section(['문서'], None, f'{intro}\n{block.render()}\n{notes}', None, blocks=[intro, block, notes])
+        pieces = _split_section(sec, SentenceSplitter(chunk_size=512, chunk_overlap=50))
+        batches = [p for p in pieces if p.table is not None]
+        whole = batches[0].table.text
+        assert whole == '\n'.join([*intro.split('\n'), block.render(), '※ 부가세는 포함하지 않는다.'])
+        assert all(p.text.startswith('단가 단위는 kg당 원이다.\n| 번호 |') for p in batches)   # 묶음 머리는 예전처럼 한 줄
+        assert not any('※' in p.text for p in batches)                                      # 주석은 묶음 본문에 안 들어간다
+        assert any('※ 부가세는 포함하지 않는다.' in p.text for p in pieces if p.table is None)  # 원래 자리에도 그대로

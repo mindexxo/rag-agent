@@ -418,7 +418,9 @@ async def test_G4_큰_시트는_행_묶음으로_색인되고_근거는_시트_�
     assert all(c.is_table and c.table_text == chunks[0].table_text for c in chunks)
     ev = prepare_evidence(chunks[::-1], top_k=5)                     # 아무 묶음이 걸려도
     assert len(ev) == 1                                              # 한 칸으로 접히고
-    assert ev[0].text.count('| 상품코드 |') == 1 and 'A-0000' in ev[0].text and 'A-0199' in ev[0].text   # 시트 전체
+    whole = ev[0].text.split('[표 전체]\n', 1)[1]                      # 걸린 묶음 먼저 + 표 전체(#268 결정 4)
+    assert ev[0].text.startswith('[검색에 걸린 행]\n')
+    assert whole == chunks[0].table_text and whole.count('| 상품코드 |') == 1 and 'A-0000' in whole and 'A-0199' in whole   # 시트 전체
 
 
 @pytest.mark.asyncio

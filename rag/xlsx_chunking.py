@@ -207,7 +207,7 @@ def _sheet_chunks(title: str, blocks: list[Block], description: str, start: int)
 
     blocks: 읽기 순서. 표는 행 묶음으로 나누고, 표가 아닌 블록(그림 캡션·표 밖 문구)은 그대로 한 묶음.
     묶음마다 표 설명을 앞에 붙인다(검색 보강 — 작은 묶음일수록 필요). meta['table_text']는 시트 완성본(설명 한 번 +
-    블록들을 빈 줄로 이은 것) — 근거 준비 단계가 걸린 묶음을 이것으로 바꾼다.
+    블록들을 빈 줄로 이은 것) — 근거 준비 단계가 걸린 묶음을 '걸린 묶음 + 이것'으로 바꾼다(#268 결정 4).
     """
     prefix = f'[{description}]\n' if description.strip() else ''
     sheet_text = prefix + '\n\n'.join(_render(b) for b in blocks)

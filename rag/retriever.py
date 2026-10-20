@@ -120,7 +120,7 @@ def _table_key(ch: RetrievedChunk) -> tuple:
 
 # 근거 토큰 예산 — 문맥 창 30,720 − 답변 몫 3,000 − 대화 이력 최대 2,000 − 근거 1칸 뺀 프롬프트 p95 3,045 ≈ 22,675
 # (#222 실측: 골드 658문항을 운영 검색으로 조립해 Qwen3 /tokenize로 셈). 여유를 두고 22,000. 첨부는 이 계산 밖이다.
-# 표 하나는 TABLE_MAX_TOKENS(6,000, rag/chunking)를 넘지 않으므로 1등 근거는 언제나 들어간다. #257로 표가 여러 개 들어올 수
+# 표 하나는 TABLE_MAX_TOKENS(6,000, rag/chunking)를 넘지 않으므로(표 근거 = 걸린 묶음 약 1,000 + 표 전체, #268) 1등 근거는 언제나 들어간다. #257로 표가 여러 개 들어올 수
 # 있게 되어(6,000 × 4 > 22,000) 실제로 닿을 수 있다 — 넘치면 prepare_evidence ④가 뺀다.
 EVIDENCE_BUDGET_TOKENS = 22000
 
@@ -147,6 +147,25 @@ def apply_identifier_boost(chunks: list[RetrievedChunk], scores: list[float], qu
     return [r[0] for r in rows], [r[1] for r in rows], [r[2] for r in rows]
 
 
+# 표 근거의 두 머리말(#268 결정 4) — 걸린 묶음을 표 전체 앞에 한 번 더 보여 준다.
+TABLE_HIT_LABEL = '[검색에 걸린 행]'
+TABLE_WHOLE_LABEL = '[표 전체]'
+
+
+def table_evidence_text(ch: RetrievedChunk) -> str:
+    """표 묶음 → 모델이 받는 글: **걸린 묶음 먼저 + 표 전체**(#268 결정 4). 묶음이 곧 표 전체면(작은 시트) 표 전체 하나.
+
+    표 전체만 주면(#257) 한 행을 찾는 질문에서 14B가 이름이 비슷한 이웃 행을 읽었다 — '닭봉 51호' 단가에 59호 값(90행 단가표),
+    '네롤리 앱솔루트' 성분에 옆 행 성분. 묶음만 주면(#257 전) 최댓값·개수·전체 나열에서 무너진다. 둘을 함께 주면 한 행 조회는
+    걸린 행에서, 표 전체 질문은 표 전체에서 답한다. 실측(2026-10-20, 14B, 표 문항 50 × 2회, 같은 색인에서 근거 모양만 바꿈):
+    한 행 조회 30문항 묶음만 48/60 · 표 전체만 48/60 · **둘 다 51/60**, 표 전체 질문 20문항 3/40 · 19/40 · **20/40**.
+    대가: 근거가 평균 약 2,000자 길어진다. 알려진 경향: 집계 질문 일부에서 걸린 행 위주로 답해 항목을 빠뜨렸다(A/S 접수처 4곳 중 2곳).
+    """
+    if not ch.text.strip() or ch.text.strip() == (ch.table_text or '').strip():
+        return ch.table_text
+    return f'{TABLE_HIT_LABEL}\n{ch.text}\n\n{TABLE_WHOLE_LABEL}\n{ch.table_text}'
+
+
 def prepare_evidence(chunks: list[RetrievedChunk], top_k: int) -> list[RetrievedChunk]:
     """검색 후보(순위순) → 모델에 넣을 근거. **운영(retrieve)과 생성 평가(eval.generation)가 함께 쓰는 정의점**(#222).
 
@@ -154,7 +173,8 @@ def prepare_evidence(chunks: list[RetrievedChunk], top_k: int) -> list[Retrieved
        표는 엑셀 시트(#222)와 PDF·DOCX 큰 표(#257)다 — 키는 _table_key. 서로 다른 표는 몇 개든 남는다(#257 결정 1: 옛 '한
        시트만' 필터를 없앴다 — PDF는 한 문서에 표가 여럿인 게 정상이고, 엑셀만 막을 근거가 없었다)
     ② top_k로 자른다
-    ③ 남은 표 묶음을 표 전체(table_text)로 바꾼다 — 모델은 언제나 표 전체를 본다("부분 표" 위험 차단)
+    ③ 남은 표 묶음을 **걸린 묶음 + 표 전체**로 바꾼다(table_evidence_text) — 모델은 언제나 표 전체를 보고("부분 표" 위험 차단,
+       #257), 걸린 행은 앞에 따로 본다(긴 표에서 이웃 행을 읽는 오답 차단, #268 결정 4)
     ⑤ 식별자 채널로 걸린 묶음 조각(matched_ident)은 그 식별자 구간만 남긴다(#238) — 구간 정의는 rag/identifiers.
        표 전체에는 기록된 헤딩 줄이 없어 그대로 통과한다(cut_identifier_span은 경계를 못 찾으면 글을 바꾸지 않는다)
     ④ 근거 추정 토큰(보수적 ÷1.1 — 예산이 실제 토크나이저 기준이라 덜 세면 안 된다)이 EVIDENCE_BUDGET_TOKENS를 넘으면
@@ -174,11 +194,12 @@ def prepare_evidence(chunks: list[RetrievedChunk], top_k: int) -> list[Retrieved
                 continue
             seen.add(key)
         folded.append(ch)
-    out = [replace(ch, text=ch.table_text) if ch.is_table and ch.table_text else ch for ch in folded[:top_k]]
+    out = [replace(ch, text=table_evidence_text(ch)) if ch.is_table and ch.table_text else ch for ch in folded[:top_k]]
     # ⑤ 식별자로 걸린 묶음 조각은 그 구간만(#238 결정 13·18) — 색인·순위·라벨은 그대로, 넘기는 글만 바뀐다.
     #    묶음을 통째로 주면 모델이 옆 조를 읽는다(실측: 실질문 23건 18→21 정답, 회귀 0). 조 하나짜리 조각은 불변.
+    #    표 근거(③에서 바뀐 것)는 오리지 않는다 — 걸린 묶음 머리의 조 제목 줄부터 잘라 [검색에 걸린 행] 머리말이 떨어졌다(#268).
     out = [replace(ch, text=cut_identifier_span(ch.text, ch.headings, ch.matched_ident))
-           if ch.matched_ident and ch.headings else ch for ch in out]
+           if ch.matched_ident and ch.headings and not (ch.is_table and ch.table_text) else ch for ch in out]
     while len(out) > 1 and sum(estimate_tokens_conservative(c.text) for c in out) > EVIDENCE_BUDGET_TOKENS:
         drop = next((i for i in range(len(out) - 1, 0, -1) if not out[i].is_table), len(out) - 1)
         logger.warning('근거 예산 초과 — 순위 %d의 청크(%s)를 뺀다', drop + 1, out[drop].filename)

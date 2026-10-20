@@ -70,7 +70,9 @@ async def test_큰_표는_묶음마다_표_키와_표_전체가_색인되고_근
     small = [c for c in chunks if '| 구분 | 납기 |' in c.text]
     assert small and not any(c.is_table for c in small)                  # 작은 표는 표 묶음이 아니다
     ev = prepare_evidence(batches[::-1] + small, top_k=5)                  # 아무 묶음이 걸려도
-    assert [c.text for c in ev] == [whole, small[0].text]                 # 한 칸으로 접혀 표 전체가 들어간다
+    from rag.retriever import table_evidence_text
+    assert [c.text for c in ev] == [table_evidence_text(batches[-1]), small[0].text]   # 한 칸으로 접혀 걸린 묶음 + 표 전체(#268)
+    assert ev[0].text.endswith(f'[표 전체]\n{whole}')
 
 
 @pytest.mark.asyncio

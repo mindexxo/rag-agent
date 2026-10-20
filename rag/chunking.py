@@ -30,8 +30,8 @@
 
  결과 ChunkData: text / heading_path / page / chunk_index / meta.
  묶음 2개 이상으로 나뉜 표(PDF·DOCX)의 묶음은 meta에 {"is_table": True, "table_key": 문서 안 표 순번, "table_text": 표 전체}를
- 싣는다(표 전체 = 앞 설명 + 표 + 아래 주석, #268) — 근거 준비(rag/retriever.prepare_evidence)가 걸린 묶음을 표 전체로
- 바꾼다(#257, 엑셀 #222와 같은 계약).
+ 싣는다(표 전체 = 앞 설명 + 표 + 아래 주석, #268) — 근거 준비(rag/retriever.prepare_evidence)가 걸린 묶음을 '걸린 묶음 + 표 전체'로
+ 바꾼다(#257·#268 결정 4, 엑셀 #222와 같은 계약).
  표 하나가 TABLE_MAX_TOKENS를 넘으면 문서를 색인하지 않는다(TableTooLargeError).
  (LlamaIndex 의존성은 이 모듈 안에 격리 — 호출부는 ChunkData 도메인 타입만 본다.)
  """

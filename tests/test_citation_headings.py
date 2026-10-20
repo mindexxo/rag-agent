@@ -101,10 +101,11 @@ class TestMdSections:
             (['규정'], '제4조(삭제)'),
         ]
 
-    def test_헤딩_사이_줄은_빈_줄을_지닌_한_덩어리(self, tmp_path):
+    def test_헤딩_사이_문단은_줄로_나뉜_한_덩어리(self, tmp_path):
+        # #267부터 docling — 문단은 요소 하나씩 나오고 조립이 줄바꿈 하나로 잇는다(PDF·DOCX와 같은 모양, 정규식 시절엔 빈 줄까지 뒀다)
         p = tmp_path / 'r.md'
         p.write_text('# 제목\n\n\n첫 문단\n\n둘째 문단\n\n\n## 절\n\n\n', encoding='utf-8')
-        assert [(s.heading_path, s.body) for s in _md_sections(p)] == [(['제목'], '첫 문단\n\n둘째 문단'), (['제목'], '절')]
+        assert [(s.heading_path, s.body) for s in _md_sections(p)] == [(['제목'], '첫 문단\n둘째 문단'), (['제목'], '절')]
 
 
 # ----- 문서 단위: 합성 4건 + 골드 *_ct -------------------------------------------------------------

@@ -6,6 +6,8 @@
   - 실변환 테스트: `pytest.importorskip("docling")` — 패키지 1.4GB + 첫 실행 모델 다운로드가
     필요해 CI에선 건너뛰고 로컬·워커에서 돈다.
 """
+from pathlib import Path
+
 import pytest
 
 from config import settings
@@ -598,6 +600,28 @@ class TestConvertProcess:
         assert isinstance(errors[0], RuntimeError) and '비정상 종료' in str(errors[0])
         fake_vlm.delay = 0
         assert ch.docling_convert(p).pictures
+
+
+    def test_변환과_무관한_설정이_바뀌면_자식을_다시_띄우지_않는다(self, tmp_path, monkeypatch):
+        # #267 — 설정 전체를 비교하던 때는 테스트가 임베딩 주소·한도를 바꿔 끼울 때마다 콜드 기동(8.5초)이 났다
+        import rag.chunking as ch
+        p = tmp_path / 'a.md'
+        p.write_text('# 제목\n\n본문.\n', encoding='utf-8')
+        ch.docling_convert(p)
+        first = ch._convert_process._proc
+        monkeypatch.setattr(settings, 'rerank_timeout', settings.rerank_timeout + 1)
+        ch.docling_convert(p)
+        assert ch._convert_process._proc is first
+        monkeypatch.setattr(settings, 'docling_table_mode', 'fast' if settings.docling_table_mode != 'fast' else 'accurate')
+        ch.docling_convert(p)
+        assert ch._convert_process._proc is not first        # 변환 설정은 여전히 자식에 닿아야 한다
+
+    def test_이_모듈이_읽는_설정은_모두_자식에_넘어간다(self):
+        # 자식은 _CHILD_SETTING_PREFIXES 설정만 받는다 — 다른 접두사 설정을 자식 코드가 읽으면 부모가 바꿔도 옛 값으로 돈다
+        import re
+        import rag.chunking as ch
+        names = set(re.findall(r'settings\.([a-z_]+)', Path(ch.__file__).read_text(encoding='utf-8'))) - {'model_dump'}
+        assert names and all(n.startswith(ch._CHILD_SETTING_PREFIXES) for n in names), sorted(names)
 
 
 def _raises(fn, *args):

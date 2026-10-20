@@ -102,7 +102,9 @@ class TestPrepareEvidence:
         from rag.retriever import prepare_evidence
         chunks = [_t(1, table_text='시트1 전체'), _t(2, sheet='시트2', table_text='시트2 전체'),
                   _pt(3, 't1', doc=5, table_text='표1 전체'), _pt(4, 't2', doc=5, table_text='표2 전체')]
-        assert [c.text for c in prepare_evidence(chunks, top_k=5)] == ['시트1 전체', '시트2 전체', '표1 전체', '표2 전체']
+        from rag.retriever import table_evidence_text
+        assert [c.text for c in prepare_evidence(chunks, top_k=5)] == [table_evidence_text(c) for c in chunks]
+        assert all(c.text.endswith(f'[표 전체]\n{c0.table_text}') for c, c0 in zip(prepare_evidence(chunks, top_k=5), chunks))
 
     def test_PDF_큰_표_묶음은_문서와_표_순번으로_접힌다(self):
         from rag.retriever import prepare_evidence
@@ -110,7 +112,7 @@ class TestPrepareEvidence:
                   _pt(3, 't1', doc=2, table_text='B표'),                              # 다른 문서의 t1은 다른 표
                   _chunk(chunk_id=4, text='산문')]
         out = prepare_evidence(chunks, top_k=5)
-        assert [(c.chunk_id, c.text) for c in out] == [(1, 'A표'), (3, 'B표'), (4, '산문')]
+        assert [(c.chunk_id, c.text.rsplit('\n', 1)[-1]) for c in out] == [(1, 'A표'), (3, 'B표'), (4, '산문')]
 
     def test_산문이_없으면_순위가_낮은_표를_통째로_뺀다(self, monkeypatch):
         # #257 결정 4 — 예전엔 표만 남으면 멈춰 예산을 넘긴 채 넘겼다(표가 하나뿐이라 닿지 않았다)
@@ -118,7 +120,7 @@ class TestPrepareEvidence:
         monkeypatch.setattr(R, 'EVIDENCE_BUDGET_TOKENS', 100)
         chunks = [_t(1, table_text='가' * 60), _t(2, sheet='시트2', table_text='나' * 60), _pt(3, 't1', doc=7, table_text='다' * 60)]
         out = R.prepare_evidence(chunks, top_k=5)
-        assert [(c.chunk_id, len(c.text)) for c in out] == [(1, 60)]          # 일부만 남기지 않는다 — 통째로 빠진다
+        assert [c.chunk_id for c in out] == [1] and out[0].text.endswith('가' * 60)   # 일부만 남기지 않는다 — 통째로 빠진다
 
     def test_산문을_먼저_빼고_그래도_넘치면_표를_뺀다(self, monkeypatch):
         import rag.retriever as R
@@ -138,4 +140,20 @@ class TestPrepareEvidence:
         whole = '[별표 1] 징계 양정 기준\n| 사유 | 양정 |\n| --- | --- |\n| 횡령 | 파면 |\n| 지각 | 견책 |'
         ch = _pt(1, 't1', text='제5조(징계)\n[별표 1] 징계 양정 기준\n| 사유 | 양정 |\n| --- | --- |\n| 횡령 | 파면 |',
                  table_text=whole, headings=['제5조(징계)'], matched_ident='5조')
-        assert prepare_evidence([ch], top_k=5)[0].text == whole
+        from rag.retriever import table_evidence_text
+        assert prepare_evidence([ch], top_k=5)[0].text == table_evidence_text(ch)       # 오리지 않는다 — 머리말·표 전체 그대로
+        assert prepare_evidence([ch], top_k=5)[0].text.endswith(whole)
+
+
+class TestTableEvidenceText:
+    """표 근거 모양(#268 결정 4) — 걸린 묶음 먼저 + 표 전체."""
+
+    def test_걸린_묶음을_먼저_보이고_표_전체를_뒤에_싣는다(self):
+        from rag.retriever import TABLE_HIT_LABEL, TABLE_WHOLE_LABEL, table_evidence_text
+        ch = _pt(1, 't1', text='| h |\n| --- |\n| 51 |', table_text='단위: kg당 원\n| h |\n| --- |\n| 1 |\n| 51 |\n| 59 |')
+        assert table_evidence_text(ch) == f'{TABLE_HIT_LABEL}\n{ch.text}\n\n{TABLE_WHOLE_LABEL}\n{ch.table_text}'
+
+    def test_묶음이_곧_표_전체면_한_번만(self):
+        # 작은 시트는 묶음 = 완성본(#222) — 같은 글을 두 번 싣지 않는다
+        from rag.retriever import table_evidence_text
+        assert table_evidence_text(_t(1, text='| h |\n| 1 |', table_text='| h |\n| 1 |')) == '| h |\n| 1 |'

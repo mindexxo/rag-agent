@@ -17,7 +17,7 @@ async def load_chunks(tenant: str) -> list[dict]:
     없고, 키워드 축은 측정 테넌트에 FAQ가 0건이라(2026-10-18 실측) 넣을 이유가 아직 없다(#248 설계 3)."""
     resp = await client().search(index=settings.opensearch_index, body={
         "size": 10000, "track_total_hits": True,
-        "_source": ["chunk_id", "document_id", "filename", "heading_path", "headings", "text"],
+        "_source": ["chunk_id", "document_id", "filename", "heading_path", "headings", "text", "table_text"],
         "query": tenant_filter(tenant),
     })
     total = resp["hits"]["total"]["value"]
@@ -25,7 +25,7 @@ async def load_chunks(tenant: str) -> list[dict]:
         raise RuntimeError(f"{tenant}: 조각 {total}개 — size 상한 초과, 페이지네이션 필요")
     return [{"chunk_id": int(s["chunk_id"]), "document_id": s["document_id"], "filename": s["filename"],
              "heading_path": list(s.get("heading_path") or []), "headings": list(s.get("headings") or []),
-             "text": s.get("text") or ""}
+             "text": s.get("text") or "", "table_text": s.get("table_text")}   # 표 묶음이면 표 전체(#257) — chunk_boundary가 본다
             for h in resp["hits"]["hits"] if (s := h["_source"]).get("document_id") is not None]
 
 

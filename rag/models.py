@@ -118,6 +118,9 @@ class Document(Base):
 class Faq(Base):
     """FAQ 항목 (F3 전용 저장). 검색 편입은 색인에 항목당 청크 1개로 (outbox INDEX_FAQ → os_index.index_faq_chunks)."""
     __tablename__ = "faqs"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "question"),   # 대표 질문 중복 금지(#276) — 라우터 409의 최후 방어. 유사 질문은 JSONB라 앱에서만
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     tenant_id: Mapped[str]

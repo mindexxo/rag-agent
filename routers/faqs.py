@@ -7,7 +7,9 @@
 semantic 캐시의 문서 집합 비교·무효화가 코드 수정 없이 그대로 동작한다 (service._source_doc_ids 참조).
 """
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import Text, cast, func, or_, select
+from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
@@ -21,6 +23,28 @@ router = APIRouter(prefix='/kms')
 
 def _to_response(f: Faq) -> FaqResponse:
     return FaqResponse(id=f.id, question=f.question, variants=f.variants or [], answer=f.answer, is_active=f.is_active)
+
+
+async def _reject_duplicate(session: AsyncSession, tenant_id: str, phrases: list[str],
+                            exclude_id: int | None = None) -> None:
+    """대표 질문·유사 질문이 같은 테넌트의 다른 FAQ(대표 질문 또는 유사 질문)와 **완전 일치**하면 409 (#276).
+
+    완전 일치만 본다(공백 정리는 스키마가 했다) — 띄어쓰기·대소문자를 무시하면 정당한 변형 질문까지 막는다.
+    같은 질문이 두 항목에 있으면 둘 다 후보에 올라 리랭커 점수로 순서가 정해지는데, 내용이 같으면
+    점수도 거의 같아 어느 쪽이 먼저일지 비결정이다 — 등록 시점에 막는 이유.
+    `?|`(jsonb_exists_any): variants 배열에 후보 문구 중 하나라도 있으면 참.
+    """
+    if not phrases:
+        return
+    stmt = (select(Faq.id, Faq.question, Faq.variants)
+            .where(Faq.tenant_id == tenant_id)   # 격리 — WHERE 절 명시
+            .where(or_(Faq.question.in_(phrases),
+                       func.jsonb_exists_any(Faq.variants, cast(phrases, ARRAY(Text))))))
+    if exclude_id is not None:
+        stmt = stmt.where(Faq.id != exclude_id)
+    for other_id, question, variants in (await session.execute(stmt)).all():
+        hit = next(p for p in phrases if p == question or p in (variants or []))
+        raise HTTPException(status_code=409, detail=f"같은 질문의 FAQ(#{other_id})가 이미 있습니다: '{hit}'")
 
 
 async def _get_faq(session: AsyncSession, tenant_id: str, faq_id: int) -> Faq:
@@ -51,16 +75,23 @@ async def create_faq(
         tenant_id: str = Depends(get_tenant_id),
         session: AsyncSession = Depends(get_session),
 ):
-    if not request.question.strip() or not request.answer.strip():
+    # 공백 제거·빈 유사 질문 제거·길이 상한은 스키마가 했다(schemas/kms.py FAQ_*_MAX) — 여기선 빈 값만 본다.
+    if not request.question or not request.answer:
         raise HTTPException(status_code=422, detail='질문/답변이 비어 있습니다.')
+    await _reject_duplicate(session, tenant_id, [request.question, *request.variants])
     faq = Faq(
         tenant_id=tenant_id,
-        question=request.question.strip(),
-        variants=[v.strip() for v in request.variants if v.strip()],
-        answer=request.answer.strip(),
+        question=request.question,
+        variants=list(request.variants),
+        answer=request.answer,
     )
     session.add(faq)
-    await session.flush()   # id 확보 (대기열 payload에 필요)
+    try:
+        await session.flush()   # id 확보 (대기열 payload에 필요)
+    except IntegrityError:
+        # UNIQUE (tenant_id, question) — 위 검사와 커밋 사이에 같은 질문이 들어온 경쟁. 폴더 라우터의 IntegrityError→409 변환과 같다
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=f"같은 질문의 FAQ가 이미 있습니다: '{request.question}'")
 
     # 임베딩·색인은 워커가 한다(rag/outbox.py INDEX_FAQ) — 라우터는 행만 같은 트랜잭션에 남긴다.
     # 그래서 생성 직후 최대 1분(재시도 포함 1~5분)은 검색에 안 잡힌다 — 제품 가이드 그대로.
@@ -79,24 +110,26 @@ async def update_faq(
     faq = await _get_faq(session, tenant_id, faq_id)
 
     # 빈 문자열 가드 (create는 스키마에서 막지만 PATCH는 optional이라 뚫려 있었음 — P1-15).
-    # 빈 question/answer가 저장·재임베딩되면 검색에 쓰레기 항목이 남는다.
-    if request.question is not None and not request.question.strip():
+    # 빈 question/answer가 저장·재임베딩되면 검색에 쓰레기 항목이 남는다. strip·길이 상한은 스키마가 했다.
+    if request.question is not None and not request.question:
         raise HTTPException(status_code=422, detail='질문은 비울 수 없습니다.')
-    if request.answer is not None and not request.answer.strip():
+    if request.answer is not None and not request.answer:
         raise HTTPException(status_code=422, detail='답변은 비울 수 없습니다.')
 
-    content_changed = False
-    if request.question is not None and request.question.strip() != faq.question:
-        faq.question = request.question.strip()
-        content_changed = True
-    if request.variants is not None:
-        clean = [v.strip() for v in request.variants if v.strip()]
-        if clean != (faq.variants or []):
-            faq.variants = clean
-            content_changed = True
-    if request.answer is not None and request.answer.strip() != faq.answer:
-        faq.answer = request.answer.strip()
-        content_changed = True
+    # 바뀐 뒤의 모습을 먼저 계산해 중복을 검사하고, 통과하면 그때 대입한다 — 대입을 먼저 하면 검사 SELECT 직전
+    # autoflush가 UPDATE를 내보내 DB UNIQUE에서 터진다(409가 아니라 500, 리뷰 지적 1).
+    question = request.question if request.question is not None else faq.question
+    variants = list(request.variants) if request.variants is not None else (faq.variants or [])
+    answer = request.answer if request.answer is not None else faq.answer
+    content_changed = (question, variants, answer) != (faq.question, faq.variants or [], faq.answer)
+    if content_changed:
+        await _reject_duplicate(session, tenant_id, [question, *variants], exclude_id=faq.id)   # 자기 자신은 제외
+        faq.question, faq.variants, faq.answer = question, variants, answer
+        try:
+            await session.flush()   # UNIQUE (tenant_id, question) 경쟁을 여기서 받는다 — 뒤의 캐시 무효화 질의가 autoflush로 먼저 터지지 않게
+        except IntegrityError:
+            await session.rollback()   # 폴더 라우터의 IntegrityError→409 변환과 같다. rollback이 faq를 만료시키므로 지역 변수를 쓴다
+            raise HTTPException(status_code=409, detail=f"같은 질문의 FAQ가 이미 있습니다: '{question}'")
 
     turned_off = False
     if request.is_active is not None:

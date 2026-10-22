@@ -169,3 +169,100 @@ async def test_타_테넌트_FAQ는_404(client, tenant_id):
                                  headers={'X-Tenant-Id': str(uuid.uuid4())}) as other:
         assert (await other.patch(f'/kms/faqs/{faq_id}', json={'answer': '탈취'})).status_code == 404
         assert (await other.delete(f'/kms/faqs/{faq_id}')).status_code == 404
+
+
+# ---------- #276 입력 상한·중복 거절 ----------
+
+@pytest.mark.asyncio
+async def test_상한_초과는_422(client, tenant_id):
+    res = await client.post('/kms/faqs', json={'question': '가' * 101, 'answer': 'a'})
+    assert res.status_code == 422 and res.json()['detail'][0]['loc'] == ['body', 'question'], res.text
+    faq_id = await _create_faq(client)
+    res = await client.patch(f'/kms/faqs/{faq_id}', json={'answer': '가' * 501})
+    assert res.status_code == 422 and res.json()['detail'][0]['loc'] == ['body', 'answer'], res.text
+
+
+@pytest.mark.asyncio
+async def test_같은_대표_질문은_409에_기존_id가_보인다(client, tenant_id):
+    faq_id = await _create_faq(client, question='환불 기간은?')
+    res = await client.post('/kms/faqs', json={'question': '  환불 기간은?  ', 'answer': '다른 답'})
+    assert res.status_code == 409, res.text
+    assert f'#{faq_id}' in res.json()['detail'] and '환불 기간은?' in res.json()['detail']
+
+
+@pytest.mark.asyncio
+async def test_다른_FAQ의_유사_질문과_같아도_409(client, tenant_id):
+    faq_id = await _create_faq(client)                       # variants=['돈 언제 돌려받아요']
+    # 내 대표 질문 = 남의 유사 질문
+    res = await client.post('/kms/faqs', json={'question': '돈 언제 돌려받아요', 'answer': 'a'})
+    assert res.status_code == 409 and f'#{faq_id}' in res.json()['detail'], res.text
+    # 내 유사 질문 = 남의 대표 질문
+    res = await client.post('/kms/faqs', json={'question': '새 질문', 'variants': ['환불 기간은?'], 'answer': 'a'})
+    assert res.status_code == 409 and f'#{faq_id}' in res.json()['detail'], res.text
+
+
+@pytest.mark.asyncio
+async def test_느슨한_일치는_막지_않는다(client, tenant_id):
+    """완전 일치만 — 띄어쓰기·대소문자가 다르면 정당한 변형으로 본다."""
+    await _create_faq(client, question='환불 기간은?')
+    res = await client.post('/kms/faqs', json={'question': '환불기간은?', 'answer': 'a'})
+    assert res.status_code == 200, res.text
+
+
+@pytest.mark.asyncio
+async def test_수정시_자기_자신은_중복이_아니고_남과_겹치면_409(client, tenant_id):
+    a = await _create_faq(client, question='환불 기간은?')              # variants=['돈 언제 돌려받아요']
+    res = await client.post('/kms/faqs', json={'question': '배송 기간은?', 'variants': ['택배 며칠'], 'answer': 'a'})
+    assert res.status_code == 200, res.text
+    b = res.json()['id']
+    res = await client.patch(f'/kms/faqs/{a}', json={'question': '환불 기간은?', 'answer': '바뀐 답'})   # 자기 질문 그대로
+    assert res.status_code == 200, res.text
+    res = await client.patch(f'/kms/faqs/{b}', json={'variants': ['환불 기간은?']})
+    assert res.status_code == 409 and f'#{a}' in res.json()['detail'], res.text
+    async with AsyncSessionLocal() as session:
+        row = await session.get(Faq, b)
+        assert row.variants == ['택배 며칠']                   # 409면 저장 안 됨
+
+
+@pytest.mark.asyncio
+async def test_타_테넌트의_같은_질문은_허용(client, tenant_id, other_tenant_id):
+    await _create_faq(client, question='환불 기간은?')
+    res = await client.post('/kms/faqs', json={'question': '환불 기간은?', 'answer': 'a'},
+                            headers={'X-Tenant-Id': other_tenant_id})
+    assert res.status_code == 200, res.text
+
+
+@pytest.mark.asyncio
+async def test_앱_검사를_지나친_경쟁은_DB_UNIQUE가_409로(client, tenant_id, monkeypatch):
+    """검사와 커밋 사이에 같은 질문이 들어온 경우 — 검사를 비활성화해 그 경로만 재현."""
+    import routers.faqs as faqs_router
+    await _create_faq(client, question='환불 기간은?')
+    async def _noop(*a, **k): ...
+    monkeypatch.setattr(faqs_router, '_reject_duplicate', _noop)
+    res = await client.post('/kms/faqs', json={'question': '환불 기간은?', 'answer': 'a'})
+    assert res.status_code == 409 and '환불 기간은?' in res.json()['detail'], res.text
+
+
+@pytest.mark.asyncio
+async def test_PATCH로_대표_질문을_남의_것과_같게_바꾸면_409(client, tenant_id):
+    """리뷰 지적 1 — 대입을 먼저 하면 autoflush UPDATE가 DB UNIQUE에 걸려 500이었다."""
+    a = await _create_faq(client, question='환불 기간은?')
+    res = await client.post('/kms/faqs', json={'question': '배송 기간은?', 'answer': 'a'})
+    b = res.json()['id']
+    res = await client.patch(f'/kms/faqs/{b}', json={'question': '환불 기간은?'})
+    assert res.status_code == 409 and f'#{a}' in res.json()['detail'], res.text
+    async with AsyncSessionLocal() as session:
+        assert (await session.get(Faq, b)).question == '배송 기간은?'
+
+
+@pytest.mark.asyncio
+async def test_PATCH_경쟁도_DB_UNIQUE가_409로(client, tenant_id, monkeypatch):
+    """리뷰 지적 2 — rollback 뒤 만료된 faq.question을 읽으면 500이었다."""
+    import routers.faqs as faqs_router
+    await _create_faq(client, question='환불 기간은?')
+    res = await client.post('/kms/faqs', json={'question': '배송 기간은?', 'answer': 'a'})
+    b = res.json()['id']
+    async def _noop(*a, **k): ...
+    monkeypatch.setattr(faqs_router, '_reject_duplicate', _noop)
+    res = await client.patch(f'/kms/faqs/{b}', json={'question': '환불 기간은?'})
+    assert res.status_code == 409 and '환불 기간은?' in res.json()['detail'], res.text

@@ -91,9 +91,12 @@ CREATE TABLE IF NOT EXISTS faqs (
     answer     TEXT        NOT NULL,
     is_active  BOOLEAN     NOT NULL DEFAULT TRUE,   -- 항목 단위 검색 on/off
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, question)                     -- 대표 질문 중복 금지(#276). 유사 질문(variants)은 JSONB라 앱에서만 검사
 );
 CREATE INDEX IF NOT EXISTS idx_faqs_tenant ON faqs (tenant_id);
+-- 기존 DB 반영(#276): ALTER TABLE faqs ADD CONSTRAINT faqs_tenant_id_question_key UNIQUE (tenant_id, question);
+--   길이 상한(질문 100·유사 질문 100×10·답변 500)은 앱(schemas/kms.py FAQ_*_MAX)에만 둔다 — 컬럼은 TEXT 유지.
 
 -- ---------- 청크: 이 DB에 없다 ----------
 -- 본문·메타·벡터·어휘 필드는 OpenSearch 인덱스(rag/os_client.py MAPPING)에만 있다(#139).

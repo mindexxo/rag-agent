@@ -1,4 +1,6 @@
 """KMS API 요청/응답 스키마"""
+from typing import Annotated
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from schemas.common import KstDatetime
@@ -172,6 +174,27 @@ class DocumentBulkUpdateRequest(BaseModel):
     is_searchable: bool | None = None
 
 
+# FAQ 입력 상한 (#276, 사용자 결정 10/22). 질문+유사 질문+답변이 **청크 하나**로 임베딩되므로
+# (rag/faq_indexing.py) 길어질수록 임베딩 입력이 잘리거나 검색 정확도가 떨어진다 — 상한의 이유.
+# DB 컬럼은 TEXT 그대로다(저장소 관례: 길이는 앱, DB는 TEXT). FE 입력칸이 같은 값을 건다.
+FAQ_QUESTION_MAX = 100
+FAQ_VARIANT_MAX = 100     # 유사 질문 항목당 — 질문과 같은 성격이라 같은 값
+FAQ_VARIANTS_MAX = 10     # FAQ 하나당 유사 질문 개수
+FAQ_ANSWER_MAX = 500
+
+
+def _strip_text(v):
+    """길이를 **공백 제거 후** 잰다 — 라우터는 이 값을 그대로 저장하므로 검증 기준과 저장 기준이 같다(QueryAttachment와 같은 이유)."""
+    return v.strip() if isinstance(v, str) else v
+
+
+def _strip_variants(v):
+    """항목을 strip하고 빈 항목은 뺀다 — 개수 상한(FAQ_VARIANTS_MAX)이 실제 항목만 세게."""
+    if isinstance(v, list):
+        return [x.strip() for x in v if not isinstance(x, str) or x.strip()]
+    return v
+
+
 class FaqResponse(BaseModel):
     """FAQ 항목 (F3 — 전용 저장, 항목 단위 CRUD)."""
     id: int
@@ -181,16 +204,22 @@ class FaqResponse(BaseModel):
     is_active: bool = True
 
 class FaqCreateRequest(BaseModel):
-    question: str
-    variants: list[str] = []
-    answer: str
+    question: str = Field(max_length=FAQ_QUESTION_MAX)
+    variants: list[Annotated[str, Field(max_length=FAQ_VARIANT_MAX)]] = Field(default=[], max_length=FAQ_VARIANTS_MAX)
+    answer: str = Field(max_length=FAQ_ANSWER_MAX)
+
+    _strip = field_validator('question', 'answer', mode='before')(_strip_text)
+    _strip_v = field_validator('variants', mode='before')(_strip_variants)
 
 class FaqUpdateRequest(BaseModel):
     """보낸 필드만 반영."""
-    question: str | None = None
-    variants: list[str] | None = None
-    answer: str | None = None
+    question: str | None = Field(None, max_length=FAQ_QUESTION_MAX)
+    variants: list[Annotated[str, Field(max_length=FAQ_VARIANT_MAX)]] | None = Field(None, max_length=FAQ_VARIANTS_MAX)
+    answer: str | None = Field(None, max_length=FAQ_ANSWER_MAX)
     is_active: bool | None = None
+
+    _strip = field_validator('question', 'answer', mode='before')(_strip_text)
+    _strip_v = field_validator('variants', mode='before')(_strip_variants)
 
 
 FOLDER_DESC_MAX = 200   # 리랭커 입력에 매 후보마다 붙으므로 길이를 제한 (top_n개 누적 → 지연)

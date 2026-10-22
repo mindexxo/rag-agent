@@ -56,6 +56,61 @@ class TestHeadingLevels:
             _h('제목'), _h('제 1 장 총칙'), _h('제 1 조'), _t('a'), _h('제 2 조'), _t('b')])
         assert len(_common_prefix([s.heading_path for s in secs])) == 2
 
+    # ── 조 제목 보정(#240·#241) — 레이아웃 모델이 같은 꼴의 조 제목을 들쭉날쭉 text로 낸다(회계 규정 35/97) ──
+
+    def test_text로_나온_조_제목은_제목으로_올린다(self):
+        secs = _sections_from_docling_elements([
+            _h('규정'), _h('제1조 (목 적)'), _t('목적 본문'), _t('제2조 (적 용)'), _t('적용 본문'), _t('제3조（회계단위（본사））'), _t('단위 본문')])   # 전각·중첩 괄호도
+        assert [s.heading_path for s in secs] == [['규정', '제1조 (목 적)'], ['규정', '제2조 (적 용)'], ['규정', '제3조（회계단위（본사））']]
+        assert secs[1].body == '적용 본문'
+
+    def test_장_아래에서_올린_조_제목은_조_층(self):
+        secs = _sections_from_docling_elements([_h('규정'), _h('제 1 장 총칙'), _t('제 1 조(목적)'), _t('본문')])
+        assert secs[0].heading_path == ['규정', '제 1 장 총칙', '제 1 조(목적)']
+
+    def test_제목과_첫_문장이_한_요소면_떼어서_제목과_본문으로(self):
+        # '제1조 (목적) 이 규정은 …' — 조 제목 뒤 간격이 좁으면 docling이 한 덩어리로 낸다(실측 간격 합성 규정 30/30, 회계 규정 3건)
+        secs = _sections_from_docling_elements([
+            _h('규정'), _h('제1조 (목적)'), _t('본문'), _t('제24조 (자금의 관리) 회사의 자금은 재무팀장이 총괄한다.'), _t('둘째 줄')])
+        assert secs[-1].heading_path == ['규정', '제24조 (자금의 관리)']
+        assert secs[-1].body == '회사의 자금은 재무팀장이 총괄한다.\n둘째 줄'
+
+    def test_알려진_한계_괄호_뒤_공백_인용으로_시작하는_문단은_제목이_된다(self):
+        # DOCX 폴백(#205)과 같은 규칙·같은 위험(#233 결정 2) — 글은 남는다. 이 동작이 바뀌면 이 단언을 고친다
+        secs = _sections_from_docling_elements([_h('규정'), _h('제1조 (목적)'), _t('본문'), _t('제3조(보상) 규정에 따라 지급한다')])
+        assert secs[-1].heading_path == ['규정', '제3조(보상)'] and secs[-1].body == '규정에 따라 지급한다'
+
+    @pytest.mark.parametrize('line', [
+        '제10조(보관)에 따라 보관한다',          # 닫는 괄호에 조사 — 인용
+        '제 10 조 3호에 의한 특별 공로 퇴직금',   # 괄호 없음 — 인용(실문서 퇴직금 규정)
+        "제98조(이하 '보상조항'이라 한다)에 …",   # 정의 꼴
+    ])
+    def test_조_인용_문장은_올리지_않는다(self, line):
+        secs = _sections_from_docling_elements([_h('규정'), _h('제1조 (목적)'), _t('본문'), _t(line)])
+        assert [s.heading_path for s in secs] == [['규정', '제1조 (목적)']] and line in secs[0].body
+
+    def test_문서_제목보다_먼저_나온_조_제목_꼴은_올리지_않는다(self):
+        # 문서 제목(첫 section_header) 전의 글은 본문으로 둔다 — 올리면 '규정'이 조 아래 헤딩으로 밀려 제목 경로가 틀어진다
+        secs = _sections_from_docling_elements([_t('제1조 (목적)'), _h('규정'), _h('제2조 (적용)'), _t('본문')])
+        assert [(s.heading_path, s.body) for s in secs] == [([], '제1조 (목적)'), (['규정', '제2조 (적용)'], '본문')]
+
+    def test_닫는_괄호가_다음_요소로_떨어진_조_제목은_잇는다(self):
+        # 징계규정 실문서 3건(#241) — 전에는 ')'가 따로 제목이 되어 제목 경로가 [... , ')']였다
+        secs = _sections_from_docling_elements([
+            _h('징계규정'), _h('제 1 장 총 칙'), _h('제 7 조 ( 징계종류'), _h(')'), _t('징계의 종류는 5 종으로 한다 .'),
+            _h('제 8 조 ( 양정기준'), _t('）'), _t('양정 본문')])
+        assert [s.heading_path for s in secs] == [['징계규정', '제 1 장 총 칙', '제 7 조 ( 징계종류 )'],
+                                                 ['징계규정', '제 1 장 총 칙', '제 8 조 ( 양정기준 ）']]
+
+    def test_괄호가_떨어진_조_제목이_text로_나와도_잇고_올린다(self):
+        # 제목 쪽이 text로 오면(①이 올릴 꼴) ②가 먼저 잇는다 — 안 그러면 ')'가 본문 첫 줄로 남는다(리뷰 지적)
+        secs = _sections_from_docling_elements([_h('규정'), _t('제 7 조 ( 징계종류'), _t(')'), _t('본문')])
+        assert [(s.heading_path, s.body) for s in secs] == [(['규정', '제 7 조 ( 징계종류 )'], '본문')]
+
+    def test_괄호_하나만_있는_요소라도_조_제목_뒤가_아니면_건드리지_않는다(self):
+        secs = _sections_from_docling_elements([_h('규정'), _h('■ 안내'), _t(')'), _t('본문')])
+        assert secs[0].heading_path == ['규정', '■ 안내'] and secs[0].body.startswith(')')
+
     def test_장_패턴_변형(self):
         from rag.chunking import _CHAPTER_RE
         assert _CHAPTER_RE.match('제 3 장 복 무') and _CHAPTER_RE.match('제3장 총칙') and _CHAPTER_RE.match('제 12 장')

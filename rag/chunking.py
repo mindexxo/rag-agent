@@ -794,6 +794,23 @@ def _docling_elements(doc, footnote_markers: dict[int, set[str]] | None = None):
             yield label, text, page, None
 
 
+def _join_split_article_titles(elements):
+    """② 닫는 괄호만 다음 요소로 떨어진 조 제목을 잇는다 — '제 7 조 ( 징계종류' + ')' → '제 7 조 ( 징계종류 )'(징계규정 3건, #241)."""
+    elements = list(elements)
+    i = 0
+    while i < len(elements):
+        label, text, page, table = elements[i]
+        nxt = elements[i + 1] if i + 1 < len(elements) else None
+        t = _docling_norm(text or '')
+        if (label in ('section_header', 'text') and nxt is not None and _docling_norm(nxt[1] or '') in (')', '）')
+                and (head := split_heading_line(t)) and head[0] == t and not any(c in t for c in ')）')):
+            yield label, f'{t} {_docling_norm(nxt[1])}', page, table
+            i += 2
+            continue
+        yield label, text, page, table
+        i += 1
+
+
 def _sections_from_docling_elements(elements) -> list[_Section]:
     """(label, text, page, table) 흐름 → _Section. 헤딩 층 복원 규칙의 정의점. table은 행 목록(첫 행 헤더, #252 — _TableBlock으로
     운반)이거나 옛 계약의 markdown 문자열(그대로 글 블록).
@@ -804,11 +821,32 @@ def _sections_from_docling_elements(elements) -> list[_Section]:
     조항끼리 묶인다. 이 규칙 없이 두면 26쪽 규정이 73→170청크로 갈렸다(#143 실측).
     표는 _TableBlock(행 목록 — chunk_file이 행 단위로 나눈다, #252), 그림은 캡션(없으면 _PICTURE_PLACEHOLDER), 나머지 텍스트
     요소는 본문 줄. 비상 경로(pdfplumber·python-docx)는 표를 markdown 글줄로 그대로 흘린다 — 거긴 행 묶음 분할이 없다(의도).
+
+    조 제목 보정(#240·#241) — docling 레이아웃 모델은 본문과 같은 글꼴·크기의 조 제목을 들쭉날쭉 판정한다(회계 규정: 조 제목 97줄이
+    글꼴·크기·들여쓰기·앞 간격까지 같은데 61줄만 section_header, 35줄은 text(그중 3줄은 다음 문장과 한 덩어리), 1줄은 쪽 경계에서
+    순서가 섞였다. 다음 요소 종류와도 무관 — 판정 규칙을 찾을 수 없었다.
+    레이아웃 모델 6종 비교에서도 최선 egret-medium이 35→8에 그치고 다른 문서에서 새로 놓쳤다, 2026-10-21). 두 꼴만 고친다:
+      ① text 요소가 조 제목 꼴(rag/identifiers.split_heading_line)로 시작하면 제목으로 올리고, 같은 요소에 이어진 글은 그 조의
+         본문으로 둔다 — '제1조 (목적) 이 규정은 …'처럼 제목과 첫 문장을 한 덩어리로 내는 경우가 흔하다(조 제목 뒤 간격이 좁은
+         조판: 실문서 회계 규정 3건, 실측 간격에 맞춘 합성 규정은 30조 전부). 판정은 DOCX 조문 폴백(#205)과 같은 함수지만 범위가
+         넓다 — DOCX는 헤딩 스타일이 0개인 문서에서만 돌고 여기는 문서 제목 뒤 모든 text 요소에 돈다. 그래서 '제98조(보상) 규정에
+         따라 …'로 시작하는 본문 문단(쪽·단 경계에서 문장 중간부터 시작한 요소, 목차 줄)은 제목으로 오인된다(#233 결정 2, 글은
+         남는다). 실문서 PDF 20건에서 이 규칙이 올린 줄은 35건 전부 진짜 조 제목이었다(오탐 0, 2026-10-22).
+      ② 닫는 괄호가 다음 요소로 떨어진 조 제목('제 7 조 ( 징계종류' + ')')은 하나로 잇는다 — 안 이으면 ')'가 제목 경로에 들어갔다.
+         제목 쪽이 text로 나와도(①이 올릴 꼴) 잇는다
+    올린 조 제목은 문서 제목이 될 수 없다 — 문서 제목(첫 section_header)이 나온 뒤에만 올린다. docling이 문서 제목까지 본문으로
+    낸 문서(실측 간격 합성 규정)에서는 보정이 걸리지 않는다 — 운영하며 실문서로 대응한다(#240, 2026-10-22 사용자 결정).
+    조문 체계 밖의 제목('1. 목적', 번호 없는 절 제목)은 글자로 가를 단서가 없어 보정하지 않는다(모델 한계로 남김).
     """
     items: list[_Item] = []
     seen_title = False
     seen_chapter = False
-    for label, text, page, table_markdown in elements:
+    for label, text, page, table_markdown in _join_split_article_titles(elements):
+        if label == 'text' and seen_title and (head := split_heading_line(_docling_norm(text))):
+            items.append((page, head[0], 3 if seen_chapter else 2))     # ① 조 제목 꼴 본문 요소 → 제목(+ 이어진 글은 본문)
+            if head[1]:
+                items.append((page, head[1], None))
+            continue
         if label == 'section_header':
             text = _docling_norm(text)
             if not text:

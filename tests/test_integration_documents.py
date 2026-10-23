@@ -5,7 +5,8 @@
 (GET /documents/exists)과 낙관적 잠금(expect_version).
 업로드는 arq를 만지지 않는다 — 문서와 색인 대기열 행이 같은 트랜잭션에 커밋된다 (#139 outbox).
 
-같은 축의 나머지: _folders(등록정보·폴더·일괄 변경) _delete(삭제) _list(목록) _failed(#161).
+같은 축의 나머지: _folders(등록정보·폴더·일괄 변경) _delete(삭제) _list(목록) _failed(#161)
+_reupload(재업로드 뒤 실제 질의 경로의 캐시·인용, #239).
 공용 헬퍼는 tests/helpers_documents.py.
 """
 from pathlib import Path

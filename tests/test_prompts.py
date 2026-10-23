@@ -47,17 +47,23 @@ class TestContextBlocks:
         assert '[1] 배송정책.pdf v1' in out and '[2] 환불정책.pdf v1' in out
         assert out.count('[1] 배송정책.pdf v1') == 2   # 재등장 청크도 같은 번호
 
-    def test_FAQ_청크는_버전없는_FAQ_표시(self):
-        out = build_context_blocks([_chunk(document_id=None, faq_id=7, filename='FAQ')])
-        assert '[1] FAQ' in out
+    def test_FAQ_청크는_버전없이_질문으로_표시(self):
+        # 표시명은 'FAQ: 질문'(#278) — 질문은 색인 heading_path[0]
+        out = build_context_blocks([_chunk(document_id=None, faq_id=7, filename='FAQ',
+                                           heading_path=['환불 기간은?'])])
+        assert '[1] FAQ: 환불 기간은?' in out
         assert 'FAQ v' not in out                # 버전 붙으면 안 됨
 
-    def test_FAQ는_문서들_뒤_번호를_받는다(self):
-        # sources_from_chunks가 FAQ를 마지막에 접는다 — 등장이 앞서도 번호는 뒤
+    def test_FAQ는_항목마다_번호를_받고_순위_순서다(self):
+        # #278: 'FAQ' 하나로 접어 마지막에 두던 것을 항목(faq_id)마다 번호 하나, 등장 순서로 바꿨다 —
+        # 어느 항목이 인용됐는지가 저장돼야 항목별 인용 횟수를 셀 수 있다.
         out = build_context_blocks([
-            _chunk(chunk_id=1, document_id=None, faq_id=7, filename='FAQ', text='FAQ 본문'),
-            _chunk(chunk_id=2)])
-        assert '[2] FAQ' in out and '[1] 배송정책.pdf v1' in out
+            _chunk(chunk_id=1, document_id=None, faq_id=7, filename='FAQ', heading_path=['A 질문'], text='FAQ 본문'),
+            _chunk(chunk_id=2),
+            _chunk(chunk_id=3, document_id=None, faq_id=9, filename='FAQ', heading_path=['B 질문'], text='둘째 FAQ'),
+            _chunk(chunk_id=4, document_id=None, faq_id=7, filename='FAQ', heading_path=['A 질문'], text='같은 FAQ 재등장')])
+        assert '[1] FAQ: A 질문' in out and '[2] 배송정책.pdf v1' in out and '[3] FAQ: B 질문' in out
+        assert out.count('[1] FAQ: A 질문') == 2   # 같은 항목 재등장은 같은 번호
 
     def test_헤딩_없고_페이지_없으면_대시(self):
         out = build_context_blocks([_chunk(heading_path=[], page=None)])

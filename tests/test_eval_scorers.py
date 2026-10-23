@@ -22,7 +22,7 @@ def _tail(*nums: int) -> str:
 
 def _chunks(*filenames: str) -> list[RetrievedChunk]:
     """문서당 청크 1개 — 등장 순서가 곧 인용 번호(sources_from_chunks 불변식).
-    'FAQ'는 운영과 같게 faq_id 청크로 만든다(후보 목록 마지막에 접힘)."""
+    'FAQ'는 운영과 같게 faq_id 청크로 만든다(#278부터 항목마다 번호 — 여기선 항목 하나라 등장 순서 그대로)."""
     out = []
     for i, fn in enumerate(filenames, start=1):
         faq = fn == 'FAQ'

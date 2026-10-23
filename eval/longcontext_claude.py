@@ -58,7 +58,8 @@ async def load_corpus(session, tenant: str) -> str:
 
     문서: ready·is_active·is_searchable (운영 검색 필터와 동일 조건) 청크를
     chunk_index 순으로 이어붙임. FAQ: faq_id 청크 전부를 'FAQ' 블록으로
-    (운영 인용 라벨이 'FAQ'인 것과 짝 — eval.generation.citation_accuracy v2 참조).
+    (채점기 기대 'FAQ'와 짝 — eval.generation.citation_accuracy v2 참조. 운영 인용은 #278부터 항목별
+    'FAQ: 질문'이지만 이 축은 문서 단위 비교라 FAQ를 한 블록으로 둔 채다).
     """
     doc_rows = (await session.execute(
         select(Document.id, Document.filename)

@@ -84,7 +84,8 @@ TEI→인덱싱·검색·캐시.
 - SSE 이벤트명 `EVENT_DONE`(`'done'`) ≠ `TurnStatus.DONE`. 어휘는 같지만 다른 축이다.
 - `PreparedRag.route`의 `'blocked'`(소문자 문자열) ≠ `TurnStatus.BLOCKED`.
 - **인용 5형제 — 전부 다른 것**: `Message.sources`(검색 후보 전체) /
-  `Message.cited_docs`(실인용 파일명, 지표는 이 컬럼만 집계) / `PreparedRag.sources`(인메모리 후보)
+  `Message.cited_docs`(실인용 **문서** 파일명 — FAQ 항목 인용은 `Message.cited_faq_ids`에 id로, #278) /
+  `PreparedRag.sources`(인메모리 후보)
   / `ConversationMessage.citations`(API 응답 필터 결과) / SSE `done.citations`(생성 시점 재계산).
   다섯이 네 파일에 흩어져 있고(`rag/models.py`·`rag/service.py`·`schemas/conversations.py`·
   `rag/streaming.py`) 이 구분 자체를 설명하는 문장은 코드에 없다 — 여기가 유일한 설명이다.

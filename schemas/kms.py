@@ -8,10 +8,15 @@ from text_norm import normalize_filename
 
 class SourceCitation(BaseModel):
     """응답에 인용된 문서 정보. 내부 retrieval 메타(score 등)는 제외.
-    document_id는 원본 다운로드용 — 과거 저장분(메시지·캐시)엔 없으므로 옵셔널."""
+    document_id는 원본 다운로드용 — 과거 저장분(메시지·캐시)엔 없으므로 옵셔널.
+
+    FAQ 인용(#278): document_id=None·faq_id=항목 id, filename은 표시명 'FAQ: 질문'(질문 전체 —
+    줄여 보이는 건 FE 몫, rag/citation_labels.faq_display). #278 이전 저장분(메시지·캐시)은 FAQ 전체가
+    {filename:'FAQ', faq_id 없음} 하나로 접혀 있다 — 그대로 재생되고 항목 집계에는 안 잡힌다."""
     document_id: int | None = None
     filename: str
     version: int
+    faq_id: int | None = None
 
 # 첨부 상한 (#22) — 여기가 단일 정의점. routers/documents.py의 extract 엔드포인트도 이 값을 쓴다.
 # 이전엔 extract에만 상한이 있어, 클라이언트가 그 헬퍼를 건너뛰고 /kms/query에 직접
@@ -196,30 +201,64 @@ def _strip_variants(v):
 
 
 class FaqResponse(BaseModel):
-    """FAQ 항목 (F3 — 전용 저장, 항목 단위 CRUD)."""
+    """FAQ 항목 (F3 — 전용 저장, 항목 단위 CRUD). 관리 필드(#278)는 FE 요청 5번 그대로."""
     id: int
     question: str
     variants: list[str] = []   # 유사 질문 (구어체 변형)
     answer: str
     is_active: bool = True
+    category_id: int | None = None       # None = 미분류 (관리용 분류 — 검색·생성에 영향 없음)
+    created_at: KstDatetime
+    updated_at: KstDatetime              # 어떤 UPDATE든 DB가 올린다(is_active 토글 포함) — updated_by도 같은 기준
+    created_by: str | None = None        # X-User-Id. 미전송이면 null(문서 uploaded_by와 같은 규칙)
+    updated_by: str | None = None        # 마지막으로 손댄 사람 — 헤더 없으면 null로 덮는다(사용자 결정 5, ICCS 연동은 헤더 필수)
+    ref_count: int | None = None         # 답변 인용 누적 횟수 — 목록 API에서만 집계(messages.cited_faq_ids). #278 이전 인용은 항목 기록이 없어 안 센다
 
 class FaqCreateRequest(BaseModel):
     question: str = Field(max_length=FAQ_QUESTION_MAX)
     variants: list[Annotated[str, Field(max_length=FAQ_VARIANT_MAX)]] = Field(default=[], max_length=FAQ_VARIANTS_MAX)
     answer: str = Field(max_length=FAQ_ANSWER_MAX)
+    category_id: int | None = None       # 미전송·null = 미분류
 
     _strip = field_validator('question', 'answer', mode='before')(_strip_text)
     _strip_v = field_validator('variants', mode='before')(_strip_variants)
 
 class FaqUpdateRequest(BaseModel):
-    """보낸 필드만 반영."""
+    """보낸 필드만 반영. category_id는 문서 PATCH의 folder_id와 같은 3단 — 미전송=유지, null=미분류로 이동(model_fields_set으로 구분)."""
     question: str | None = Field(None, max_length=FAQ_QUESTION_MAX)
     variants: list[Annotated[str, Field(max_length=FAQ_VARIANT_MAX)]] | None = Field(None, max_length=FAQ_VARIANTS_MAX)
     answer: str | None = Field(None, max_length=FAQ_ANSWER_MAX)
     is_active: bool | None = None
+    category_id: int | None = None
 
     _strip = field_validator('question', 'answer', mode='before')(_strip_text)
     _strip_v = field_validator('variants', mode='before')(_strip_variants)
+
+
+class FaqListResponse(BaseModel):
+    """FAQ 목록 (#278) — 모양·has_more 산출은 문서 목록(DocumentListResponse)과 같다. 페이지 크기도 같은 상수(DOC_LIST_*)."""
+    items: list[FaqResponse]
+    total: int = 0
+    has_more: bool
+
+
+# FAQ 카테고리 (#278) — 폴더(F2)와 같은 1단 관리 분류. 다른 점: 검색에 영향 없음(캐시 무효화·fan-out 없음), 이름 상한 있음.
+# 폴더 이름에는 상한이 없지만 FAQ 쪽은 #276부터 입력 상한을 두는 쪽이라 맞췄다(사용자 결정 4). DB 컬럼은 TEXT.
+FAQ_CATEGORY_NAME_MAX = 50
+
+
+class FaqCategoryInfo(BaseModel):
+    id: int
+    name: str
+    faq_count: int = 0        # 소속 FAQ 수(활성·비활성 모두) — 삭제 가능 여부를 화면이 미리 알 수 있게
+
+class FaqCategoryCreateRequest(BaseModel):
+    name: str = Field(max_length=FAQ_CATEGORY_NAME_MAX)
+    _strip = field_validator('name', mode='before')(_strip_text)
+
+class FaqCategoryUpdateRequest(BaseModel):
+    name: str = Field(max_length=FAQ_CATEGORY_NAME_MAX)
+    _strip = field_validator('name', mode='before')(_strip_text)
 
 
 FOLDER_DESC_MAX = 200   # 리랭커 입력에 매 후보마다 붙으므로 길이를 제한 (top_n개 누적 → 지연)

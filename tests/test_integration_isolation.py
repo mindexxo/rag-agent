@@ -70,7 +70,7 @@ async def test_FAQ_목록_격리(client, tenant_id, other_tenant_id):
     await sync_faq((await client.post('/kms/faqs', json={'question': 'A사 전용', 'variants': [], 'answer': 'a'})).json()['id'])
     async with _client_for(other_tenant_id) as other:
         listing = (await other.get('/kms/faqs')).json()
-        assert listing == []
+        assert listing['items'] == [] and listing['total'] == 0   # #278: {items,total,has_more}
 
 
 @pytest.mark.asyncio

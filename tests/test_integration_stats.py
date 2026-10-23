@@ -42,8 +42,9 @@ async def test_씨앗_저장_user_id_latency_cache_kind(client, tenant_id, fake_
         assert answers[1].cache_kind == 'semantic'                        # 캐시 재생 표시
         # 저장 시 확정된 사실: 짝 FK(생성·즉시 경로 모두) + 인용 목록 + 인텐트(답변률 분모)
         assert [a.question_message_id for a in answers] == [u.id for u in users]
-        # 근거없음 판정의 원천 — 옛 is_refusal 컬럼을 대신한다 (#61)
-        assert all(a.cited_docs for a in answers)
+        # 근거없음 판정의 원천 — 옛 is_refusal 컬럼을 대신한다 (#61). FAQ 인용은 #278부터 cited_faq_ids에 간다
+        # (문서 파일명 컬럼엔 안 남는다) — 생성·캐시 재생 둘 다.
+        assert all(a.cited_faq_ids and not a.cited_docs for a in answers)
         assert all(a.intent == 'KNOWLEDGE' for a in answers)              # 생성·캐시 경로 모두 기록 (답변률 분모, #13 원복)
 
 
@@ -71,7 +72,7 @@ async def test_stats_집계_정확성(client, tenant_id, fake_llm, pass_gate, re
     assert body['ungrounded'] == 1
     assert body['ungrounded_rate'] == round(1 / 3, 3)
     assert body['daily'] and sum(d['questions'] for d in body['daily']) == 4
-    assert body['top_documents'][0]['filename'] == 'FAQ'         # 실인용 기준 top
+    assert body['top_documents'][0]['filename'] == 'FAQ: 환불 기간은?'   # 실인용 기준 top — FAQ는 항목별 'FAQ: 질문'(#278)
     assert body['top_documents'][0]['citations'] == 2             # 생성 1 + 캐시 재생 1 (미인용은 미집계)
     # 제거된 내부 지표(활성 사용자·지연·차단/실패)는 응답에 없어야 한다 (2026-08-07 정리)
     for gone in ('active_users', 'avg_latency_ms', 'p95_latency_ms', 'blocked', 'failed'):
@@ -234,8 +235,8 @@ async def test_문구가_거절이어도_인용이_있으면_ungrounded가_아�
 
     body = (await client.get('/kms/stats?days=1')).json()
     assert body['knowledge_done'] == 1
-    assert body['ungrounded'] == 0                               # 문구가 아니라 인용을 본다
-    assert body['top_documents'][0]['filename'] == 'FAQ'
+    assert body['ungrounded'] == 0                               # 문구가 아니라 인용을 본다 — FAQ만 인용해도 근거 있음(#278)
+    assert body['top_documents'][0]['filename'] == 'FAQ: 환불 기간은?'
 
 
 # ── #181 일별 집계 경계는 KST 자정 ────────────────────────────

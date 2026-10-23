@@ -115,6 +115,21 @@ class Document(Base):
     )
 
 
+class FaqCategory(Base):
+    """FAQ 카테고리 (#278) — 폴더(Folder)와 같은 1단 관리 분류, 트리 없음. 폴더와 달리 검색에 영향이 없다
+    (참조 토글·설명 없음 → 캐시 무효화·색인 fan-out 없음). 소속 FAQ가 있으면 삭제 불가(라우터 409, 폴더와 같은 규칙)."""
+    __tablename__ = "faq_categories"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    tenant_id: Mapped[str]
+    name: Mapped[str]                                                               # 테넌트 내 유일. 길이 상한은 앱(FAQ_CATEGORY_NAME_MAX)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name"),
+    )
+
+
 class Faq(Base):
     """FAQ 항목 (F3 전용 저장). 검색 편입은 색인에 항목당 청크 1개로 (outbox INDEX_FAQ → os_index.index_faq_chunks)."""
     __tablename__ = "faqs"
@@ -128,6 +143,10 @@ class Faq(Base):
     variants: Mapped[Any] = mapped_column(JSONB, default=list)                     # 유사 질문(구어체 변형) 배열
     answer: Mapped[str]
     is_active: Mapped[bool] = mapped_column(default=True, server_default="true")   # 항목 단위 검색 on/off
+    # 관리 분류(#278). NULL = 미분류. FK에 cascade 없음 — 카테고리 삭제는 소속 FAQ가 0일 때만 라우터가 허용한다
+    category_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("faq_categories.id"))
+    created_by: Mapped[str | None]                                                 # 등록자 X-User-Id (#278). 미전송·도입 전 행은 NULL
+    updated_by: Mapped[str | None]                                                 # 마지막 변경자 — updated_at과 같은 기준(모든 PATCH). 헤더 없으면 NULL로 덮는다
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
@@ -234,7 +253,8 @@ class Message(Base):
     user_id: Mapped[str | None]          # user 메시지: 질문한 상담원 (X-User-Id — 인증 전엔 'test-user')
     latency_ms: Mapped[int | None]       # assistant 메시지: 생성 소요(ms). 캐시/즉시 경로 포함
     cache_kind: Mapped[str | None]       # assistant 메시지: 'semantic'=캐시 재생 답변, NULL=신규 생성
-    cited_docs: Mapped[Any | None] = mapped_column(JSONB)  # assistant: 실인용 파일명 배열 — 저장 시 확정 (지표는 이 컬럼만 집계)
+    cited_docs: Mapped[Any | None] = mapped_column(JSONB)  # assistant: 실인용 **문서** 파일명 배열 — 저장 시 확정 (문서 지표는 이 컬럼만 집계). #278부터 FAQ는 안 들어간다(옛 행의 'FAQ' 원소는 그대로)
+    cited_faq_ids: Mapped[Any | None] = mapped_column(JSONB)  # assistant: 실인용 FAQ id 배열(#278) — FAQ 항목별 ref_count·근거없음 판정이 읽는다. 도입 전 행은 NULL
     intent: Mapped[str | None]           # assistant: 라우팅 결과 'KNOWLEDGE'|'OTHER'|'ATTACHMENT'(#63 — 첨부만 근거, KB 지표에서 제외) — 답변률 분모는 KNOWLEDGE만 (NULL=차단 턴·도입 전 행)
     question_message_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("messages.id", ondelete="SET NULL"))  # assistant: 답한 user 메시지 (짝을 데이터로)

@@ -6,7 +6,7 @@
 꼬리 강제 제약(build_citation_constraint)도 여기서 조립한다(런타임 값 → LLM 입력이라는 같은 성격).
 """
 from rag.citation_labels import (TAIL_END, TAIL_START, attachment_display,
-                                 source_display, sources_from_chunks)
+                                 source_display, source_key, sources_from_chunks)
 from rag.prompt_texts import (
     CACHE_REUSE_JUDGE_NO_ORIGINAL,
     CACHE_REUSE_JUDGE_SYSTEM,
@@ -61,16 +61,15 @@ def build_context_blocks(chunks: list[RetrievedChunk]) -> str:
     """RetrievedChunk 리스트 -> <문서> 블록 안에 들어갈 텍스트 조립.
     각 블록 앞 [번호]가 출처 꼬리의 인용 번호다 — 번호 순서는 sources_from_chunks가
     단일 정의점(citation_labels)이라, 제약·파서와 어긋날 수 없다. 같은 문서의 여러
-    청크는 같은 번호를 받는다(인용은 문서 단위). FAQ 청크는 retriever가 filename='FAQ'로
-    강제하므로(F99) 'FAQ' 후보 하나로 접힌다.
+    청크는 같은 번호를 받는다(인용은 문서 단위). FAQ 청크는 항목(faq_id)마다 번호 하나다
+    (#278 — 그전엔 'FAQ' 후보 하나로 접혔다). 묶음 키는 source_key가 정한다.
     """
-    numbers = {s.document_id if s.filename != 'FAQ' else 'FAQ': i
-               for i, s in enumerate(sources_from_chunks(chunks), start=1)}
+    numbers = {source_key(s): i for i, s in enumerate(sources_from_chunks(chunks), start=1)}
     blocks = []
     for chunk in chunks:
         heading = ' > '.join(chunk.heading_path) if chunk.heading_path else ''
         page = chunk.page or '-'
-        n = numbers['FAQ' if chunk.faq_id is not None else chunk.document_id]
+        n = numbers[source_key(chunk)]
         blocks.append(
             f'[{n}] {source_display(chunk)} 섹션: {heading} / 페이지: {page}\n'
             f'{chunk.text}\n---'

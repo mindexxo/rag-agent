@@ -47,6 +47,25 @@ def norm_text(s: str) -> str:
     return re.sub(r"\s+", "", s).casefold()
 
 
+TABLE_SEP = re.compile(r"^\|(\s*-{3,}\s*\|)+\s*$", re.M)   # 마크다운 표 구분선 `| --- | --- |`(rag.chunking.to_markdown_table)
+
+
+def is_table_chunk(chunk) -> bool:
+    """조각에 표가 있나 — 표 문항 축(#232)의 정의점. `is_table`만 보면 안 된다: 그 표식은 묶음 2개 이상인 큰 표(PDF·DOCX)와
+    엑셀에만 붙고(rag/chunking.py chunk_file), 산문 조각 안에 통째로 든 **작은 표**는 마크다운 구분선으로만 알 수 있다
+    (실문서 PDF 표는 큰 표 3 vs 작은 표 38 — 2026-10-23 전수, eval/table_census)."""
+    return bool(getattr(chunk, "is_table", False)) or bool(TABLE_SEP.search(getattr(chunk, "text", "") or ""))
+
+
+def table_kind(chunks) -> str:
+    """정답 조각 묶음의 표 종류 — '' (표 없음) / 'big' / 'small' / 'big+small'. 검색축이 문항을 '표 문항'으로 묶는 키(#232)."""
+    kinds = set()
+    for c in chunks:
+        if is_table_chunk(c):
+            kinds.add("big" if c.is_table else "small")
+    return "+".join(sorted(kinds))
+
+
 def evidence_has(evidence, token: str) -> float:
     """모델이 실제로 받는 근거 **글**에 토큰이 있나(키워드 축 합격 기준, #248). 조각 id로 보면 안 된다: 표는 같은 시트 조각을
     가장 위 하나로 접고 시트 완성본으로 바꿔 넘기므로(rag.retriever.prepare_evidence), 정답 행이 든 형제 조각이 id로는 빠져도

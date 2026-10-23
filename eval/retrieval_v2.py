@@ -6,6 +6,10 @@ LLM 의존이라 이 축에서 제외 — 멀티턴 검색축은 eval.retrieval_
 
 사용: python3 -m eval.retrieval_v2
      python3 -m eval.retrieval_v2 --expand   # 멀티쿼리 통합(#5) on A/B — 이때만 LLM 사용
+
+표 문항 묶음(#232): 문항마다 정답 조각의 표 종류(`table`: ''/big/small/big+small, 판정은 eval.axis_common.is_table_chunk)와
+표 조각의 파일 형식(`table_fmt`)을 행에 적고 [표 문항]·[표 형식별]로 따로 평균을 낸다 — 골드 type에 표 구분이 없어
+"표 셀 값 질문의 검색 성적"이 유형 평균에 묻혀 있었다.
 """
 import argparse
 import asyncio
@@ -14,8 +18,10 @@ from collections import defaultdict
 from pathlib import Path
 
 from database import AsyncSessionLocal
+from eval.axis_common import table_kind
 from eval.generation import HARD_TYPES, load_gold, row_tenant
 from eval.retrieval import resolve_gold, score_one
+from rag.os_search import fetch_chunk_map
 from rag.retriever import retrieve_candidates
 
 TYPES = {'single_fact', 'paraphrase', 'rare_lexical', 'multi_doc'} | HARD_TYPES
@@ -107,11 +113,17 @@ async def compute(expand: bool = False) -> dict:
             resolved = await resolve_gold(session, tenant, items)
             if resolved.stale:
                 stale[tenant] = len(resolved.stale)
+            # 정답 조각의 표 여부(#232) — 테넌트당 한 번 읽는다
+            gold_chunks = await fetch_chunk_map(sorted({c for s in resolved.scoring_ids.values() for c in s}))
             for g in items:
                 gold_ids = sorted(resolved.scoring_ids.get(g['id']) or [])   # 스니펫 포함 청크 전부 (#209)
                 if not gold_ids:
                     skipped += 1
                     continue
+                table_chunks = [gold_chunks[c] for c in gold_ids if c in gold_chunks]
+                table = table_kind(table_chunks)
+                table_fmt = '+'.join(sorted({c.filename.rsplit('.', 1)[-1].lower() for c in table_chunks
+                                             if table_kind([c])})) if table else ''
                 if expand:
                     queries = queries_map[g['id']]
                     cands = await retrieve_candidates(session, tenant, queries[0], top_n=20,
@@ -120,7 +132,8 @@ async def compute(expand: bool = False) -> dict:
                     queries = [g['query']]
                     cands = await retrieve_candidates(session, tenant, g['query'], top_n=20)
                 scores = score_one([c.chunk_id for c in cands.chunks], gold_ids)
-                row = {'id': g['id'], 'type': g['type'], 'tenant': tenant, 'scores': scores}
+                row = {'id': g['id'], 'type': g['type'], 'tenant': tenant, 'table': table, 'table_fmt': table_fmt,
+                       'scores': scores}
                 if expand:
                     row['queries'] = queries
                 rows.append(row)
@@ -154,6 +167,10 @@ async def main() -> None:
     _table(rows, lambda r: r['type'], 'type')
     print('\n[테넌트별]')
     _table(rows, lambda r: r['tenant'], 'tenant')
+    print('\n[표 문항] 정답 조각의 표 종류 (#232)')
+    _table(rows, lambda r: r['table'] or '(비표)', 'table')
+    print('\n[표 형식별] 표 문항만')
+    _table([r for r in rows if r['table']], lambda r: r['table_fmt'], 'fmt')
 
 
 if __name__ == '__main__':

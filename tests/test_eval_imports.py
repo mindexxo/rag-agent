@@ -7,7 +7,8 @@ import pytest
 @pytest.mark.parametrize("mod", ["eval.retrieval", "eval.retrieval_v2", "eval.retrieval_mt", "eval.generation",
                                  "eval.run_all", "eval.reindex_documents", "eval.retrieval_article",
                                  "eval.retrieval_keyword", "eval.hybrid_replay", "eval.hybrid_weights",
-                                 "eval.chunk_boundary", "eval.contextual_header", "eval.pdf_layout.run"])
+                                 "eval.chunk_boundary", "eval.contextual_header", "eval.pdf_layout.run",
+                                 "eval.table_census"])
 def test_eval_module_imports(mod):
     importlib.import_module(mod)
 

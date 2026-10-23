@@ -57,9 +57,11 @@ async def stats_summary(
           -- coalesce: cited_docs NULL도 0건으로 본다 — routers/conversations.py의
           -- `m.cited_docs or []` 관례와 같은 결론. (assistant·done 행에는 NULL이 없는 것을
           -- 개발계에서 확인했지만, 컬럼이 nullable이라 방어는 남긴다.)
+          -- FAQ만 인용한 답변은 cited_docs가 비고 cited_faq_ids에만 값이 있다(#278) — 둘 다 비어야 근거없음.
           count(*) FILTER (WHERE role = 'assistant' AND status = 'done'
                              AND intent = 'KNOWLEDGE'
-                             AND coalesce(jsonb_array_length(cited_docs), 0) = 0)      AS ungrounded
+                             AND coalesce(jsonb_array_length(cited_docs), 0) = 0
+                             AND coalesce(jsonb_array_length(cited_faq_ids), 0) = 0)   AS ungrounded
         FROM messages
         WHERE tenant_id = :tenant_id
           AND created_at >= {_SINCE_KST}
@@ -79,13 +81,26 @@ async def stats_summary(
     # 인용 top 문서 — 저장 시 확정된 실인용 목록(cited_docs)만 집계. 본문 재파싱·전송 없음.
     # (저장 시점에 출처 꼬리 해석(rag/citation_tail, #56)이 확정 — 단일 정의점.
     #  첨부 인용은 '첨부: 파일명' 문자열로 함께 잡힌다 — 첨부 기반 답변도 지표에 노출)
+    # FAQ 항목 인용(#278)은 cited_faq_ids에 id로 있다 — 'FAQ: 질문'(현재 질문, 인용 표시명과 같은 꼴)으로 합쳐
+    # 같은 top에 올린다. 삭제된 FAQ는 조인에서 빠진다. #278 전 행의 'FAQ' 원소는 cited_docs 쪽에서 그대로 잡힌다.
     top_rows = (await session.execute(text(f"""
-        SELECT d AS filename, count(*) AS cnt
-        FROM messages, jsonb_array_elements_text(cited_docs) AS d
-        WHERE tenant_id = :tenant_id AND role = 'assistant'
-          AND jsonb_typeof(cited_docs) = 'array'
-          AND created_at >= {_SINCE_KST}
-        GROUP BY 1 ORDER BY cnt DESC LIMIT 10
+        SELECT filename, sum(cnt) AS cnt FROM (
+            SELECT d AS filename, count(*) AS cnt
+            FROM messages, jsonb_array_elements_text(cited_docs) AS d
+            WHERE tenant_id = :tenant_id AND role = 'assistant'
+              AND jsonb_typeof(cited_docs) = 'array'
+              AND created_at >= {_SINCE_KST}
+            GROUP BY 1
+            UNION ALL
+            SELECT 'FAQ: ' || f.question AS filename, count(*) AS cnt
+            FROM messages m
+            CROSS JOIN LATERAL jsonb_array_elements_text(m.cited_faq_ids) AS fid   -- 쉼표 조인은 뒤의 JOIN이 먼저 묶여 m이 안 보인다
+            JOIN faqs f ON f.id = fid::bigint AND f.tenant_id = m.tenant_id
+            WHERE m.tenant_id = :tenant_id AND m.role = 'assistant'
+              AND jsonb_typeof(m.cited_faq_ids) = 'array'
+              AND m.created_at >= {_SINCE_KST}
+            GROUP BY 1
+        ) t GROUP BY filename ORDER BY cnt DESC LIMIT 10
     """), params)).all()
 
     knowledge_done = row.knowledge_done or 0
@@ -129,6 +144,7 @@ async def stats_unanswered(
           -- 잡담이 전부 지식 갭 목록을 덮는다(개발계 실측: OTHER·done 53건 전부 빈 배열).
           AND a.role = 'assistant' AND a.status = 'done' AND a.intent = 'KNOWLEDGE'
           AND coalesce(jsonb_array_length(a.cited_docs), 0) = 0
+          AND coalesce(jsonb_array_length(a.cited_faq_ids), 0) = 0   -- FAQ만 인용한 답변은 근거 있음(#278)
           AND a.created_at >= {_SINCE_KST}
         ORDER BY a.created_at DESC
         LIMIT :limit

@@ -20,6 +20,7 @@ from rag import cancellation, os_client
 from rag.otel import init_tracing
 from routers.conversations import router as conversation_router
 from routers.documents import router as document_router
+from routers.faq_categories import router as faq_category_router
 from routers.faqs import router as faq_router
 from routers.folders import router as folder_router
 from routers.kms import router as kms_router
@@ -80,4 +81,5 @@ app.include_router(document_router)
 app.include_router(conversation_router)
 app.include_router(folder_router)
 app.include_router(faq_router)
+app.include_router(faq_category_router)
 app.include_router(stats_router)

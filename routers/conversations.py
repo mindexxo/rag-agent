@@ -140,7 +140,10 @@ async def get_conversation_messages(
             status=m.status,
             # 실인용만 (#56) — sources(후보 스냅샷)를 cited_docs로 필터. 구 데이터는 sources가
             # 후보 전체라 필터가 실질이고, 신 데이터는 저장 자체가 인용만이라 no-op이다.
-            citations=[s for s in (m.sources or []) if s['filename'] in (m.cited_docs or [])] or None,
+            # FAQ 항목 인용(#278)은 cited_faq_ids에 있다 — 파일명 필터만 두면 FAQ 인용이 이력에서 사라진다.
+            citations=[s for s in (m.sources or [])
+                       if s['filename'] in (m.cited_docs or [])
+                       or (s.get('faq_id') is not None and s['faq_id'] in (m.cited_faq_ids or []))] or None,
             # 첨부 본문은 노출하지 않고 파일명만 (FE 뱃지/말풍선 표시용)
             attachments=[a['filename'] for a in m.attachments] if m.attachments else None,
             feedback=m.feedback,

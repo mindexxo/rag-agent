@@ -43,30 +43,61 @@ def citation_tail(numbers) -> str:
 
 
 def sources_from_chunks(chunks) -> list[SourceCitation]:
-    """검색 청크 목록 → 문서 단위 인용 후보 (번호 순서의 원천).
+    """검색 청크 목록 → 출처 단위 인용 후보 (번호 순서의 원천).
 
-    문서는 청크 첫 등장 순서(=리랭크 순위 순), FAQ 청크(F3)가 섞여 있으면 'FAQ' 인용
-    1건으로 접어 마지막에 둔다 — 원본 파일이 없으므로 document_id 없이 내려가고,
+    출처는 청크 첫 등장 순서(=리랭크 순위 순)로 번호를 받는다 — 문서는 document_id 단위,
+    FAQ 청크(F3)는 **항목(faq_id) 단위**다(#278). #278 전에는 FAQ 전체를 'FAQ' 인용 1건으로
+    접어 마지막에 뒀는데, 그러면 어느 항목이 인용됐는지가 어디에도 남지 않아 항목별 인용 횟수
+    (FE 요청 ref_count)를 셀 수 없었다. 원본 파일이 없으므로 document_id 없이 내려가고,
     FE는 document_id 없는 인용을 비클릭으로 처리한다. filename/version은 검색 시점에
     청크에 비정규화돼 있어 DB 재조회가 필요 없다 — 구 _build_sources의 `WHERE id IN`은
-    반환 순서가 비보장이라 번호의 순서 근거로 쓸 수 없었다.
+    반환 순서가 비보장이라 번호의 순서 근거로 쓸 수 없었다. FAQ의 표시명(질문)도 같은 이유로
+    색인 heading_path에서 읽는다(faq_question).
     """
-    seen: set[int] = set()
+    seen: set[tuple] = set()
     out: list[SourceCitation] = []
     for chunk in chunks:
-        if chunk.faq_id is not None or chunk.document_id in seen:
+        key = source_key(chunk)
+        if key in seen:
             continue
-        seen.add(chunk.document_id)
-        out.append(SourceCitation(document_id=chunk.document_id,
-                                  filename=chunk.filename, version=chunk.version))
-    if any(chunk.faq_id is not None for chunk in chunks):
-        out.append(SourceCitation(document_id=None, filename='FAQ', version=1))
+        seen.add(key)
+        if chunk.faq_id is not None:
+            out.append(SourceCitation(document_id=None, faq_id=chunk.faq_id,
+                                      filename=faq_display(faq_question(chunk)), version=1))
+        else:
+            out.append(SourceCitation(document_id=chunk.document_id,
+                                      filename=chunk.filename, version=chunk.version))
     return out
 
 
+def source_key(item) -> tuple:
+    """청크·인용 객체 → 번호 묶음 키. 문서는 ('doc', document_id), FAQ는 ('faq', faq_id) — 둘의 id 공간이
+    겹치므로 종류를 같이 든다(캐시 키가 -faq_id 음수 네임스페이스를 쓰는 것과 같은 이유)."""
+    faq_id = getattr(item, 'faq_id', None)
+    return ('faq', faq_id) if faq_id is not None else ('doc', item.document_id)
+
+
+def faq_question(chunk) -> str:
+    """FAQ 청크의 질문 — 색인이 heading_path=[질문]으로 적는다(rag/os_index.index_parsed_faq, #139부터 전 항목).
+    없으면 청크 본문 첫 줄 'Q: …'에서 읽는다(rag/faq_indexing.build_faq_chunk_text의 형식) — 방어용."""
+    if chunk.heading_path:
+        return chunk.heading_path[0]
+    first = (chunk.text or '').split('\n', 1)[0]
+    return first[2:].strip() if first.startswith('Q:') else 'FAQ'
+
+
+def faq_display(question: str) -> str:
+    """FAQ 인용의 표시명 — 'FAQ: 질문' (질문 전체. 칩에서 줄여 보이는 것과 툴팁 전체 표시는 FE 몫, 사용자 결정 2).
+    첨부 표시명('첨부: 파일명')과 같은 '종류: 이름' 꼴이라 FE가 접두로 종류를 알 수 있다."""
+    return f'FAQ: {question}'
+
+
 def source_display(source) -> str:
-    """검색 출처의 표시명 — 컨텍스트 블록에서 [번호] 뒤에 붙는 사람용 이름 (매칭에 안 쓰임)."""
-    return 'FAQ' if source.filename == 'FAQ' else f'{source.filename} v{source.version}'
+    """검색 출처의 표시명 — 컨텍스트 블록에서 [번호] 뒤에 붙는 사람용 이름 (매칭에 안 쓰임).
+    청크(RetrievedChunk)와 인용 객체(SourceCitation) 둘 다 받는다 — FAQ는 faq_id로 가른다."""
+    if getattr(source, 'faq_id', None) is not None:
+        return faq_display(faq_question(source)) if hasattr(source, 'text') else source.filename
+    return f'{source.filename} v{source.version}'
 
 
 def attachment_display(filename: str) -> str:

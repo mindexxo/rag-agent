@@ -179,6 +179,7 @@ async def finalize_turn(
         standalone_query: str | None = None,
         cache_kind: str | None = None,
         block_reason: str | None = None,
+        cited_faq_ids: list[int] | None = None,
 ) -> None:
     """자리표시를 최종 결과로 채운다 (id로 재조회 후 UPDATE) — **모든 경로의 유일한 종료 지점**.
 
@@ -209,6 +210,7 @@ async def finalize_turn(
     msg.status = status
     msg.latency_ms = latency_ms
     msg.cited_docs = cited_docs
+    msg.cited_faq_ids = cited_faq_ids   # FAQ 항목 인용(#278) — 문서 파일명과 종류가 달라 컬럼을 가른다
     msg.intent = intent   # 라우팅 결과 — 답변률 분모(KNOWLEDGE) 집계용. DB 반영 완료로 원복 (#13)
     msg.cache_kind = cache_kind      # 'semantic'=캐시 재생 답변 (기간별 히트율 집계용)
     msg.block_reason = block_reason  # 입력 가드 차단 사유 — 차단 턴만 값이 있다 (#22)

@@ -44,7 +44,8 @@ async def test_KNOWLEDGE_생성_경로_SSE_전체흐름(client, tenant_id, fake_
     # done이 최종 상태를 싣는다 — 확정 인용·finish_reason·latency (#56)
     done = sse_done(res)
     assert done['finish_reason'] == 'done'
-    assert done['citations'] == [{'document_id': None, 'filename': 'FAQ', 'version': 1}]
+    # FAQ 인용은 항목별(#278): faq_id가 실리고 표시명은 'FAQ: 질문' — 원본 파일이 없으니 document_id는 그대로 None
+    assert done['citations'] == [{'document_id': None, 'filename': 'FAQ: 환불 기간은?', 'version': 1, 'faq_id': faq_id}]
     assert isinstance(done['latency_ms'], int)
 
     # persist-before-stream: 스트림이 끝났으면 자리표시가 done으로 finalize돼 있어야 함
@@ -54,7 +55,7 @@ async def test_KNOWLEDGE_생성_경로_SSE_전체흐름(client, tenant_id, fake_
         assert msg.content.strip() == '테스트 답변입니다.'   # 꼬리는 본문·저장 어디에도 없다 (#56)
         assert TAIL_START not in msg.content
         assert msg.tenant_id == tenant_id
-        assert msg.cited_docs == ['FAQ']                     # done.citations와 같은 사실
+        assert msg.cited_docs == [] and msg.cited_faq_ids == [faq_id]   # done.citations와 같은 사실 — FAQ는 id 컬럼에(#278)
 
     # 꼬리 제약이 생성 호출에 실렸는지 — 후보 1건(FAQ)이면 enum=[1]만 허용 (#56→#65)
     # 실제 수용/거부는 서버의 구조화 디코딩이 판정하므로(로컬 재현 불가) 여기서는

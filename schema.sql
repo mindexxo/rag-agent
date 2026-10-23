@@ -83,20 +83,36 @@ CREATE INDEX IF NOT EXISTS idx_docs_filename_trgm
 -- 해당 문서 재인제스트가 이상적이다. 검색 품질 영향은 작아 각주·지표 복구는 UPDATE만으로 충분.
 
 -- ---------- FAQ (F3: 전용 저장. 검색은 색인에 항목당 청크 1개 — 관문·원문반환 없음) ----------
-CREATE TABLE IF NOT EXISTS faqs (
+-- FAQ 카테고리(#278): 폴더와 같은 1단 관리 분류. 검색에 영향 없음(참조 토글·설명 없음).
+CREATE TABLE IF NOT EXISTS faq_categories (
     id         BIGSERIAL PRIMARY KEY,
     tenant_id  TEXT        NOT NULL,
-    question   TEXT        NOT NULL,
-    variants   JSONB       NOT NULL DEFAULT '[]',   -- 유사 질문(구어체 변형) 배열
-    answer     TEXT        NOT NULL,
-    is_active  BOOLEAN     NOT NULL DEFAULT TRUE,   -- 항목 단위 검색 on/off
+    name       TEXT        NOT NULL,                 -- 길이 상한(50)은 앱(schemas/kms.py FAQ_CATEGORY_NAME_MAX)
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS faqs (
+    id          BIGSERIAL PRIMARY KEY,
+    tenant_id   TEXT        NOT NULL,
+    question    TEXT        NOT NULL,
+    variants    JSONB       NOT NULL DEFAULT '[]',   -- 유사 질문(구어체 변형) 배열
+    answer      TEXT        NOT NULL,
+    is_active   BOOLEAN     NOT NULL DEFAULT TRUE,   -- 항목 단위 검색 on/off
+    category_id BIGINT      REFERENCES faq_categories(id),   -- NULL = 미분류(#278). cascade 없음 — 소속 FAQ가 있으면 카테고리 삭제는 앱이 409
+    created_by  TEXT,                                -- 등록자 X-User-Id(#278). 미전송·도입 전 행은 NULL
+    updated_by  TEXT,                                -- 마지막 변경자 — updated_at과 같은 기준(모든 PATCH). 헤더 없으면 NULL로 덮는다
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (tenant_id, question)                     -- 대표 질문 중복 금지(#276). 유사 질문(variants)은 JSONB라 앱에서만 검사
 );
 CREATE INDEX IF NOT EXISTS idx_faqs_tenant ON faqs (tenant_id);
 -- 기존 DB 반영(#276): ALTER TABLE faqs ADD CONSTRAINT faqs_tenant_id_question_key UNIQUE (tenant_id, question);
 --   길이 상한(질문 100·유사 질문 100×10·답변 500)은 앱(schemas/kms.py FAQ_*_MAX)에만 둔다 — 컬럼은 TEXT 유지.
+-- 기존 DB 반영(#278): CREATE TABLE IF NOT EXISTS faq_categories (… 위와 같음 …);
+--                  ALTER TABLE faqs ADD COLUMN IF NOT EXISTS category_id BIGINT REFERENCES faq_categories(id);
+--                  ALTER TABLE faqs ADD COLUMN IF NOT EXISTS created_by TEXT;
+--                  ALTER TABLE faqs ADD COLUMN IF NOT EXISTS updated_by TEXT;
 
 -- ---------- 청크: 이 DB에 없다 ----------
 -- 본문·메타·벡터·어휘 필드는 OpenSearch 인덱스(rag/os_client.py MAPPING)에만 있다(#139).
@@ -176,12 +192,14 @@ CREATE TABLE IF NOT EXISTS messages (
     user_id         TEXT,        -- user 메시지: 질문한 상담원 (X-User-Id)
     latency_ms      INTEGER,     -- assistant 메시지: 생성 소요(ms)
     cache_kind      TEXT,        -- assistant 메시지: 'semantic'=캐시 재생, NULL=신규 생성
-    cited_docs      JSONB,       -- assistant: 실인용 파일명 배열 (저장 시 확정 — 지표 집계는 이 컬럼만).
-                                 -- **근거없음(ungrounded) = 이 배열이 비어 있음** — 별도 컬럼 없다 (#61).
+    cited_docs      JSONB,       -- assistant: 실인용 **문서** 파일명 배열 (저장 시 확정 — 문서 지표 집계는 이 컬럼만).
+                                 -- **근거없음(ungrounded) = 이 배열과 cited_faq_ids가 둘 다 비어 있음** — 별도 컬럼 없다 (#61, #278).
                                  -- 옛 is_refusal(거절 문구 부분일치)을 대체한 판정이다. NULL도 없음으로 본다
                                  -- (routers/conversations.py의 `m.cited_docs or []` 관례와 같은 결론).
                                  -- 주의: #56 이전 행은 인라인 인용 시절이라 이 컬럼이 비어 있어도
                                  -- 실제로는 근거를 댄 답변이다 — 그 구간 지표는 무의미하다.
+                                 -- #278 전 행은 FAQ 인용이 'FAQ' 원소 하나로 여기 들어 있다(항목 불명) — 그대로 둔다.
+    cited_faq_ids   JSONB,       -- assistant: 실인용 FAQ id 배열(#278) — FAQ 항목별 ref_count·근거없음 판정이 읽는다. 도입 전 행은 NULL
     question_message_id BIGINT REFERENCES messages(id) ON DELETE SET NULL,  -- assistant: 답한 user 메시지 (미답변 짝짓기)
     intent          TEXT,        -- assistant: 라우팅 결과 'KNOWLEDGE'|'OTHER' (2026-08-07 — 답변률 분모를 지식 질문으로 한정). NULL=차단 턴·컬럼 도입 전 행
     block_reason    TEXT,        -- assistant(status='blocked'): 입력 가드(classify_and_guard) 차단 사유. 출력 가드는 제거됨(#26)

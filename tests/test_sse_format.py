@@ -27,7 +27,8 @@ def test_done_페이로드_형식():
     assert _done_payload(result) == {
         'finish_reason': 'done',
         'latency_ms': 123,
-        'citations': [{'document_id': 5, 'filename': '정책.pdf', 'version': 2}],
+        # faq_id는 항상 실린다(#278) — 문서는 null, FAQ 항목 인용은 id. FE는 faq_id 유무로 종류를 가른다
+        'citations': [{'document_id': 5, 'filename': '정책.pdf', 'version': 2, 'faq_id': None}],
     }
 
 

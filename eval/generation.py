@@ -444,6 +444,8 @@ def citation_accuracy(answer: str, expected_docs: list[str], chunks: list[Retrie
     v2 개정 (기존 0/1 any-match와 비교 불가):
     - any-match는 multi_doc에서 문서 하나만 인용해도 만점 → 커버리지 비율로 교체.
     - FAQ 출처는 'FAQ'로 인용됨 — 기대에 'FAQ'를 넣으면 정확 매칭.
+      (#278부터 운영 인용은 항목별 'FAQ: 질문'이지만 이 채점기의 기대 'FAQ'는 **어느 FAQ든 인용했나**로 그대로 둔다 —
+       골드에 FAQ 문항이 0건이라 정의 변경이 아니고, 항목 단위 채점은 eval/faq_citation.py가 faq_id로 한다.)
     - 확장자 스트립을 5개 형식 전체로 확장 (corpus v2 대응).
     """
     if not expected_docs:
@@ -455,8 +457,10 @@ def citation_accuracy(answer: str, expected_docs: list[str], chunks: list[Retrie
     splitter.feed(answer)
     splitter.finish()
     cited = resolve_citations(splitter.tail_raw, sources_from_chunks(chunks), [])
-    # 기대 stem과 같은 규칙으로 확장자 제거 — '공지.txt' vs '공지'는 4자 미만이라 포함 매칭도 못 탄다
-    cores = [re.sub(r"\.(pdf|docx|xlsx|txt|md)$", "", c.filename) for c in cited]
+    # 기대 stem과 같은 규칙으로 확장자 제거 — '공지.txt' vs '공지'는 4자 미만이라 포함 매칭도 못 탄다.
+    # FAQ 인용은 항목 표시명('FAQ: 질문', #278)이 아니라 'FAQ'로 접는다 — 기대 'FAQ'와 정확 매칭되게.
+    cores = ['FAQ' if c.faq_id is not None else re.sub(r"\.(pdf|docx|xlsx|txt|md)$", "", c.filename)
+             for c in cited]
     # 원소가 리스트면 대체 출처 그룹 — 같은 정보가 여러 문서에 있을 때 하나만 인용해도 인정
     groups = [[d] if isinstance(d, str) else d for d in expected_docs]
     covered = 0

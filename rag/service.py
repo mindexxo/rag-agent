@@ -652,7 +652,10 @@ class RagService:
             self.session, self.tenant_id, prepared.assistant_message_id, answer, source_dicts,
             status=status, latency_ms=latency_ms,
             # 인용 확정은 정상 완료(done)에만 의미 — blocked/failed/cancelled는 항상 []/False
-            cited_docs=[c.filename for c in citations] if status == TurnStatus.DONE else [],
+            # 문서 파일명과 FAQ id는 컬럼을 가른다(#278) — 종류가 다른 식별자를 한 배열에 섞으면 집계마다 걸러야 한다.
+            # #278 전 캐시가 재생한 옛 FAQ 인용({filename:'FAQ', faq_id 없음})은 예전처럼 cited_docs에 'FAQ'로 남는다.
+            cited_docs=[c.filename for c in citations if c.faq_id is None] if status == TurnStatus.DONE else [],
+            cited_faq_ids=[c.faq_id for c in citations if c.faq_id is not None] if status == TurnStatus.DONE else [],
             intent=prepared.intent_label,
             # 턴 시작 시점엔 몰랐던 값들 — 짝 user 행의 standalone_query까지 여기서 확정한다
             standalone_query=prepared.standalone_query,

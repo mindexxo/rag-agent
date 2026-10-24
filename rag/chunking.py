@@ -484,6 +484,12 @@ def _guard_picture_models(converter) -> None:
                 _picture_guards.append(guard)
 
 
+def _caption_headers() -> dict[str, str]:
+    """캡션 요청에 붙일 HTTP 헤더 — 키가 있을 때만 Bearer(#290 결정 1). 사내 VLM은 키를 안 보므로 빈 dict가 전과 같은 요청이다."""
+    key = settings.vlm_caption_api_key
+    return {'Authorization': f'Bearer {key}'} if key else {}
+
+
 def _docling_runtime():
     """프로세스당 1회: 변환기(모델 로딩). **변환 프로세스(_ConvertProcess) 안에서** 불린다(#223).
 
@@ -541,10 +547,13 @@ def _docling_runtime():
                 url=settings.vlm_caption_url,
                 params={'model': settings.vlm_caption_model,
                         'temperature': settings.vlm_caption_temperature,    # 결정적 캡션(#209) — params는 요청 body에 그대로 들어간다
-                        'max_tokens': settings.vlm_caption_max_tokens},     # 반복 고리 폭주 상한(#247 결정 16, config 주석)
+                        # 반복 고리 폭주 상한(#247 결정 16, config 주석). 이름은 새 OpenAI 표기(#290 결정 3) — gpt-5 계열은
+                        # 'max_tokens'를 400으로 거부하고, 사내 vLLM·Gemini는 둘 다 받아 상한으로 작동한다(5로 보내면 잘림, 실측 10/24)
+                        'max_completion_tokens': settings.vlm_caption_max_tokens},
                 prompt=_PICTURE_CAPTION_PROMPT,
                 picture_area_threshold=settings.vlm_caption_area_threshold,      # 기본 0.05 → 0.01(#247 결정 17, config 주석)
                 scale=settings.vlm_caption_scale,
+                headers=_caption_headers(),                                      # 상용 VLM 키(#290) — 비면 {} = 전과 동일
                 timeout=settings.vlm_caption_timeout_seconds,
                 concurrency=settings.vlm_caption_concurrency)
             opts.enable_remote_services = True

@@ -47,7 +47,7 @@ X%"라는 절대값 주장에는 쓸 수 없다. eval/ragas_eval.py가 같은 �
 읽는 기준도 같이 흔들린다 — 편향이 일정한 오프셋이라 전후 비교에서 상쇄된다는 가정이
 여기서 깨진다. **규칙 3에 인접한 프롬프트 변경의 결과는 이 수치만으로 판단하지 말고
 외부 judge나 사람 판정으로 교차 확인해야 한다.** 코드로 막을 수 없는 지점이다.
-외부 judge 경로(ABSENCE_JUDGE=openai)는 자리만 잡아뒀고 아직 미구현이다.
+외부 judge는 설정 공급자를 바꾸면 된다(ABSENCE_JUDGE=vllm + LLM_PROVIDER=openai 등, #290) — 별도 분기는 없다.
 
 **버저닝.** JUDGE_PROMPT_VERSION을 판정 결과·감사 로그·요약에 모두 스탬프한다.
 판정 기준이나 프롬프트가 바뀌면 올리고, 이전 버전의 absence_rate와 비교하지 말 것 —
@@ -131,11 +131,8 @@ def judge_llm() -> LlmClient:
     if judge == "claude":
         from eval.claude_client import ClaudeCliClient
         return ClaudeCliClient(model=os.getenv("CLAUDE_MODEL", "sonnet"))
-    if judge == "openai":
-        raise NotImplementedError(
-            "외부 judge(openai) 경로는 미구현이다 — eval/ragas_eval.py의 OpenAI 배관 참고. "
-            "Claude 교차채점은 ABSENCE_JUDGE=claude로 지원(#103)."
-        )
+    if judge != "vllm":   # #290: 외부 judge는 별도 값이 아니라 설정 공급자(LLM_PROVIDER)로 — 값 이름 'vllm'은 호환 유지
+        raise SystemExit(f"ABSENCE_JUDGE={judge} — vllm(설정 공급자)|claude 만 지원. 외부 judge는 LLM_PROVIDER를 바꾼다(#290)")
     return create_llm()
 
 

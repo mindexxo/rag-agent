@@ -293,7 +293,7 @@ class TestRealConversion:
         # 내용을 지어낸다**(#162 실측: scale 1.0에서 3회 모두 환각). 값이 안 걸리면 기본 2.0으로
         # 도는데 에러가 없어 아무도 모른다 — 그래서 값까지 단언한다.
         from docling.datamodel.base_models import InputFormat
-        from rag.chunking import _PICTURE_CAPTION_PROMPT, _docling_runtime
+        from rag.chunking import _PICTURE_CAPTION_PROMPT, _caption_headers, _docling_runtime
 
         converter = _docling_runtime()
         opts = converter.format_to_options[InputFormat.PDF].pipeline_options
@@ -302,11 +302,12 @@ class TestRealConversion:
         api = opts.picture_description_options
         assert api.scale == settings.vlm_caption_scale
         assert api.timeout == settings.vlm_caption_timeout_seconds
+        assert api.headers == _caption_headers() == {}            # 키 비면 전과 같은 요청(#290) — 기본 .env는 사내
         # temperature 0 = 결정적 캡션(#209): 3회 재변환 25/25 동일 실측. 빠지면 샘플링으로 돌아가 재인제스트마다 캡션이 달라진다
         assert api.params == {'model': settings.vlm_caption_model, 'temperature': settings.vlm_caption_temperature,
-                              'max_tokens': settings.vlm_caption_max_tokens}
+                              'max_completion_tokens': settings.vlm_caption_max_tokens}   # 새 표기(#290 결정 3) — gpt-5가 max_tokens 거부
         # 출력 상한(#247 결정 16) — 빠지면 7B 반복 고리 폭주(실측 6천 자대)가 색인되고 45초 상한을 넘겨 문서 재시도로 번진다
-        assert 655 * 2 <= api.params['max_tokens'] <= 4000
+        assert 655 * 2 <= api.params['max_completion_tokens'] <= 4000
         # 면적 하한(#247 결정 17) — 0.05면 내용 있는 작은 캡처(1.2~4.6%)가 캡션 없이 빠졌다. 아이콘(0.39%)은 계속 제외
         assert api.picture_area_threshold == settings.vlm_caption_area_threshold == 0.01
         # XLSX만 하한 0(#249 결정 1) — 엑셀은 시트 칸 단위라 면적 비율이 그림 크기를 반영하지 못한다. DOCX는 1% 그대로

@@ -212,11 +212,6 @@ class TestPictureCaption:
 docling = pytest.importorskip('docling', reason='docling 미설치 — 실변환 테스트는 설치 환경에서만')
 
 
-@pytest.fixture(autouse=True)
-def _docling_path(monkeypatch):
-    monkeypatch.setattr(settings, 'docling_enabled', True)
-
-
 class TestRealConversion:
     """실제 변환 — 결함 1·2·5가 모델로 처리되는지. reportlab 합성 픽스처."""
 

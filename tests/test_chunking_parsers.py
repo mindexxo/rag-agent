@@ -1,6 +1,8 @@
-"""청킹 파서 단위 테스트 — _pdf_pages / _docx_text / chunk_file (비ML 파서 리팩토링 검증).
+"""청킹 파서 단위 테스트 — 첨부 추출(_pdf_pages / _docx_text)과 형식 분기(chunk_file)의 계약.
 
-MD만 예외다 — #267부터 MD 파서는 docling(MD 백엔드)이라 MD 케이스(_needs_docling 표시)는 docling 변환 프로세스를 탄다.
+chunk_file 케이스는 전부 docling 변환 프로세스를 탄다(_needs_docling 표시) — PDF·DOCX·XLSX·MD 색인 경로가 docling 하나뿐이라서
+(#143·#220·#267, 비상 스위치는 #272에서 없앴다). 첨부 추출과 순수 함수는 docling 없이 돈다. docling 경로의 세부(제목 층·표·캡션)는
+tests/test_chunking_docling.py·tests/test_chunking_office_docling.py.
 
 입력은 corpus_v2 합성 문서 실물. heading_path는 pdf·docx·md 모두 채워진다
 (txt만 헤딩 개념이 없어 빈다).
@@ -11,21 +13,13 @@ from pathlib import Path
 import pytest
 
 from rag.chunking import _docx_text, _md_sections, _pdf_pages, chunk_file
-from config import settings
-
-
-@pytest.fixture(autouse=True)
-def _pdfplumber_path(monkeypatch):
-    """PDF 케이스는 pdfplumber **비상 경로**(docling_enabled=False)를 검사한다 — 이 파일은 형식 분기와
-    파서 계약이 대상이다. docling 경로는 tests/test_chunking_docling.py. MD는 이 스위치와 무관하게 docling이다(#267)."""
-    monkeypatch.setattr(settings, 'docling_enabled', False)
 
 CORPUS = Path(__file__).resolve().parent.parent / 'sample_docs' / 'corpus_v2'
 
 PDF = CORPUS / 'summers' / 'summers_01_환불반품정책.pdf'
 DOCX = CORPUS / 'goodpeople' / 'goodpeople_02_정기후원신청변경해지.docx'
 MD = CORPUS / 'harim' / 'harim_06_대량주문B2B.md'
-_needs_docling = pytest.mark.skipif(importlib.util.find_spec('docling') is None, reason='MD 파서는 docling(#267)')
+_needs_docling = pytest.mark.skipif(importlib.util.find_spec('docling') is None, reason='색인 파서는 docling')
 
 
 class TestPdfPages:
@@ -36,6 +30,7 @@ class TestPdfPages:
         assert '환불' in pages[0][1]
 
 
+    @_needs_docling                                  # 뒤 절반의 chunk_file이 docling 변환을 탄다
     def test_빈_페이지는_빈_문자열_그리고_청킹_무해(self, tmp_path):
         # 스캔/빈 페이지에서 extract_text()가 None — '' 폴백이 없으면 split_text(None) 크래시
         from reportlab.pdfgen import canvas
@@ -81,28 +76,16 @@ class TestChunkTxt:
         assert chunk_file(p) == []
 
 
+@_needs_docling
 class TestChunkFile:
     def test_pdf_page_보존_heading_채움(self):
         chunks = chunk_file(PDF)
         assert chunks, 'PDF에서 청크 0개'
-        assert all(c.heading_path for c in chunks)         # 글자 크기로 헤딩 판정
+        assert all(c.heading_path for c in chunks)         # docling 제목 층(레이아웃 모델 + 번호 체계 복원)
         assert all(c.page is not None and c.page >= 1 for c in chunks)
         assert len({c.page for c in chunks}) >= 2          # 다중 페이지 문서여야 아래 연속성 검증이 유효
         # chunk_index는 섹션·페이지 경계를 넘어 문서 전체에서 연속 (리셋 회귀 방지)
         assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
-
-    def test_pdf_크기차이_없으면_heading_없이_폴백(self, tmp_path):
-        # 한 가지 글자 크기만 쓰는 PDF(스캔·단순 조판) → 헤딩 0개, 변경 전과 동일 동작
-        from reportlab.pdfgen import canvas
-        p = tmp_path / 'flat.pdf'
-        c = canvas.Canvas(str(p))
-        for i in range(12):
-            c.setFont('Helvetica', 11)
-            c.drawString(60, 760 - i * 22, f'Uniform body line number {i} with policy content.')
-        c.save()
-        chunks = chunk_file(p)
-        assert chunks
-        assert all(ch.heading_path == [] for ch in chunks)
 
     def test_docx_heading_path_채움_page_없음(self):
         chunks = chunk_file(DOCX)
@@ -124,19 +107,16 @@ class TestChunkFile:
         assert table_chunks, '표 청크를 못 찾음'
         assert any('결제수단별 출금일' in h for h in table_chunks[0].heading_path)
 
-    @_needs_docling
     def test_md는_heading_path_채움(self):
         chunks = chunk_file(MD)
         assert any(c.heading_path for c in chunks)         # md만 헤딩 구조 보존
         heads = [h for c in chunks for h in c.heading_path]
         assert any('대량주문' in h for h in heads)
 
-    @_needs_docling
     def test_chunk_index_순차(self):
         chunks = chunk_file(MD)
         assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
 
-    @_needs_docling
     def test_긴_문서는_여러_청크로(self):
         assert len(chunk_file(MD)) > 1                     # 3,600자 문서 — 512자 분할
 
@@ -213,6 +193,7 @@ class TestMdSections:
 class TestChunkFileDispatch:
     """형식 분기가 chunk_file 한 곳뿐임을 고정 (#42 — 두 곳이던 게 xlsx 버그의 원인)."""
 
+    @_needs_docling
     def test_xlsx는_chunk_xlsx로_위임된다(self):
         # 옛 CLI 경로는 xlsx를 md로 취급해 ZIP 바이너리를 색인했다
         xlsx = CORPUS / 'homeplus' / 'homeplus_10_멤버십혜택표.xlsx'
@@ -301,6 +282,7 @@ class TestDocxFallbackHeadings:
         expected = [p.text.strip() for p in d.paragraphs if p.text.strip()]
         assert all(line in _docx_text(DOCX) for line in expected)
 
+    @_needs_docling
     def test_생성한_docx_제목_장_조_3단_경로(self, tmp_path):
         from docx import Document as _Doc
         d = _Doc()
@@ -309,6 +291,7 @@ class TestDocxFallbackHeadings:
         chunks = chunk_file(p)
         assert chunks[0].heading_path == ['지침서', '제 1 장 총칙', '제1조(목적)'] and '이 지침은 절차를 정한다.' in chunks[0].text
 
+    @_needs_docling
     def test_생성한_docx에서_조문별_heading_path가_채워지고_표_행이_한_청크에_남는다(self, tmp_path):
         from docx import Document as _Doc
         d = _Doc()

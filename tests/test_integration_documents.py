@@ -15,6 +15,7 @@ from urllib.parse import quote
 import pytest
 from sqlalchemy import func, select
 
+from config import settings
 from database import AsyncSessionLocal
 from rag import cache, outbox
 from rag.models import AnswerCache as AnswerCacheRow, Document, SearchIndexOutbox
@@ -118,6 +119,38 @@ async def test_인덱싱_예외시_failed_기록(client, tenant_id, fake_queue, 
     assert row.status == 'failed' and row.attempts == 1
     assert len(drops) == 1 and drops[0].status == 'pending'
     assert await ingest(body['document_id']) == {'done': 1, 'failed': 0}   # 그 DROP — 없는 청크, 무해
+
+
+@pytest.mark.asyncio
+async def test_docling_변환_실패는_failed로_끝나고_비상_경로로_색인하지_않는다(client, tenant_id, fake_queue, blob_tmp, monkeypatch):
+    """#272 — 색인 파서는 docling 하나다. 변환이 실패하면 pdfplumber 등으로 조용히 저품질 색인을 만들지 않고 failed+사유로 끝난다.
+    RuntimeError(불완전 변환 가드와 같은 종류)는 결정적 실패라 1회로 확정된다(#185)."""
+    from io import BytesIO
+    from reportlab.pdfgen import canvas
+    import rag.chunking as rc
+
+    buf = BytesIO()
+    c = canvas.Canvas(buf)
+    c.drawString(60, 760, 'Refund within 14 days of delivery.')
+    c.save()
+    body = await upload(client, '환불정책.pdf', buf.getvalue(), mime='application/pdf')
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError('docling 변환 불완전(테스트 주입)')
+
+    monkeypatch.setattr(rc, 'docling_convert', _boom)      # PDF·DOCX·MD 경로가 이 이름을 부른다(XLSX는 xlsx_chunking이 따로 import)
+    assert await ingest(body['document_id']) == {'done': 0, 'failed': 1}
+    assert not hasattr(settings, 'docling_enabled')         # 스위치가 되살아나면 여기서 깨진다 — 이슈 결정(2026-10-19)의 강제점
+
+    doc = await get_doc(body['document_id'])
+    assert doc.status == 'failed' and '테스트 주입' in doc.status_reason
+    assert await chunk_texts(body['document_id']) == []     # 비상 경로가 있었다면 pdfplumber 청크가 여기 남았다
+    async with AsyncSessionLocal() as s:
+        row = (await s.execute(select(SearchIndexOutbox)
+                               .where(SearchIndexOutbox.op == outbox.INDEX_DOCUMENT)
+                               .where(SearchIndexOutbox.payload['document_id'].as_integer()
+                                      == body['document_id']))).scalars().one()
+    assert row.status == 'failed' and row.attempts == 1
 
 
 @pytest.mark.asyncio

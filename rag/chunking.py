@@ -14,11 +14,11 @@
 
  - PDF : **docling**(레이아웃 ML + TableFormer + 원격 한국어 OCR #168)이 기본 — #143. 인쇄 부산물·제목 분할·표 빈 셀을
          모델이 구조적으로 처리하고, 헤딩 층만 한국 규정 번호 체계('제 N 장'/'제 N 조')로 복원한다.
-         `docling_enabled=False`면 pdfplumber 글자 크기 휴리스틱(비상 경로). page는 **청크마다 실제 쪽**.
-         채팅 첨부(extract_text)는 항상 pdfplumber — 사용자 대기 경로라 콜드 스타트를 안 태운다.
+         docling이 실패하면 색인은 failed로 끝난다 — 저품질 비상 경로로 조용히 바꾸지 않는다(#272).
+         page는 **청크마다 실제 쪽**. 채팅 첨부(extract_text)는 pdfplumber — 사용자 대기 경로라 콜드 스타트를 안 태운다.
  - DOCX: **docling**(SimplePipeline — 레이아웃·OCR 없음)이 기본(#220). Heading 스타일 레벨 그대로 섹션 분할,
          스타일이 없으면 조문 패턴 폴백(#205). 그림은 VLM 캡션, 표 셀 안 중첩 표·워드 자동 번호까지 읽는다.
-         `docling_enabled=False`·채팅 첨부는 python-docx(그림·중첩 표·자동 번호를 잃는다).
+         채팅 첨부만 python-docx(그림·중첩 표·자동 번호를 잃는다 — 첨부는 통째로 넣는 평문이라 감수).
  - MD  : **docling**(MD 백엔드, #267) — 헤딩(밑줄식 포함)·표를 문법대로. 표 칸 '\\|'·'<br>', 링크 주소, 인라인 서식
          조각을 보정한다(_md_sections). 채팅 첨부는 원문 그대로.
  - TXT : 평문(인코딩 감지 utf-8→cp949). 헤딩 구조가 없어 heading_path는 빈다.
@@ -153,7 +153,7 @@ class _Section:
     # 분할이 헤딩을 본문과 같은 조각에 둘 수 있다(_split_section). 묶지 않은 섹션은 비어 있다.
     headings: list[str] = field(default_factory=list)
     # 본문을 이루는 블록 목록(#252 결정 1 = b′): 글 블록(str) 또는 표 블록(_TableBlock). body·line_pages는 이 목록에서
-    # 파생된 값이다(파서가 둘 다 채운다 — body 문자열을 없애는 일은 #230). None이면(txt·md·pdfplumber 비상 경로) 본문 전체가
+    # 파생된 값이다(파서가 둘 다 채운다 — body 문자열을 없애는 일은 #230). None이면(txt·md) 본문 전체가
     # 글 블록 하나다. 크기 분할(chunk_file)은 이 목록을 보고 표만 행 단위로 나눈다 — 표를 글줄에서 추측하지 않는다.
     blocks: list['str | _TableBlock'] | None = None
 
@@ -193,9 +193,8 @@ def _join_blocks(blocks: list['str | _TableBlock']) -> list['str | _TableBlock']
     return out
 
 
-# (page, text, level) — PDF(docling·pdfplumber)·DOCX·MD 경로가 _build_sections에 흘리는 공통 단위(#233).
-# level이 None이면 본문 줄, 정수면 그 레벨의 헤딩. text는 여러 줄일 수 있고(pdfplumber 경로의 표 markdown), docling 경로의
-# 표는 _TableBlock으로 온다(#252 — 행 목록 그대로 운반).
+# (page, text, level) — PDF·DOCX·MD 경로가 _build_sections에 흘리는 공통 단위(#233).
+# level이 None이면 본문 줄, 정수면 그 레벨의 헤딩. text는 여러 줄일 수 있고, 표는 _TableBlock으로 온다(#252 — 행 목록 그대로 운반).
 _Item = tuple[int | None, 'str | _TableBlock', int | None]
 
 
@@ -820,7 +819,7 @@ def _sections_from_docling_elements(elements) -> list[_Section]:
     그러면 _pack_sections의 joinable(공통 조상 깊이 ≥2)이 현행과 같이 동작해 같은 장 아래
     조항끼리 묶인다. 이 규칙 없이 두면 26쪽 규정이 73→170청크로 갈렸다(#143 실측).
     표는 _TableBlock(행 목록 — chunk_file이 행 단위로 나눈다, #252), 그림은 캡션(없으면 _PICTURE_PLACEHOLDER), 나머지 텍스트
-    요소는 본문 줄. 비상 경로(pdfplumber·python-docx)는 표를 markdown 글줄로 그대로 흘린다 — 거긴 행 묶음 분할이 없다(의도).
+    요소는 본문 줄.
 
     조 제목 보정(#240·#241) — docling 레이아웃 모델은 본문과 같은 글꼴·크기의 조 제목을 들쭉날쭉 판정한다(회계 규정: 조 제목 97줄이
     글꼴·크기·들여쓰기·앞 간격까지 같은데 61줄만 section_header, 35줄은 text(그중 3줄은 다음 문장과 한 덩어리), 1줄은 쪽 경계에서
@@ -861,7 +860,7 @@ def _sections_from_docling_elements(elements) -> list[_Section]:
         elif label == 'table':
             if not table_markdown:
                 continue
-            if isinstance(table_markdown, str):               # 옛 계약(markdown 문자열) — 테스트·pdfplumber 호환
+            if isinstance(table_markdown, str):               # 옛 계약(markdown 문자열) — 튜플만 먹이는 단위 테스트 호환
                 items.append((page, table_markdown, None))
                 continue
             block = _TableBlock(table_markdown, [page] * len(table_markdown))
@@ -1108,60 +1107,9 @@ def _docling_sections(file_path: str | Path) -> list[_Section]:
     return _sections_from_docling_elements(_docling_elements(document, footnote_markers))
 
 
-# ── PDF 경로 ② pdfplumber — 비상 스위치 (docling_enabled=False) ─────────────────
-
-@dataclass
-class _Line:
-    """pdfplumber 줄 하나 — 헤딩 판정에 크기가 필요해 함께 나른다."""
-    page: int
-    text: str
-    size: float                 # 줄의 최대 글자 크기
-
-
-def _pdf_lines(file_path: str | Path) -> list[_Line]:
-    """PDF를 (page, 줄, 최대 글자크기)로. extract_text()는 크기를 버리므로 extract_text_lines()."""
-    out: list[_Line] = []
-    with pdfplumber.open(str(file_path)) as pdf:
-        for page_no, page in enumerate(pdf.pages, start=1):
-            for line in page.extract_text_lines():
-                text = (line.get('text') or '').strip()
-                if not text:
-                    continue
-                sizes = [c['size'] for c in line.get('chars', []) if c.get('size')]
-                out.append(_Line(page_no, text, round(max(sizes), 1) if sizes else 0.0))
-    return out
-
-
-def _pdfplumber_sections(file_path: str | Path) -> list[_Section]:
-    """PDF → pdfplumber 글자 크기 휴리스틱 → _Section. **비상 경로** — `docling_enabled=False`일 때만.
-
-    본문 크기 = 글자 수 기준 최빈 크기, 그보다 큰 줄이 헤딩. 크기 차이가 없으면 헤딩 0개로 폴백.
-    #137에서 확정된 결함 1(인쇄 부산물이 투표를 전복)·2(폰트 혼용으로 제목 분할)·5(표 빈 셀 소실)를
-    **이 경로는 막지 않는다** — #141의 손 수정은 docling 도입(#143)으로 제거했다. 표는 공백 구분
-    평문으로 들어가고 인쇄 헤더·URL 푸터가 본문에 섞인다. docling을 못 쓰는 상황의 임시 수단이다.
-    결함 3·6·③(번호 복원·줄별 쪽·고아 헤딩)은 _build_sections·chunk_file 단계라 여기서도 유지된다.
-    """
-    lines = _pdf_lines(file_path)
-    if not lines:
-        return []
-    weight: dict[float, int] = {}
-    for line in lines:
-        weight[line.size] = weight.get(line.size, 0) + len(line.text)
-    body_size = max(weight, key=lambda size: weight[size])
-    level_of = {size: level for level, size in
-                enumerate(sorted((s for s in weight if s > body_size), reverse=True), start=1)}
-    return _build_sections([(line.page, line.text, level_of.get(line.size)) for line in lines])
-
-
-def _pdf_sections(file_path: str | Path) -> list[_Section]:
-    """PDF 파서 디스패처 — 기본 docling, `docling_enabled=False`면 pdfplumber 비상 경로 (#143)."""
-    if settings.docling_enabled:
-        return _docling_sections(file_path)
-    return _pdfplumber_sections(file_path)
-
-
 def _docx_items(file_path: str | Path):
-    """DOCX body를 **문서 원래 순서대로** (is_heading, level, text, from_table)로 흘린다.
+    """DOCX body를 **문서 원래 순서대로** (is_heading, level, text, from_table)로 흘린다. python-docx — 채팅 첨부
+    (_docx_text) 전용. 색인은 _docx_docling_items(#220).
 
     doc.paragraphs와 doc.tables를 따로 훑으면 표가 전부 문서 끝으로 밀린다
     (예: '2.1 기준표' 밑의 표가 자기 섹션에서 떨어져 나와 마지막 청크로 감).
@@ -1361,8 +1309,8 @@ def _docx_sections(file_path: str | Path) -> list[_Section]:
     """DOCX를 (heading_path, 본문) 섹션 목록으로 — Heading 스타일이 경계. 스타일이 하나도 없으면
     조문 패턴 폴백(_docx_fallback_headings, #205).
 
-    읽기는 docling이 기본(#220, _docx_docling_items — 그림 캡션·중첩 표·자동 번호), `docling_enabled=False`면
-    python-docx(_docx_items, 비상 경로이자 채팅 첨부 경로). 둘이 같은 항목 형태라 아래 조립은 하나다.
+    읽기는 docling(#220, _docx_docling_items — 그림 캡션·중첩 표·자동 번호). 채팅 첨부의 python-docx 읽기(_docx_items)와
+    항목 형태가 같아 #205 폴백은 공유한다.
 
     헤딩 텍스트는 본문에 넣지 않는다. heading_path가 들고 있고, 인덱스 입력엔
     rag/index_text가 앞에 붙이므로 본문에까지 넣으면 같은 문구가 두 번 들어간다.
@@ -1371,10 +1319,7 @@ def _docx_sections(file_path: str | Path) -> list[_Section]:
     남는다), 본문 없이 같은 레벨 헤딩에 밀린 헤딩('제7조(삭제)')과 문서 끝 헤딩은 본문으로 되살린다. 따로 접던 때는 이 보존이
     PDF에만 있어서 워드에서 본문 없는 조가 색인에서 사라졌다. page는 docx에 없다(None).
     """
-    if settings.docling_enabled:
-        items = list(_docx_docling_items(docling_convert(file_path)))
-    else:
-        items = list(_docx_items(file_path))
+    items = list(_docx_docling_items(docling_convert(file_path)))
     return _build_sections([(None, text, level if is_heading else None)
                             for is_heading, level, text, _ in _docx_fallback_headings(items)])
 
@@ -1647,8 +1592,8 @@ def _md_sections(file_path: str | Path) -> list[_Section]:
 # 형식 → 섹션 파서. 이 넷은 _Section으로 수렴하므로 뒤 단계(묶기·분할)를 공유한다.
 # xlsx만 빠져 있다 — 행 묶음 + 시트 완성본·크기 상한 초과 시 거절이라 계약이 근본적으로 다르다(#222).
 _SECTION_PARSERS = {
-    '.pdf': _pdf_sections,      # docling(기본) / pdfplumber 글자 크기 휴리스틱(비상)
-    '.docx': _docx_sections,    # docling(기본) / python-docx(비상) — 둘 다 Heading 스타일 레벨
+    '.pdf': _docling_sections,  # docling — 레이아웃 ML + TableFormer + 원격 OCR(#143)
+    '.docx': _docx_sections,    # docling SimplePipeline — Heading 스타일 레벨, 없으면 조문 폴백(#220·#205)
     '.md': _md_sections,        # docling MD 백엔드 + 보정 3개(#267)
     '.txt': _txt_sections,      # 헤딩 없음 — 통째로 섹션 1개
 }

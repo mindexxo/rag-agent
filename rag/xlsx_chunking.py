@@ -37,8 +37,8 @@
   (시트당 표 1개·첫 행 헤더)은 안내일 뿐 강제하지 않으며, docling이 나았던 3건은 전부 그 규격을 어긴 파일이었다.
 - **크기 판정**: openpyxl `_iter_sheets`로 렌더한 표 하나로 잰다 — 업로드 검증과 색인이 같은 기준이어야 하고(아래 절),
   업로드 검증이 docling 변환 대기(변환 프로세스)에 서면 안 된다.
-- `docling_enabled=False`(비상 스위치, `chunk_xlsx_plain`)와 채팅 첨부(`xlsx_plain_text`)는 openpyxl로 읽는다 — 첨부는
-  사용자 대기 경로라 색인과 docling 변환 프로세스를 나누지 않는다(#220 결정 6). 첨부는 묶지 않고 시트 전체 텍스트 그대로다.
+- 채팅 첨부(`xlsx_plain_text`)만 openpyxl로 읽는다 — 첨부는 사용자 대기 경로라 색인과 docling 변환 프로세스를 나누지
+  않는다(#220 결정 6). 첨부는 묶지 않고 시트 전체 텍스트 그대로다. 색인은 docling뿐이다(#272 — openpyxl 색인 스위치 제거).
 
 청크 meta에 {"is_table": True, "table_key": 시트명, "table_text": 시트 완성본}을 싣는다 — PDF·DOCX 큰 표와 같은 계약(#257).
 근거 준비(rag.retriever.prepare_evidence)가 같은 시트 묶음을 접고 완성본으로 바꾼다. #257 전의 '한 시트만 참조' 필터는 없앴다
@@ -65,7 +65,6 @@ from io import BytesIO
 
 import openpyxl
 
-from config import settings
 from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN, estimate_tokens_conservative
 
 # 표 markdown 조립은 chunking.py가 단일 정의점 — PDF 표(#137 결함 5)도 같은 형태를
@@ -234,14 +233,6 @@ def _plain_sheets(file_path, *, check_size: bool = True) -> list[tuple[str, list
         return out
 
 
-def chunk_xlsx_plain(file_path, description: str = '') -> list[ChunkData]:
-    """openpyxl 경로 — 시트별 행 묶음 청크(첫 행 헤더). 비상 스위치(`docling_enabled=False`)용. 그림은 읽지 않는다."""
-    chunks: list[ChunkData] = []
-    for title, rows in _plain_sheets(file_path):
-        chunks += _sheet_chunks(title, [('table', rows)], description, len(chunks))
-    return chunks
-
-
 def xlsx_plain_text(file_path) -> str:
     """채팅 첨부용 — 시트별 표 markdown을 묶지 않고 그대로 잇는다(#222: 첨부는 행 묶음 대상이 아니다).
 
@@ -290,8 +281,6 @@ def chunk_xlsx(file_path, description: str = '') -> list[ChunkData]:
     시트 순서·포함 여부: openpyxl이 셀을 본 시트는 전부 나간다 — docling이 그 시트를 비워 내면 **조용히 빠뜨리지 않고
     실패로 올린다**(strict-grounded, PDF 경로와 같은 규율). 셀 없이 그림만 있는 시트는 docling 결과가 있으면 뒤에 붙인다.
     """
-    if not settings.docling_enabled:
-        return chunk_xlsx_plain(file_path, description)
     titles = _check_workbook_size(file_path)
     blocks = _docling_sheet_blocks(docling_convert(file_path))
     if missing := [t for t in titles if t not in blocks]:

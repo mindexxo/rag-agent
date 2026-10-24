@@ -3,7 +3,7 @@
 꼬리가 번호 목록(TAIL_EXAMPLE_MULTI 형태)이 되면서(파일명 라벨 ~25토큰 → ~6토큰, 각주 표시
 지연 해소) "번호 i가 어느 문서인가"의 순서 근거가 곧 계약이다. 같은 순서를 세 곳이 소비한다 —
 ① 프롬프트 컨텍스트 블록의 [번호](rag/prompts.py), ② 꼬리 강제 제약의 번호 후보
-(rag/prompts.build_citation_constraint), ③ 꼬리 파서의 번호→객체 매핑
+(rag/prompts.build_citation_tail), ③ 꼬리 파서의 번호→객체 매핑
 (rag/citation_tail.resolve_citations). 셋이 각자 순서를 세우면 어긋나는 순간
 **오귀속이 조용히**(에러 없이 엉뚱한 문서 인용) 생긴다 — 순서는 여기 한 곳만 만든다.
 

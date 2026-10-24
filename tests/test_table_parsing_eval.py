@@ -270,7 +270,7 @@ class TestLlmJudge:
 
         class FakeLlm:
             calls = []
-            async def acomplete(self, messages, extra_body=None):
+            async def acomplete(self, messages, **_):
                 FakeLlm.calls.append(messages[1]['content'])
                 return AnswerJudgment(label='correct' if '30일' in messages[1]['content'] else 'ungrounded', reason='이유').model_dump_json()
         rows = [dict(id='S03_rowspan', path='pdf', question='무급 병가 한도?', expected='연 30일', answer='1년에 30일까지', value_ok=False, manual=False),
@@ -290,7 +290,7 @@ class TestLlmJudge:
         from eval.table_parsing.llm_judge import rejudge, final_ok
 
         class BrokenLlm:
-            async def acomplete(self, messages, extra_body=None):
+            async def acomplete(self, messages, **_):
                 raise RuntimeError('한도')
         rows = [dict(id='a', path='pdf', question='q', expected='e', answer='x', value_ok=False, manual=False)]
         asyncio.run(rejudge(rows, {}, llm=BrokenLlm()))

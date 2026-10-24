@@ -1,6 +1,6 @@
 """#235 노이즈 문서 생성 — 운영 vLLM(14B)에 직접 요청, 이어 돌리기 가능.
 
-운영 rag/llm.LlmClient를 쓰지 않는 이유: 온도 0.2·max_tokens 3,000이 고정이라 수백 편이 비슷해지고 긴 규정이 잘린다.
+운영 rag/llm 공급자를 쓰지 않는 이유: 온도 0.2·max_tokens 3,000이 고정이라 수백 편이 비슷해지고 긴 규정이 잘린다.
 eval/ragas_eval.py처럼 AsyncOpenAI를 직접 만들어 온도·상한을 넘긴다(thinking off는 동일).
 동시성은 NOISE_CONCURRENCY(기본 12) — worker15 공유 장비, 14B 안전선 동시 24·32 붕괴(#101·#114).
 산출: DOCS/<id>.md + MANIFEST(한 줄 = 문서 하나: id·kind·topic·company·chars·sec). 이미 manifest에 있는 id는 건너뛴다.
@@ -34,7 +34,7 @@ async def generate(n: int) -> None:
     done = _done()
     todo = [j for j in jobs(n) if j['id'] not in done]
     print(f'작업 {n} · 남은 {len(todo)} · 동시 {CONCURRENCY}', flush=True)
-    cli = AsyncOpenAI(base_url=settings.vllm_base_url, api_key='EMPTY', timeout=httpx.Timeout(600.0, connect=5.0))
+    cli = AsyncOpenAI(base_url=settings.llm_base_url, api_key='EMPTY', timeout=httpx.Timeout(600.0, connect=5.0))
     sem = asyncio.Semaphore(CONCURRENCY)
     t0, n_done, n_tok = time.time(), 0, 0
 
@@ -43,7 +43,7 @@ async def generate(n: int) -> None:
         async with sem:
             t = time.time()
             r = await cli.chat.completions.create(
-                model=settings.vllm_model, messages=[{'role': 'user', 'content': prompt(job)}],
+                model=settings.llm_model, messages=[{'role': 'user', 'content': prompt(job)}],
                 max_tokens=MAX_TOKENS, temperature=0.8,
                 extra_body={'chat_template_kwargs': {'enable_thinking': False}})
             text = _FENCE.sub('', (r.choices[0].message.content or '').strip()).strip() + '\n'

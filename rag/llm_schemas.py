@@ -1,15 +1,15 @@
 """LLM 구조화 출력 — 스키마(Pydantic)와 강제 호출 헬퍼 (#43).
 
 프롬프트로 형식을 간청하고 방어 파서로 수습하던 세 지점(가드+인텐트, condense 단일,
-condense 멀티)을 vLLM structured_outputs의 json 스키마 강제로 바꾼다. 모델 정의가 곧
+condense 멀티)을 json 스키마 강제로 바꾼다(서버 문법은 공급자 구현 rag/llm이 안다). 모델 정의가 곧
 스키마(model_json_schema)이자 검증(model_validate_json) — 정의·검증이 한 곳이다.
 
-공개 표면: RouteDecision · CondenseResult · CondenseMultiResult · acomplete_validated ·
-is_schema_rejected(#61에서 승격 — eval 하네스도 같은 판정을 쓴다, 사유는 그 docstring).
-나머지는 내부 헬퍼(_).
+공개 표면: RouteDecision · CondenseResult · CondenseMultiResult · acomplete_validated.
+나머지는 내부 헬퍼(_). 스키마를 서버 문법으로 바꾸는 일은 #287부터 공급자 구현(rag/llm)이 한다 —
+여기는 `schema=`로 의도만 넘긴다.
 
 원칙 (rag/citation_tail.py #56과 동일): guided decoding은 확률을 낮추는 최적화지 신뢰의
-근거가 아니다 — 스키마가 걸렸든(정상) 무스키마 재시도로 떨어졌든(fail-open) 검증은 항상 돈다.
+근거가 아니다 — 스키마가 걸렸어도 검증은 항상 돈다.
 
 경계: 이 모듈은 "구조를 신뢰할 수 있는가"까지만 책임진다. 계약은 **2갈래**다 (#72) —
 검증을 통과한 모델 인스턴스이거나, 예외다. 예전엔 "구조 신뢰 불가"를 None으로 돌려주고
@@ -17,7 +17,7 @@ is_schema_rejected(#61에서 승격 — eval 하네스도 같은 판정을 쓴�
 **판단하지 못한 상태에서 기본값을 추측**하는 것이었다. 가드 쪽은 입력 검사가 꺼진 채
 통과시키는 것이라 특히 안전 측이 아니었고, 어느 쪽이든 LLM이 죽었다면 생성도 실패하므로
 폴백이 턴을 살리지도 못했다 — 에러를 검색까지 다 수행한 뒤로 미룰 뿐이었다.
-관측은 kms.schema_invalid(검증 실패)·kms.schema_retry(무스키마 재시도)로 남는다.
+관측은 kms.schema_invalid(검증 실패)로 남는다.
 
 스키마 필드에 기본값을 주지 말 것: 기본값이 있으면 json 스키마에서 required가 빠져
 guided 경로에서 모델이 필드를 생략해도 합법이 된다 — 강제력이 조용히 약화된다.
@@ -26,10 +26,9 @@ guided 경로에서 모델이 필드를 생략해도 합법이 된다 — 강제
 원래 없을 수 있는 값이라 옵셔널이 맞다.)
 
 배치가 schemas/가 아니라 rag/인 이유: schemas/는 FastAPI 요청·응답(API 경계) 계약이고,
-이건 LLM에 거는 생성 제약이라는 내부 계약이다 — build_citation_constraint(rag/prompts)와 같은 축.
+이건 LLM에 거는 생성 제약이라는 내부 계약이다 — build_citation_tail(rag/prompts)과 같은 축.
 """
 import logging
-from functools import cache
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
@@ -53,8 +52,8 @@ class LlmJudgmentFailed(RuntimeError):
 class RouteDecision(BaseModel):
     """입력 가드레일 + 인텐트 분류 통합 결과 (구 rag/guardrail.py의 dataclass를 대체).
 
-    intent의 Literal 검증이 곧 화이트리스트다 — 무스키마 폴백 경로에서 'knowledge'(소문자)
-    같은 이탈은 검증 실패 → 호출부 fail-open으로 떨어지고 kms.schema_invalid로 관측된다.
+    intent의 Literal 검증이 곧 화이트리스트다 — 'knowledge'(소문자) 같은 이탈은 검증 실패로
+    끝나고 kms.schema_invalid로 관측된다.
 
     RETRY(#59)·ATTACHMENT(#63)는 표면 패턴 인식용 **전이 인텐트**다 — RETRY는 재요청
     발화("다시"/"이어서"), ATTACHMENT는 첨부 문서 자체를 대상으로 하는 요청("이 문서
@@ -96,32 +95,9 @@ class CondenseMultiResult(BaseModel):
     variants: list[str] = Field(default_factory=list, json_schema_extra={'maxItems': 2})
 
 
-@cache
-def _schema_extra_body(model_cls: type[BaseModel]) -> dict:
-    """vLLM v0.12+ structured_outputs 형식. 세 스키마 모두 런타임 값이 없는 정적이라 캐시 —
-    요청마다 조립하는 build_citation_constraint(후보 의존)와 다른 점."""
-    return {"structured_outputs": {"json": model_cls.model_json_schema()}}
-
-
-def is_schema_rejected(exc: Exception) -> bool:
-    """서버가 extra_body 파라미터 자체를 거부한 경우만 좁게 (400/422 — 구버전 vLLM).
-
-    타임아웃·5xx는 재시도해도 같은 결과인데 블로킹 호출이라 대기만 배가 된다 —
-    #56 astream(스트리밍, 첫 토큰 전 전부 재시도)과 의도적으로 다른 지점.
-    status_code 덕 타이핑: openai.APIStatusError 계열이 이 속성을 갖고, 테스트 fake도 흉내낸다.
-
-    공개 심볼인 이유(#61): 소비처가 둘이다 — 여기(structured_outputs)와
-    eval/generation.py(출처 꼬리 제약). 둘 다 acomplete에 extra_body를 실어 보내고
-    같은 근거로 같은 폭을 쓴다. 규칙을 복제하면 위 rationale은 한 곳에만 남고
-    판정은 두 곳에서 갈릴 수 있다. 판정 자체는 스키마에 한정되지 않으므로 이름도
-    extra_body 기준으로 읽는다.
-    """
-    return getattr(exc, 'status_code', None) in (400, 422)
-
-
 def _extract_json_slice(raw: str) -> str:
-    """무스키마 재시도 응답의 ```json 펜스·부연 텍스트 방어 — 구 guardrail._extract_json의 승격.
-    첫 '{'부터 마지막 '}'까지. 스키마 강제 응답(순수 JSON)엔 항등이라 양쪽에 걸어도 무해.
+    """```json 펜스·부연 텍스트 방어 — 구 guardrail._extract_json의 승격. 첫 '{'부터 마지막 '}'까지.
+    스키마 강제 응답(순수 JSON)엔 항등이라 무해하고, 스키마를 못 거는 공급자가 와도 같은 검증을 탄다.
     '{'가 없으면 ValueError — 호출자(acomplete_validated)의 검증 실패 처리로 합류."""
     return raw[raw.index('{'):raw.rindex('}') + 1]
 
@@ -137,18 +113,10 @@ async def acomplete_validated(llm: LlmClient, messages: list[dict],
     호출부는 아무것도 잡지 않는다 — 판단하지 못했으면 그 턴은 실패다. 예전엔 None을 돌려주고
     호출부가 각자 기본값을 추측했는데, 그건 판단 없이 진행하는 것이었다(사유는 모듈 docstring).
 
-    400/422(구버전 vLLM의 structured_outputs 미지원) 재시도는 유지한다 — 판단을 포기하는 게
-    아니라 같은 판단을 형식만 바꿔 **다시 시도**하는 것이라 성격이 다르다.
+    #287: 스키마를 거부하는 서버를 위한 "스키마 없이 재시도"는 지웠다 — 사내 서버는 지원 버전이라 그 경로가
+    쓰이지 않았고, 조용한 우회보다 즉시 실패가 낫다(사용자 결정 8). 거부·타임아웃은 그대로 전파된다.
     """
-    try:
-        raw = await llm.acomplete(messages, extra_body=_schema_extra_body(model_cls))
-    except Exception as exc:
-        if not is_schema_rejected(exc):
-            raise
-        logger.warning('structured_outputs 미지원 서버 — 스키마 없이 재시도 (%s)', model_cls.__name__)
-        if span is not None:
-            otel.set_attrs(span, {'kms.schema_retry': True})
-        raw = await llm.acomplete(messages)   # 여기서도 실패하면 그대로 전파 (이중 안전망 없음)
+    raw = await llm.acomplete(messages, schema=model_cls)   # 스키마 강제 문법은 공급자 구현이 안다(rag/llm)
 
     try:
         return model_cls.model_validate_json(_extract_json_slice(raw or ''))

@@ -11,7 +11,7 @@ prepare()의 디스패처가 상태(직전 턴 미답변 여부·첨부 유무)�
 경로로 가 "안녕"에 근거없음으로 답하게 만들었다. 무엇보다 LLM이 죽었다면 생성도 실패하므로
 폴백이 턴을 살리지도 못했다 — 에러를 검색까지 다 수행한 뒤로 미룰 뿐이었다.
 
-출력 형식은 vLLM structured_outputs의 json 스키마로 강제한다(#43) — RouteDecision이
+출력 형식은 json 스키마로 강제한다(#43, 서버 문법은 공급자 구현 rag/llm의 몫) — RouteDecision이
 스키마이자 검증(rag/llm_schemas). 구 방어 파서(_extract_json·_as_bool)는 스키마가 대체했고,
 무스키마 재시도(400/422)는 acomplete_validated가 공용으로 담당한다.
 

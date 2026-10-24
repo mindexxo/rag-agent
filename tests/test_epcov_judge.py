@@ -20,7 +20,7 @@ class _FakeJudge:
     def __init__(self, labels: dict[str, str], fail: set[str] = frozenset()):
         self.labels, self.fail, self.calls = labels, fail, []
 
-    async def acomplete(self, messages, extra_body=None):
+    async def acomplete(self, messages, **_):
         point = messages[-1]["content"].split("\n", 1)[0].removeprefix("기대 포인트: ")
         self.calls.append(point)
         if point in self.fail:
@@ -172,7 +172,7 @@ def test_생성_일관성_축은_EPCov_심판을_끈다(monkeypatch, tmp_path):
     monkeypatch.setattr(C, "load_gold", lambda: [{"id": "x1", "type": gtype, "query": "q", "expected_points": ["포인트 a"]}])
     monkeypatch.setattr(C, "run_mode", fake_run_mode)
     monkeypatch.setattr(C, "AsyncSessionLocal", fake_session)
-    monkeypatch.setattr(C, "LlmClient", lambda: None)
+    monkeypatch.setattr(C, "create_llm", lambda: None)
     monkeypatch.setattr(C, "RUNS", 2)
     monkeypatch.setattr(C, "OUT", tmp_path / "c.jsonl")
     monkeypatch.setattr(C, "RESULT_DIR", tmp_path)

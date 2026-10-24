@@ -50,7 +50,7 @@ def judge_spec() -> tuple[str, str]:
         return backend, os.getenv("EPCOV_JUDGE_MODEL", DEFAULT_CLAUDE_MODEL)
     if backend == "vllm":
         from config import settings
-        return backend, settings.vllm_model
+        return backend, settings.llm_model
     raise SystemExit(f"EPCOV_JUDGE={backend} — claude|vllm 만 지원")
 
 
@@ -71,8 +71,8 @@ def judge_llm():
                              "설치·로그인하거나 EPCOV_JUDGE=vllm으로 실행하라")
         from eval.claude_client import ClaudeCliClient
         return ClaudeCliClient(model=model)
-    from rag.llm import LlmClient
-    return LlmClient()
+    from rag.llm import create_llm
+    return create_llm()
 
 
 def _build_messages(answer: str, point: str) -> list[dict]:

@@ -19,7 +19,7 @@ class _FakeLlm:
         self._result = result
         self._error = error
 
-    async def acomplete(self, messages, extra_body=None):
+    async def acomplete(self, messages, **_):
         if self._error:
             raise self._error
         return self._result

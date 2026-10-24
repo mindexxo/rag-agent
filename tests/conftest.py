@@ -244,11 +244,6 @@ def _current_question(user_content: str) -> str:
     return lines[lines.index('현재 질문:') + 1] if '현재 질문:' in lines else lines[-1]
 
 
-class FakeSchemaRejected(Exception):
-    """구버전 vLLM의 스키마 거부(400) 재현 — is_schema_rejected가 보는 status_code 덕 타이핑."""
-    status_code = 400
-
-
 class FakeLlm:
     """시스템 프롬프트로 용도를 판별해 고정 응답을 주는 가짜 LLM.
 
@@ -272,9 +267,8 @@ class FakeLlm:
         self.reuse_judge_json = '{"same_answer": true, "reason": "테스트 고정 승인"}'   # 캐시 판정 (#113)
         self.calls: list[str] = []          # 어떤 용도로 호출됐는지 기록 (검증용)
         self.system_prompts: list[tuple[str, str]] = []   # (용도, 시스템 프롬프트) — 주입 내용 검증용
-        self.extra_bodies: list[dict | None] = []   # astream별 extra_body — 꼬리 제약 주입 검증용(#56·#65)
-        self.acomplete_extra_bodies: list[dict | None] = []   # acomplete별 — 스키마 주입·재시도 증거(#43)
-        self.reject_schema = False   # True면 structured_outputs 실린 acomplete를 400으로 거부 — 구버전 서버 재현(#43)
+        self.citation_tails: list = []   # astream별 citations 의도(CitationTail|None) — 꼬리 제약 주입 검증용(#56·#65·#287)
+        self.schemas: list = []          # acomplete별 schema 의도 — 스키마 주입 증거(#43·#287)
         # 취소 테스트용 정지 지점 (#30). None이면 기존 동작 그대로.
         # 왜 필요한가: astream에 진짜 await가 없으면 이벤트 루프에 제어가 넘어가지 않아
         # task.cancel()이 전달될 지점 자체가 없다 — 생성이 그대로 완주한다(실측).
@@ -303,13 +297,11 @@ class FakeLlm:
     def _record(self, kind: str, messages: list[dict]) -> None:
         self.system_prompts.append((kind, messages[0]['content'] if messages else ''))
 
-    async def acomplete(self, messages: list[dict], extra_body: dict | None = None) -> str:
+    async def acomplete(self, messages: list[dict], *, schema=None, citations=None) -> str:
         kind = self._kind(messages)
         self.calls.append(kind)
         self._record(kind, messages)
-        self.acomplete_extra_bodies.append(extra_body)
-        if self.reject_schema and extra_body and 'structured_outputs' in extra_body:
-            raise FakeSchemaRejected('structured_outputs를 모르는 구버전 서버 재현')
+        self.schemas.append(schema)
         if kind == 'intent':
             return self.intent_json
         if kind == 'reuse_judge':
@@ -329,12 +321,11 @@ class FakeLlm:
                               ensure_ascii=False)
         return self.answer
 
-    async def astream(self, messages: list[dict], extra_body: dict | None = None,
-                      on_finish_reason=None):
+    async def astream(self, messages: list[dict], *, schema=None, citations=None, on_finish_reason=None):
         kind = self._kind(messages)
         self.calls.append('stream:' + kind)
         self._record(kind, messages)
-        self.extra_bodies.append(extra_body)
+        self.citation_tails.append(citations)
         for i, token in enumerate(self.answer.split(' ')):
             if self.raise_after_tokens is not None and i == self.raise_after_tokens:
                 raise RuntimeError('LLM 스트림 중단 (테스트 주입)')
@@ -342,7 +333,7 @@ class FakeLlm:
                 self.paused.set()
                 await self.resume.wait()      # 취소 테스트가 여기서 task.cancel()을 건다
             yield token + ' '
-        # 실제 llm.py처럼 완주 시 종료 사유를 콜백으로 알린다 (#129).
+        # 실제 구현(rag/llm/openai_compat.py)처럼 완주 시 종료 사유를 콜백으로 알린다 (#129).
         # finish_reason 속성을 'length'로 바꾸면 잘림 시나리오를 흉내 낼 수 있다.
         if on_finish_reason:
             on_finish_reason(self.finish_reason)

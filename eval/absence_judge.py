@@ -69,7 +69,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rag.llm import LlmClient
+from rag.llm import LlmClient, create_llm
 from rag.llm_schemas import acomplete_validated
 from rag.prompt_texts import NO_EVIDENCE_ANSWER
 
@@ -124,9 +124,9 @@ def judge_llm() -> LlmClient:
     ABSENCE_JUDGE=claude면 Claude(claude -p 헤드리스)로 교차채점한다(#103) — 자기채점
     편향을 다른 모델로 다변화한다. ClaudeCliClient는 acomplete 시그니처가 LlmClient와
     같아(덕 타이핑) 그대로 주입되고, acomplete_validated의 JSON 파싱·실패 폴백이 동일하게
-    작동한다(스키마 강제 extra_body만 무시됨 — JSON은 프롬프트 지시로 유도). 판정자가
+    작동한다(스키마 강제 의도만 무시됨 — JSON은 프롬프트 지시로 유도). 판정자가
     다르면 절대값 비교 불가(회귀 감시는 judge 통일 필요) — 교차검증 병기용이다.
-    반환 타입 힌트는 LlmClient지만 실제 계약은 acomplete(messages, extra_body) → str 덕 타이핑."""
+    반환 타입 힌트는 LlmClient지만 실제 계약은 acomplete(messages, schema=, citations=) → str 덕 타이핑."""
     judge = os.getenv("ABSENCE_JUDGE", "vllm")
     if judge == "claude":
         from eval.claude_client import ClaudeCliClient
@@ -136,7 +136,7 @@ def judge_llm() -> LlmClient:
             "외부 judge(openai) 경로는 미구현이다 — eval/ragas_eval.py의 OpenAI 배관 참고. "
             "Claude 교차채점은 ABSENCE_JUDGE=claude로 지원(#103)."
         )
-    return LlmClient()
+    return create_llm()
 
 
 async def judge_absence(llm: LlmClient, query: str, answer: str) -> AbsenceJudgment:

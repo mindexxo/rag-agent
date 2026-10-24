@@ -34,7 +34,7 @@ from rag.clients import shared_llm
 from rag.citation_labels import sources_from_chunks
 from rag.models import Conversation, Message
 from rag.prompt_texts import BLOCKED_INPUT_ANSWER, NO_EVIDENCE_ANSWER, SMALLTALK_ANSWER
-from rag.prompts import (build_chat_prompt, build_citation_constraint,
+from rag.prompts import (build_chat_prompt, build_citation_tail,
                          build_knowledge_generation_prompt, build_other_system_prompt,
                          build_other_user_message)
 from rag.retriever import retrieve
@@ -199,10 +199,10 @@ class RagService:
         self.session = session
         self.user_id = user_id          # 지표 씨앗 — user 메시지에 기록 (X-User-Id)
         self._llm = shared_llm          # 공용 싱글톤 재사용 (요청마다 HTTP 풀 생성 방지 — P1-12)
-        # vLLM 스트림 종료 사유(stop|length|...) — generate() 완주 후 streaming.py가 읽어
-        # 지표·스팬에 기록한다 (#129). TurnStatus finish_reason과 이름이 같지만 다른 축이다
+        # LLM 스트림 종료 사유(stop|length|other — 공통 어휘, rag/llm/base.FinishReason) — generate() 완주 후
+        # streaming.py가 읽어 지표·스팬에 기록한다 (#129). TurnStatus finish_reason과 이름이 같지만 다른 축이다
         # (AGENTS.md '헷갈리는 것'). 인스턴스가 요청 단위라 동시 요청 간 안 섞인다.
-        self.last_vllm_finish_reason: str | None = None
+        self.last_finish_reason: str | None = None
 
 
     async def prepare(
@@ -559,9 +559,9 @@ class RagService:
         # row가 JSON null(과거 저장분)일 수 있어 방어 — SQL NULL과 JSON null은 IS NOT NULL 판정이 다름
         return [attachment for row in rows if row for attachment in row]
 
-    def _set_vllm_finish(self, reason: str) -> None:
+    def _set_finish_reason(self, reason: str) -> None:
         """astream의 on_finish_reason 콜백 (#129) — 값 보관만. 기록은 streaming.py가 한다."""
-        self.last_vllm_finish_reason = reason
+        self.last_finish_reason = reason
 
     async def generate(self, prepared: PreparedRag) -> AsyncIterator[str]:
         """답변 토큰을 생성한다. 갈래는 셋뿐이다 (#36):
@@ -584,14 +584,14 @@ class RagService:
             yield answer
             return
 
-        self.last_vllm_finish_reason = None   # 호출마다 리셋 — 이전 턴 값 누출 방지 (#129)
+        self.last_finish_reason = None   # 호출마다 리셋 — 이전 턴 값 누출 방지 (#129)
 
         if prepared.route == "other":
             try:
                 user_msg = build_other_user_message(prepared.original_query, prepared.prior_turns)
                 async for token in self._llm.astream(
                         build_chat_prompt(build_other_system_prompt(prepared.domain_hint), user_msg),
-                        on_finish_reason=self._set_vllm_finish):
+                        on_finish_reason=self._set_finish_reason):
                     yield token
             except Exception:
                 logger.exception('LLM error(other gen)')
@@ -609,23 +609,12 @@ class RagService:
             domain_hint=prepared.domain_hint,
         )
 
-        # 출처 꼬리 강제 (#56 도입 → #65에서 정규식→structural_tag 재구현. 정규식이 왜 무효였는지는
-        # build_citation_constraint docstring — 되돌리지 말 것). 유효 범위의 후보 번호만 꼬리에 온다.
-        # 서버가 미지원(400 등, 첫 토큰 전에 터진다)이면 제약 없이 재시도(fail-open) —
-        # 이때도 꼬리 파서의 번호 범위 검증은 동일하므로 조용한 오답 확정은 없다.
-        constraint = build_citation_constraint(*prepared.citation_candidates)
-        stream = self._llm.astream(prompt, extra_body=constraint,
-                                   on_finish_reason=self._set_vllm_finish)
-        try:
-            first = await anext(stream, None)
-        except Exception:
-            logger.warning('꼬리 제약 요청 실패 — 제약 없이 재시도 (fail-open, #56·#65)')
-            stream = self._llm.astream(prompt, on_finish_reason=self._set_vllm_finish)
-            first = await anext(stream, None)
-        if first is not None:
-            yield first
-            async for token in stream:
-                yield token
+        # 출처 꼬리 강제 (#56 도입 → #65 재구현). 유효 범위의 후보 번호만 꼬리에 온다 — 의도(CitationTail)만
+        # 넘기고 서버 문법은 공급자 구현이 안다(rag/llm, #287). 꼬리 파서의 번호 범위 검증은 제약과 별개로 항상 돈다.
+        # #287: 첫 토큰 전 실패 시 "제약 없이 재시도"하던 fail-open을 지웠다 — 실패는 다른 LLM 오류와 같이 failed 턴이다.
+        async for token in self._llm.astream(prompt, citations=build_citation_tail(*prepared.citation_candidates),
+                                             on_finish_reason=self._set_finish_reason):
+            yield token
 
     async def finalize(self, prepared: PreparedRag, answer: str, citations: list[SourceCitation],
                        status: TurnStatus = TurnStatus.DONE, latency_ms: int | None = None) -> None:

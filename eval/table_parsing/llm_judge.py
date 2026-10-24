@@ -41,7 +41,7 @@ def judge_spec() -> tuple[str, str]:
         return backend, os.getenv("TABLE_JUDGE_MODEL", DEFAULT_CLAUDE_MODEL)
     if backend == "vllm":
         from config import settings
-        return backend, settings.vllm_model
+        return backend, settings.llm_model
     raise SystemExit(f"TABLE_JUDGE={backend} — claude|vllm 만 지원")
 
 
@@ -58,8 +58,8 @@ def judge_llm():
             raise SystemExit("판정자가 claude(기본)인데 claude CLI가 PATH에 없다 — 설치·로그인하거나 TABLE_JUDGE=vllm")
         from eval.claude_client import ClaudeCliClient
         return ClaudeCliClient(model=model)
-    from rag.llm import LlmClient
-    return LlmClient()
+    from rag.llm import create_llm
+    return create_llm()
 
 
 def build_messages(question: str, expected: str, answer: str, chunks: list[str]) -> list[dict]:

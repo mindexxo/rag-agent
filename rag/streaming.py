@@ -258,16 +258,16 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
                     parts.append(tail_flush)             # 마커 접두인 줄 알았던 본문 끝자락
                     await emit(EVENT_DELTA, {"text": tail_flush})
                 answer = "".join(parts)
-                # vLLM 종료 사유 (#129) — 완주한 스트림만 여기 도달하므로 값이 있으면 신뢰 가능.
+                # LLM 종료 사유 (#129, 공통 어휘 stop|length|other) — 완주한 스트림만 여기 도달하므로 값이 있으면 신뢰 가능.
                 # 카운터(집계)와 스팬 속성(개별 드릴다운)을 같이 남긴다: 대시보드에서 length
                 # 비율이 튀면 Phoenix에서 해당 대화를 찾아 들어갈 수 있어야 한다.
-                if svc.last_vllm_finish_reason is not None:
+                if svc.last_finish_reason is not None:
                     metrics.FINISH_REASON_TOTAL.labels(
-                        route=prepared.route, reason=svc.last_vllm_finish_reason).inc()
+                        route=prepared.route, reason=svc.last_finish_reason).inc()
                 if sp.is_recording():   # 가드가 먼저 — no-op이면 clip 비용도 없어야 한다 (otel.py 규약, #54 시정)
-                    otel.set_attrs(sp, {otel.LLM_MODEL: settings.vllm_model, otel.OUTPUT_VALUE: otel.clip(answer)})
-                    if svc.last_vllm_finish_reason is not None:
-                        otel.set_attrs(sp, {'kms.llm_finish_reason': svc.last_vllm_finish_reason})
+                    otel.set_attrs(sp, {otel.LLM_MODEL: settings.llm_model, otel.OUTPUT_VALUE: otel.clip(answer)})
+                    if svc.last_finish_reason is not None:
+                        otel.set_attrs(sp, {'kms.llm_finish_reason': svc.last_finish_reason})
                     if splitter and splitter.tail_raw is not None:
                         # 꼬리 원문(번호 목록) — OUTPUT_VALUE는 걷어낸 본문이라 여기 없으면 어디에도
                         # 안 남는다. 고객이 "인용 문서가 잘못됐다"고 할 때 모델 판단(번호 자체가

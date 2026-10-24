@@ -40,7 +40,7 @@ class ClaudeCliChatModel(BaseChatModel):
                          run_manager=None, **kwargs: Any) -> ChatResult:
         # BaseMessage(system/human/ai) → {"role","content"} — ClaudeCliClient가 받는 형태.
         dict_messages = convert_to_openai_messages(messages)
-        text = await self.client.acomplete(dict_messages)   # extra_body 없음 = 스키마 강제 불가
+        text = await self.client.acomplete(dict_messages)   # 제약 의도 없음 = 스키마 강제 불가
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
 
     def _generate(self, messages: list[BaseMessage], stop=None,

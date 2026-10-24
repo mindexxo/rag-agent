@@ -5,8 +5,12 @@
 
 우선순위: OS 환경변수 > .env 파일 > 코드 기본값.
 """
+import os
 from pathlib import Path
+from typing import Literal
 
+from dotenv import dotenv_values
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 이 파일(config.py)이 앱 루트에 있으므로, 그 디렉터리가 프로젝트 루트.
@@ -71,9 +75,12 @@ class Settings(BaseSettings):
     # 쉼표 구분 (.env 예: CORS_ALLOW_ORIGINS=http://localhost:5173,https://iccs.example.com)
     cors_allow_origins: str = "http://localhost:5173,http://localhost:3000"
 
-    # vllm
-    vllm_base_url: str = "http://localhost:11434/v1"
-    vllm_model: str = "qwen3:4b"
+    # LLM — 공급자 하나를 고르고 그 접속 정보를 준다(#287). 공급자별 구현은 rag/llm/ (정의점 rag/llm/__init__.py).
+    # 이름에 벤더를 넣지 않는다 — 옛 VLLM_BASE_URL·VLLM_MODEL은 없앴고, 남아 있으면 기동 시 멈춘다(_reject_renamed_env).
+    llm_provider: Literal["vllm"] = "vllm"   # 모르는 이름은 기동 시 실패. 벤더를 추가하면 여기와 rag/llm 등록부에 함께 넣는다
+    llm_base_url: str = "http://localhost:11434/v1"
+    llm_model: str = "qwen3:4b"
+    llm_api_key: str = "EMPTY"               # 사내 vLLM은 키를 안 본다. 상용 벤더 키는 .env에만 둔다(이 파일·.env.dev에 적지 말 것)
     # 문서 기반 사실 제공 서비스라 다양성이 손해 — 낮게 고정 (2026-08-05).
     # None이면 서버 기본값(Qwen3 non-thinking 권장 0.7)이 쓰이는데, 실측 4회 반복에서 매번 다른 답이
     # 나왔다. 인용 형식 파싱(출처 꼬리)·시맨틱 캐시가 모두 결정성에 의존해 불리하다.
@@ -310,6 +317,27 @@ class Settings(BaseSettings):
                                               # 동시 4 매회 2~3장 다름. 합성 표 그림 100장에선 동시 4도 100/100 같아 처음엔 4로 정했다가 뒤집었다.
                                               # 속도 대가: 그림 100장 DOCX 199초(동시 4면 68초), 보유 코퍼스 106건 합계로는 약 7%.
                                               # 올리려면 vLLM의 배치 불변(batch-invariant) 모드 같은 서버 쪽 결정성부터 확인할 것.
+
+    @model_validator(mode="after")
+    def _reject_renamed_env(self):
+        """이름을 바꾼 설정이 옛 이름으로 남아 있으면 멈춘다(#287 결정 4).
+
+        extra="ignore"라 옛 이름은 에러 없이 버려지고 새 이름의 **기본값(localhost)** 으로 조용히 붙는다 —
+        "설정했는데 엉뚱한 서버에 붙는" 사고를 막으려고 OS 환경변수와 두 env 파일을 직접 본다.
+        옛 이름을 받아 주는 호환이 아니다(사용자 결정 — 새 이름만 쓴다).
+        """
+        found = [k for k in os.environ if k.upper() in _RENAMED_ENV]
+        for f in self.model_config["env_file"]:
+            if Path(f).exists():
+                found += [k for k in dotenv_values(f) if k.upper() in _RENAMED_ENV]
+        if found:
+            hints = ", ".join(f"{k.upper()} → {_RENAMED_ENV[k.upper()]}" for k in dict.fromkeys(found))
+            raise ValueError(f"이름이 바뀐 설정이 남아 있습니다 — 새 이름으로 바꾸세요: {hints}")
+        return self
+
+
+# 옛 환경변수 이름 → 새 이름 (#287). 기동 시 Settings._reject_renamed_env가 본다.
+_RENAMED_ENV = {"VLLM_BASE_URL": "LLM_BASE_URL", "VLLM_MODEL": "LLM_MODEL"}
 
 
 # 모듈 import가 곧 프로세스당 1회이므로 이 전역 자체가 싱글톤이다 (팩토리·캐시 불필요).

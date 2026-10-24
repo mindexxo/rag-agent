@@ -156,7 +156,7 @@ class TestGenerateQuerySlot:
         monkeypatch.setattr('rag.service.build_knowledge_generation_prompt', fake_build)
 
         class _Llm:
-            async def astream(self, prompt, extra_body=None, on_finish_reason=None):
+            async def astream(self, prompt, *, citations=None, on_finish_reason=None, **_):
                 yield 'ok'
                 if on_finish_reason:
                     on_finish_reason('stop')

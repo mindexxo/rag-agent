@@ -16,10 +16,10 @@ import httpx
 import redis.asyncio as aioredis
 
 from config import settings
-from rag.llm import LlmClient
+from rag.llm import create_llm
 
-# 공용 LLM 클라이언트 (stateless — AsyncOpenAI는 동시 재사용 설계)
-shared_llm = LlmClient()
+# 공용 LLM 클라이언트 — 어느 공급자인지는 settings.llm_provider가 정한다(#287). stateless라 동시 재사용 가능
+shared_llm = create_llm()
 
 # TEI(임베딩·리랭커) 비동기 HTTP 공용 클라이언트 — 커넥션 풀 재사용.
 # 타임아웃은 호출별로 다르므로(embed vs rerank) 요청 시점에 지정한다.

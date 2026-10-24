@@ -74,11 +74,12 @@ def _by_difficulty(rows) -> dict:
     return out
 
 
-async def compute(expand: bool = False) -> dict:
+async def compute(expand: bool = False, tenants: set[str] | None = None) -> dict:
     """검색축 채점 실행 → 요약 반환 (출력·파일저장은 main이 담당).
 
     expand=True면 운영 플래그 on과 동일하게 condense_to_queries(#5, 빈 히스토리)로
     멀티쿼리를 만들어 첫 줄=주 쿼리, 나머지=변형으로 검색 (A/B). 변형은 rows에 기록.
+    tenants가 있으면 그 테넌트 문항만 돈다(#235 규모 실험이 측정 테넌트만 반복 측정) — 기본은 전부.
 
     반환: {'rows': [...], 'skipped': int, 'overall': {recall_at_5, ...}, 'stale': {tenant: n}}
 
@@ -87,7 +88,7 @@ async def compute(expand: bool = False) -> dict:
     평균에 편입되며 필요해짐 — absence_rate의 judge_prompt_version과 같은 메커니즘).
     """
     gold = load_gold()          # 정본 + eval/gold_private (인티큐브 실문서 골드 — gitignore)
-    target = [g for g in gold if g['type'] in TYPES]
+    target = [g for g in gold if g['type'] in TYPES and (tenants is None or row_tenant(g) in tenants)]
 
     # 1단계(expand만): LLM 선병렬 — vLLM 연속 배칭 활용 (#18). DB 접근 없어 gather 안전
     queries_map: dict[str, list[str]] = {}

@@ -15,8 +15,8 @@ PG↔OS 재동기화는 `reconcile` 쪽이 맡는다.
 HNSW(m·ef_construction·ef_search)와 BM25(k1=1.2·b=0.75)는 **엔진 기본값을 그대로 쓴다** — 매핑에 명시하지
 않는다(사용자 결정 2026-09-13: 표준/기본값으로). 도입 판정 A/B 때는 변인 격리를 위해 pgvector·앱 BM25와
 맞춘 값(m=16/ef_construction=64/ef_search=40, k1=1.5)을 썼는데(이슈 #139·PR #140 본문), 도입이 끝난 뒤엔
-그 값을 유지할 이유가 없다. 현 규모(1천 청크대)는 정확 탐색 구간이라 HNSW 파라미터는 리콜에 관여하지 않고,
-k1 차이는 리랭커 뒤에서 흡수된다 — 재측정은 배포 후 전 축 eval에서.
+그 값을 유지할 이유가 없다. 현 규모(1천 청크대)에서 HNSW 근사 탐색은 정확 탐색과 사실상 같고(#235 실측, 아래 MAPPING의
+`ef_search` 주석), k1 차이는 리랭커 뒤에서 흡수된다 — 재측정은 배포 후 전 축 eval에서.
 
 거리 환산(`cosinesimil` 점수 → pgvector cosine_distance)은 그대로다 — 공식과 실측 근거는
 `score_to_cosine_distance`의 docstring. bigram 토큰은 analyzer로 재현하지 않는다
@@ -28,8 +28,8 @@ k1 차이는 리랭커 뒤에서 흡수된다 — 재측정은 배포 후 전 �
    idf를 움직인다(실측: 표시 지표는 미동). 테넌트별 인덱스가 대안.
 2. **길이 노름**: Lucene은 필드 길이를 양자화해 저장한다.
 
-(Nori 기본 사전의 고유명 오분할은 `search_lexical` docstring, 정확 탐색 구간은 아래 MAPPING의
-`approximate_threshold` 주석이 정의점이다 — 여기서 반복하지 않는다.)
+(Nori 기본 사전의 고유명 오분할은 `search_lexical` docstring, 규모에 따른 근사 탐색 리콜과 `ef_search` 재검토 트리거는
+아래 MAPPING의 `ef_search` 주석이 정의점이다 — 여기서 반복하지 않는다.)
 """
 import logging
 
@@ -48,9 +48,13 @@ MAPPING = {
             "number_of_replicas": 0,    # 배포는 자체 설치 단일 노드(#139 결정) — 레플리카 둘 곳이 없다.
             "knn": True,
             # ef_search·BM25 similarity는 명시하지 않는다 — 엔진 기본값(ef_search 100, BM25 k1=1.2 b=0.75).
-            # **현 규모에서는 ef_search가 쓰이지도 않는다**: index.knn.advanced.approximate_threshold
-            # (기본 15000) 미만이면 HNSW를 건너뛰고 정확 탐색한다. 청크가 1만5천을 넘으면
-            # ef_search가 리콜을 좌우하기 시작한다 — 그때 재측정.
+            # lucene 엔진은 규모와 무관하게 HNSW 근사 탐색을 탄다 — index.knn.advanced.approximate_threshold
+            # (기본 15000 미만이면 정확 탐색)는 네이티브 엔진(faiss·nmslib) 전용이라 여기 해당 없다(k-NN 2.18 소스,
+            # #235). 실측(#235, 커밋 7696216, 측정 테넌트 141문항, 근사 vs 정확 상위 30): 테넌트 444조각 29.7/30·정답 누락 0,
+            # 2.7천 28.1/30·누락 0, 4.9천 27.7/30·누락 3문항, 1.4만 26.0/30·누락 9문항. 누락분은 어휘 채널 주입+리랭커가
+            # 대부분 구제해(9건 중 7건) 최종 Hit@1·R@5는 안 움직였고, 질의 파라미터 ef_search 400이면 1.4만에서도
+            # 29.9/30(지연 36ms 동일). **재검토 트리거**: 테넌트 조각 5천 이상, 또는 어휘 겹침 없는 질문이 늘 때
+            # → knn_clause에 method_parameters.ef_search 400(#235 결정 1은 미반영 — 현 규모 이득 0).
         },
         "analysis": {
             "tokenizer": {

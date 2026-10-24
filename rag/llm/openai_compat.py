@@ -11,7 +11,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from config import settings
-from rag.llm.base import CitationTail, ConstraintUnsupported, FinishReason
+from rag.llm.base import CitationTail, ConstraintUnsupported, FinishReason, LlmUsage
 
 # 벤더 종료 사유 → 공통 어휘. 모르는 값은 'other'(content_filter·abort 등).
 _FINISH_REASONS: dict[str, FinishReason] = {"stop": "stop", "length": "length"}
@@ -57,15 +57,19 @@ class OpenAiCompatClient:
         return kwargs
 
     async def acomplete(self, messages: list[dict], *, schema: type[BaseModel] | None = None,
-                        citations: CitationTail | None = None) -> str:
+                        citations: CitationTail | None = None,
+                        on_usage: Callable[[LlmUsage], None] | None = None) -> str:
+        # on_usage는 받되 부르지 않는다 — usage를 받으려면 요청 인자(stream_options)가 바뀌는데 vLLM 요청 바디는
+        # #287이 고정했고 사내 서버는 비용 검증 대상이 아니다. 상용 구현(rag/llm/litellm.py)만 올린다.
         response = await self._client.chat.completions.create(
             messages=messages, stream=False, **self._request_kwargs(schema, citations))
         return response.choices[0].message.content
 
     async def astream(self, messages: list[dict], *, schema: type[BaseModel] | None = None,
                       citations: CitationTail | None = None,
-                      on_finish_reason: Callable[[FinishReason], None] | None = None) -> AsyncIterator[str]:
-        """스트리밍 호출.
+                      on_finish_reason: Callable[[FinishReason], None] | None = None,
+                      on_usage: Callable[[LlmUsage], None] | None = None) -> AsyncIterator[str]:
+        """스트리밍 호출. on_usage는 받되 부르지 않는다(acomplete와 같은 이유).
 
         on_finish_reason(#129): 마지막 청크는 delta 없이 finish_reason만 실려 와서 예전 `if delta:` 가드가
         통째로 삼켰다 — 토큰 상한에 잘려도(length) 호출부가 알 길이 없었다. 반환이 AsyncIterator[str]라

@@ -17,7 +17,7 @@ class _StubLlm:
         self._responses = iter(responses)
         self.calls: list = []          # 호출별 schema 의도
 
-    async def acomplete(self, messages, *, schema=None, citations=None):
+    async def acomplete(self, messages, *, schema=None, citations=None, on_usage=None):
         self.calls.append(schema)
         item = next(self._responses)
         if isinstance(item, Exception):

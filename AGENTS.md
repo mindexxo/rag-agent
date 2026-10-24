@@ -13,7 +13,7 @@
 의존은 아래에서 위로만 흐른다. 계층은 `rag/` 톱레벨 import로 실측한 것이다.
 
 - **0층(leaf, 다른 `rag/` 모듈을 안 씀)**: `config.py`, `rag/models.py`, `rag/tokens.py`,
-  `rag/prompt_texts.py`, `rag/llm/`(공급자별 구현 — `base.py`·`openai_compat.py`·`vllm.py`, #287), `rag/embeddings.py`, `rag/chunking.py`,
+  `rag/prompt_texts.py`, `rag/llm/`(공급자별 구현 — `base.py`·`openai_compat.py`·`vllm.py`·`litellm.py`, #287·#288), `rag/embeddings.py`, `rag/chunking.py`,
   `rag/index_text.py`, `rag/lexical.py`, `rag/limiter.py`, `rag/otel.py`, `rag/metrics.py`,
   `rag/faq_indexing.py`, `rag/retrieval_types.py`, `rag/identifiers.py`, `rag/os_client.py`(톱레벨은 `config`만 —
   `opensearchpy`는 `client()` 안에서 지연 import한다: 매핑 상수만 보는 테스트가 그 패키지 없이도 import할 수 있게).
@@ -36,9 +36,10 @@
 이걸 하는 모듈: `chunking`(→xlsx_chunking), `embeddings`·`limiter`(→clients),
 `reranker`(→clients, embeddings), `retriever`(→reranker), `stream_resume`(→clients, streaming),
 `outbox`(→documents).
-순환 회피가 아닌 지연 import은 `opensearchpy` 하나뿐이다 — `rag/` 어느 모듈도 톱레벨에 들이지 않고
+순환 회피가 아닌 지연 import은 둘이다. `opensearchpy` — `rag/` 어느 모듈도 톱레벨에 들이지 않고
 `os_client.client()`·`outbox.is_transient()`가 함수 안에서 import한다(매핑 상수만 보는 테스트가 그 패키지
-없이 `os_client`를 import할 수 있게 한 규율을 outbox도 따른다).
+없이 `os_client`를 import할 수 있게 한 규율을 outbox도 따른다). `litellm` — `rag/llm/litellm.py`의 호출 함수 안에서만
+import한다(118MB 패키지라 사내 vLLM만 쓰는 프로세스가 비용을 안 내게, #288).
 
 검색 저장소(`os_*` 4모듈)에는 **지연 import가 없다**(#146). 구 rag/opensearch.py는 19~21곳을
 함수 안에 두고 있었는데, 그중 진짜 순환은 둘뿐이었다 — `retriever`(자료형)와 `outbox`(재등재).

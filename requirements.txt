@@ -31,6 +31,7 @@ prometheus-client==0.26.0   # #129: 앱 지표(/metrics) — vLLM·TEI는 자체
 
 # ---- LLM (vLLM은 OpenAI 호환 API로 호출) ----
 openai==2.30.0
+litellm==1.95.0                  # 상용 LLM 벤더(gemini·openai·anthropic) 번역층 (#288). rag/llm/litellm.py에서 지연 import
 tiktoken==0.12.0                 # 토큰 카운트
 
 # ---- 문서 파싱 (인제스트) ----

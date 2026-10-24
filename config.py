@@ -77,7 +77,9 @@ class Settings(BaseSettings):
 
     # LLM — 공급자 하나를 고르고 그 접속 정보를 준다(#287). 공급자별 구현은 rag/llm/ (정의점 rag/llm/__init__.py).
     # 이름에 벤더를 넣지 않는다 — 옛 VLLM_BASE_URL·VLLM_MODEL은 없앴고, 남아 있으면 기동 시 멈춘다(_reject_renamed_env).
-    llm_provider: Literal["vllm"] = "vllm"   # 모르는 이름은 기동 시 실패. 벤더를 추가하면 여기와 rag/llm 등록부에 함께 넣는다
+    llm_provider: Literal["vllm", "gemini", "openai", "anthropic"] = "vllm"   # 모르는 이름은 기동 시 실패. 벤더 추가 = 여기 + rag/llm 등록부
+    # 상용 3종(#288)은 LiteLLM 경유(rag/llm/litellm.py). llm_model은 접두 없이 벤더 모델명(예: gemini-2.5-flash, gpt-5-mini,
+    # claude-sonnet-5), 키는 llm_api_key 하나(벤더별 환경변수 GEMINI_API_KEY 등은 읽지 않는다 — 결정 6).
     llm_base_url: str = "http://localhost:11434/v1"
     llm_model: str = "qwen3:4b"
     llm_api_key: str = "EMPTY"               # 사내 vLLM은 키를 안 본다. 상용 벤더 키는 .env에만 둔다(이 파일·.env.dev에 적지 말 것)
@@ -87,10 +89,14 @@ class Settings(BaseSettings):
     # 0.0(greedy)은 배제 — Qwen3 모델 카드가 "성능 저하·무한 반복" 위험으로 명시 금지.
     # 0.2는 greedy를 피하는 최소 대역이고 저온이라 top_p·top_k는 거의 개입하지 않아 따로 안 보낸다.
     llm_temperature: float | None = 0.2
-    llm_enable_thinking: bool = False     # Qwen3 thinking 모드. 서버가 --reasoning-parser로 떠 있어 추론은 reasoning 필드로
-                                          # 분리되고 우리는 .content만 읽으므로 답변엔 안 섞인다. 다만 추론 토큰만큼
-                                          # 첫 토큰 지연·생성 시간이 늘고 max_tokens 예산을 함께 먹는다. 실험용 토글(기본 off).
-                                          # 주의: 전 호출(인텐트·condense·생성) 공유 — 운영에 켤 땐 호출별 분리 필요
+    # 추론(thinking) 수준 — None 또는 "none"이면 끔. 전 호출(인텐트·condense·생성) 공유. 벤더별 변환(#288 결정 5):
+    #   vllm(Qwen3)  : none→enable_thinking=False, 그 외→True (서버가 --reasoning-parser라 추론은 reasoning 필드로 분리,
+    #                  답변엔 안 섞이지만 첫 토큰 지연·max_tokens 예산을 먹는다)
+    #   gemini       : LiteLLM이 thinking_level/thinking_budget으로 변환
+    #   openai(GPT-5): reasoning_effort 그대로. ⚠ 추론이 켜진 모델은 temperature를 1 외 값으로 보내면 400
+    #   anthropic    : none→thinking 끔, 그 외→모델에 따라 adaptive 또는 budget. ⚠ 4.7+는 temperature<1이면 400
+    # 거부되는 조합은 400으로 바로 드러난다 — 조용히 빼지 않는다. 값: none | minimal | low | medium | high
+    llm_reasoning_effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
 
     # embedding (F99: TEI 원격 서버, dense-only). 저장 벡터도 이 서버 출력이어야 검색 정상 — 재인제스트로 일치 보장
     embed_base_url: str = "http://localhost:38889"    # TEI 임베딩 서버 (BGE-M3, /embed) — 실주소는 .env
@@ -337,7 +343,8 @@ class Settings(BaseSettings):
 
 
 # 옛 환경변수 이름 → 새 이름 (#287). 기동 시 Settings._reject_renamed_env가 본다.
-_RENAMED_ENV = {"VLLM_BASE_URL": "LLM_BASE_URL", "VLLM_MODEL": "LLM_MODEL"}
+_RENAMED_ENV = {"VLLM_BASE_URL": "LLM_BASE_URL", "VLLM_MODEL": "LLM_MODEL",
+                "LLM_ENABLE_THINKING": "LLM_REASONING_EFFORT"}   # #288: bool 토글 → 수준값
 
 
 # 모듈 import가 곧 프로세스당 1회이므로 이 전역 자체가 싱글톤이다 (팩토리·캐시 불필요).

@@ -41,6 +41,15 @@ class CitationTail:
     end: str
 
 
+@dataclass(frozen=True)
+class LlmUsage:
+    """호출 하나의 토큰 사용량 — 비용 검증용(#288). cached_tokens가 0이면 프롬프트 캐싱이 안 먹은 것이다."""
+    prompt_tokens: int
+    completion_tokens: int
+    cached_tokens: int = 0        # 캐시에서 읽은 입력 토큰(입력 단가의 0.1배)
+    cache_write_tokens: int = 0   # 캐시에 새로 쓴 입력 토큰(Anthropic 1.25배)
+
+
 class ConstraintUnsupported(Exception):
     """구현이 요청받은 제약(schema·citations)을 강제할 수 없다 — 조용히 무시하지 않으려고 낸다."""
 
@@ -49,12 +58,14 @@ class LlmClient(Protocol):
     """LLM이 갖춰야 할 모양. 인스턴스는 rag.llm.create_llm()이 설정을 보고 만든다."""
 
     async def acomplete(self, messages: list[dict], *, schema: type[BaseModel] | None = None,
-                        citations: CitationTail | None = None) -> str:
-        """비스트리밍 — 응답 전체를 문자열로."""
+                        citations: CitationTail | None = None,
+                        on_usage: Callable[[LlmUsage], None] | None = None) -> str:
+        """비스트리밍 — 응답 전체를 문자열로. usage는 on_usage로 올린다(구현이 못 주면 안 부른다)."""
         ...
 
     def astream(self, messages: list[dict], *, schema: type[BaseModel] | None = None,
                 citations: CitationTail | None = None,
-                on_finish_reason: Callable[[FinishReason], None] | None = None) -> AsyncIterator[str]:
-        """스트리밍 — 텍스트 조각을 만드는 족족 내보낸다. 종료 사유는 on_finish_reason으로 올린다."""
+                on_finish_reason: Callable[[FinishReason], None] | None = None,
+                on_usage: Callable[[LlmUsage], None] | None = None) -> AsyncIterator[str]:
+        """스트리밍 — 텍스트 조각을 만드는 족족 내보낸다. 종료 사유·usage는 콜백으로 올린다(#129·#288 — 0층이라 기록은 호출부 몫)."""
         ...

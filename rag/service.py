@@ -203,6 +203,7 @@ class RagService:
         # streaming.py가 읽어 지표·스팬에 기록한다 (#129). TurnStatus finish_reason과 이름이 같지만 다른 축이다
         # (AGENTS.md '헷갈리는 것'). 인스턴스가 요청 단위라 동시 요청 간 안 섞인다.
         self.last_finish_reason: str | None = None
+        self.last_usage = None   # LlmUsage | None — 상용 공급자만 채운다(#288). 캐시 적중 검증용, streaming.py가 스팬에 기록
 
 
     async def prepare(
@@ -563,6 +564,10 @@ class RagService:
         """astream의 on_finish_reason 콜백 (#129) — 값 보관만. 기록은 streaming.py가 한다."""
         self.last_finish_reason = reason
 
+    def _set_usage(self, usage) -> None:
+        """astream의 on_usage 콜백 (#288) — 값 보관만. 기록은 streaming.py가 한다."""
+        self.last_usage = usage
+
     async def generate(self, prepared: PreparedRag) -> AsyncIterator[str]:
         """답변 토큰을 생성한다. 갈래는 셋뿐이다 (#36):
 
@@ -585,13 +590,14 @@ class RagService:
             return
 
         self.last_finish_reason = None   # 호출마다 리셋 — 이전 턴 값 누출 방지 (#129)
+        self.last_usage = None
 
         if prepared.route == "other":
             try:
                 user_msg = build_other_user_message(prepared.original_query, prepared.prior_turns)
                 async for token in self._llm.astream(
                         build_chat_prompt(build_other_system_prompt(prepared.domain_hint), user_msg),
-                        on_finish_reason=self._set_finish_reason):
+                        on_finish_reason=self._set_finish_reason, on_usage=self._set_usage):
                     yield token
             except Exception:
                 logger.exception('LLM error(other gen)')
@@ -613,7 +619,7 @@ class RagService:
         # 넘기고 서버 문법은 공급자 구현이 안다(rag/llm, #287). 꼬리 파서의 번호 범위 검증은 제약과 별개로 항상 돈다.
         # #287: 첫 토큰 전 실패 시 "제약 없이 재시도"하던 fail-open을 지웠다 — 실패는 다른 LLM 오류와 같이 failed 턴이다.
         async for token in self._llm.astream(prompt, citations=build_citation_tail(*prepared.citation_candidates),
-                                             on_finish_reason=self._set_finish_reason):
+                                             on_finish_reason=self._set_finish_reason, on_usage=self._set_usage):
             yield token
 
     async def finalize(self, prepared: PreparedRag, answer: str, citations: list[SourceCitation],

@@ -297,7 +297,7 @@ class FakeLlm:
     def _record(self, kind: str, messages: list[dict]) -> None:
         self.system_prompts.append((kind, messages[0]['content'] if messages else ''))
 
-    async def acomplete(self, messages: list[dict], *, schema=None, citations=None) -> str:
+    async def acomplete(self, messages: list[dict], *, schema=None, citations=None, on_usage=None) -> str:
         kind = self._kind(messages)
         self.calls.append(kind)
         self._record(kind, messages)
@@ -321,7 +321,7 @@ class FakeLlm:
                               ensure_ascii=False)
         return self.answer
 
-    async def astream(self, messages: list[dict], *, schema=None, citations=None, on_finish_reason=None):
+    async def astream(self, messages: list[dict], *, schema=None, citations=None, on_finish_reason=None, on_usage=None):
         kind = self._kind(messages)
         self.calls.append('stream:' + kind)
         self._record(kind, messages)

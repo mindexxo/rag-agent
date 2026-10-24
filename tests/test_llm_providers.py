@@ -31,13 +31,13 @@ class TestVllm요청은_이전과_같다:
             'model': settings.llm_model,
             'max_tokens': settings.generation_reserve_tokens,
             'temperature': settings.llm_temperature,
-            'extra_body': {'chat_template_kwargs': {'enable_thinking': settings.llm_enable_thinking}},
+            'extra_body': {'chat_template_kwargs': {'enable_thinking': False}},   # llm_reasoning_effort 미설정 = 끔
         }
 
     def test_스키마_의도는_structured_outputs로(self):
         body = _vllm_kwargs(schema=RouteDecision)['extra_body']
         assert body['structured_outputs'] == {'json': RouteDecision.model_json_schema()}
-        assert body['chat_template_kwargs'] == {'enable_thinking': settings.llm_enable_thinking}   # 병합 — 유실 금지
+        assert body['chat_template_kwargs'] == {'enable_thinking': False}   # 병합 — 유실 금지
 
     def test_꼬리_의도는_structural_tag로(self):
         rf = _vllm_kwargs(citations=CitationTail(count=3, start=TAIL_START, end=TAIL_END))['extra_body']['response_format']
@@ -79,7 +79,8 @@ class TestBase:
 
 
 class TestCreateLlm:
-    def test_설정_이름으로_고른다(self):
+    def test_설정_이름으로_고른다(self, monkeypatch):
+        monkeypatch.setattr(settings, 'llm_provider', 'vllm')   # 실행 환경의 .env(상용 스모크 중일 수 있음)에 묶이지 않게
         assert isinstance(create_llm(), VllmClient)
         assert isinstance(create_llm('vllm'), VllmClient)
 

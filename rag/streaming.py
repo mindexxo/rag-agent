@@ -268,6 +268,11 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
                     otel.set_attrs(sp, {otel.LLM_MODEL: settings.llm_model, otel.OUTPUT_VALUE: otel.clip(answer)})
                     if svc.last_finish_reason is not None:
                         otel.set_attrs(sp, {'kms.llm_finish_reason': svc.last_finish_reason})
+                    if svc.last_usage is not None:   # 상용 공급자만(#288) — 캐시 적중 토큰이 0이면 캐싱 전제가 깨진 것
+                        otel.set_attrs(sp, {'kms.llm_prompt_tokens': svc.last_usage.prompt_tokens,
+                                            'kms.llm_completion_tokens': svc.last_usage.completion_tokens,
+                                            'kms.llm_cached_tokens': svc.last_usage.cached_tokens,
+                                            'kms.llm_cache_write_tokens': svc.last_usage.cache_write_tokens})
                     if splitter and splitter.tail_raw is not None:
                         # 꼬리 원문(번호 목록) — OUTPUT_VALUE는 걷어낸 본문이라 여기 없으면 어디에도
                         # 안 남는다. 고객이 "인용 문서가 잘못됐다"고 할 때 모델 판단(번호 자체가

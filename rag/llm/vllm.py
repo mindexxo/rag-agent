@@ -18,7 +18,9 @@ class VllmClient(OpenAiCompatClient):
     def _constraint_params(self, schema: type[BaseModel] | None,
                            citations: CitationTail | None) -> dict:
         # thinking 토글은 매 요청에 실린다 — 덮어쓰면 유실되므로 제약과 같은 extra_body에 병합한다.
-        extra_body = {"chat_template_kwargs": {"enable_thinking": settings.llm_enable_thinking}}
+        # thinking 토글은 공통 설정 llm_reasoning_effort에서 파생한다(#288 결정 5) — vLLM(Qwen3)은 on/off만 있다
+        thinking = settings.llm_reasoning_effort not in (None, "none")
+        extra_body = {"chat_template_kwargs": {"enable_thinking": thinking}}
         if schema is not None:
             extra_body |= _schema_body(schema)
         if citations is not None:

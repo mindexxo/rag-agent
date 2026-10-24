@@ -1,15 +1,15 @@
-"""PDF 청킹 결함 회귀 테스트 (#137) — 결함 3·4·6, 파서 무관 후단.
+"""PDF 청킹 결함 회귀 테스트 (#137) — 결함 3·4, 파서 무관 후단(순수 함수·pdfplumber 직접 호출, docling 불필요).
 
 결함 1·2·5(인쇄 부산물·기호 제목·표 빈 셀)는 #143에서 pdfplumber 휴리스틱을 걷어내고 docling이
-구조적으로 처리하므로 tests/test_chunking_docling.py로 옮겼다.
+구조적으로 처리하므로 tests/test_chunking_docling.py로 옮겼다. 결함 6(청크마다 실제 쪽)도 같은 파일의
+실변환 테스트가 같은 합성 PDF로 검사한다 — 여기 있던 pdfplumber 비상 경로 판은 #272에서 지웠다.
 
-실문서 21건을 색인하고 원본과 쪽 단위로 대조해 확정한 결함들이다. 여섯 개 전부
+실문서 21건을 색인하고 원본과 쪽 단위로 대조해 확정한 결함들이다. 당시 여섯 개 전부
 **기존 픽스처가 조건을 만들지 못해** 통과하고 있었다 — 합성 PDF가 단일 폰트·단일
 크기·헤더푸터 없음·표 없음이었고, 실물 PDF를 쓰는 단정문은 `all(c.heading_path)`,
 `len({c.page}) >= 2`처럼 존재만 확인해 값의 정확성을 보지 않았다.
 
-그래서 여기 픽스처는 **결함 조건을 의도적으로 재현한다**: 인쇄 부산물, 폰트 혼용,
-목록 번호, 빈 셀 격자표, 여러 쪽에 걸친 섹션.
+그래서 픽스처는 **결함 조건을 의도적으로 재현한다** — 여기 남은 결함 3·4는 목록 번호와 이미지 쪽.
 """
 from pathlib import Path
 
@@ -17,16 +17,7 @@ import pytest
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
-from config import settings
-from rag.chunking import (_restore_leading_marker, _strip_orphan_marker, chunk_file,
-                          pdf_image_area_ratio)
-
-
-@pytest.fixture(autouse=True)
-def _pdfplumber_path(monkeypatch):
-    """이 파일은 청킹 **후단**(번호 복원·쪽 귀속·이미지 감지)을 pdfplumber 비상 경로로 검사한다.
-    docling 경로와 결함 1·2·5는 tests/test_chunking_docling.py — 모델이 필요해 설치 시에만 돈다."""
-    monkeypatch.setattr(settings, 'docling_enabled', False)
+from rag.chunking import _restore_leading_marker, _strip_orphan_marker, pdf_image_area_ratio
 
 W, H = A4
 
@@ -66,31 +57,6 @@ class TestOrphanMarker:
         body = '문장이 끝났다.\n다음 문장'
         offset = body.index('다음')
         assert _restore_leading_marker(body, offset, '다음 문장') == '다음 문장'
-
-
-class TestChunkPage:
-    """결함 6 — 한 섹션의 모든 청크가 섹션 시작 페이지를 물려받았다(실측 49% 오류)."""
-
-    def test_여러_쪽에_걸친_섹션은_청크마다_제_쪽을_단다(self, tmp_path):
-        p = tmp_path / 'multipage.pdf'
-        c = canvas.Canvas(str(p), pagesize=A4)
-        c.setFont('Helvetica-Bold', 16)
-        c.drawString(50, H - 60, 'Single Heading For Whole Document')
-        c.setFont('Helvetica', 10)
-        for page_no in range(3):
-            if page_no:
-                c.setFont('Helvetica', 10)
-            for i in range(30):
-                c.drawString(50, H - 100 - i * 20,
-                             f'Page {page_no + 1} line {i} with enough words to fill the chunk budget.')
-            c.showPage()
-        c.save()
-        chunks = chunk_file(p)
-        assert len({ch.page for ch in chunks}) >= 2      # 한 쪽으로 뭉개지지 않는다
-        for ch in chunks:
-            first = ch.text.strip().split('\n')[0]
-            if first.startswith('Page '):
-                assert ch.page == int(first.split()[1])  # 청크가 실제로 있는 쪽을 가리킨다
 
 
 class TestImageRatio:

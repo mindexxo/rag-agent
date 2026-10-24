@@ -28,17 +28,7 @@ def _png(size=(120, 80)) -> bytes:
 @pytest.fixture(autouse=True)
 def _vlm(fake_vlm, monkeypatch):
     """캡션은 로컬 대역이 준다. 설정이 바뀌면 변환 프로세스가 스냅숏 불일치로 재기동하므로 싱글턴을 비울 필요가 없다(#223)."""
-    monkeypatch.setattr(settings, 'docling_enabled', True)
     return fake_vlm
-
-
-def _both(path, monkeypatch):
-    """같은 파일을 docling 경로·기존 경로로 각각 청킹."""
-    new = chunk_file(path)
-    monkeypatch.setattr(settings, 'docling_enabled', False)
-    old = chunk_file(path)
-    monkeypatch.setattr(settings, 'docling_enabled', True)
-    return new, old
 
 
 # ── 표 그리기 (docling_grid_markdown) — 가짜 grid ─────────────────────────────────
@@ -88,9 +78,9 @@ def _docx(tmp_path, build, name='t.docx'):
 
 
 class TestDocxDocling:
-    def test_헤딩_스타일_레벨이_기존_경로와_같다(self, tmp_path, monkeypatch):
-        # Heading 스타일 문서 29건 전부 docling 레벨 = 스타일 레벨이었다(2026-10-11). PDF 매핑의 제목/장 휴리스틱을
-        # 쓰면 3단이 2단으로 눌린다 — 이 테스트가 그 회귀를 잡는다.
+    def test_헤딩_스타일_레벨이_그대로_섹션_층이_된다(self, tmp_path):
+        # Heading 스타일 문서 29건 전부 docling 레벨 = 스타일 레벨이었다(2026-10-11, 당시 python-docx 경로와 대조). PDF 매핑의
+        # 제목/장 휴리스틱을 쓰면 3단이 2단으로 눌린다 — 이 테스트가 그 회귀를 잡는다.
         def build(doc):
             doc.add_heading('배송 정책', level=1)
             doc.add_heading('1. 배송 유형', level=2)
@@ -100,9 +90,6 @@ class TestDocxDocling:
             doc.add_paragraph('새벽 배송은 전날 23시까지 주문분이다.')
         p = _docx(tmp_path, build)
         new = [s.heading_path for s in _docx_sections(p)]     # 섹션 단위로 본다 — 청크는 형제 섹션을 묶어 공통 조상만 남긴다
-        monkeypatch.setattr(settings, 'docling_enabled', False)
-        old = [s.heading_path for s in _docx_sections(p)]
-        assert new == old
         assert new == [['배송 정책', '1. 배송 유형', '1.1 일반 배송'], ['배송 정책', '1. 배송 유형', '1.2 새벽 배송']]
 
     def test_표_셀은_한_번만_들어가고_굵게_표시가_없다(self, tmp_path):
@@ -122,17 +109,15 @@ class TestDocxDocling:
         assert '**' not in text
         assert '| 지역 | 요금 |' in text
 
-    def test_표_셀_안의_중첩_표를_읽는다(self, tmp_path, monkeypatch):
-        # python-docx 경로는 셀 안의 표를 못 읽었다(인사규정 2건에서 문장 373·435개 누락)
+    def test_표_셀_안의_중첩_표를_읽는다(self, tmp_path):
+        # python-docx로 색인하던 때는 셀 안의 표를 못 읽었다(인사규정 2건에서 문장 373·435개 누락) — docling 전환 이유 하나
         def build(doc):
             doc.add_heading('인사규정', level=1)
             outer = doc.add_table(rows=1, cols=1)
             inner = outer.cell(0, 0).add_table(rows=1, cols=2)
             inner.cell(0, 0).text = '중첩셀고유문구'
             inner.cell(0, 1).text = 'CL2'
-        new, old = _both(_docx(tmp_path, build), monkeypatch)
-        assert '중첩셀고유문구' in '\n'.join(c.text for c in new)
-        assert '중첩셀고유문구' not in '\n'.join(c.text for c in old)
+        assert '중첩셀고유문구' in '\n'.join(c.text for c in chunk_file(_docx(tmp_path, build)))
 
     def test_스타일_없는_문서는_조문_폴백이_docling_경로에서도_돈다(self, tmp_path):
         # #205 — Heading 스타일 0개인 실문서. docling도 헤딩을 0개 내놓으므로 폴백이 같은 층을 만들어야 한다.
@@ -356,16 +341,6 @@ class TestXlsxDocling:
 
     def test_빈_엑셀은_청크_0개(self, tmp_path):
         assert chunk_file(_xlsx(tmp_path, lambda wb: None)) == []
-
-    def test_비상_스위치를_끄면_openpyxl_경로와_같다(self, tmp_path, monkeypatch):
-        from rag.xlsx_chunking import chunk_xlsx_plain
-
-        def build(wb):
-            wb.active.append(['col', 'v'])
-            wb.active.append(['a', '1'])
-        p = _xlsx(tmp_path, build)
-        monkeypatch.setattr(settings, 'docling_enabled', False)
-        assert [c.text for c in chunk_file(p)] == [c.text for c in chunk_xlsx_plain(p)]
 
     def test_docling이_셀_있는_시트를_비워_내면_실패한다(self, tmp_path, monkeypatch):
         # 조용히 시트를 빠뜨린 채 ready가 되지 않게 — PDF 경로의 불완전 결과 가드와 같은 규율

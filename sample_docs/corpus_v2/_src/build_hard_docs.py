@@ -35,7 +35,7 @@ SRC = Path(__file__).resolve().parent
 OUT_ROOT = SRC.parent
 FONT = "HYGothic-Medium"
 
-# 헤딩 크기 사다리 — 본문(10)보다 커야 _pdf_sections가 헤딩으로 인식한다.
+# 헤딩 크기 사다리 — 본문(10)보다 크게. 옛 pdfplumber 글자 크기 휴리스틱(#272에서 제거)의 조건이었고, docling 레이아웃 모델도 크기 차이를 제목 단서로 쓴다.
 PDF_SIZES = {0: 10, 1: 16, 2: 13, 3: 11.5}
 _HEADING = re.compile(r"^(#{1,3})\s+(.*)")
 _TABLE_ROW = re.compile(r"^\|(.+)\|\s*$")

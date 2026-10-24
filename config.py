@@ -195,10 +195,7 @@ class Settings(BaseSettings):
     # (extract_text)는 pdfplumber·python-docx·openpyxl 유지 — 첨부는 사용자 대기 경로라 콜드 스타트 4.4초가 그대로
     # 보이고, 변환 세마포어를 색인과 나누면 색인 작업 뒤에 줄을 선다(#220 결정 6).
     # 아래 메모리·시간 값은 PDF 실측에서 왔다(2026-09-11 M3 → 리눅스 컨테이너 재측정). 소비처는 rag/chunking.py.
-    docling_enabled: bool = True              # 인제스션의 기본 경로. False = 비상 경로 — PDF는 pdfplumber(표·부산물 처리 없음,
-                                              # #141 휴리스틱은 #143에서 제거), DOCX는 python-docx, XLSX는 openpyxl(그림 캡션·
-                                              # 중첩 표·자동 번호 없음). 폴백 아님 — 수동 스위치. MD는 무관 — 항상 docling(#267),
-                                              # 스위치 자체를 없앨 예정(#272)
+    # 인제스션 경로는 docling 하나다 — 끄는 스위치는 없다(#272). 저품질 색인을 조용히 만드느니 docling 실패는 failed로 끝낸다.
     docling_table_mode: str = "accurate"      # fast | accurate. accurate이 병합 셀을 한 셀로 잡는다(출장 지급표
                                               # '부회장/사장' 실측). RAM 차이 +110MB(687→796MB)라 정확도를 택한다
     docling_do_ocr: bool = True               # 이미지로 렌더된 표(TableItem)의 셀을 읽는다(#168). 그림(PictureItem)은

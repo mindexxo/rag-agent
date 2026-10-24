@@ -13,8 +13,7 @@ from rag.chunking import TABLE_MAX_TOKENS
 
 from rag.xlsx_chunking import (XLSX_BATCH_TOKENS, CHARS_PER_TOKEN, XlsxDescriptionRequired,
                                XlsxTableTooLarge, XlsxUploadRejected, _batch_rows, _cell, _to_markdown, chunk_xlsx,
-                               chunk_xlsx_plain, description_missing, estimate_tokens, xlsx_plain_text,
-                               validate_xlsx_upload)
+                               description_missing, estimate_tokens, xlsx_plain_text, validate_xlsx_upload)
 
 CORPUS_XLSX = (Path(__file__).resolve().parent.parent
                / 'sample_docs' / 'corpus_v2' / 'homeplus' / 'homeplus_10_멤버십혜택표.xlsx')
@@ -92,9 +91,8 @@ class TestChunkXlsx:
         # 헤더 행(rows[0])이 표 첫 줄로 포함 — 첫 데이터 행이 헤더로 둔갑하는 회귀 방지 (뮤테이션 생존자)
         assert chunks[0].text.splitlines()[0] == '| 품목 | 가격 |'
 
-    @pytest.mark.parametrize('chunker', [chunk_xlsx, chunk_xlsx_plain], ids=['docling', 'openpyxl'])
-    def test_큰_시트는_행_묶음으로_나뉘고_묶음마다_설명과_헤더를_반복한다(self, tmp_path, chunker):
-        # #222 — 검색은 작은 묶음으로, 모델에는 시트 완성본으로. 두 읽기 경로가 같은 모양을 내야 한다
+    def test_큰_시트는_행_묶음으로_나뉘고_묶음마다_설명과_헤더를_반복한다(self, tmp_path):
+        # #222 — 검색은 작은 묶음으로, 모델에는 시트 완성본으로
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = '단가'
@@ -103,7 +101,7 @@ class TestChunkXlsx:
             ws.append([f'A-{i:04d}', f'상품 {i}', 1000 + i])
         p = tmp_path / 'big.xlsx'
         wb.save(p)
-        chunks = chunker(p, description='단가표')
+        chunks = chunk_xlsx(p, description='단가표')
         assert len(chunks) > 1
         budget = int(XLSX_BATCH_TOKENS * CHARS_PER_TOKEN)
         for c in chunks:
@@ -163,11 +161,10 @@ class TestChunkXlsx:
         assert msg.startswith("시트 '단가표'의 표가 허용 크기의 1") and '%입니다(현재 ' in msg and '행 × 1열)' in msg
         assert '토큰' not in msg and '나눠' not in msg and '줄여 다시 올려 주세요' in msg
 
-    def test_중간_빈_행은_스킵(self, tmp_path):
-        # 빈 행이 표에 끼어도 데이터로 세지 않아야 함 (크기 오판·빈 행 노이즈 방지) — openpyxl 경로
+    def test_첨부_추출은_중간_빈_행을_스킵(self, tmp_path):
+        # 빈 행이 표에 끼어도 데이터로 세지 않는다(빈 행 노이즈 방지) — openpyxl 첨부 경로
         p = _gap_xlsx(tmp_path)
-        chunks = chunk_xlsx_plain(p)
-        assert chunks[0].text.splitlines()[2:] == ['| 1 |', '| 2 |']
+        assert xlsx_plain_text(p).splitlines()[2:] == ['| 1 |', '| 2 |']
 
     def test_docling은_완전히_빈_행에서_표를_가르지만_값은_한_청크에_남는다(self, tmp_path):
         # #220 결정 9 — docling 기본(gap_tolerance=0)은 완전히 빈 행을 표 경계로 본다. 아랫부분은 첫 데이터 행이

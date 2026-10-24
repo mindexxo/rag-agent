@@ -304,6 +304,11 @@ class Settings(BaseSettings):
     vlm_caption_url: str = "http://localhost:18892/v1/chat/completions"   # **base가 아니라 전체 엔드포인트다**
                                               # — docling이 이 값을 그대로 POST 대상으로 쓴다. 실주소는 .env
     vlm_caption_model: str = "qwen25-vl"      # OpenAI 호환 body의 model 필드. Qwen2.5-VL-7B-Instruct(Apache 2.0)
+    # 상용 VLM 키(#290 결정 1). 비면 지금처럼 헤더 없이(사내), 있으면 docling 옵션 headers에 Authorization: Bearer로 실린다.
+    # 벤더 선택은 따로 없다 — docling이 OpenAI 호환 body 하나만 보내므로 **주소가 곧 벤더**다: OpenAI
+    # https://api.openai.com/v1/chat/completions, Gemini https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+    # (Anthropic 호환 창구는 공식 문서상 테스트용 — 캡션은 OpenAI·Gemini로). 키는 .env에만.
+    vlm_caption_api_key: str = ""
     vlm_caption_scale: float = 4.0            # **그림 크롭을 VLM에 보낼 때의 해상도 배수(72dpi 기준).**
                                               # docling 기본 2.0 → 4.0. 1.0(434×60px)에서는 글자가 안 보여 VLM이
                                               # 원문에 없는 내용을 지어냈다(3회 재현). 4.0(1736×239px)에서 원문

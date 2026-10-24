@@ -18,11 +18,11 @@ from contextlib import closing
 from rag.xlsx_chunking import _iter_sheets, _to_markdown, estimate_tokens
 
 ROOT = Path(__file__).resolve().parent.parent
-BASE = settings.vllm_base_url.rstrip('/').removesuffix('/v1')
+BASE = settings.llm_base_url.rstrip('/').removesuffix('/v1')
 
 
 def _count(text: str) -> int:
-    r = httpx.post(f'{BASE}/tokenize', json={'model': settings.vllm_model, 'prompt': text}, timeout=20)
+    r = httpx.post(f'{BASE}/tokenize', json={'model': settings.llm_model, 'prompt': text}, timeout=20)
     r.raise_for_status()
     return r.json()['count']
 

@@ -57,14 +57,12 @@ async def test_KNOWLEDGE_생성_경로_SSE_전체흐름(client, tenant_id, fake_
         assert msg.tenant_id == tenant_id
         assert msg.cited_docs == [] and msg.cited_faq_ids == [faq_id]   # done.citations와 같은 사실 — FAQ는 id 컬럼에(#278)
 
-    # 꼬리 제약이 생성 호출에 실렸는지 — 후보 1건(FAQ)이면 enum=[1]만 허용 (#56→#65)
-    # 실제 수용/거부는 서버의 구조화 디코딩이 판정하므로(로컬 재현 불가) 여기서는
-    # "올바른 후보 집합이 스키마로 넘어갔는지"만 고정한다 — 사유는 test_prompts.py 참조.
-    rf_bodies = [b for b in fake_llm.extra_bodies if b and 'response_format' in b]
-    assert rf_bodies
-    structure = rf_bodies[-1]['response_format']['structures'][0]
-    assert structure['begin'] == TAIL_START and structure['end'] == TAIL_END
-    assert structure['schema']['items']['enum'] == [1]                        # 범위 밖 번호 차단
+    # 꼬리 제약 의도가 생성 호출에 실렸는지 — 후보 1건(FAQ)이면 count=1 (#56→#65→#287 의도 객체).
+    # 서버 문법으로 바꾸는 건 공급자 구현(tests/test_llm_providers.py), 실제 강제는 라이브 실측 — 여기서는
+    # "올바른 후보 수가 넘어갔는지"만 고정한다.
+    tails = [t for t in fake_llm.citation_tails if t is not None]
+    assert tails and tails[-1].count == 1                                    # 범위 밖 번호 차단의 근거
+    assert tails[-1].start == TAIL_START and tails[-1].end == TAIL_END
 
 
 @pytest.mark.asyncio
@@ -152,30 +150,6 @@ async def test_domain_hint가_인텐트와_생성_프롬프트에_주입(client,
 
 
 @pytest.mark.asyncio
-async def test_제약_미지원_서버는_제약_없이_재시도한다(client, tenant_id, fake_llm, pass_gate):
-    """fail-open(#56) — structured_outputs를 모르는 vLLM(400)이어도 스트림은 살아야 한다.
-    재시도는 첫 토큰 전 실패에만 걸리므로 토큰 유실·중복이 없다."""
-    await register_faq(client)
-    original = fake_llm.astream
-
-    async def rejects_grammar(messages, extra_body=None, on_finish_reason=None):
-        if extra_body is not None:
-            raise RuntimeError('400: unknown field structured_outputs')   # 구버전 서버 재현
-        async for t in original(messages, on_finish_reason=on_finish_reason):
-            yield t
-
-    fake_llm.astream = rejects_grammar
-    # 제약 없는 자유 생성이 꼬리 형식을 안 지키는 최악 조합 — citations는 조용히 [] 여야 한다
-    fake_llm.answer = '테스트 답변입니다. 출처는 환불규정 문서입니다.'
-    res = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
-    assert res.status_code == 200
-    assert '테스트 답변입니다.' in sse_answer(res)
-    done = sse_done(res)
-    assert done['finish_reason'] == 'done'                   # 재시도로 정상 완주
-    assert done['citations'] == []                           # 꼬리 미준수 → 그럴듯한 복구 없이 빈 목록
-
-
-@pytest.mark.asyncio
 async def test_꼬리가_잘린_답변은_인용_없이_완주한다(client, tenant_id, fake_llm, pass_gate):
     """max_tokens 도달 등으로 END 전에 스트림이 끝나는 경우(#56 truncated) — 잘린 버퍼는
     화면·저장 어디에도 없고 citations는 빈 목록이어야 한다."""
@@ -187,27 +161,6 @@ async def test_꼬리가_잘린_답변은_인용_없이_완주한다(client, ten
     assert sse_answer(res).strip() == '테스트 답변입니다.'       # 잘린 꼬리 조각 미노출
     done = sse_done(res)
     assert done['finish_reason'] == 'done' and done['citations'] == []
-
-
-@pytest.mark.asyncio
-async def test_스키마_거부_서버에서도_가드와_condense가_동작한다(client, tenant_id, fake_llm, pass_gate):
-    """#43 fail-open 통합 — 구버전 vLLM(structured_outputs 거부)에서도 가드·condense가
-    무스키마 재시도로 계속 동작해야 한다. 재시도가 없으면 가드 전량 fail-open = 무력화."""
-    await register_faq(client)
-    fake_llm.reject_schema = True
-
-    first = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
-    assert first.status_code == 200
-    assert sse_done(first)['finish_reason'] == 'done'        # 가드가 재시도로 정상 판정
-    conv_id = next(d for e, d in _events(first.text) if e == 'meta')['conversation_id']
-
-    second = await client.post('/kms/query', json={'query': '그럼 교환은?', 'conversation_id': conv_id})
-    assert sse_done(second)['finish_reason'] == 'done'       # condense(멀티턴)도 재시도로 완주
-
-    # 재시도 증거 — 스키마 실린 호출과 무스키마 재호출이 쌍으로 남는다
-    bodies = fake_llm.acomplete_extra_bodies
-    assert any(b and 'structured_outputs' in b for b in bodies)
-    assert None in bodies
 
 
 @pytest.mark.asyncio

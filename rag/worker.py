@@ -102,7 +102,7 @@ class WorkerSettings:
         #
         # 주기만 줄인다(5분→1분, #72). 회복 지연은 '임계 + 주기'인데 둘은 성격이 다르다:
         # 임계(GENERATION_STALE_SECONDS=500)는 **살아 있는 요청을 보호**하는 값이라
-        # LLM 호출 타임아웃 300초(rag/llm.py) 위에 있어야 한다 — 내리면 vLLM 큐에 밀린
+        # LLM 호출 타임아웃 300초(rag/llm/openai_compat.py) 위에 있어야 한다 — 내리면 vLLM 큐에 밀린
         # 정상 요청이 먼저 failed로 선고되고 완주 시 done으로 덮여 좀비 플립이 난다.
         # 반면 주기는 순수 지연이라 줄여도 그 위험이 없다. 최악 ~800초 → ~560초.
         cron(sweep_stale_generating, minute=set(range(0, 60, 1))),

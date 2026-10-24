@@ -284,8 +284,8 @@ async def main() -> None:
     rows, items_all, text_of, keys_all = [], [], {}, {}
     llm = None
     if args.answers:
-        from rag.llm import LlmClient
-        llm = LlmClient()
+        from rag.llm import create_llm
+        llm = create_llm()
     for tenant in TENANTS:
         chunks = await load_chunks(tenant)
         gold, keys_of = build_gold(chunks)

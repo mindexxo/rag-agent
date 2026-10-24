@@ -29,7 +29,7 @@ from database import AsyncSessionLocal
 from eval.generation import (GEN_TYPES, RESULT_DIR, _smoke_sample,
                              expected_points_hits, load_gold, run_mode)
 from eval.retrieval import Resolved
-from rag.llm import LlmClient
+from rag.llm import create_llm
 
 N = int(os.getenv("N", "50"))
 RUNS = int(os.getenv("RUNS", "5"))
@@ -43,7 +43,7 @@ async def main() -> None:
     sample = _smoke_sample([g for g in gold if g["type"] in GEN_TYPES], N)
     points_by_id = {g["id"]: g.get("expected_points", []) for g in sample}
 
-    llm = LlmClient()
+    llm = create_llm()
     all_rows = []
     async with AsyncSessionLocal() as session:
         for run in range(1, RUNS + 1):

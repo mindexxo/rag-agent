@@ -13,7 +13,7 @@
 의존은 아래에서 위로만 흐른다. 계층은 `rag/` 톱레벨 import로 실측한 것이다.
 
 - **0층(leaf, 다른 `rag/` 모듈을 안 씀)**: `config.py`, `rag/models.py`, `rag/tokens.py`,
-  `rag/prompt_texts.py`, `rag/llm.py`, `rag/embeddings.py`, `rag/chunking.py`,
+  `rag/prompt_texts.py`, `rag/llm/`(공급자별 구현 — `base.py`·`openai_compat.py`·`vllm.py`, #287), `rag/embeddings.py`, `rag/chunking.py`,
   `rag/index_text.py`, `rag/lexical.py`, `rag/limiter.py`, `rag/otel.py`, `rag/metrics.py`,
   `rag/faq_indexing.py`, `rag/retrieval_types.py`, `rag/identifiers.py`, `rag/os_client.py`(톱레벨은 `config`만 —
   `opensearchpy`는 `client()` 안에서 지연 import한다: 매핑 상수만 보는 테스트가 그 패키지 없이도 import할 수 있게).
@@ -93,7 +93,7 @@ TEI→인덱싱·검색·캐시.
   순서"의 정의점이다 — 이름이 비슷하지만 다른 문제를 다룬다.)
 - `RetrievalResult.no_evidence`(원시 판정) ≠ `PreparedRag.no_evidence`(첨부 보정 후 실제 판정).
 - SSE `done`의 finish_reason(TurnStatus 어휘 — `rag/streaming.py`의 `TurnResult`)
-  ≠ vLLM 레벨 finish_reason(`stop`/`length` — `RagService.last_vllm_finish_reason`, SSE로
+  ≠ LLM 레벨 finish_reason(`stop`/`length`/`other` 공통 어휘 — `RagService.last_finish_reason`, SSE로
   나가지 않고 지표 `kms_llm_finish_reason_total`·스팬 속성 전용, #129). 이름이 같지만 다른 축.
 - `Message.intent`(DB 저장값) ≠ `RouteDecision.intent`(LLM 출력, RETRY는 저장 전 소멸)
   ≠ `PreparedRag.intent_label`(파생).

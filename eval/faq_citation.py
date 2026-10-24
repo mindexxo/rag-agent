@@ -35,7 +35,7 @@ from eval.generation import CONCURRENCY, RESULT_DIR, generate, retrieved_context
 from rag import os_index
 from rag.citation_labels import sources_from_chunks
 from rag.citation_tail import TailSplitter, resolve_citations
-from rag.llm import LlmClient
+from rag.llm import LlmClient, create_llm
 from rag.models import Faq
 
 FAQ_EVAL_TENANT = "faq_eval"          # 전용 테넌트 — 다른 축의 측정 테넌트에 FAQ를 섞지 않는다(eval/axis_common.load_chunks 전제)
@@ -139,7 +139,7 @@ async def main() -> None:
         if args.cmd == "load":
             await load(session)
             return
-        rows = await measure(session, LlmClient(), args.label)
+        rows = await measure(session, create_llm(), args.label)
     RESULT_DIR.mkdir(exist_ok=True)
     out = RESULT_DIR / f"faq_citation_{args.label}.jsonl"
     out.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows))

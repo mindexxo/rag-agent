@@ -146,12 +146,12 @@ def _window(chunks: list[dict], i: int) -> str:
 
 
 async def make_contexts() -> None:
-    from rag.llm import LlmClient
+    from rag.llm import create_llm
     settings.llm_temperature = 0.0           # 결정적 — 재생성해도 같은 문장(운영 생성 온도와 별개)
     OUT.mkdir(parents=True, exist_ok=True)
     done = json.loads(CR_FILE.read_text(encoding='utf-8')) if CR_FILE.exists() else {}
     docs = _by_document(await _all_docs(settings.opensearch_index))
-    llm, sem = LlmClient(), asyncio.Semaphore(CR_CONCURRENCY)
+    llm, sem = create_llm(), asyncio.Semaphore(CR_CONCURRENCY)
     jobs = [(chunks, i) for chunks in docs.values() for i in range(len(chunks)) if str(chunks[i]['chunk_id']) not in done]
     print(f'조각 {sum(len(v) for v in docs.values())} · 이미 생성 {len(done)} · 남음 {len(jobs)}', flush=True)
 
@@ -243,10 +243,10 @@ async def _answers(cond: str, rows: list[dict], gold: dict, run: int) -> list[di
     from database import AsyncSessionLocal
     from eval import epcov_judge
     from eval.generation import _epcov_scores, expected_points_hits, row_tenant
-    from rag.llm import LlmClient
+    from rag.llm import create_llm
     from rag.prompts import build_knowledge_generation_prompt
     from rag.retriever import retrieve
-    llm, judge, sem, jsem = LlmClient(), epcov_judge.judge_llm(), asyncio.Semaphore(8), asyncio.Semaphore(4)
+    llm, judge, sem, jsem = create_llm(), epcov_judge.judge_llm(), asyncio.Semaphore(8), asyncio.Semaphore(4)
     out = []
     async with AsyncSessionLocal() as session:
         evid = {}

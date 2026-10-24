@@ -5,9 +5,9 @@ OpenAI 호환 API가 아니라 `claude -p`(헤드리스 CLI)를 서브프로세�
 아니라는 것이 채택 이유다(이슈 #96 코멘트 2026-08-29). eval 전용 — 운영 rag/에는 물리지
 않는다(rag→eval import 금지 규칙과 별개로, 운영 생성기는 vLLM 하나여야 한다).
 
-LlmClient(rag/llm.py)와 acomplete 시그니처를 맞춰 eval/generation.py에 주입한다.
+LlmClient(rag/llm)와 acomplete 시그니처를 맞춰 eval/generation.py에 주입한다.
 다른 점 — 전부 결과 각주에 명시할 것:
-- extra_body(출처 꼬리 structural_tag 제약)를 **받되 무시한다**. CLI에 그 배관이 없다.
+- 제약 의도(schema·citations, #287)를 **받되 무시한다**. CLI에 그 배관이 없다.
   꼬리는 프롬프트 서술(rag/prompt_texts.py의 TAIL_EXAMPLE_MULTI 규칙)만으로 유도되고, 채점기는
   꼬리 부재를 인용 0으로 세므로 미준수는 수치에 정직하게 반영된다.
 - astream 없음 — eval generate()는 acomplete만 쓴다. 필요해지면 그때 추가.
@@ -33,7 +33,7 @@ import tempfile
 from pathlib import Path
 
 # 콜당 상한. 생성 프롬프트는 1~2분이면 족하지만 롱컨텍스트(수십만 자)는 읽기만으로도
-# 오래 걸린다 — vLLM 쪽 300s(rag/llm.py)보다 넉넉히 잡되 무한 대기는 막는다.
+# 오래 걸린다 — vLLM 쪽 300s(rag/llm/openai_compat.py)보다 넉넉히 잡되 무한 대기는 막는다.
 TIMEOUT_SECONDS = 600
 _MINIMAL_SYSTEM = "요청한 작업만 지정된 형식으로 수행한다."   # 시스템 메시지 없는 호출(RAGAS 판정 등)의 기본값
 
@@ -52,8 +52,8 @@ class ClaudeCliClient:
         if not self._exe:
             raise RuntimeError("claude 실행 파일을 PATH에서 찾지 못함 — claude-code 설치·로그인 확인")
 
-    async def acomplete(self, messages: list[dict], extra_body: dict | None = None) -> str:
-        """비스트리밍 1콜. extra_body는 시그니처 호환용 — 무시한다 (모듈 docstring)."""
+    async def acomplete(self, messages: list[dict], *, schema=None, citations=None) -> str:
+        """비스트리밍 1콜. schema·citations는 시그니처 호환용 — 무시한다 (모듈 docstring; CLI에 강제 배관이 없다)."""
         system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
         # 운영 생성 프롬프트는 system+user 구성(rag/prompts.py)이라 보통 user 1개가 남는다.
         # assistant 턴이 섞인 형태가 오면 순서대로 이어붙인다 — 정보 소실보다 낫다.

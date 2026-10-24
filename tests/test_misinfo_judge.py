@@ -11,7 +11,7 @@ class _FakeLlm:
     def __init__(self, labels: dict[str, str], fail: set[str] = frozenset()):
         self.labels, self.fail, self.calls = labels, fail, 0
 
-    async def acomplete(self, messages, extra_body=None):
+    async def acomplete(self, messages, **_):
         self.calls += 1
         phrase = messages[-1]["content"].split("\n", 1)[0].removeprefix("금지 주장: ")
         if phrase in self.fail:

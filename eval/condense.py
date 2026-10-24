@@ -21,7 +21,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from config import settings
-from rag.llm import LlmClient
+from rag.llm import create_llm
 from eval._gold_history import messages_from_conversation
 from rag.conversation import (condense_query, condense_to_queries,
                               trim_messages_for_condense)
@@ -52,7 +52,7 @@ async def compute(multi: bool = False) -> dict:
     변형 생성을 얹었을 때 재작성 품질이 회귀하지 않는지 본다. 변형 줄은 채점 대상 아님.
     """
     cases = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
-    llm = LlmClient()
+    llm = create_llm()
     sem = asyncio.Semaphore(CONCURRENCY)
 
     async def _one(case: dict, _i: int):

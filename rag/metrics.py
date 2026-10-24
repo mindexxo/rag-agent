@@ -44,7 +44,7 @@ tenant_id·conversation_id·filename 같은 고카디널리티 값 금지(Promet
 
 이 모듈은 0층(다른 rag/ 모듈 import 금지). 기록 주체는 **두 곳**이고 프로세스가 서로 다르다:
   - 웹 프로세스: rag/streaming.py(진입점) — TTFT·finish_reason.
-    llm.py(0층)는 이 모듈을 모르고 콜백으로 값만 올려보낸다(계층 규칙, llm.astream docstring).
+    rag/llm(0층)은 이 모듈을 모르고 콜백으로 값만 올려보낸다(계층 규칙, rag/llm/openai_compat.py astream docstring).
   - 워커 프로세스: rag/documents.py(인제스션)·rag/outbox.py(대기열) — 인제스션 소요·동기화 결과.
 레지스트리는 프로세스마다 따로이므로 **지표도 프로세스별로 갈라져 노출된다** — 인제스션 지표는
 워커의 /metrics(WORKER_METRICS_PORT, #151)에만, TTFT는 앱의 /metrics(main.py)에만 나온다.

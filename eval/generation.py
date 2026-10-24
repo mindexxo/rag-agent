@@ -8,7 +8,7 @@
 - deterministic(서버 무관): Expected Points Coverage, Citation Accuracy
 - LLM-judge(서버 + 심판모델 필요): Answer Relevancy, Faithfulness → 현재 stub
 
-LLM 서버 필요: .env의 VLLM_BASE_URL/VLLM_MODEL (Ollama qwen3:4b 또는 vLLM).
+LLM 서버 필요: .env의 LLM_PROVIDER/LLM_BASE_URL/LLM_MODEL (기본 공급자 vllm).
 실행: python -m eval.generation
 비교군 (#96a): GENERATOR=claude [CLAUDE_MODEL=sonnet] python -m eval.generation
   — 생성 콜만 Claude CLI로 교체(condense·검색은 운영 그대로), 결과는 generation_{mode}_claude.jsonl.
@@ -33,9 +33,8 @@ from rag.conversation import (build_prior_turns, condense_query,
 from rag.retriever import prepare_evidence, retrieve_candidates
 from rag.retrieval_types import RetrievedChunk
 from rag.embeddings import embed_texts_sync
-from rag.llm_schemas import is_schema_rejected
-from rag.prompts import build_citation_constraint, build_knowledge_generation_prompt
-from rag.llm import LlmClient
+from rag.prompts import build_citation_tail, build_knowledge_generation_prompt
+from rag.llm import LlmClient, create_llm
 from eval.retrieval import resolve_gold
 from eval.absence_judge import judge_llm
 from eval.misinfo_judge import confirm_violations
@@ -133,28 +132,12 @@ async def generate(llm: LlmClient, original_query: str, chunks: list[RetrievedCh
 
     #65부터 이 제약이 **실제로 강제된다**(#56 도입 이후 처음). 그전 구현(정규식)은 vLLM에서
     무효였고, 그래서 붙이기 전후 위반율이 같았다(oracle 1.1%·retrieved 1.6%) — 경위와 사다리
-    실측은 rag/prompts.build_citation_constraint docstring. 이 하네스가 그 강제 효과를 재는
-    1차 지표다: 위반율이 0으로 떨어지는지가 검증 대상이다.
-
-    fail-open: 서버가 제약을 거부하면(400/422) 제약 없이 1회 재시도한다.
-    400/422로 좁힌 것은 rag/llm_schemas.py의 선례를 따른 것이다 — 운영 답변 생성 경로
-    (rag/service.py의 astream)는 except Exception으로 넓게 잡지만, 그쪽은 첫 토큰을 당기는
-    시점이라 재시도 비용이 0에 가깝다. acomplete는 블로킹이라 넓게 잡으면 타임아웃 대기가
-    배가된다. 호출 형태가 같은 쪽(acomplete_validated)의 판단을 따른다.
-    주의: response_format을 모르는 구버전 서버가 어떤 상태코드로 거부할지는 **미검증**이다
-    (그런 서버가 없다). 400/422 밖이면 이 필터를 통과하지 못해 예외가 그대로 전파된다 —
-    조용히 삼키는 것보다 시끄럽게 실패하는 쪽이 안전한 기본값이라 넓히지 않았다.
+    실측은 rag/llm/vllm.py docstring. 이 하네스가 그 강제 효과를 재는 1차 지표다: 위반율이 0으로
+    떨어지는지가 검증 대상이다. 제약을 거부하는 서버를 위한 재시도는 #287에서 지웠다(운영과 동일).
     """
     prompt = build_knowledge_generation_prompt(
         original_query, chunks, standalone_query=standalone_query, prior_turns=prior_turns)
-    constraint = build_citation_constraint(sources_from_chunks(chunks), [])
-    try:
-        return await llm.acomplete(prompt, extra_body=constraint)
-    except Exception as exc:
-        if not is_schema_rejected(exc):
-            raise
-        print('  [warn] 꼬리 제약 거부 — 제약 없이 재시도 (fail-open, #61·#65)')
-        return await llm.acomplete(prompt)
+    return await llm.acomplete(prompt, citations=build_citation_tail(sources_from_chunks(chunks), []))
 
 
 # ===== 채점 — deterministic (서버 무관) ==============================
@@ -660,7 +643,7 @@ async def main():
         gen_gold = _smoke_sample(gen_gold, SMOKE)
     RESULT_DIR.mkdir(exist_ok=True)
 
-    llm = LlmClient()
+    llm = create_llm()
     # 생성기 선택 (#96 비교군 (a)): GENERATOR=claude 면 **생성 콜만** Claude CLI로 교체.
     # condense·검색·채점은 운영 그대로 — 무엇이 격차를 만들었는지 한 변수로 좁히기 위해서다
     # (run_mode의 gen_llm docstring). 모델은 CLAUDE_MODEL(기본 sonnet)로 바꾼다.
@@ -671,7 +654,7 @@ async def main():
         gen_label = f"claude:{gen_llm.model}"
     elif generator == "vllm":
         gen_llm = None
-        gen_label = f"vllm:{settings.vllm_model}"
+        gen_label = f"{settings.llm_provider}:{settings.llm_model}"
     else:
         raise SystemExit(f"GENERATOR={generator} — vllm|claude 만 지원")
 

@@ -28,7 +28,7 @@ metric — 한 번 실행에 두 집합을 채점한다(#216):
       SMOKE=0 python -m eval.ragas_eval                # 사내 vLLM judge, 전체
       RAGAS_JUDGE=openai python -m eval.ragas_eval     # 외부 judge (rate limit 주의)
       RAGAS_JUDGE=claude SMOKE=10 python -m eval.ragas_eval   # Claude 교차채점 스모크 (#103)
-      (vllm judge의 실제 대상 = .env의 VLLM_BASE_URL — 현재 worker15:18888)
+      (vllm judge의 실제 대상 = .env의 LLM_BASE_URL — 현재 worker15:18888)
 """
 import os
 
@@ -85,12 +85,12 @@ def compute(smoke: int | None = None) -> dict:
     if JUDGE == "vllm":
         from config import settings
         judge = LangchainLLMWrapper(ChatOpenAI(
-            model=settings.vllm_model,
-            base_url=settings.vllm_base_url,     # 사내 vLLM — OpenAI 호환 API
+            model=settings.llm_model,
+            base_url=settings.llm_base_url,      # 사내 vLLM — OpenAI 호환 API
             api_key="EMPTY",
             temperature=0.2,                     # 채점 일관성 (운영 생성과 동일값, greedy 금지 — Qwen3 모델 카드)
             timeout=300,
-            # thinking off + 생성 상한 (#216). 이 판정기는 rag/llm.LlmClient를 안 거쳐 운영의 enable_thinking=False·
+            # thinking off + 생성 상한 (#216). 이 판정기는 rag/llm 공급자를 안 거쳐 운영의 enable_thinking=False·
             # max_tokens가 빠져 있었다 → Qwen3가 추론을 길게 생성(서버 reasoning-parser가 떼어내 텍스트엔 안 보임).
             # 실측: 같은 판정형 프롬프트 9.5s·354토큰 → 1.6s·54토큰. 길어진 추론이 RAGAS 작업 타임아웃(180s)을 넘겨
             # 조용히 NaN이 됐다(28행 스모크 정답대조 8/26, #114 14B 채점본 결측 수백 건). ⚠ 이 전후 RAGAS 수치는 비교 불가.
@@ -139,7 +139,7 @@ def compute(smoke: int | None = None) -> dict:
     ref_cols = ["context_recall", "answer_correctness"]
     gen_hash = hashlib.sha1(Path("eval/results/generation_retrieved.jsonl").read_bytes()).hexdigest()[:10]
     model_tag = (os.getenv("CLAUDE_MODEL", "sonnet") if JUDGE == "claude" else
-                 (settings.vllm_model if JUDGE == "vllm" else OPENAI_JUDGE_MODEL)).replace("/", "_")
+                 (settings.llm_model if JUDGE == "vllm" else OPENAI_JUDGE_MODEL)).replace("/", "_")
     progress = Path(f"eval/results/ragas_progress_{JUDGE}_{model_tag}_{gen_hash}.csv")
     prog = pd.read_csv(progress).set_index("id") if progress.exists() else pd.DataFrame()
 

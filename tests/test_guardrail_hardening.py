@@ -151,9 +151,9 @@ async def test_취소_표식은_condense_이력에도_동일(tenant_id, fake_llm
 
     captured = []                                  # condense가 받은 user 메시지(이력 포함) 캡처
     orig = fake_llm.acomplete
-    async def spy(messages, extra_body=None):
+    async def spy(messages, **kw):
         captured.append(messages[-1]['content'])
-        return await orig(messages, extra_body)
+        return await orig(messages, **kw)
     fake_llm.acomplete = spy
 
     await condense_query(fake_llm, '다시 얘기해줘', msgs)

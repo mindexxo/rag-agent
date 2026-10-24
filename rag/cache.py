@@ -271,7 +271,7 @@ async def save_answer(
             answer=answer,
             sources=_sources_to_json(sources),
             source_doc_ids=source_doc_ids,
-            model=settings.vllm_model,
+            model=settings.llm_model,
         )
 
         # 같은 tenant + cache_key가 이미 있으면 UPDATE — 동시 요청이 같은 질의를 쓰거나,
@@ -286,7 +286,7 @@ async def save_answer(
                 "answer": answer,
                 "sources": _sources_to_json(sources),
                 "source_doc_ids": source_doc_ids,
-                "model": settings.vllm_model,
+                "model": settings.llm_model,
                 "last_hit_at": func.now(),
                 "hit_count": 0,
             },

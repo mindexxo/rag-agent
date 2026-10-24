@@ -8,7 +8,8 @@ import pytest
                                  "eval.run_all", "eval.reindex_documents", "eval.retrieval_article",
                                  "eval.retrieval_keyword", "eval.hybrid_replay", "eval.hybrid_weights",
                                  "eval.chunk_boundary", "eval.contextual_header", "eval.pdf_layout.run",
-                                 "eval.table_census"])
+                                 "eval.table_census", "eval.scale_noise.measure", "eval.scale_noise.build",
+                                 "eval.scale_noise.generate", "eval.scale_noise.filter", "eval.scale_noise.chunks"])
 def test_eval_module_imports(mod):
     importlib.import_module(mod)
 

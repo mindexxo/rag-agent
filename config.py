@@ -98,10 +98,15 @@ class Settings(BaseSettings):
     # 거부되는 조합은 400으로 바로 드러난다 — 조용히 빼지 않는다. 값: none | minimal | low | medium | high
     llm_reasoning_effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
 
-    # embedding (F99: TEI 원격 서버, dense-only). 저장 벡터도 이 서버 출력이어야 검색 정상 — 재인제스트로 일치 보장
-    embed_base_url: str = "http://localhost:38889"    # TEI 임베딩 서버 (BGE-M3, /embed) — 실주소는 .env
+    # embedding (F99: TEI 원격 서버, dense-only). 저장 벡터도 같은 공급자·모델 출력이어야 검색 정상 — 바꾸면 재인제스트 필수.
+    # 공급자(#289, 정의점 rag/embeddings.py): tei(사내, 기본) | openai | gemini | voyage — 상용은 LiteLLM 경유, 모델명은 접두 없이
+    # (예: text-embedding-3-large, gemini-embedding-001, voyage-3.5), 차원은 항상 1024로 요청하고 응답을 검사한다.
+    embed_provider: Literal["tei", "openai", "gemini", "voyage"] = "tei"
+    embed_model: str = ""                    # 상용일 때 필수(_require_vendor_model). TEI는 컨테이너당 모델 고정이라 안 본다
+    embed_api_key: str = ""                  # 상용 키 — .env에만 (LLM과 별개 키: 벤더가 다를 수 있다)
+    embed_base_url: str = "http://localhost:38889"    # TEI 임베딩 서버 (BGE-M3, /embed) — 실주소는 .env. 상용이면 무시
     embed_timeout: float = 30.0
-    embed_dimensions: int | None = None
+    embed_dimensions: int | None = None      # TEI 전용 MRL 절단 — 상용은 rag/embeddings.EMBED_DIM(1024) 고정
 
     # OTel 트레이싱 (#7). 미설정(빈 값)이면 완전 no-op — 계측 코드는 돌지만 스팬이 기록되지 않음.
     # 로컬 Phoenix: http://localhost:6006/v1/traces (docker-compose.local.yml). 개발계 전용 권장.
@@ -135,7 +140,13 @@ class Settings(BaseSettings):
     # 분포 대비 정식 채널로 켜둔다(사용자 결정). 끄면 dense-only.
     hybrid_lexical_enabled: bool = True
     hybrid_lexical_inject: int = 15                   # dense 미포함 BM25 상위 주입 수 (어블레이션 조립과 동일)
-    rerank_base_url: str = "http://localhost:38890"   # TEI 리랭커 서버 (bge-reranker-v2-m3, /rerank) — 실주소는 .env
+    # 리랭크 공급자(#289, 정의점 rag/reranker.py): tei(사내, 기본) | cohere | voyage | jina — 상용은 LiteLLM arerank 경유,
+    # 모델명은 접두 없이(예: rerank-v5.0-pro, rerank-3, jina-reranker-v2-base-multilingual — Cohere 목록은 /v2/models?endpoint=rerank, 10/24 기준 v5.0이 최신). 점수 눈금이 벤더마다 달라
+    # ident_boost는 벤더 전환 측정 때 다시 본다.
+    rerank_provider: Literal["tei", "cohere", "voyage", "jina"] = "tei"
+    rerank_model: str = ""                   # 상용일 때 필수(_require_vendor_model)
+    rerank_api_key: str = ""                 # 상용 키 — .env에만
+    rerank_base_url: str = "http://localhost:38890"   # TEI 리랭커 서버 (bge-reranker-v2-m3, /rerank) — 실주소는 .env. 상용이면 무시
     rerank_timeout: float = 30.0
     # 식별자 채널(#238, 정의점 rag/identifiers·rag/retriever). 질문에 사전 식별자('11조')가 있을 때만 발동:
     # 정확 일치 조각을 리랭커 풀에 주입하고, 리랭크 **뒤** 점수에 ident_boost를 더해 재정렬한다.
@@ -323,6 +334,18 @@ class Settings(BaseSettings):
                                               # 동시 4 매회 2~3장 다름. 합성 표 그림 100장에선 동시 4도 100/100 같아 처음엔 4로 정했다가 뒤집었다.
                                               # 속도 대가: 그림 100장 DOCX 199초(동시 4면 68초), 보유 코퍼스 106건 합계로는 약 7%.
                                               # 올리려면 vLLM의 배치 불변(batch-invariant) 모드 같은 서버 쪽 결정성부터 확인할 것.
+
+    @model_validator(mode="after")
+    def _require_vendor_model(self):
+        """상용 임베딩·리랭크 공급자를 고르면 모델명이 있어야 한다(#289).
+
+        빈 모델명은 LiteLLM이 "openai/"처럼 접두만 남은 이름으로 첫 호출 때 실패시키는데, 그 시점은 색인·검색 중이라
+        원인(설정 누락)이 묻힌다. 키는 검사하지 않는다 — 빈 키는 벤더가 401로 바로 알려 준다.
+        """
+        for name in ("embed", "rerank"):
+            if getattr(self, f"{name}_provider") != "tei" and not getattr(self, f"{name}_model"):
+                raise ValueError(f"{name.upper()}_PROVIDER={getattr(self, f'{name}_provider')}이면 {name.upper()}_MODEL이 필요합니다")
+        return self
 
     @model_validator(mode="after")
     def _reject_renamed_env(self):

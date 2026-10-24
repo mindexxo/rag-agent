@@ -150,7 +150,7 @@ async def capture(sets: list[str], limit: int | None) -> Path:
         raise SystemExit(f"문항 id 중복: {dup[:5]}")
     vecs = []
     for i in range(0, len(items), 256):                       # embed_texts가 32씩 나눠 보낸다
-        vecs += [e.dense for e in await embed_texts([it["query"] for it in items[i:i + 256]])]
+        vecs += [e.dense for e in await embed_texts([it["query"] for it in items[i:i + 256]], kind="query")]
     sem = asyncio.Semaphore(CONCURRENCY)
     done = 0
 
@@ -207,7 +207,7 @@ def _patched():
              (rag.os_search, "search_identifiers"), (rag.retriever, "_chunk_map"), (rag.reranker, "rerank_scores")}
     orig = {(m, n): getattr(m, n) for m, n in names}
 
-    async def _embed(texts):
+    async def _embed(texts, kind="document"):
         return [Embedding(dense=_CURRENT.get()[2]) for _ in texts]
 
     async def _dense(tenant, q_embs, n):

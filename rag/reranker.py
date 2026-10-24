@@ -1,7 +1,13 @@
-"""리랭커 — TEI `/rerank` 로 검색 후보를 cross-encoder로 재정렬 (F99).
+"""리랭커 — 검색 후보를 cross-encoder로 재정렬 (F99). 공급자는 설정으로 고른다(#289):
+사내 TEI `/rerank`(bge-reranker-v2-m3, 기본) 또는 상용 리랭크 API(cohere·voyage·jina, LiteLLM `arerank` 경유).
 
 bi-encoder(임베딩)로 넓게 추린 후보를, query+청크를 함께 넣어 직접 관련도를 매겨
 정밀하게 재정렬한다. on/off = settings.rerank_enabled (retriever가 참조).
+
+공급자 분기는 rerank_scores 안에만 있다 — 입력 텍스트(_rerank_text)·배치 분할·실패 시 None·순서 환산은
+공급자 무관하게 같다. 점수 눈금은 벤더마다 다르다(TEI는 시그모이드 확률, Cohere도 0~1이지만 분포가 다르다) —
+점수에 더하는 settings.ident_boost(#238)는 TEI 분포로 맞춘 값이라 벤더 전환 측정에 조 번호 축을 포함한다(#289 결정 5).
+`litellm`은 함수 안에서만 import한다(rag/embeddings.py와 같은 규율).
 
 - retrieve_candidates() 후보의 '순서만' 바꾼다 (집합·Recall@N 불변).
 - 실패(서버 다운 등) 시 원 순서 유지 → graceful degrade (검색이 멈추지 않게).
@@ -20,6 +26,10 @@ from config import settings
 from rag.index_text import build_index_text
 
 logger = logging.getLogger(__name__)
+
+# 상용 벤더표 (#289) — 값은 LiteLLM 모델 접두. 검증(로컬 스텁 캡처 2026-10-24, litellm 1.95.0): 셋 다
+# {model, query, documents, return_documents} 본문, 응답 results[{index, relevance_score}] — index는 보낸 documents 기준.
+_VENDORS = {"cohere": "cohere", "voyage": "voyage", "jina": "jina_ai"}
 
 
 def _rerank_text(chunk) -> str:
@@ -46,28 +56,42 @@ async def rerank_scores(query: str, chunks: list) -> list[float] | None:
     if not chunks:
         return []
     try:
-        from rag.clients import http_async
-        from rag.embeddings import MAX_CLIENT_BATCH   # 리랭커 TEI도 같은 상한 32 (실측 2026-08-04)
+        from rag.embeddings import MAX_CLIENT_BATCH   # 리랭커 TEI도 같은 상한 32 (실측 2026-08-04); 상용도 같은 분할(상한 안)
 
         # 상한 초과 시 422. cross-encoder는 query-text 쌍마다 독립 채점이라 나눠 불러도
         # 점수가 같다 → 전체 점수를 모아 한 번에 정렬하면 결과가 동일하다.
         scores = [0.0] * len(chunks)
         for start in range(0, len(chunks), MAX_CLIENT_BATCH):
-            batch = chunks[start:start + MAX_CLIENT_BATCH]
-            resp = await http_async.post(
-                f"{settings.rerank_base_url}/rerank",
-                json={"query": query, "texts": [_rerank_text(c) for c in batch]},
-                timeout=settings.rerank_timeout,
-            )
-            resp.raise_for_status()
-            # TEI /rerank → [{"index": i, "score": s}, ...]. index는 **이 배치 안**의 위치라
+            texts = [_rerank_text(c) for c in chunks[start:start + MAX_CLIENT_BATCH]]
+            # 두 경로 모두 [(배치 안 index, 점수)]로 받는다. index는 **이 배치 안**의 위치라
             # start를 더해 원본 인덱스로 환산한다 (빠뜨리면 엉뚱한 청크가 상위로 올라간다).
-            for item in resp.json():
-                scores[start + item["index"]] = item["score"]
+            for i, score in await _score_batch(query, texts):
+                scores[start + i] = score
         return scores
     except Exception as e:
         logger.warning("rerank 점수 실패: %s", e)
         return None
+
+
+async def _score_batch(query: str, texts: list[str]) -> list[tuple[int, float]]:
+    """배치 하나 채점 — 공급자 분기는 여기뿐. 반환은 (배치 안 index, 점수)."""
+    if settings.rerank_provider == "tei":
+        from rag.clients import http_async
+        resp = await http_async.post(
+            f"{settings.rerank_base_url}/rerank",
+            json={"query": query, "texts": texts},
+            timeout=settings.rerank_timeout,
+        )
+        resp.raise_for_status()
+        return [(item["index"], item["score"]) for item in resp.json()]   # TEI /rerank → [{"index", "score"}]
+    import litellm
+    resp = await litellm.arerank(
+        model=f"{_VENDORS[settings.rerank_provider]}/{settings.rerank_model}",
+        query=query, documents=texts, api_key=settings.rerank_api_key,
+        return_documents=False,                    # 본문은 우리가 들고 있다 — 응답 크기만 키운다
+        timeout=settings.rerank_timeout,
+    )
+    return [(r["index"], r["relevance_score"]) for r in resp.results]
 
 
 async def rerank_maxpool(queries: list[str], chunks: list) -> tuple[list, list[float] | None, list[int] | None]:

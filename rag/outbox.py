@@ -67,6 +67,7 @@ import time
 from datetime import timedelta
 
 import httpx
+import openai
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import InterfaceError, OperationalError
 
@@ -159,6 +160,8 @@ def is_transient(exc: BaseException) -> bool:
         또는 상태코드 없음('N/A' — 연결 계층 실패)
       - httpx(임베딩 TEI 호출): TransportError(ConnectError·Timeout·RemoteProtocolError),
         HTTPStatusError 중 429·5xx
+      - openai SDK 예외(상용 임베딩, #289 — LiteLLM 예외는 전부 이 하위다, 실측 1.95.0): APIConnectionError(타임아웃
+        포함)·APIStatusError 중 429·5xx. 401·400은 결정적(키·모델명 오류는 백 번 돌려도 같다)
       - builtin ConnectionError(ConnectionRefusedError 등 OSError 하위)·TimeoutError(asyncio.TimeoutError와 동일 클래스)
       - PG 자체(SQLAlchemy가 asyncpg 예외를 감싼 것): OperationalError·InterfaceError — 핸들러가 같은 세션으로
         PG를 읽고 쓰는 도중 커넥션이 끊긴 경우. 분류 뒤의 attempts UPDATE도 같은 DB라 함께 실패할 수
@@ -177,6 +180,10 @@ def is_transient(exc: BaseException) -> bool:
     if isinstance(exc, httpx.HTTPStatusError):
         code = exc.response.status_code
         return code == 429 or code >= 500
+    if isinstance(exc, openai.APIConnectionError):
+        return True
+    if isinstance(exc, openai.APIStatusError):
+        return exc.status_code == 429 or exc.status_code >= 500
     # opensearchpy는 함수 안에서 import한다 — rag/ 어느 모듈도 톱레벨에 들이지 않는 규율(os_client.client
     # 참조, AGENTS.md)을 따른다. 순환 회피가 아니라서 AGENTS.md의 지연 import 목록엔 따로 적혀 있다.
     from opensearchpy import ConnectionError as OsConnectionError, TransportError

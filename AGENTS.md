@@ -38,8 +38,8 @@
 `outbox`(→documents).
 순환 회피가 아닌 지연 import은 둘이다. `opensearchpy` — `rag/` 어느 모듈도 톱레벨에 들이지 않고
 `os_client.client()`·`outbox.is_transient()`가 함수 안에서 import한다(매핑 상수만 보는 테스트가 그 패키지
-없이 `os_client`를 import할 수 있게 한 규율을 outbox도 따른다). `litellm` — `rag/llm/litellm.py`의 호출 함수 안에서만
-import한다(118MB 패키지라 사내 vLLM만 쓰는 프로세스가 비용을 안 내게, #288).
+없이 `os_client`를 import할 수 있게 한 규율을 outbox도 따른다). `litellm` — `rag/llm/litellm.py`·`rag/embeddings.py`·`rag/reranker.py`의 상용 분기 함수 안에서만
+import한다(118MB 패키지라 사내 vLLM·TEI만 쓰는 프로세스가 비용을 안 내게, #288·#289).
 
 검색 저장소(`os_*` 4모듈)에는 **지연 import가 없다**(#146). 구 rag/opensearch.py는 19~21곳을
 함수 안에 두고 있었는데, 그중 진짜 순환은 둘뿐이었다 — `retriever`(자료형)와 `outbox`(재등재).
@@ -73,7 +73,7 @@ import한다(118MB 패키지라 사내 vLLM만 쓰는 프로세스가 비용을 
 우선순위: OS 환경변수 > `.env`(gitignore, 로컬 전용) > `.env.dev`(커밋됨, 개발계 공용).
 없으면 무엇이 죽는지: `DATABASE_URL`→기동 즉시 실패, `OPENSEARCH_URL`(연결 불가)→기동은 되지만 검색·색인이
 호출 시점에 실패(ERROR 로그), Redis→limiter·cancellation·스트림 재개, vLLM→인텐트·질의재작성·생성·캐시 재사용 판정,
-TEI→인덱싱·검색·캐시.
+TEI→인덱싱·검색·캐시(`EMBED_PROVIDER`·`RERANK_PROVIDER`가 tei가 아니면 그 자리에 상용 API·키, #289).
 **비밀값은 이 파일에 적지 않는다** — `config.py`의 필드명만 참조하라.
 
 ## 이름이 비슷해서 헷갈리는 것 — 절대 동일시하지 말 것

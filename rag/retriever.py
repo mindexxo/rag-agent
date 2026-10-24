@@ -225,15 +225,15 @@ async def retrieve_candidates(
     expanded_queries가 있으면 원본+변형을 각각 dense 검색해 union 후보를 만들고,
     쿼리별 cross-encoder 채점의 max-pool로 정렬한다 (#5). 리랭크 꺼짐/실패 시 RRF 순서 폴백.
 
-    부수효과 없음 (엔진 읽기 + TEI 호출 2종뿐). `session`은 쓰지 않는다(모듈 docstring).
+    부수효과 없음 (엔진 읽기 + 임베딩·리랭크 호출 2종뿐 — 공급자는 설정, #289). `session`은 쓰지 않는다(모듈 docstring).
     """
     queries = [query, *(expanded_queries or [])]
 
     # embed_texts는 이 함수 안에서 직접 부른다 — tests/conftest.py가
     # `rag.retriever.embed_texts`를 monkeypatch하므로, 이 호출을 다른 모듈로 옮기면
     # (헬퍼로 감싸도 그 헬퍼가 retriever.py 밖이면 마찬가지) 패치가 안 먹고
-    # 테스트가 실제 TEI 서버를 때린다. 옮기려면 conftest부터 함께 고칠 것.
-    q_embs = await embed_texts(queries)   # TEI 호출 1회 — 배치 분할은 embed_texts가 담당
+    # 테스트가 실제 임베딩 서버를 때린다. 옮기려면 conftest부터 함께 고칠 것.
+    q_embs = await embed_texts(queries, kind="query")   # 임베딩 호출 1회 — 배치 분할은 embed_texts가 담당. 질의 용도(#289)
     query_embedding = q_embs[0].dense     # 원본 쿼리 벡터 — 캐시가 재사용한다 (#50).
                                           # Embedding 래퍼를 여기서 벗긴다: 도착지(cache.py·
                                           # AnswerCacheRow.query_embedding)가 list[float]를 받으므로

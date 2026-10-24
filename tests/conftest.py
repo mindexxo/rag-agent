@@ -181,7 +181,7 @@ def fake_embed(monkeypatch):
 
     counting = SimpleNamespace(embed_calls=0)
 
-    async def _texts(texts: list[str]) -> list[Embedding]:
+    async def _texts(texts: list[str], kind: str = "document") -> list[Embedding]:
         counting.embed_calls += 1
         return [Embedding(dense=fake_vector(t)) for t in texts]
 

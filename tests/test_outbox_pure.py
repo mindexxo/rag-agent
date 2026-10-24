@@ -11,6 +11,15 @@ from rag import outbox
 from rag.chunking import CaptionFailedError, PictureLimitError
 
 
+def _litellm(name):
+    """LiteLLM 예외(openai SDK 예외 하위) — 상용 임베딩이 올리는 모양 그대로. 생성자가 llm_provider·model을 요구한다."""
+    import litellm
+    cls = getattr(litellm, name)
+    if name in ('Timeout', 'APIConnectionError'):
+        return cls(message='conn', llm_provider='openai', model='m')
+    return cls(message=name, llm_provider='openai', model='m')
+
+
 def _http_status(code: int) -> httpx.HTTPStatusError:
     req = httpx.Request('POST', 'http://tei/embed')
     return httpx.HTTPStatusError('x', request=req, response=httpx.Response(code, request=req))
@@ -32,6 +41,8 @@ def _http_status(code: int) -> httpx.HTTPStatusError:
     InterfaceError('SELECT 1', {}, Exception('connection is closed')),
     CaptionFailedError('그림 캡션 실패'),                 # #223 결정 3 — VLM이 살아나면 저절로 ready
     TimeoutError('docling 변환이 900초를 넘겨 중단했다'),   # #223 결정 5 — 마감 초과도 일시(24회)
+    _litellm('RateLimitError'), _litellm('ServiceUnavailableError'), _litellm('InternalServerError'),   # #289 상용 임베딩 — 벤더 순단·한도
+    _litellm('Timeout'), _litellm('APIConnectionError'),
 ])
 def test_일시_실패로_분류(exc):
     assert outbox.is_transient(exc) is True
@@ -49,6 +60,7 @@ def test_일시_실패로_분류(exc):
     IntegrityError('INSERT', {}, Exception('unique_violation')),          # DB지만 연결 문제가 아니다
     ProgrammingError('SELECT nope', {}, Exception('column does not exist')),
     PictureLimitError('그림 101장'),                       # #223 결정 4 — 다시 돌려도 그림 수는 같다
+    _litellm('AuthenticationError'), _litellm('BadRequestError'), _litellm('NotFoundError'),   # #289 키·모델명 오류
 ])
 def test_결정적_실패로_분류(exc):
     assert outbox.is_transient(exc) is False

@@ -48,7 +48,7 @@ def _exact(tenant: str, vector: list[float], n: int) -> dict:
 async def _pool_compare(gold_rows: list[dict], gold_ids: dict[str, set[int]]) -> list[dict]:
     """ⓐ — 문항마다 근사·정확 상위 30."""
     out = []
-    vecs = await embed_texts([g['query'] for g in gold_rows])
+    vecs = await embed_texts([g['query'] for g in gold_rows], kind="query")
     for g, v in zip(gold_rows, vecs):
         ids = gold_ids.get(g['id']) or set()
         if not ids:

@@ -54,7 +54,7 @@ def production(monkeypatch):
     대체하는 이음새 목록은 eval/hybrid_weights._patched와 같다 — 운영 이름이 바뀌면 둘을 함께 고칠 것."""
     state = {}
 
-    async def _embed(texts):
+    async def _embed(texts, kind="document"):
         assert len(texts) == 1, "단일 질의 경로만 재생한다"
         return [Embedding(dense=[0.0])]
 

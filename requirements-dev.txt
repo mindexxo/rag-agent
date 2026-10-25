@@ -1,6 +1,0 @@
-# 개발·검증 전용 의존성 — 운영 이미지(requirements.txt)에는 넣지 않는다.
-# 설치: pip install -r requirements-dev.txt
-
-# 버전을 고정한다 — 규칙 판정이 버전마다 달라 래칫 기준선(tests/quality_baseline.json)이 버전 업만으로 흔들린다.
-# 올릴 때는 기준선을 같은 PR에서 다시 만든다(tests/test_code_quality.py docstring).
-ruff==0.17.2

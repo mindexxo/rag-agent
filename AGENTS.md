@@ -168,7 +168,7 @@ TEI→인덱싱·검색·캐시(`EMBED_PROVIDER`·`RERANK_PROVIDER`가 tei가 �
 
 강제는 `tests/test_code_quality.py`(설정 `pyproject.toml`, 기준선 `tests/quality_baseline.json`)가 한다. 지금의 위반은
 기준선에 동결돼 있고 **그보다 나빠지면 실패**한다(줄면 경고 — 정리한 PR이 `QUALITY_BASELINE_UPDATE=1 pytest
-tests/test_code_quality.py`로 조인다). ruff는 `pip install -r requirements-dev.txt`(버전 고정) — CI가 없으니(#90) 커밋 전에 돌린다.
+tests/test_code_quality.py`로 조인다). ruff는 `requirements.txt`에 버전 고정 — CI가 없으니(#90) 커밋 전에 돌린다.
 불가피한 증가·이름 변경·기준선 충돌 처리는 그 파일 docstring.
 
 1. **자동 강제(위반 0이 목표)**: Ruff 포매터, import 정렬, 미사용 코드, 버그 패턴. 새 파일은 처음부터 지킨다

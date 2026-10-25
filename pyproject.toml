@@ -1,5 +1,5 @@
 # 코드 품질 도구 설정(#302). 판단 기준의 정의점은 AGENTS.md "코드 품질 기준"이고, 강제는 tests/test_code_quality.py
-# (래칫 — 기준선 tests/quality_baseline.json보다 나빠지면 실패)가 한다. 버전을 고정하는 이유는 requirements-dev.txt.
+# (래칫 — 기준선 tests/quality_baseline.json보다 나빠지면 실패)가 한다. 버전 고정은 requirements.txt.
 
 [tool.ruff]
 line-length = 120          # 실측(main ffed729): 88이면 운영 코드 변경 6.8천 줄, 120이면 4.3천 줄 — 한국어 주석이 긴 저장소라 120

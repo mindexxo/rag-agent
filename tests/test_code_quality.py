@@ -19,7 +19,7 @@
   - 기준선 JSON이 머지 충돌하면 손으로 풀지 말고 한쪽을 받은 뒤 갱신 명령으로 다시 만든다.
   - `# noqa`는 위반을 센 수에서 뺀다 — "명시적으로 끈 것"이라 리뷰에서 사유를 본다. pyproject.toml의 상한·제외 완화도 같다.
 
-ruff는 개발 의존성(requirements-dev.txt, 버전 고정)이다. 없으면 건너뛰되 CI=1(또는 true)이면 실패한다(#90이 CI에서 부른다).
+ruff는 requirements.txt에 버전 고정돼 있다. 없으면 건너뛰되 CI=1(또는 true)이면 실패한다(#90이 CI에서 부른다).
 버전이 다르면 실패한다 — 규칙 판정이 버전마다 달라 기준선이 흔들린다. ruff를 올릴 때는 같은 PR에서 기준선을 다시 만든다
 (QUALITY_BASELINE_UPDATE=1 QUALITY_ALLOW_GROWTH=1).
 """
@@ -60,10 +60,10 @@ def _flag(name: str) -> bool:
 
 
 def _pinned_version() -> str:
-    for line in (ROOT / 'requirements-dev.txt').read_text(encoding='utf-8').splitlines():
+    for line in (ROOT / 'requirements.txt').read_text(encoding='utf-8').splitlines():
         if line.startswith('ruff=='):
             return line.split('==', 1)[1].split()[0]
-    raise AssertionError('requirements-dev.txt에 ruff==버전 줄이 없다')
+    raise AssertionError('requirements.txt에 ruff==버전 줄이 없다')
 
 
 def _ruff_bin() -> str:
@@ -71,14 +71,12 @@ def _ruff_bin() -> str:
         from ruff.__main__ import find_ruff_bin
     except ImportError:
         if _flag('CI'):
-            pytest.fail('ruff 미설치 — pip install -r requirements-dev.txt')
-        pytest.skip('ruff 미설치 — pip install -r requirements-dev.txt (CI에서는 실패)')
+            pytest.fail('ruff 미설치 — pip install -r requirements.txt')
+        pytest.skip('ruff 미설치 — pip install -r requirements.txt (CI에서는 실패)')
     ruff = find_ruff_bin()
     version = subprocess.run([ruff, '--version'], capture_output=True, text=True, check=True).stdout.split()[-1]
     if version != (pinned := _pinned_version()):
-        pytest.fail(
-            f'ruff {version} ≠ 고정 {pinned} — 판정이 버전마다 달라 기준선과 비교할 수 없다(requirements-dev.txt)'
-        )
+        pytest.fail(f'ruff {version} ≠ 고정 {pinned} — 판정이 버전마다 달라 기준선과 비교할 수 없다(requirements.txt)')
     return ruff
 
 

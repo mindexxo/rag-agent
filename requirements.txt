@@ -60,3 +60,8 @@ reportlab==5.0.0                 # 테스트·합성 문서 생성기(sample_doc
 # ragas==0.4.3
 # langchain-openai==0.3.35
 # datasets==4.8.4
+
+# ---- 코드 품질 (#302: tests/test_code_quality.py 래칫 게이트) ----
+# 버전을 정확히 고정한다 — 규칙 판정이 버전마다 달라 기준선(tests/quality_baseline.json)이 버전 업만으로 흔들린다.
+# 올릴 때는 같은 PR에서 기준선을 다시 만든다(tests/test_code_quality.py docstring). 운영 실행에는 안 쓰인다(이미지 +22MB 감수, 사용자 결정).
+ruff==0.17.2

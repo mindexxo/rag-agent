@@ -70,7 +70,7 @@ cp .env ../consult-agent-issue<N>/.env   # 필수 — .env는 gitignore라 워�
   `QUALITY_BASELINE_UPDATE=1 QUALITY_ALLOW_GROWTH=1`로 기준선에 올리고, **사용자에게 사유를 보고**한 뒤 PR 본문 `## 테스트`에 적는다.
 - 경고("품질 개선 N건")가 나오면 `QUALITY_BASELINE_UPDATE=1 pytest tests/test_code_quality.py`로 기준선을 조여 같은 PR에 넣는다.
 - 리뷰어 프롬프트에 3·4·5번(데이터는 dict 대신 dataclass/TypedDict, 클래스 절제, 공개 함수 타입 힌트)을 점검 항목으로 넣는다 — 기계 검사가 없는 규칙이다.
-- ruff가 없다는 skip이 나오면 `pip install -r requirements-dev.txt` 후 다시 돌린다 — skip을 통과로 보고하지 마라.
+- ruff가 없다는 skip이 나오면 `pip install -r requirements.txt` 후 다시 돌린다 — skip을 통과로 보고하지 마라.
 
 ## 4. E2E 테스트케이스 리스트업
 

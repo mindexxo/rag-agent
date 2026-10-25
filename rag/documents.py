@@ -1,12 +1,7 @@
 """문서 도메인 — 업로드·인제스션·삭제. 라우터(routers/documents.py)와 워커가 함께 쓴다.
 
-들어 있는 것: 업로드 시점 처리(handle_upload — 버전 정책·failed 재사용), 인제스션 전체
-(index_pending_document — 파싱·임베딩·색인·ready 승격, outbox의 INDEX_DOCUMENT 핸들러),
-소프트 삭제(soft_delete_documents), 문서 내리기(_retire_documents), 폴더 조회(get_folder).
-
-**HTTPException을 만들지 않는다.** 라우터도 워커도 import하는 모듈이라 starlette를 들이지
-않는다 — 도메인 예외(FailedReuseConflict)나 None을 돌려주고, HTTP 변환은 라우터가 한다.
-같은 이유로 스레드 오프로딩은 stdlib `asyncio.to_thread`를 쓴다.
+라우터도 워커도 import하므로 starlette를 들이지 않는다 — HTTPException 대신 도메인 예외나 None을
+돌려주고 HTTP 변환은 라우터가 한다. 스레드 오프로딩도 stdlib `asyncio.to_thread`를 쓴다.
 """
 
 import asyncio
@@ -21,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database import AsyncSessionLocal
 from rag import cache, os_index, outbox
 from rag.chunking import abort_conversion, chunk_file, count_picture_placeholders, pdf_image_area_ratio
-from rag.embeddings import embed_texts
+from rag.embeddings import embed_texts  # 이름으로 들일 것 — tests/conftest.py가 rag.documents.embed_texts를 패치
 from rag.index_text import build_index_text
 from rag.metrics import (
     INDEX_DURATION_SECONDS,
@@ -31,9 +26,7 @@ from rag.metrics import (
 )
 from rag.models import ALIVE_DOCUMENT_STATUSES, Document, Folder
 
-# 이미지 면적이 이 비율을 넘으면 인제스션에서 경고를 남긴다 (#137 결함 4).
-# 실측(실문서 21건): 도표가 이미지인 3건이 21.1% / 4.4% / 0.7%, 나머지 18건 0%.
-# 0.7%짜리도 수당 산정식 하나가 통째로 사라졌으므로 임계를 낮게 잡는다.
+# 이미지 면적(%)이 이 값 이상이면 문서에 경고를 남긴다 — 작은 도표 하나에도 핵심 내용이 들 수 있어 낮게 잡는다.
 IMAGE_WARN_RATIO = 0.5
 
 _MIME_OVERRIDES = {
@@ -42,11 +35,9 @@ _MIME_OVERRIDES = {
 
 
 def _detect_mime(blob_path: Path) -> str:
-    """확장자로 mime 추론 — 업로드 시점에 handle_upload가 부른다.
+    """확장자로 mime 추론. `mimetypes`가 docx를 못 알아보는 환경이 있어 override를 먼저 본다.
 
-    `mimetypes`가 docx를 못 알아보는 환경이 있어 override를 먼저 본다.
-    라우터의 SUPPORTED_SUFFIXES 5종이 전부 여기서 판별돼야 업로드가 500 없이 끝난다
-    (tests/test_small_utils.py가 그 조건을 고정한다).
+    라우터의 SUPPORTED_SUFFIXES가 전부 여기서 판별돼야 업로드가 500 없이 끝난다.
     """
     suffix = blob_path.suffix.lower()
     if suffix in _MIME_OVERRIDES:
@@ -58,13 +49,9 @@ def _detect_mime(blob_path: Path) -> str:
 
 
 async def get_folder(session: AsyncSession, tenant_id: str, folder_id: int) -> Folder | None:
-    """테넌트의 폴더 하나. 없거나 **남의 테넌트 것이면 None** — 폴더 조회의 정의점 (#188 B-2).
+    """테넌트의 폴더 하나. 없거나 **남의 테넌트 것이면 None** — 폴더 조회의 정의점.
 
-    라우터 넷이 같은 SELECT를 따로 적고 있었다(업로드·단건 변경·일괄 변경 + routers/folders.py의
-    _get_folder). 테넌트 WHERE가 곧 격리라서, 사본이 늘수록 한 곳만 빠뜨릴 위험이 커진다.
-
-    404 변환은 여기서 하지 않는다 — 이 모듈은 라우터도 워커도 import하므로 starlette를 들이지
-    않는다(index_pending_document의 to_thread 주석과 같은 이유). 호출부가 HTTPException을 만든다.
+    테넌트 WHERE가 곧 격리라 사본을 만들지 말고 이 함수를 쓴다. 404 변환은 호출부가 한다.
     """
     return (
         (
@@ -82,19 +69,10 @@ async def get_folder(session: AsyncSession, tenant_id: str, folder_id: int) -> F
 async def _retire_documents(
     session: AsyncSession, tenant_id: str, document_ids: list[int], *, status_reason: str | None = None
 ) -> None:
-    """문서들을 내린다 — 상태·캐시·DROP **세 동작이 한 묶음**이다 (#188 B-4).
+    """문서들을 내린다 — 상태·캐시·DROP **세 동작이 한 묶음**이다(하나만 빠져도 조용히 어긋난다).
 
-    하나만 빠져도 조용히 어긋난다: 상태만 바꾸면 엔진에 남아 계속 인용되고, DROP만 넣으면
-    목록에 남고, 캐시를 안 지우면 내린 문서를 근거로 만든 답변이 그대로 재사용된다.
-
-    쓰는 곳 둘 — 재업로드의 구버전 supersede(index_pending_document ③)와 failed 정리
-    (_reuse_failed_document의 others). `soft_delete_documents`는 **쓰지 않는다**: 그쪽은 filename
-    하위 질의로 대상 확정과 UPDATE를 한 문장에 묶어 그 사이 창을 닫는 구조라, 여기처럼 id 목록을
-    미리 들고 있을 수 없다(그 함수 주석 참조).
-
-    **커밋하지 않는다** — 호출부 트랜잭션에 얹힌다(outbox.enqueue와 같은 규약).
-    flush까지 하는 이유: supersede는 옛 active가 먼저 off로 반영돼야 신버전을 켤 때
-    uq_docs_one_active_per_name을 안 밟는다.
+    **커밋하지 않는다** — 호출부 트랜잭션에 얹힌다. flush는 한다: supersede는 옛 active가 먼저
+    off로 반영돼야 신버전을 켤 때 uq_docs_one_active_per_name을 안 밟는다.
     """
     if not document_ids:
         return
@@ -109,26 +87,16 @@ async def _retire_documents(
 
 
 async def index_pending_document(document_id: int, *, outbox_row_id: int | None = None) -> None:
-    """INDEX_DOCUMENT 핸들러 — 인제스션 전체 (#139 outbox). 워커 drain이 부른다.
+    """INDEX_DOCUMENT 핸들러 — 인제스션 전체. 실패는 예외로 올린다(재시도·failed 판정은 outbox.drain).
 
-    **실패는 예외로 올린다.** 재시도 횟수·failed 판정은 rag/outbox.drain이 한다(MAX_ATTEMPTS
-    초과 시 문서도 failed). 이 함수 안에는 삼키는 곳이 없다.
+    커밋은 ③의 한 번뿐이고 ready·supersede·캐시 무효화·outbox done이 함께 들어가 `ready ≡ 색인됨`이
+    커밋 단위로 성립한다. 어디서 죽어도 다음 회차가 처음부터 다시 한다(엔진 색인은 같은 _id upsert라 멱등).
+    **파괴적 엔진 변경은 커밋 뒤 outbox로만** — 구버전 청크 삭제는 ③에 DROP 행으로 얹어, ③이 실패하면
+    구버전이 PG·엔진 모두 그대로 남게 한다.
 
-    커밋은 **마지막에 한 번**이다. 그 커밋에 ready·is_active·supersede·캐시 무효화·outbox done이
-    함께 들어간다 — 그래서 `ready ≡ 색인됨`이 커밋 단위로 성립한다. 어느 단계에서 죽어도
-    PG는 pending 그대로, 대기열 행은 pending 그대로여서 다음 회차가 처음부터 다시 한다
-    (엔진에 반쯤 들어간 청크는 같은 _id로 덮인다 — 멱등. 커밋 전엔 엔진에서 아무것도 **지우지** 않는다).
-
-    **파괴적인 엔진 변경은 커밋 뒤 outbox로만** (#186). 구버전 청크 삭제는 ②에서 직접 하지 않고
-    ③ 커밋에 DROP_DOCUMENTS 행으로 얹는다 — ③이 실패하면 행도 롤백돼 구버전은 PG(ready·active)·엔진
-    모두 그대로다. ②에서 지웠던 때는 ③ 실패가 "목록엔 정상인데 검색엔 없는" 구버전을 영구로 남겼다.
-    대가는 성공 경로에서 구·신 버전 청크가 다음 회차(≤1분)까지 공존하는 것 — 삭제 문서가 최대 1분
-    인용될 수 있다는 제품 결정(rag/outbox.py)과 같은 범위. 신버전 색인(②)은 비파괴·멱등 upsert라
-    커밋 전에 해도 되고, 실패로 굳으면 outbox.drain의 failed 확정 DROP(#184)이 치운다.
-
-    세션 셋으로 나눈 이유는 그대로다: 무거운 파싱·임베딩 동안 DB 커넥션을 물지 않는다.
-      ① 짧은 읽기   처리 대상 확인 + 파싱·색인에 필요한 값만 (커넥션 즉시 반납)
-      ② DB 없이     파싱·청킹·임베딩 → 엔진 색인 (삭제는 없다 — 위 원칙)
+    세션을 셋으로 나눠 무거운 파싱·임베딩 동안 DB 커넥션을 물지 않는다.
+      ① 짧은 읽기   처리 대상 확인 + 파싱·색인에 필요한 값만
+      ② DB 없이     파싱·청킹·임베딩 → 엔진 색인(삭제 없음)
       ③ 짧은 쓰기   유일한 커밋
     """
     # ── ① 짧은 읽기 ──
@@ -149,13 +117,8 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         tenant_id, filename, version = doc.tenant_id, doc.filename, doc.version
         blob_path, description = doc.blob_path, doc.description or ''
         folder_id, doc_searchable = doc.folder_id, doc.is_searchable
-        # 같은 filename의 **낮은 version** 중 살아 있는 것 — ③에서 PG를 내리고 DROP 행을 남길 대상(supersede).
-        # "active만"이 아니라 pending도 포함하고 version 조건을 거는 이유(#185): outbox 행은 등재 순으로
-        # 처리된다는 보장이 없다 — 백오프로 v1 행이 미뤄진 사이 v2 행이 먼저 끝날 수 있다. 그때 v2가
-        # pending v1을 ③에서 내려두면 v1의 차례가 와도 위 "pending 아님 → done" 분기로 빠진다.
-        # version 조건은 그 반대 방향의 안전판이다 — 어떤 경로로든 구버전이 나중에 돌아도 신버전을
-        # supersede하지 못한다(그 경우 ③의 active 유니크 uq_docs_one_active_per_name에 걸려 결정적 실패 →
-        # 구버전만 failed). 라우터의 expect_version 검사는 FE가 보낼 때만 도는 선택적 방어라 근거로 삼지 않는다.
+        # supersede 대상 — 같은 filename의 **낮은 version** 중 살아 있는 것(pending 포함). outbox 처리 순서는
+        # 보장되지 않으므로 늦게 도는 구버전이 신버전을 내리지 못하게 version 조건을 건다.
         old_ids = list(
             (
                 await session.execute(
@@ -171,43 +134,32 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         )
 
     # ── ② 무거운 계산 — DB 세션 없음 ──
-    # 단계별 소요를 지표로 남긴다 (#151). 워커에는 이것 말고 "한 건이 얼마나 걸리나"를 볼 방법이
-    # 없다 — 로그는 남지 않고, drain의 cron 소요는 배치 전체라 건당으로 나눌 수 없다.
-    # 성공한 건만 기록된다: 실패는 kms_search_index_sync_total{result="error"}가 이미 센다.
+    # 단계별 소요 지표는 성공한 건만 기록한다(실패는 outbox.drain이 센다).
     _ext = ext_label(filename)
     _t_start = time.monotonic()
-    # 청킹은 동기 CPU 작업(docling 변환·openpyxl 행 검사)이라 스레드로 보낸다 — 이벤트
-    # 루프에서 돌리면 PDF 하나에 100~200ms(실문서는 초 단위) 동안 워커가 멈춘다.
-    # to_thread(stdlib)를 쓴다 — 이 모듈은 라우터도 import하므로 starlette를 들이지 않는다.
-    # 취소(arq job_timeout)되면 변환 프로세스를 즉시 죽인다(#223 리뷰) — to_thread는 취소돼도 스레드가 계속 돌아,
-    # 자식의 응답을 마감(900초)까지 기다리며 변환 잠금을 쥔다. 그동안 다음 회차가 그 잠금에 서서 회차 예산을 쓰고
-    # 그 회차도 취소되는 연쇄가 난다. 죽이면 기다리던 스레드가 EOF로 깨어나 잠금을 푼다.
+    # 청킹은 동기 CPU 작업이라 스레드로 보낸다. 취소되면 변환 프로세스를 즉시 죽인다 — to_thread는 취소돼도
+    # 스레드가 계속 돌며 변환 잠금을 쥐어, 다음 회차까지 잠금에 막혀 연쇄로 취소된다.
     try:
         chunks = await asyncio.to_thread(chunk_file, blob_path, description=description)
     except asyncio.CancelledError:
         abort_conversion()
         raise
-    image_ratio = await asyncio.to_thread(pdf_image_area_ratio, blob_path)  # #137 결함 4 경고용
+    image_ratio = await asyncio.to_thread(pdf_image_area_ratio, blob_path)
     if not chunks:  # 빈 파일·텍스트레이어 없는 PDF → ready 승격 대신 실패 (유령 ready 방지)
         raise ValueError('추출된 텍스트가 없습니다 (빈 파일이거나 파싱 결과가 비어 있음)')
-    # 네 단계가 같은 분모(성공한 문서)를 갖도록 실패 분기 뒤에서 기록한다 — 단계별 p95를
-    # 나란히 읽으려면 분모가 같아야 한다.
+    # 단계별 지표가 같은 분모(성공한 문서)를 갖도록 실패 분기 뒤에서 기록한다.
     INDEX_DURATION_SECONDS.labels(stage='parse', ext=_ext).observe(time.monotonic() - _t_start)
-    # 캡션이 안 붙은 그림 수(#162) — 캡션 대상에서 빠진 작은 그림(면적 하한 미만)·XLSX(#249).
-    # VLM 실패는 여기까지 오지 않는다 — 변환에서 CaptionFailedError로 문서 재시도가 된다(#223).
+    # 캡션이 안 붙은 그림 수(면적 하한 미만 등) — 캡션 실패는 변환에서 예외로 끝나 여기까지 오지 않는다.
     if placeholders := count_picture_placeholders(chunks):
         INDEX_PICTURE_PLACEHOLDER_TOTAL.labels(ext=_ext).inc(placeholders)
     _t_parse_done = time.monotonic()
-    # 임베딩 입력에만 '파일명 > 헤딩' 컨텍스트를 얹는다 (저장되는 chunk.text는 원문 유지).
-    # 리랭커·어휘 채널·엔진 색인이 같은 조립을 쓴다 — 세 소비자가 같은 형태를 본다.
+    # 임베딩 입력에만 '파일명 > 헤딩' 컨텍스트를 얹는다(저장되는 chunk.text는 원문 유지).
     index_texts = [build_index_text(c.text, filename, c.heading_path) for c in chunks]
     embeddings = await embed_texts(index_texts)
     INDEX_DURATION_SECONDS.labels(stage='embed', ext=_ext).observe(time.monotonic() - _t_parse_done)
     _t_embed_done = time.monotonic()
 
-    # searchable은 PG의 **현재** 상태(pending·inactive)가 아니라 **아래 ③이 만들 상태**
-    # (ready·active)로 계산한다 — 켜진 채로 바로 넣어 "켜기" 단계를 없애기 위함이다.
-    # 문서 검색토글·폴더 토글은 PG 값을 그대로 쓴다.
+    # searchable은 PG의 현재 상태(pending·inactive)가 아니라 ③이 만들 상태(ready·active)로 계산한다.
     indexed_searchable = os_index.effective_searchable(
         is_faq=False,
         doc_is_active=True,
@@ -227,37 +179,26 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         chunks=chunks,
         embeddings=embeddings,
     )
-    # 구버전 청크는 여기서 지우지 않는다 — ③의 DROP 행이 다음 회차에 지운다(함수 docstring, #186).
+    # 구버전 청크는 여기서 지우지 않는다 — ③의 DROP 행이 지운다.
     INDEX_DURATION_SECONDS.labels(stage='index', ext=_ext).observe(time.monotonic() - _t_embed_done)
 
     # ── ③ 유일한 커밋 ──
     async with AsyncSessionLocal() as session:
         doc = await session.get(Document, document_id)
         if doc is None or doc.status != 'pending':
-            # ②가 도는 사이 삭제됐다. 엔진에 넣은 청크는 그 삭제가 만든 DROP 행이 지운다 —
-            # **다음 회차**다: drain은 pending 행을 회차 시작 시 한 번의 SELECT로 고정하므로
-            # ② 도중 생긴 행은 이번 배치에 없다. 노출 창 ≤ 1분(cron) — 제품 결정 범위 안.
+            # ②가 도는 사이 삭제됐다. 엔진에 넣은 청크는 그 삭제가 만든 DROP 행이 다음 회차에 지운다.
             if outbox_row_id is not None:
                 await outbox.mark_done(session, outbox_row_id)
                 await session.commit()
             return
 
-        # 청크 행은 PG에 쓰지 않는다 — 검색·본문·메타 전부 엔진이 든다(#139). 이 커밋은
-        # 문서 상태(ready·active·supersede)와 대기열 행만 확정한다.
-        # supersede — ①에서 읽은 같은 집합을 내린다(_retire_documents: 상태·캐시·DROP).
-        # 엔진 삭제는 같은 커밋의 DROP 행으로(#186) — deleted로 바뀌는 상태와 함께 확정되거나 함께 롤백된다.
-        # 처리 시 outbox.drain의 DROP 가드는 이 문서들이 deleted라 통과시킨다. pending 구버전의 청크
-        # (그쪽 ②가 썼다가 ③에서 실패해 남은 것)도 같은 집합이라 함께 지워진다.
-        # 옛 active off가 먼저 flush돼야 아래 is_active=True가 유니크를 안 밟는다(헬퍼가 flush한다).
+        # 청크는 PG에 쓰지 않는다(엔진이 정본). 구버전 DROP 행은 이 커밋에 얹혀 상태와 함께 확정·롤백된다.
         await _retire_documents(session, tenant_id, old_ids)
 
         doc.status = 'ready'
         doc.is_active = True
         doc.char_count = sum(len(c.text) for c in chunks)
-        # 도표가 이미지로 렌더된 문서를 사용자에게 알린다(#137 결함 4). 검색·인용은 정상
-        # 동작하므로 상태는 ready 그대로 둔다. 문구는 두 번 바뀌었다 — #162 이후 그림은 VLM 캡션으로,
-        # #168 이후 격자 표 이미지는 한국어 OCR로 읽히므로 "반영되지 않습니다"는 더 이상 사실이 아니다.
-        # 남는 위험은 생성·인식 오류라 그것만 알린다.
+        # 이미지 비중이 큰 문서는 캡션·OCR 오류 가능성만 알린다 — 검색·인용은 정상이라 ready 그대로.
         if image_ratio >= IMAGE_WARN_RATIO:
             doc.status_reason = (
                 f'이미지가 쪽 면적의 {image_ratio:.0f}%를 차지합니다. '
@@ -266,10 +207,8 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
             )[:500]
         doc.indexed_at = datetime.now(timezone.utc)
 
-        # ②가 도는 사이(초~분) 문서 검색토글·폴더 토글·폴더 이동이 있었을 수 있다. 그 META 행은
-        # 이미 색인된 청크만 갱신하므로(이 문서는 그때 엔진에 없었다) 여기서 ① 시점 값으로 넣은
-        # 것이 낡은 채 남는다 — reconcile은 id 집합만 보고 메타 드리프트는 못 잡는다(리뷰 지적).
-        # 최신 PG 상태로 다시 계산해 어긋나면 META 행을 **이 커밋에** 얹어 다음 회차가 맞춘다.
+        # ② 도중 토글·폴더 이동이 있었으면 ① 시점 값으로 넣은 메타가 낡는다(그때의 META 행은 이 문서를
+        # 못 봤다) — 최신 PG 값과 다르면 META 행을 이 커밋에 얹는다.
         f_on = None
         if doc.folder_id is not None:
             f_on = (await session.execute(select(Folder.is_searchable).where(Folder.id == doc.folder_id))).scalar()
@@ -284,38 +223,23 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
             outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=[document_id])
 
         if outbox_row_id is not None:
-            await outbox.mark_done(session, outbox_row_id)  # ready와 같은 커밋 — 정의점 rag/outbox.py
+            await outbox.mark_done(session, outbox_row_id)  # ready와 같은 커밋
         await session.commit()
-    # total은 ③ 커밋까지 포함한다 — 사용자가 체감하는 "업로드 후 검색될 때까지"에 가장 가깝다
-    # (여기에 cron 대기 최대 1분이 더 붙는다, rag/worker.py drain 주석).
+    # total은 ③ 커밋까지 포함한다(사용자 체감 지연에는 cron 대기 최대 1분이 더 붙는다).
     INDEX_DURATION_SECONDS.labels(stage='total', ext=_ext).observe(time.monotonic() - _t_start)
     INDEX_TOTAL.labels(ext=_ext, result='ok').inc()  # 실패 쪽은 outbox.drain이 센다(재시도/확정 구분)
 
 
 async def soft_delete_documents(session: AsyncSession, tenant_id: str, document_ids: list[int]) -> list[int]:
-    """문서 소프트 삭제 (F5) — 단건·일괄 삭제가 공유하는 하나의 경로 (#174).
+    """문서 소프트 삭제 — 단건·일괄 공용. 같은 filename의 **전 버전**을 상태·캐시·DROP으로 함께 내린다.
 
-    같은 filename의 **전 버전**을 함께 내린다. 한 버전만 내리면 그 이름의 옛 버전이 검색에
-    되살아난 것처럼 보인다(supersede와 같은 메커니즘).
-
-    - status='deleted' + is_active=False → 검색 즉시 제외 + 목록에서 사라짐
-    - 캐시 무효화 → 이 문서를 근거로 만든 답변 재사용 방지
-    - DROP_DOCUMENTS outbox → 색인에서 청크 제거. **이게 빠지면 지운 문서가 계속 인용된다**
-    - documents row·blob은 보존 → 과거 대화 인용의 원본 다운로드 유지
-
-    반환은 실제로 내려간 document_id들 — 전 버전을 함께 내리므로 요청한 id보다 많을 수 있다.
-    **커밋하지 않는다**: 호출부 트랜잭션에 얹힌다(outbox.enqueue와 같은 규약). 문서 UPDATE·
-    캐시 삭제·대기열 행이 한 커밋으로 묶여야 "문서는 지웠는데 색인엔 남는" 상태가 안 생긴다.
-
-    status 필터를 두지 않는 것은 의도다 — 이미 deleted인 문서를 다시 지워도 성공으로 본다
-    (삭제는 "그 문서가 없는 상태"를 만드는 것이라, 이미 그 상태면 실패로 볼 이유가 없다).
-    단건 DELETE가 원래 이렇게 동작했고, 일괄도 같은 규칙을 쓴다.
+    행·blob은 보존한다(과거 인용의 원본 다운로드). 반환은 실제로 내려간 id들(요청보다 많을 수 있다).
+    **커밋하지 않는다** — 호출부 트랜잭션에 얹혀야 "지웠는데 색인엔 남는" 상태가 안 생긴다.
+    이미 deleted인 문서도 성공으로 본다(status 필터 없음은 의도).
     """
     if not document_ids:
         return []
-    # id → filename을 **서브쿼리로** 푼다. 따로 SELECT해서 값을 받아오면 그 사이에 같은 이름의
-    # 새 버전이 들어올 창이 생긴다 — 한 문장이면 그 창이 없다(단건이 쓰던 방식 그대로다).
-    # 요청에 같은 문서의 다른 버전이 섞여 있어도 filename으로 모이므로 한 번만 처리된다.
+    # id → filename을 서브쿼리로 풀어 한 문장에 묶는다 — 따로 SELECT하면 그 사이 새 버전이 들어올 창이 생긴다.
     filenames = (
         select(Document.filename)
         .where(Document.tenant_id == tenant_id)  # 격리 — WHERE 절 명시
@@ -325,9 +249,7 @@ async def soft_delete_documents(session: AsyncSession, tenant_id: str, document_
         (
             await session.execute(
                 update(Document)
-                .where(Document.tenant_id == tenant_id)  # 격리 — UPDATE에도 유지(이중 방어).
-                # 이게 빠지면 같은 파일명을 쓰는 남의 테넌트
-                # 문서까지 지워진다 — 테스트로 고정해 둔다.
+                .where(Document.tenant_id == tenant_id)  # 격리 — 빠지면 같은 파일명의 남의 테넌트 문서까지 지워진다
                 .where(Document.filename.in_(filenames))
                 .values(is_active=False, status='deleted', status_reason='user_deleted')
                 .returning(Document.id)
@@ -346,16 +268,13 @@ async def soft_delete_documents(session: AsyncSession, tenant_id: str, document_
 
 
 class FailedReuseConflict(Exception):
-    """failed 행을 되살리려는 순간 다른 요청이 먼저 되살렸다 (#161). 라우터가 409로 바꾼다."""
+    """failed 행을 되살리려는 순간 다른 요청이 먼저 되살렸다. 라우터가 409로 바꾼다."""
 
 
 async def _reuse_failed_row(session: AsyncSession, target_id: int, **values) -> int | None:
-    """failed 행 하나를 pending으로 되살린다 — **status='failed'인 동안에만** 먹는 조건부 UPDATE.
+    """failed 행 하나를 pending으로 되살리는 조건부 UPDATE — 동시 재업로드에 진 쪽은 0행이라 None.
 
-    같은 failed를 둘이 동시에 재업로드하면 한쪽의 UPDATE가 0행이 된다(그새 pending이 됐으니
-    조건이 안 맞는다) — 그쪽이 None을 받아 FailedReuseConflict로 빠진다. 별도 함수로 뗀 이유는
-    테스트가 이 경합을 monkeypatch로 재현하기 위해서다(test_동시_삽입은_유니크_인덱스가_막고_409와
-    같은 방식). 반환: 되살린 행 id, 0행이면 None.
+    별도 함수로 둘 것 — 테스트가 이 경합을 monkeypatch로 재현한다.
     """
     return (
         await session.execute(
@@ -380,14 +299,9 @@ async def _reuse_failed_document(
     folder_id: int | None,
     folder_given: bool,
 ) -> tuple[Document, str | None]:
-    """failed만 있는 파일명의 재업로드 (#161) — 새 version 대신 그 행을 되살린다.
+    """failed만 있는 파일명의 재업로드 — 최신 failed를 되살리고 나머지는 내린다(이유는 handle_upload).
 
-    **왜** 그러는지는 handle_upload docstring이 정의점이다. 여기는 그 기계적 절차다:
-    failed가 여럿이면 최신을 되살리고 나머지는 내린다. 반환은 handle_upload와 같은
-    (문서, 지워야 할 옛 blob) — 옛 blob은 호출부가 **커밋 뒤에** 지운다.
-
-    정상 경로(새 version insert)와 한 함수에 섞여 있던 것을 뗐다 (#188 A3). 분기 조건
-    (`not alive and failed`)은 호출부에 남는다 — 그것이 정책이고, 여기는 그 뒤의 절차다.
+    반환은 handle_upload와 같은 (문서, 지워야 할 옛 blob) — 옛 blob은 호출부가 **커밋 뒤에** 지운다.
     """
     target = max(failed, key=lambda d: d.version)
     stale_blob = target.blob_path
@@ -396,53 +310,38 @@ async def _reuse_failed_document(
         target.id,
         status='pending',
         is_active=False,
-        # 워커 ③단계는 status_reason을 이미지 경고일 때만 덮어쓴다 — 여기서 안 지우면
-        # 옛 실패 사유가 ready 문서에 그대로 남는다. page_count·char_count·indexed_at도 같이 비운다.
+        # 워커 ③은 status_reason을 이미지 경고일 때만 덮어쓰므로 옛 실패 사유를 여기서 비운다.
         status_reason=None,
         page_count=None,
         char_count=None,
         indexed_at=None,
         blob_path=str(blob_path),
         mime=_detect_mime(blob_path),
-        # server_default는 INSERT에만 적용된다 — UPDATE에서 갱신하지 않으면 목록(uploaded_at
-        # 내림차순, #164)에서 재업로드한 문서가 위로 올라오지 않는다.
+        # server_default는 INSERT에만 적용된다 — 갱신하지 않으면 목록(uploaded_at 내림차순)에서 위로 안 온다.
         uploaded_at=func.now(),
         uploaded_by=uploaded_by,
-        # 설정은 그 행의 값을 유지(= 계승과 같은 결과), 보냈으면 그 값 — #165 규칙 그대로.
+        # 설정은 그 행의 값을 유지(= 계승), 보냈으면 그 값.
         folder_id=(folder_id if folder_given else target.folder_id),
         description=resolve_description(description, target),
     )
     if reused is None:
         raise FailedReuseConflict(filename)
-    # 되살리는 행 자신의 캐시도 지운다 — 같은 id를 **다른 내용**으로 되살리는 것이라, 잔여 청크로
-    # 만들어진 답변 캐시가 있었다면 새 내용과 어긋난 답을 재사용한다. 워커 ③은 구버전(old_ids)만
-    # 무효화하고 자기 자신은 건드리지 않는다(신버전은 새 id라 캐시가 없다는 전제) — 재사용은 그 전제 밖이다.
+    # 같은 id를 다른 내용으로 되살리므로 자기 캐시도 지운다 — 워커 ③은 구버전만 무효화한다.
     await cache.invalidate_source(session, tenant_id, target.id)
-    # 나머지 failed는 내린다 — soft_delete_documents와 **같은 세 동작**(상태·캐시·DROP). 그 함수에
-    # 위임하지 않는 이유는 filename 기준으로 전 버전을 내려 되살리는 target까지 지우기 때문이다.
-    # DROP이 필요한 이유: failed라도 엔진에 청크가 남을 수 있다 — index_pending_document는
-    # ②에서 청크를 쓴 뒤 ③에서 커밋하므로, ③ 실패가 반복돼 failed로 굳은 문서는 searchable=True
-    # 청크를 가진 채다(리뷰 지적). target은 재색인이 먼저 지우지만(index_parsed_document의
-    # _delete_by_terms) others는 재색인이 없어 여기서 지워야 한다. #184 이후 failed 확정 자체가
-    # DROP을 등재하므로(outbox.drain — "생길 때 지운다") 여기는 이중 안전판이다("내릴 때 지운다").
+    # 나머지 failed는 내린다 — soft_delete_documents는 filename 기준이라 target까지 지우므로 쓰지 않는다.
+    # failed라도 엔진에 청크가 남을 수 있어 DROP이 필요하다(failed 확정 DROP의 이중 안전판).
     others = [d.id for d in failed if d.id != target.id]
     await _retire_documents(session, tenant_id, others, status_reason='failed_superseded')
-    await session.refresh(target)  # UPDATE로 바뀐 값을 ORM 객체에 반영 (응답에 쓴다)
+    await session.refresh(target)  # UPDATE로 바뀐 값을 ORM 객체에 반영(응답에 쓴다)
     outbox.enqueue(session, tenant_id, outbox.INDEX_DOCUMENT, document_id=target.id)
     return target, stale_blob
 
 
 async def document_versions(session: AsyncSession, tenant_id: str, filename: str) -> list[Document]:
-    """같은 filename의 **모든** 버전 행 (status 무관 — deleted·failed 포함).
+    """같은 filename의 **모든** 버전 행(deleted·failed 포함) — handle_upload와 라우터 사전검증이 공유한다.
 
-    `handle_upload`가 쓰던 조회를 그대로 뗀 것이다. 라우터의 xlsx 사전검증(#194)이 "설명이
-    계승될지"를 blob 쓰기 전에 알아야 해서 같은 집합이 필요한데, 쿼리가 두 벌이 되면 기준이
-    갈린다 — 이 이슈가 시작된 사고가 정확히 그거였다(라우터의 `_current_version`은 ALIVE만,
-    `handle_upload`의 계승 출처는 필터 없음).
-
-    status를 안 거르는 것이 의도다 — `next_version`은 deleted·failed까지 센 최대값+1이어야
-    하기 때문이다(안 그러면 UNIQUE(tenant_id, filename, version) 위반). 계승 출처를 고르는
-    것은 별개 질문이고 `latest_alive`가 답한다.
+    status를 거르지 않는 것은 의도다 — next_version은 전체 최대값+1이어야 UNIQUE 위반이 없다.
+    계승 출처는 별개 질문이고 `latest_alive`가 답한다.
     """
     return list(
         (
@@ -456,33 +355,19 @@ async def document_versions(session: AsyncSession, tenant_id: str, filename: str
 
 
 def latest_alive(docs: list[Document]) -> Document | None:
-    """`docs` 중 살아 있는 최신 버전 — **설정 계승 출처의 정의점** (#194).
+    """`docs` 중 살아 있는 최신 버전 — **설정 계승 출처의 정의점**.
 
-    `handle_upload`의 계승과 라우터의 xlsx 설명 사전판정이 이 함수 하나를 쓴다.
-
-    **`next_version` 계산과 혼동하지 마라.** 번호는 전체(deleted·failed 포함) 최대값+1이고,
-    계승 출처는 ALIVE만이다. 서로 다른 질문이라 집합도 다르다.
-
-    ALIVE만 보는 이유(#194): 전에는 status 필터가 없어 "지운 문서를 다시 올리면 지운 문서의
-    폴더·검색토글·표 설명을 그대로 물려받는" 동작이었다. `exists`·`_current_version`이 이미
-    deleted·failed를 "없는 문서"로 답하고 있었으므로, 사용자에겐 **신규 등록으로 보이는
-    업로드가 죽은 행의 설정을 상속**하는 셈이었다. 세 곳의 기준을 ALIVE로 맞춘다.
+    ALIVE만 본다 — deleted·failed는 사용자에게 "없는 문서"라, 그 위의 업로드는 신규 등록이다.
+    `next_version`(전체 최대값+1)과 혼동하지 마라.
     """
     alive = [d for d in docs if d.status in ALIVE_DOCUMENT_STATUSES]
     return max(alive, key=lambda d: d.version) if alive else None
 
 
 def resolve_description(description: str | None, source: Document | None) -> str | None:
-    """표 설명의 최종값 — 보낸 값이 있으면 그 값, 없으면 `source`에서 계승, 그것도 없으면 None.
+    """표 설명의 최종값 — 보낸 값, 없으면 `source`에서 계승, 그것도 없으면 None.
 
-    `handle_upload`(source=살아 있는 직전 버전)·`_reuse_failed_document`(source=되살리는 failed 행
-    자신)·라우터의 xlsx 사전판정(source=살아 있는 직전 버전)이 **같은 식**을 쓴다. 세 곳에
-    따로 적혀 있던 것을 모았다(#194) — 식이 갈리면 "라우터는 통과시켰는데 저장은 빈 값"이 된다.
-
-    failed만 있는 xlsx에 설명 없이 재업로드하면 라우터가 400을 낸다 — source가 ALIVE 최신이라
-    None이기 때문이다. failed는 "없는 문서"(#161)이고 그 위에 올리는 건 신규 업로드라
-    설명이 필요하다(사용자 결정 2026-10-03). `_reuse_failed_document`의 failed 행 계승은 그래서
-    xlsx에서는 도달하지 않고, 설명이 필수가 아닌 다른 형식에서만 의미가 있다.
+    업로드·failed 재사용·라우터 xlsx 사전판정이 이 식 하나를 쓴다 — 갈리면 사전판정과 저장값이 어긋난다.
     """
     return description if description is not None else (source.description if source else None)
 
@@ -498,45 +383,19 @@ async def handle_upload(
     folder_given: bool = False,
     docs: list[Document] | None = None,
 ) -> tuple[Document, str | None]:
-    """업로드 시점 처리: pending row + 색인 대기열 행을 **같은 트랜잭션**에 등록한다 (#139).
-    반환은 (문서, 지워야 할 옛 blob 경로 또는 None) — 옛 blob은 **호출부가 커밋 뒤에** 지운다.
-    커밋 전에 지우면 롤백 시 DB는 옛 경로를 가리키는데 파일은 없는 상태가 된다.
-    실제 청킹/임베딩/색인/supersede는 워커 drain이 index_pending_document로 수행한다.
-    description은 표 설명(xlsx 검색 보강) — 워커가 청킹 시 병합한다.
-    uploaded_by는 업로더 식별자(X-User-Id) — 없으면 NULL.
-    folder_id/folder_given은 업로드 시 폴더 지정 (#165) — folder_given=False(미전송)면 계승,
-    True면 folder_id를 그대로 쓴다(None이면 미분류로 떼는 것). 값만으로는 둘을 못 가른다.
-    mime은 blob_path에서 직접 구한다 — 호출부가 계산해 넘길 이유가 없다.
-    docs는 호출부가 이미 읽은 전 버전 목록(선택) — 라우터가 xlsx 사전검증으로 먼저 읽으므로
-    그걸 넘겨 같은 쿼리를 두 번 돌지 않게 한다(#194). 안 넘기면 여기서 읽는다.
+    """업로드 시점 처리: pending 행 + INDEX_DOCUMENT 대기열 행을 **같은 트랜잭션**에 등록한다(커밋은 호출부).
 
-    **설정 계승 출처는 `latest_alive` — 살아 있는 최신 버전뿐이다 (#194).** 전에는 필터가 없어
-    deleted·failed 행에서도 물려받았다. 계승 대상은 folder_id·is_searchable·description 셋이고,
-    `next_version`은 이와 **다른 집합**(전체 최대값+1)을 쓴다 — 섞으면 UNIQUE 제약에 걸린다.
+    반환은 (문서, 지워야 할 옛 blob 또는 None) — 옛 blob은 **호출부가 커밋 뒤에** 지운다(롤백 시 파일 소실 방지).
+    folder_given=False(미전송)면 폴더를 계승하고, True면 folder_id를 그대로 쓴다(None = 미분류).
+    docs는 호출부가 이미 읽은 전 버전 목록(선택) — 같은 쿼리를 두 번 돌지 않게.
 
-    문서 식별은 **filename 완전 일치** 하나뿐 (2026-08-05 정책 확정).
-    내용 해시(sha) dedupe는 제거 — 같은 이름이면 내용이 같아도 새 version이 된다.
-    "같은 이름이면 물어보고, 확인하면 대체"라는 단일 규칙을 유지하기 위함
-    (내용 동일 여부로 확인 창을 띄울지 말지 분기하면 규칙이 둘이 된다).
-
-    **예외 하나 — failed는 그 자리에서 다시 시도한다 (#161).** 같은 이름에 정상(pending·ready)
-    행이 없고 failed 행만 있으면 새 version을 만들지 않고 그 행을 pending으로 되살린다.
-    failed는 검색에 나오지 않고 사용자에겐 "등록이 안 된 상태"인데, 실패한 **시도**가 개정
-    **번호**를 소비하면 "내가 언제 v1을 등록했지?"가 된다. 새 행을 안 만드니 failed v1·ready v2가
-    목록에 두 줄로 남는 문제도 애초에 생기지 않는다.
-    단, "failed = 청크 0개"는 **항상 참이 아니다** — 색인(②) 뒤 커밋(③)에서 실패가 반복된 문서는
-    엔진에 청크가 남아 있다. 되살리는 행은 재색인이 먼저 지우고, 내리는 행은 DROP을 적재한다. exists·_current_version도 같은 기준으로
-    failed를 "없는 문서"로 답한다(routers/documents.py) — 세 곳의 기준이 갈리면 확인창에서 본 것과
-    다른 결과가 난다.
+    문서 식별은 filename 완전 일치 하나뿐이다(내용이 같아도 새 version). 예외로 정상 행 없이 failed만
+    있으면 새 version 대신 그 행을 되살린다 — 실패한 시도가 개정 번호를 소비하지 않게.
     """
-    # 같은 filename의 모든 버전 (다음 version 계산 + 설정 계승용).
-    # 호출부가 이미 읽었으면 그걸 쓴다 — 라우터의 xlsx 사전검증(#194)이 같은 집합을 먼저
-    # 읽으므로, 안 넘기면 같은 쿼리를 한 요청에 두 번 돌게 된다.
     if docs is None:
         docs = await document_versions(session, tenant_id, filename)
 
-    # failed 재사용 (#161) — 정상 행이 없고 failed만 있을 때. deleted 이력이 섞여 있어도 된다
-    # (예: v1 deleted + v2 failed → v2를 되살린다).
+    # failed 재사용 — 정상 행이 없고 failed만 있을 때(deleted 이력이 섞여 있어도 된다).
     prev = latest_alive(docs)
     failed = [d for d in docs if d.status == 'failed']
     if prev is None and failed:
@@ -552,10 +411,7 @@ async def handle_upload(
             folder_given=folder_given,
         )
 
-    # pending 버전 row만 insert. is_active=False(ready 전엔 검색 제외).
-    # 폴더 소속·참조 on/off(F2)·표 설명은 **살아 있는** 직전 버전에서 계승 — 개정판 업로드로
-    # 설정이 풀리지 않게. 계승 출처는 latest_alive가 정의점이고(#194), 번호는 그와 달리
-    # 전체(deleted·failed 포함) 최대값+1이다 — UNIQUE(tenant_id, filename, version) 때문.
+    # 설정(폴더·검색 on/off·표 설명)은 살아 있는 직전 버전에서 계승하고, 번호는 전체 최대값+1이다.
     next_version = max((d.version for d in docs), default=0) + 1
     doc = Document(
         tenant_id=tenant_id,
@@ -565,20 +421,13 @@ async def handle_upload(
         version=next_version,
         is_active=False,
         status="pending",
-        # 미전송이면 계승, 보냈으면 그 값(None이면 미분류) — #165. 호출부가 보낸 여부를
-        # 따로 넘겨주는 이유는, folder_id=None이 "미분류로 보내라"와 "안 보냈다" 둘 다이기 때문이다.
         folder_id=(folder_id if folder_given else (prev.folder_id if prev else None)),
         is_searchable=prev.is_searchable if prev else True,
         description=resolve_description(description, prev),
-        # 등록자만은 **계승하지 않는다** (#164). 위 세 값은 "문서에 건 설정"이라 개정판에도
-        # 이어져야 하지만, 등록자는 uploaded_at과 짝을 이루는 "이 버전을 올린 사람"이다 —
-        # 계승하면 화면에서 최신 개정을 누가 했는지 알 수 없게 된다.
+        # 등록자는 계승하지 않는다 — 문서 설정이 아니라 "이 버전을 올린 사람"이다.
         uploaded_by=uploaded_by,
     )
     session.add(doc)
-    await session.flush()  # doc.id 확보 (대기열 payload에 필요)
-    # 트랜잭셔널 outbox — 호출부(라우터)가 커밋하면 문서와 대기열 행이 함께 확정된다.
-    # arq 잡 등록은 없다: Redis 순단으로 잡이 유실돼 pending이 고착하던 실패 모드(P1-4)가
-    # 이 한 줄로 사라진다. 사유·처리 규약은 rag/outbox.py.
+    await session.flush()  # doc.id 확보(대기열 payload에 필요)
     outbox.enqueue(session, tenant_id, outbox.INDEX_DOCUMENT, document_id=doc.id)
     return doc, None

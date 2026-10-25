@@ -88,7 +88,7 @@ TEI→인덱싱·검색·캐시(`EMBED_PROVIDER`·`RERANK_PROVIDER`가 tei가 �
   ≠ `Message.status`(TurnStatus 5값) — 둘 다 `rag/models.py`.
 - SSE 이벤트명 `EVENT_DONE`(`'done'`) ≠ `TurnStatus.DONE`. 어휘는 같지만 다른 축이다.
 - `PreparedRag.route`의 `'blocked'`(소문자 문자열) ≠ `TurnStatus.BLOCKED`.
-- **인용 5형제 — 전부 다른 것**: `Message.sources`(검색 후보 전체) /
+- **인용 5형제 — 전부 다른 것**: `Message.sources`(실제 인용된 출처 — 생성은 꼬리에서 확정, 캐시 히트는 복원, 그 외 빈 목록) /
   `Message.cited_docs`(실인용 **문서** 파일명 — FAQ 항목 인용은 `Message.cited_faq_ids`에 id로, #278) /
   `PreparedRag.sources`(인메모리 후보)
   / `ConversationMessage.citations`(API 응답 필터 결과) / SSE `done.citations`(생성 시점 재계산).

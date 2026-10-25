@@ -1,3 +1,5 @@
+"""arq 워커 — 색인 대기열 드레인·고착 턴 회수·캐시 청소 cron과 워커 지표 노출."""
+
 import logging
 
 from arq import cron
@@ -19,24 +21,16 @@ async def ping(ctx):
 
 
 def _start_metrics_server() -> None:
-    """워커 프로세스 지표를 루프백에 노출한다 (#151). worker_metrics_port가 0이면 아무것도 안 한다.
+    """워커 프로세스 지표 HTTP 서버를 띄운다(arq엔 HTTP 서버가 없다). worker_metrics_port가 0이면 안 띄운다.
 
-    arq에는 HTTP 서버가 없어 웹의 /metrics(main.py)가 워커를 덮지 못한다 — 이 함수가 워커
-    메모리를 보는 유일한 수단이다. 값은 prometheus_client 기본 레지스트리가 알아서 채운다
-    (ProcessCollector → process_resident_memory_bytes·process_cpu_seconds_total). 따라서
-    docling 변환 중 RSS가 컨테이너 mem_limit(docker-compose.yml) 안에 머무는지를 여기서 본다.
-    **Linux에서만 값이 나온다** — ProcessCollector가 /proc를 읽으므로 macOS에선 조용히 빈 값이다.
-
-    기동 실패(포트 점유 등)는 로그만 남기고 넘어간다 — 관측 장치가 색인을 멈추게 하지 않는다
-    (바로 아래 ensure_index_soft와 같은 원칙). 실패는 프로메테우스 타깃 down으로도 드러난다.
+    프로세스 지표는 /proc를 읽으므로 Linux에서만 값이 나온다. 기동 실패는 로그만 남긴다 — 관측 장치가 색인을 멈추지 않는다.
     """
     port = settings.worker_metrics_port
     if not port:
         return
     host = settings.worker_metrics_host
     try:
-        # 데몬 스레드 1개가 뜬다 — 이벤트 루프와 무관하게 동작하므로 잡 처리를 막지 않는다.
-        # 바인드 주소를 설정으로 뺀 이유는 config.py 주석 참조(브리지 네트워크에서 루프백은 안 닿는다).
+        # 데몬 스레드라 이벤트 루프의 잡 처리를 막지 않는다.
         start_http_server(port, addr=host)
     except OSError as exc:
         logger.error('워커 지표 서버 기동 실패 (%s:%d) — 색인은 계속한다: %s', host, port, exc)
@@ -45,12 +39,10 @@ def _start_metrics_server() -> None:
 
 
 async def startup(ctx):
-    """워커 지표 노출(#151) + 검색 인덱스 보장(#139).
+    """워커 지표 노출 + 검색 인덱스 보장.
 
-    인덱스 보장: 워커가 웹보다 먼저 뜨는 배포에서 첫 drain이 없는 인덱스에
-    색인하면 동적 매핑(knn_vector 아님)으로 굳는다. 엔진에 못 붙어도 기동은 한다(ensure_index_soft) —
-    그동안 drain 자체는 ensure_index_soft 실패로 회차를 건너뛰고(행은 pending 그대로), 도중에
-    끊기면 행 단위 지수 백오프(#185)로 물러나 있다가 엔진이 돌아오면 늦어도 1시간 안에 반영한다."""
+    워커가 웹보다 먼저 떠 없는 인덱스에 색인하면 동적 매핑으로 굳으므로 먼저 보장한다. 엔진에 못 붙어도 기동은 한다.
+    """
     _start_metrics_server()
     await os_client.ensure_index_soft()
 
@@ -60,7 +52,7 @@ async def shutdown(ctx):
 
 
 async def sweep_stale_cache(ctx):
-    """미히트 캐시 청소(#16) — cache_retention_days(90일) 지난 row 삭제. 일 1회면 충분."""
+    """미히트 캐시 청소 — cache_retention_days 지난 행 삭제. 일 1회."""
     async with AsyncSessionLocal() as session:
         deleted = await cache.sweep_stale(session)
         await session.commit()
@@ -69,12 +61,7 @@ async def sweep_stale_cache(ctx):
 
 
 async def sweep_stale_generating(ctx):
-    """고착 generating 턴 회수(#46) — 도메인 함수 호출 + commit. 1분 주기(#72).
-
-    웹 프로세스가 생성 도중 죽으면 asyncio 태스크가 증발해 자리표시만 남는다 — 그 회수를
-    생성과 무관하게 살아있는 이 프로세스(워커)가 맡는다. 워커가 죽으면 이 치유도 멈추는데,
-    그건 index_document의 pending 고착과 같은 기존 실패 등급이다(새 위험 범주 아님).
-    """
+    """고착 generating 턴 회수 — 웹 프로세스가 생성 도중 죽어 남은 자리표시를 생성과 무관한 워커가 정리한다."""
     async with AsyncSessionLocal() as session:
         swept = await _sweep_generating(session)
         await session.commit()
@@ -83,41 +70,27 @@ async def sweep_stale_generating(ctx):
 
 
 async def drain_search_index_outbox(ctx):
-    """색인 작업 대기열 드레인 (#139 outbox) — 1분 주기. **인제스션을 포함한 모든 색인 작업의
-    유일한 처리 경로다.** 업로드·삭제·토글·FAQ 변경은 라우터가 같은 트랜잭션에 행을 남기고,
-    여기서 id 순으로 처리한다. arq 잡 등록(index_document)은 이것으로 대체됐다.
-
-    단일 워커 전제 — 이전 회차가 아직 돌고 있으면(대량 인제스션) drain_once가 즉시 빠진다.
-    검색 반영 지연은 최대 1분 + 재시도 — "문서 변경은 1~5분 뒤 반영될 수 있다"가 제품 가이드다.
-    """
+    """색인 대기열 드레인 — 인제스션을 포함한 **모든 색인 작업의 유일한 처리 경로**(규약은 rag/outbox.py)."""
     r = await outbox.drain_once()
     if r.get('done') or r.get('failed'):
         logger.info('색인 대기열: 반영 %d · 실패 %d', r['done'], r['failed'])
 
 
 class WorkerSettings:
-    functions = [ping]  # 인제스션은 cron drain이 outbox에서 꺼내 처리한다 (#139)
+    functions = [ping]  # 인제스션은 cron drain이 outbox에서 꺼내 처리한다
     on_startup = startup
     on_shutdown = shutdown
     cron_jobs = [
         cron(sweep_stale_cache, hour=19, minute=30),  # arq는 UTC — 19:30 UTC = KST 새벽 4:30
-        # 1분 주기 — status='generating' 부분 인덱스(schema.sql #46)가 스캔을 받친다.
         # arq cron은 unique=True(기본) + 시각 기반 job_id라 워커가 여러 대여도 1회만 돈다.
-        #
-        # 주기만 줄인다(5분→1분, #72). 회복 지연은 '임계 + 주기'인데 둘은 성격이 다르다:
-        # 임계(GENERATION_STALE_SECONDS=500)는 **살아 있는 요청을 보호**하는 값이라
-        # LLM 호출 타임아웃 300초(rag/llm/openai_compat.py) 위에 있어야 한다 — 내리면 vLLM 큐에 밀린
-        # 정상 요청이 먼저 failed로 선고되고 완주 시 done으로 덮여 좀비 플립이 난다.
-        # 반면 주기는 순수 지연이라 줄여도 그 위험이 없다. 최악 ~800초 → ~560초.
+        # 회복 지연은 줄이려면 주기를 줄여라 — 임계(GENERATION_STALE_SECONDS)는 LLM 타임아웃보다 커야
+        # 살아 있는 요청을 failed로 선고하지 않는다.
+        # 스캔은 status='generating' 부분 인덱스(schema.sql)가 받친다.
         cron(sweep_stale_generating, minute=set(range(0, 60, 1))),
-        # 1분 주기 — arq cron의 최소 단위. 색인 작업의 유일한 처리 경로다(인라인 없음).
+        # 1분 주기 — arq cron의 최소 단위.
         cron(drain_search_index_outbox, minute=set(range(0, 60, 1))),
     ]
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
-    max_jobs = 10  # 한 워커가 동시 진행하는 잡 수 (asyncio 코루틴 동시성, 스레드 아님). arq 기본값과 동일 — 명시.
-    job_timeout = (
-        outbox.DRAIN_ROUND_SECONDS
-    )  # drain 한 회차 상한(변환 마감에서 계산 — 지금 1380). 행 시작 판정이 이 값을 본다(#223
-    # 결정 2) — 문서 마감(900)을 넘기면 변환 프로세스가 먼저 끊어 행 실패(attempts 증가)로 끝나고,
-    # 예산이 모자라면 새 행을 시작하지 않으므로 arq 취소(CancelledError, attempts 그대로)가 나지 않는다.
+    max_jobs = 10  # 동시 진행 잡 수(코루틴 동시성). arq 기본값과 같다.
+    job_timeout = outbox.DRAIN_ROUND_SECONDS  # drain 한 회차 상한 — outbox._fits_round가 이 예산 안에서만 행을 시작한다
     max_tries = 1  # cron 잡 자체의 재시도 없음 — 행 단위 재시도는 outbox.attempts가 담당

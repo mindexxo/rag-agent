@@ -1,26 +1,7 @@
-"""OpenSearch 색인 쓰기 — 인제스션·삭제·메타 갱신의 **정의점** (#146, 구 rag/opensearch.py에서 분리).
+"""OpenSearch 색인 쓰기 — 청크 문서 조립·색인, 삭제, 메타 부분 갱신의 **정의점**.
 
-파싱·임베딩 결과를 청크 문서로 조립해 넣고(`build_doc` → `index_parsed_document`·
-`index_parsed_faq`), 삭제(`drop_*_now`)와 메타 부분 갱신(`sync_meta_*_now`)까지 이 파일이 든다.
-문서 형태(어떤 필드가 있는지)는 `rag/os_client.py`의 MAPPING이 정의점이고, 여기는 그 형태에
-값을 채우는 쪽이다.
-
-## 왜 이 연산들이 이런 모양인가
-
-- **필터를 엔진에 비정규화한다.** `searchable`(effective_searchable)·`tenant_id`를 청크마다
-  넣는다. 검색 후 PG로 걸러내면 상위 k를 뽑은 뒤 빼는 post-filter가 되어 후보가 조용히 깎인다
-  (MAPPING의 `searchable` 주석). 비검색 청크도 색인한다 — 토글 on/off가 문서 추가·삭제가 아니라
-  플래그 부분 갱신(`_update_meta`)이 되어 fan-out이 가볍고 재임베딩이 없다.
-- **전부 멱등이다.** 색인은 `_id=chunk_id` upsert(결정적 id), 삭제는 없는 것을 지워도 무해,
-  메타 갱신은 같은 값을 덮어쓸 뿐이다 — 재시도가 겹쳐도 결과가 같다.
-- **실패를 삼키지 않는다.** 예외를 올려 호출부가 횟수를 세고 failed로 확정하게 한다.
-
-## 누가 부르는가
-
-`rag/outbox.py`의 drain 하나다 — 커밋 후 직접 호출·인라인 처리는 없다. **왜 트랜잭셔널
-outbox를 거치는지, 반영 지연(최대 1~5분)을 왜 받아들이는지는 `rag/outbox.py` 모듈 docstring이
-정의점이다** — 여기서 반복하지 않는다. 색인이 서빙의 정본이라는 전제(그래서 낡은 색인이 낡은
-답을 낸다)는 `fetch_chunk_map` docstring에 있다.
+부르는 곳은 `rag/outbox.py`의 drain과 복구 명령 `rag/os_reconcile.py`(삭제)다. 모든 연산은 멱등이고(결정적 `_id` upsert·없는 것 삭제·같은 값 덮어쓰기),
+실패는 삼키지 않고 올려 호출부가 재시도·failed 확정을 하게 한다.
 """
 
 import json
@@ -39,30 +20,19 @@ from rag.os_client import LEX_BIGRAM_FIELD, NORI_FIELD, client
 
 
 def lex_text(text: str, filename: str | None, heading_path) -> str:
-    """어휘·Nori 필드의 입력 텍스트 — 인제스션·운영 어휘 채널과 **동일 조립**.
-
-    문서는 '파일명>헤딩' 프리픽스(build_index_text), FAQ는 원문 그대로다. 이 비대칭은
-    임베딩 입력과 같다(rag/index_text.py docstring) — 임베딩·Nori·bigram 세 필드가 같은
-    텍스트를 본다. 폴더 설명은 넣지 않는다 — 리랭커 전용이다(임베딩·어휘엔 미포함).
-    """
+    """어휘 필드 입력 — 문서는 '파일명>헤딩' 프리픽스, FAQ(filename=None)는 원문 그대로. 임베딩 입력과 같은 조립이다."""
     if filename is None:
         return text
     return build_index_text(text, filename, list(heading_path or []))
 
 
 def chunk_os_id(*, document_id: int | None = None, faq_id: int | None = None, chunk_index: int = 0) -> int:
-    """**결정적** chunk_id — PG 시퀀스가 없으므로 (부모 id, chunk_index)로 계산한다.
+    """(부모 id, chunk_index)로 계산한 결정적 chunk_id — `_id` upsert가 멱등이 된다.
 
-    같은 입력이면 같은 id다 —
-    같은 문서를 다시 색인해도 같은 id가 나오므로 `_id` upsert가 그대로 멱등이고, 재색인이
-    유령을 남기지 않는다(옛 청크가 더 적어졌을 때 남는 꼬리는 재색인 전 drop이 치운다).
-
-    chunk_index는 20비트(약 100만)까지 — 한 문서의 청크 수 상한으로 충분하다. FAQ는 음수
-    네임스페이스를 쓴다(캐시가 FAQ 출처를 -faq_id로 표기하는 기존 관례와 같은 방식).
+    chunk_index는 20비트까지. FAQ는 음수 네임스페이스를 쓴다(캐시의 -faq_id 표기와 같은 관례).
     """
     if not 0 <= chunk_index < (1 << 20):
-        # 20비트를 넘으면 상위 비트(부모 id 몫)를 침범해 **다른 문서의 청크와 같은 id**가 된다 —
-        # 조용히 덮어쓰는 것보다 크게 실패한다.
+        # 넘으면 다른 문서의 청크와 id가 겹쳐 조용히 덮어쓴다.
         raise ValueError(f'chunk_index {chunk_index}가 20비트 상한(1,048,575)을 넘는다')
     if faq_id is not None:
         return -((faq_id << 20) | chunk_index)
@@ -80,8 +50,7 @@ def effective_searchable(
 ) -> bool:
     """검색 가능 판정의 **정의점** — 색인 시점에 계산해 `searchable` 플래그로 넣는다.
 
-    문서: 활성 + ready + 검색가능 + (폴더 없음 또는 폴더 검색가능) / FAQ: 활성.
-    조건이 바뀌면 플래그가 낡은 청크가 생기므로 전량 META 갱신(sync_meta_*)이 따라야 한다.
+    판정 조건을 바꾸면 기존 청크 플래그가 낡으므로 전량 META 갱신(sync_meta_*)이 따라야 한다.
     """
     if is_faq:
         return bool(faq_is_active)
@@ -103,18 +72,13 @@ def build_doc(
     folder_description: str | None = None,
     searchable: bool = True,
 ) -> dict:
-    """OpenSearch 문서 본문 — **정의점**. 인제스션(index_parsed_document·index_parsed_faq)이 쓴다.
-
-    chunk는 `_ParsedChunk`(id·tenant_id·document_id·faq_id·text·heading_path·page·meta·dense).
-    filename=None은 FAQ 청크다 — 'FAQ'로 적는다(fetch_chunk_map과 동일 규약).
-    벡터는 chunk.dense에 실려 와야 한다 — 인제스션이 방금 계산한 임베딩이다.
-    """
+    """OpenSearch 문서 본문의 **정의점**. filename=None은 FAQ 청크다('FAQ'로 적는다)."""
     lex = lex_text(chunk.text, filename, chunk.heading_path)
-    # 헤딩 줄 = 청킹이 기록한 묶음 헤딩 ∪ 본문의 헤딩 꼴 줄(#238 결정 15·15-3) — 식별자 사전과 오리기 경계의 재료
+    # 헤딩 줄 = 청킹이 기록한 묶음 헤딩 ∪ 본문의 헤딩 꼴 줄 — 식별자와 오리기 경계의 재료
     headings = effective_headings(list((chunk.meta or {}).get("headings") or []), chunk.text)
     vec = getattr(chunk, 'dense', None)
     if vec is None:
-        # 조용히 벡터 없는 문서를 색인하면 kNN에서 안 잡히는 유령이 된다 — 크게 실패한다.
+        # 벡터 없이 색인하면 kNN에서 안 잡히는 유령이 된다.
         raise ValueError(f'chunk {getattr(chunk, "id", "?")}: 벡터가 없다 — 색인 불가')
     return {
         "chunk_id": chunk.id,
@@ -127,13 +91,13 @@ def build_doc(
         "filename": filename or "FAQ",
         "heading_path": list(chunk.heading_path or []),
         "headings": headings,
-        "identifiers": chunk_identifiers(list(chunk.heading_path or []), headings),  # #238 식별자 채널
+        "identifiers": chunk_identifiers(list(chunk.heading_path or []), headings),
         "searchable": bool(searchable),
         "folder_id": folder_id,
         "folder_name": folder_name,
         "folder_description": folder_description,
         "text": chunk.text,
-        "table_key": (chunk.meta or {}).get("table_key"),  # 표 묶음(#222 엑셀·#257 PDF·DOCX)만 — 그 밖은 None
+        "table_key": (chunk.meta or {}).get("table_key"),  # 표 묶음 청크만 — 그 밖은 None
         "table_text": (chunk.meta or {}).get("table_text"),
         NORI_FIELD: lex,
         LEX_BIGRAM_FIELD: " ".join(bigrams(lex)),
@@ -142,11 +106,7 @@ def build_doc(
 
 
 async def bulk_index(docs: list[dict]) -> int:
-    """_bulk 색인. _id=chunk_id라 재실행이 중복을 만들지 않고 upsert가 된다.
-
-    **_bulk은 원자적이지 않다** — 건별로 성공/실패한다. 부분 실패를 삼키면 색인이 조용히
-    비므로 첫 오류를 예외로 올린다(호출부가 잡아 지표로 기록한다).
-    """
+    """_id=chunk_id upsert. _bulk은 건별로 성공/실패하므로 부분 실패를 삼키지 않고 첫 오류를 올린다."""
     if not docs:
         return 0
     lines = []
@@ -161,7 +121,7 @@ async def bulk_index(docs: list[dict]) -> int:
 
 
 async def _delete_by_terms(field: str, values: list) -> int:
-    """_delete_by_query — 문서·FAQ 단위 청크 제거. chunk_id를 모르는 삭제 경로용."""
+    """문서·FAQ 단위 청크 제거 — chunk_id를 모르는 삭제 경로용."""
     if not values:
         return 0
     resp = await client().delete_by_query(
@@ -171,17 +131,10 @@ async def _delete_by_terms(field: str, values: list) -> int:
 
 
 async def _update_meta(field: str, values: list, meta: dict) -> int:
-    """_update_by_query로 메타 필드만 갱신한다 — **재색인하지 않는다.**
+    """메타 필드만 부분 갱신한다 — 재색인하지 않는다(벡터가 엔진에만 있어 재색인은 재임베딩이다).
 
-    재색인하면 재임베딩이 따라온다(벡터는 엔진에만 있다). 메타 하나 바꾸는데 GPU를 태우는 건
-    뒤바뀐 설계다. 그래서 부분 갱신이 이 경로의 유일한 선택이다.
-
-    conflicts=proceed: 같은 문서를 동시에 재색인 중이면 버전 충돌이 날 수 있다. 그때 전체를
-    실패시키기보다 넘긴다 — 여기서 멈추면 나머지 청크가 옛 메타로 남는 쪽이 더 나쁘다.
-    놓친 것은 outbox 재시도와 `rag.os_reconcile --apply`가 잡는다.
-
-    params가 None인 필드(미분류 이동의 folder_id 등)는 painless `ctx._source.x = params.x`로
-    **null이 반영되고** `exists` 필터에서도 없는 것으로 본다 — 2.18.0에서 실측(2026-09-11).
+    conflicts=proceed: 동시 재색인과의 버전 충돌은 넘기고 나머지 청크를 갱신한다 — 놓친 것은 outbox 재시도와
+    `rag.os_reconcile --apply`가 잡는다. None 값은 null로 반영된다.
     """
     if not values:
         return 0
@@ -199,10 +152,7 @@ async def _update_meta(field: str, values: list, meta: dict) -> int:
 
 
 class _ParsedChunk:
-    """build_doc에 넘기는 청크 형태 — 파싱 결과(chunk_file 산출물)·FAQ 행의 어댑터.
-
-    id는 chunk_os_id로 계산한 결정적 값이다.
-    """
+    """build_doc에 넘기는 청크 형태 — 파싱 결과·FAQ 행의 어댑터. id는 chunk_os_id 값이다."""
 
     __slots__ = ('id', 'tenant_id', 'document_id', 'faq_id', 'text', 'heading_path', 'page', 'meta', 'dense')
 
@@ -226,11 +176,7 @@ async def index_parsed_document(
     chunks,
     embeddings,
 ) -> int:
-    """파싱 결과를 곧장 색인한다 (#139) — 인제스션이 손에 든 청크·임베딩 그대로.
-
-    같은 문서를 다시 색인할 때 **옛 청크를 먼저 지운다** — 청크 수가 줄면 chunk_index가 큰
-    옛 문서가 꼬리로 남기 때문이다(id가 결정적이라 겹치는 것들은 upsert로 덮인다).
-    """
+    """파싱 결과를 색인한다. 옛 청크를 먼저 지운다 — 청크 수가 줄면 큰 chunk_index의 옛 청크가 꼬리로 남는다."""
     await _delete_by_terms('document_id', [document_id])
     docs = []
     for c, e in zip(chunks, embeddings):
@@ -291,14 +237,12 @@ async def drop_faqs_now(faq_ids) -> int:
 
 
 async def index_faq_chunks(session, faq_id: int) -> int:
-    """FAQ 청크 (재)색인 — INDEX_FAQ 핸들러. FAQ 행(질문·유사질문·답변)에서 텍스트를 조립해
-    임베딩하고 색인한다. FAQ는 파싱이 없어 원천이 그 행 자체다. 행이 없으면(삭제됨) 0.
-    """
+    """INDEX_FAQ 핸들러 — FAQ 행에서 텍스트를 조립해 임베딩·색인한다. 행이 없으면(삭제됨) 0."""
     faq = (await session.execute(select(Faq).where(Faq.id == faq_id))).scalars().first()
     if faq is None:
         return 0
     text = build_faq_chunk_text(faq.question, faq.variants or [], faq.answer)
-    embs = await embed_texts([text])  # FAQ는 프리픽스 없이 원문 (임베딩 입력 규약)
+    embs = await embed_texts([text])  # FAQ는 프리픽스 없이 원문
     return await index_parsed_faq(
         faq_id=faq_id,
         tenant_id=faq.tenant_id,
@@ -310,10 +254,9 @@ async def index_faq_chunks(session, faq_id: int) -> int:
 
 
 async def sync_meta_documents_now(session, document_ids) -> int:
-    """문서 메타(검색가능·폴더) 부분 갱신. 문서 토글·폴더 이동, 그리고 폴더 자체의 변경
-    (이름·설명·검색토글 → 호출부가 그 폴더의 document_ids를 넘긴다)에서 쓴다.
+    """문서 메타(검색가능·폴더) 부분 갱신. 폴더 변경이면 호출부가 그 폴더의 document_ids를 넘긴다.
 
-    같은 메타 값을 갖는 문서끼리 묶어 호출 수를 줄인다 — 폴더 변경이면 대개 1~2번이다.
+    같은 메타 값을 갖는 문서끼리 묶어 갱신 호출 수를 줄인다.
     """
     rows = (
         await session.execute(

@@ -1,30 +1,14 @@
-"""SQLAlchemy 2.0 declarative 모델 — 테넌트 테이블의 ORM 매핑.
+"""테넌트 테이블의 SQLAlchemy ORM 매핑. DDL·인덱스의 권위는 schema.sql이다.
 
-- folders        : 1단 폴더 (검색 참조 제어 전용 그룹)
-- documents      : 업로드된 원본 문서 (filename + version 단위)
-- faqs           : FAQ 항목 (검색 편입은 chunks로)
-- (청크는 PG에 없다 — 본문·메타·벡터·어휘 필드는 OpenSearch에만 — 매핑은 rag/os_client.py. #139)
-- answer_cache   : LLM 응답 영속 캐시 (semantic 매칭 + 문서 단위 무효화)
-- conversations  : 멀티턴 대화 세션
-- messages       : 대화 내 한 턴 (user/assistant)
-- tenant_quotas  : 테넌트별 동시 요청 상한 정책
+청크는 PG에 없다 — 본문·메타·벡터는 OpenSearch에만 있다(매핑은 rag/os_client.py).
 
-스키마(DDL)는 schema.sql이 권위. 이 파일은 ORM 매핑만 담당 — 인덱스는 schema.sql 참조.
-
-── 테넌트 격리 규약 ────────────────────────────────────────
-이 프로젝트는 **RLS를 사용하지 않는다.** 격리의 유일한 방어선은 쿼리의 WHERE 절이다.
-
-1. 멀티테넌트 테이블을 읽는 모든 쿼리에 `.where(Model.tenant_id == tenant_id)`를 직접 쓴다.
-   래퍼 유틸을 두지 않는 이유: 실제 쿼리 상당수가 join·컬럼 지정(`select(Document.id, Document.filename)`)·
-   집계(`select(func.count())`) 형태라 `select(Model)`을 감싸는 헬퍼가 절반도 덮지 못하고,
-   반쯤 적용된 유틸은 "안 썼으니 격리가 빠졌나?"라는 오독을 만든다. 손 WHERE로 일관시킨다.
-2. UPDATE/DELETE는 대상 id를 **tenant 스코프 조회로 먼저 확정**한 뒤 그 id로 실행한다
-   (예: `update(Document).where(Document.id.in_(<스코프된 doc_ids>))`).
-3. `messages.tenant_id`는 필터 성능용 비정규화 컬럼이다. 부모와의 일치를 DB가 보장하지
-   않으므로(FK는 부모 id에만 걸림) 삽입 시 부모의 tenant_id를 그대로 넣는다.
-   검색 청크의 격리는 PG 밖이다 — OpenSearch 질의마다 `tenant_filter()`가 건다(rag/os_search.py).
-4. 누락 검출은 통합 테스트가 담당한다 — tests/test_tenant_isolation.py(ORM 읽기),
-   tests/test_integration_isolation.py(검색 후보·대화·폴더). 표면이 늘면 여기에 케이스를 추가한다.
+테넌트 격리: RLS를 쓰지 않는다. 격리의 유일한 방어선은 쿼리의 WHERE 절이다.
+1. 멀티테넌트 테이블을 읽는 모든 쿼리에 `.where(Model.tenant_id == tenant_id)`를 직접 쓴다
+   (join·컬럼 지정·집계 쿼리가 많아 래퍼 유틸은 절반도 못 덮는다).
+2. UPDATE/DELETE는 대상 id를 tenant 스코프 조회로 먼저 확정한 뒤 그 id로 실행한다.
+3. `messages.tenant_id`는 비정규화 컬럼이라 DB가 부모와의 일치를 보장하지 않는다 — 삽입 시 부모 값을 넣는다.
+   검색 청크의 격리는 OpenSearch 질의마다 `tenant_filter()`가 건다(rag/os_search.py).
+4. 누락 검출은 통합 테스트가 한다(tests/test_tenant_isolation.py·tests/test_integration_isolation.py).
 """
 
 from datetime import datetime
@@ -43,78 +27,64 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-# sqlalchemy( 파이썬 ORM )
-# ==========================================
-# Mapped[T] -> 타입 힌트가 컬럼 타입
-# Mapped[T | None] -> NULL 허용
-# mapped_column(...) -> PK/FK/default 등 메타
-# default=(파이썬), server_default=(DB DDL)
-
 
 class Base(DeclarativeBase):
-    """시각 컬럼의 기본 매핑을 DDL에 맞춘다.
+    """시각 컬럼을 DDL(TIMESTAMPTZ)에 맞춰 tz-aware로 매핑한다.
 
-    schema.sql의 시각 컬럼은 전부 TIMESTAMPTZ인데, `Mapped[datetime]`의 SQLAlchemy 기본은
-    TIMESTAMP **WITHOUT** TIME ZONE이다. 그대로 두면 읽기·쓰기가 어긋난다 —
-    읽기는 asyncpg가 tz를 붙여 aware로 주는데, 쓰기는 aware 값을 바인딩하면 드라이버가 거부한다.
-    그 회피로 `.replace(tzinfo=None)`이나 naive `datetime.now()`가 코드에 박혔고,
-    후자는 로컬(KST) 벽시계를 UTC인 척 저장해 9시간 어긋난 값을 조용히 만든다.
-
-    예외는 두지 않는다 — 시각 컬럼 중 혼자 TIMESTAMP였던 search_index_outbox.created_at도
-    이번에 TIMESTAMPTZ로 올렸다(#164). 기존 DB에는 ALTER가 필요하다(schema.sql 하단 주석).
+    SQLAlchemy 기본(TIMESTAMP WITHOUT TIME ZONE)이면 asyncpg가 aware 값 바인딩을 거부하고,
+    naive 우회는 로컬 벽시계를 UTC로 저장해 조용히 어긋난다.
     """
 
     type_annotation_map = {datetime: DateTime(timezone=True)}
 
 
 class Folder(Base):
-    """1단 폴더 (F2) — 검색 참조 제어 전용 그룹. 트리 없음 (필요 시 parent_id 추가로 확장)."""
+    """1단 폴더 — 검색 참조 제어 전용 그룹(트리 없음)."""
 
     __tablename__ = "folders"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     tenant_id: Mapped[str]
     name: Mapped[str]  # 테넌트 내 유일
-    description: Mapped[str | None]  # "언제 이 폴더를 참조하나" 자연어 설명 (리랭커 입력·프롬프트에 사용)
-    is_searchable: Mapped[bool] = mapped_column(default=True, server_default="true")  # 폴더 단위 참조 on/off
+    description: Mapped[str | None]  # "언제 이 폴더를 참조하나" — 리랭커 입력·프롬프트에 쓴다
+    is_searchable: Mapped[bool] = mapped_column(default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
     __table_args__ = (UniqueConstraint("tenant_id", "name"),)
 
 
-# Document.status 6값 중 "살아 있는" 넷 — 처리 중이거나 서빙 중이라 색인·supersede·DROP 판정의 대상이 되는
-# 상태. deleted·failed는 사용자에게 없는 문서다(#161). 정의점은 여기 하나 — rag/documents.py(같은 파일명의
-# 구버전 집합)와 rag/outbox.py(DROP 가드)가 같은 집합을 써야 한다.
+# Document.status 6값 중 색인·supersede·DROP 판정 대상인 "살아 있는" 넷의 정의점.
+# deleted·failed는 사용자에게 없는 문서다. rag/documents.py와 rag/outbox.py가 같은 집합을 써야 한다.
 ALIVE_DOCUMENT_STATUSES = ('pending', 'parsing', 'embedding', 'ready')
 
 
 class Document(Base):
-    """업로드된 원본 문서. 같은 filename 재업로드 = 새 version (내용 무관, 2026-08-05)."""
+    """업로드된 원본 문서. 같은 filename 재업로드는 내용과 무관하게 새 version이다."""
 
     __tablename__ = "documents"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    tenant_id: Mapped[str]  # 테넌트(고객사) 식별자, 격리 키
+    tenant_id: Mapped[str]
     filename: Mapped[str]  # 테넌트 내 논리적 문서명 (재업로드 식별 기준)
-    mime: Mapped[str]  # application/pdf | .../wordprocessingml.document
-    blob_path: Mapped[str]  # 원본 파일 저장 경로 (웹 업로드는 UUID 이름, CLI는 원본 경로 그대로)
+    mime: Mapped[str]
+    blob_path: Mapped[str]  # 웹 업로드는 UUID 이름, CLI는 원본 경로 그대로
     version: Mapped[int] = mapped_column(default=1, server_default="1")  # 같은 filename 내 일련번호
     is_active: Mapped[bool] = mapped_column(
         default=False, server_default="false"
-    )  # 검색 대상 여부 (filename당 단 하나만 true)
+    )  # 검색 대상 버전 (filename당 하나만 true)
     status: Mapped[str] = mapped_column(
         default="pending", server_default="pending"
-    )  # pending|parsing|embedding|ready|failed|deleted — 살아 있는 넷은 ALIVE_DOCUMENT_STATUSES
+    )  # 문서 처리 6값 — Message.status(TurnStatus)와 별개 어휘. 살아 있는 넷은 ALIVE_DOCUMENT_STATUSES
     status_reason: Mapped[str | None]  # 실패/삭제 사유
-    page_count: Mapped[int | None]  # PDF 페이지 수
-    char_count: Mapped[int | None]  # 본문 글자 수
-    uploaded_by: Mapped[str | None]  # 업로더 식별자
-    uploaded_at: Mapped[datetime] = mapped_column(server_default=func.now())  # 업로드 시각
-    indexed_at: Mapped[datetime | None]  # 인덱싱 완료 시각
-    description: Mapped[str | None]  # F1a: 표 설명 (xlsx 검색 보강 — 청크에 병합)
+    page_count: Mapped[int | None]
+    char_count: Mapped[int | None]
+    uploaded_by: Mapped[str | None]
+    uploaded_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    indexed_at: Mapped[datetime | None]
+    description: Mapped[str | None]  # xlsx 표 설명 — 청크에 병합돼 검색을 보강
     folder_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("folders.id", ondelete="SET NULL")
-    )  # 폴더 소속 (NULL=미분류)
+    )  # NULL=미분류
     is_searchable: Mapped[bool] = mapped_column(
         default=True, server_default="true"
     )  # 문서 단위 참조 on/off (버전 정책 is_active와 별개)
@@ -123,8 +93,8 @@ class Document(Base):
 
 
 class FaqCategory(Base):
-    """FAQ 카테고리 (#278) — 폴더(Folder)와 같은 1단 관리 분류, 트리 없음. 폴더와 달리 검색에 영향이 없다
-    (참조 토글·설명 없음 → 캐시 무효화·색인 fan-out 없음). 소속 FAQ가 있으면 삭제 불가(라우터 409, 폴더와 같은 규칙)."""
+    """FAQ 1단 관리 분류. 폴더와 달리 검색에 영향이 없다(캐시 무효화·색인 fan-out 없음).
+    소속 FAQ가 있으면 삭제할 수 없다(라우터 409)."""
 
     __tablename__ = "faq_categories"
 
@@ -137,13 +107,13 @@ class FaqCategory(Base):
 
 
 class Faq(Base):
-    """FAQ 항목 (F3 전용 저장). 검색 편입은 색인에 항목당 청크 1개로 (outbox INDEX_FAQ → os_index.index_faq_chunks)."""
+    """FAQ 항목. 검색 편입은 색인에 항목당 청크 1개로 한다(outbox INDEX_FAQ → os_index.index_faq_chunks)."""
 
     __tablename__ = "faqs"
     __table_args__ = (
         UniqueConstraint(
             "tenant_id", "question"
-        ),  # 대표 질문 중복 금지(#276) — 라우터 409의 최후 방어. 유사 질문은 JSONB라 앱에서만
+        ),  # 대표 질문 중복의 최후 방어(라우터 409를 지나친 경쟁). 유사 질문은 JSONB라 앱에서만 검사
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -152,64 +122,56 @@ class Faq(Base):
     variants: Mapped[Any] = mapped_column(JSONB, default=list)  # 유사 질문(구어체 변형) 배열
     answer: Mapped[str]
     is_active: Mapped[bool] = mapped_column(default=True, server_default="true")  # 항목 단위 검색 on/off
-    # 관리 분류(#278). NULL = 미분류. FK에 cascade 없음 — 카테고리 삭제는 소속 FAQ가 0일 때만 라우터가 허용한다
+    # NULL=미분류. cascade 없음 — 카테고리 삭제는 소속 FAQ가 0일 때만 라우터가 허용한다
     category_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("faq_categories.id"))
-    created_by: Mapped[str | None]  # 등록자 X-User-Id (#278). 미전송·도입 전 행은 NULL
-    updated_by: Mapped[str | None]  # 마지막 변경자 — updated_at과 같은 기준(모든 PATCH). 헤더 없으면 NULL로 덮는다
+    created_by: Mapped[str | None]  # X-User-Id. 미전송이면 NULL
+    updated_by: Mapped[str | None]  # 모든 PATCH가 덮는다 — 헤더 없으면 NULL로
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
 
 class SearchIndexOutbox(Base):
-    """색인 작업 대기열 (#139 트랜잭셔널 outbox). 어휘·처리 규약의 정의점은 rag/outbox.py.
+    """색인 작업 트랜잭셔널 outbox. 어휘·처리 규약의 정의점은 rag/outbox.py.
 
-    **행을 PG 변경과 같은 트랜잭션에 쓴다** — 그것이 이 패턴의 전부다. 커밋이 성공하면
-    색인에 할 일이 반드시 기록돼 있고, 롤백되면 그 일도 함께 사라진다.
-
-    단일 워커가 1분 주기로 pending을 id 순으로 처리한다. 성공하면 done. 결정적 실패는 1회로
-    failed, 일시 실패는 attempts를 올리고 next_attempt_at을 지수 백오프로 미룬다 — MAX_ATTEMPTS까지
-    못 끝내면 failed(#185). INDEX_DOCUMENT의 failed는 문서도 failed로 찍고 잔여 청크 DROP을
-    같은 커밋에 등재한다(#184). 행은 지우지 않는다 — done/failed 행이 이력이자 관측 지점이다.
-
-    연산은 전부 멱등이다(색인=_id upsert, 삭제=없는 것 지워도 무해, 메타=덮어쓰기) — 재시도가
-    겹쳐도 결과가 같다. at-least-once.
+    행은 PG 변경과 같은 트랜잭션에 쓴다 — 커밋되면 색인 할 일이 반드시 남고, 롤백되면 함께 사라진다.
+    행은 지우지 않는다(done/failed 행이 이력). 연산은 전부 멱등이라 at-least-once 재시도가 안전하다.
     """
 
     __tablename__ = "search_index_outbox"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     tenant_id: Mapped[str]
-    op: Mapped[str]  # 어휘의 정의점은 rag/outbox.py (INDEX_DOCUMENT 등 상수)
+    op: Mapped[str]  # 어휘의 정의점은 rag/outbox.py
     payload: Mapped[Any] = mapped_column(JSONB, default=dict)  # id만 — 처리 시점에 PG 최신값을 읽는다
     status: Mapped[str] = mapped_column(default='pending', server_default='pending')  # pending|done|failed
     attempts: Mapped[int] = mapped_column(default=0, server_default="0")
     last_error: Mapped[str | None]
-    next_attempt_at: Mapped[datetime | None]  # 일시 실패의 다음 시도 시각 — NULL이면 지금(#185)
+    next_attempt_at: Mapped[datetime | None]  # 일시 실패의 다음 시도 시각 — NULL이면 지금
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
 class AnswerCache(Base):
-    """LLM 응답 영속 캐시. semantic 임베딩 매칭 + 문서 단위 무효화."""
+    """LLM 응답 영속 캐시. 의미 임베딩 매칭 + 문서 단위 무효화."""
 
     __tablename__ = "answer_cache"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     tenant_id: Mapped[str]
-    cache_key: Mapped[str]  # standalone query 정규화 해시 — 조회 키가 아니라 upsert 충돌 대상 (exact 계층 제거 #16)
+    cache_key: Mapped[str]  # standalone query 정규화 해시 — 조회 키가 아니라 upsert 충돌 대상
     query_text: Mapped[str]  # 저장된 standalone query 원문
     original_query: Mapped[
         str | None
-    ]  # 저장 당시 사용자가 친 원문(#153) — 재사용 판정기 입력 전용. 도입 전 행은 NULL(복원 불가), 판정기가 '(없음)'으로 받아 현행과 동일 판정
+    ]  # 사용자가 친 원문 — 재사용 판정기 입력 전용. NULL 행은 판정기가 '(없음)'으로 받는다
     query_embedding: Mapped[Any] = mapped_column(
         Vector(1024)
-    )  # 의미 캐시(semantic match)용 임베딩 — 기준은 query_text다 (original_query는 임베딩·cache_key에 안 섞는다)
-    answer: Mapped[str]  # 저장된 LLM 답변
+    )  # 기준은 query_text다 (original_query는 임베딩·cache_key에 안 섞는다)
+    answer: Mapped[str]
     sources: Mapped[Any] = mapped_column(JSONB)  # 인용 청크 메타 [{doc_id, chunk_id, page, ...}]
-    source_doc_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger))  # 답변이 의존한 문서 ID들 (무효화 키)
-    model: Mapped[str]  # 사용된 LLM 모델명
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())  # 생성 시각
-    last_hit_at: Mapped[datetime] = mapped_column(server_default=func.now())  # 마지막 히트 시각 (LRU/통계)
-    hit_count: Mapped[int] = mapped_column(default=0, server_default="0")  # 히트 누적 수
+    source_doc_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger))  # 무효화 키
+    model: Mapped[str]
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    last_hit_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    hit_count: Mapped[int] = mapped_column(default=0, server_default="0")
 
     __table_args__ = (UniqueConstraint("tenant_id", "cache_key"),)
 
@@ -221,34 +183,26 @@ class Conversation(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     tenant_id: Mapped[str]
-    title: Mapped[str | None]  # 대화 제목 (옵셔널)
-    created_by: Mapped[str | None]  # 생성한 사용자 (#10부터 항상 저장 — 미전송 시 'test-user')
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())  # 생성 시각
-    last_used_at: Mapped[datetime] = mapped_column(server_default=func.now())  # 최근 사용 시각 (목록 정렬용)
-    deleted_at: Mapped[
-        datetime | None
-    ]  # 소프트 삭제 시각 (#10) — NULL=활성. 감사 목적 이력 보존, 전 조회 경로가 IS NULL 필터
+    title: Mapped[str | None]
+    created_by: Mapped[str | None]  # 미전송 시 'test-user'
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    last_used_at: Mapped[datetime] = mapped_column(server_default=func.now())  # 목록 정렬용
+    deleted_at: Mapped[datetime | None]  # 소프트 삭제 — NULL=활성. 전 조회 경로가 IS NULL로 거른다
 
 
 class TurnStatus(StrEnum):
-    """messages.status의 값 어휘 — 다섯 파일에 흩어져 있던 나열의 단일 정의점 (#85).
+    """messages.status 값 어휘의 정의점 — Document.status 6값과 별개 어휘다.
 
-    str 서브클래스라 기존 문자열 비교·직렬화·DB 저장과 전부 호환된다. 여기는 **어휘만** 둔다 —
-    파생 의미론(이력 격리·미응답·종결 집합)은 rag/turn_state.py 소유. 이 파일의 소관은
-    ORM 매핑이라(모듈 docstring), "왜 이 상태들이 묶이나"는 상태 기계 쪽 지식이다.
-
-    컬럼 타입을 SQLAlchemy Enum으로 바꾸지 않은 이유(#85 설계 검토): 기본 동작이 멤버
-    이름('GENERATING')을 저장해 기존 소문자 데이터와 어긋나고(values_callable 필요),
-    validate_strings 기본 False라 문자열 오타는 어차피 통과한다 — 함정 둘을 정확히 맞춰야
-    겨우 제한적 보호인 반면, 쓰기 지점의 명시 검증(turn_state.finalize_turn) 한 줄이
-    같은 보호를 더 명확한 스택으로 준다.
+    str 서브클래스라 문자열 비교·직렬화·DB 저장과 호환된다. 여기는 어휘만 두고,
+    파생 의미(이력 격리·미응답·종결 집합)는 rag/turn_state.py가 소유한다.
+    밖의 값은 SQLAlchemy Enum이 아니라 쓰기 지점(turn_state.finalize_turn)이 거부한다.
     """
 
-    GENERATING = 'generating'  # assistant 자리표시 — 생성 진행 중 (유일한 비종결 상태)
+    GENERATING = 'generating'  # assistant 자리표시 — 유일한 비종결 상태
     DONE = 'done'  # 정상 종료. user 메시지는 항상 이 값
-    CANCELLED = 'cancelled'  # 사용자 취소 (#59)
-    FAILED = 'failed'  # 생성 실패 또는 고착 회수 (#72)
-    BLOCKED = 'blocked'  # 입력 가드 차단 (#22)
+    CANCELLED = 'cancelled'  # 사용자 취소
+    FAILED = 'failed'  # 생성 실패 또는 고착 회수
+    BLOCKED = 'blocked'  # 입력 가드 차단
 
 
 class Message(Base):
@@ -259,64 +213,55 @@ class Message(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     conversation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("conversations.id")
-    )  # 부모 대화 FK. CASCADE 해제(#10) — 삭제는 소프트(deleted_at), 실수 하드 DELETE에도 이력 보존
+    )  # CASCADE 없음 — 삭제는 소프트(deleted_at), 실수 하드 DELETE에도 이력 보존
     tenant_id: Mapped[str]
     role: Mapped[str]  # 'user' | 'assistant'
     content: Mapped[str]  # user면 원 질문, assistant면 최종 답변
-    standalone_query: Mapped[str | None]  # user 메시지의 condense 결과 (assistant는 NULL)
-    sources: Mapped[Any | None] = mapped_column(JSONB)  # assistant 메시지의 인용 메타 (user는 NULL)
+    standalone_query: Mapped[str | None]  # user 메시지의 condense 결과
+    sources: Mapped[Any | None] = mapped_column(
+        JSONB
+    )  # assistant: 실제 인용된 출처(done일 때만 — 그 외 빈 목록, user는 NULL)
     attachments: Mapped[Any | None] = mapped_column(
         JSONB(none_as_null=True)
-    )  # 첨부한 턴의 user 메시지에 저장되는 추출 텍스트 [{filename, text}]. none_as_null: 파이썬 None을 JSON null이 아닌 SQL NULL로 (IS NOT NULL 필터가 정확히 동작하게)
+    )  # user: 첨부 추출 텍스트 [{filename, text}]. none_as_null — IS NOT NULL 필터가 맞게 SQL NULL로 저장
     status: Mapped[str] = mapped_column(
         default="done", server_default="done"
-    )  # 값 어휘는 TurnStatus (user는 항상 'done')
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())  # 생성 시각
-    # ── 운영 지표 씨앗 (2026-07-18): 화면 반영 전이라도 기록은 지금부터 (지표는 소급 불가) ──
-    user_id: Mapped[str | None]  # user 메시지: 질문한 상담원 (X-User-Id — 인증 전엔 'test-user')
-    latency_ms: Mapped[int | None]  # assistant 메시지: 생성 소요(ms). 캐시/즉시 경로 포함
-    cache_kind: Mapped[str | None]  # assistant 메시지: 'semantic'=캐시 재생 답변, NULL=신규 생성
+    )  # 값 어휘는 TurnStatus (Document.status와 별개)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    # 운영 지표용 — 지표는 소급할 수 없어 화면 반영 전부터 기록한다
+    user_id: Mapped[str | None]  # user: 질문한 상담원 (X-User-Id)
+    latency_ms: Mapped[int | None]  # assistant: 생성 소요(ms). 캐시/즉시 경로 포함
+    cache_kind: Mapped[str | None]  # assistant: 'semantic'=캐시 재생 답변, NULL=신규 생성
     cited_docs: Mapped[Any | None] = mapped_column(
         JSONB
-    )  # assistant: 실인용 **문서** 파일명 배열 — 저장 시 확정 (문서 지표는 이 컬럼만 집계). #278부터 FAQ는 안 들어간다(옛 행의 'FAQ' 원소는 그대로)
+    )  # assistant: 실인용 **문서** 파일명 배열 — 문서 지표는 이 컬럼만 집계. FAQ는 cited_faq_ids로(옛 행의 'FAQ' 원소는 그대로)
     cited_faq_ids: Mapped[Any | None] = mapped_column(
         JSONB
-    )  # assistant: 실인용 FAQ id 배열(#278) — FAQ 항목별 ref_count·근거없음 판정이 읽는다. 도입 전 행은 NULL
+    )  # assistant: 실인용 FAQ id 배열 — FAQ 항목별 ref_count·근거없음 판정이 읽는다
     intent: Mapped[
         str | None
-    ]  # assistant: 라우팅 결과 'KNOWLEDGE'|'OTHER'|'ATTACHMENT'(#63 — 첨부만 근거, KB 지표에서 제외) — 답변률 분모는 KNOWLEDGE만 (NULL=차단 턴·도입 전 행)
+    ]  # assistant: 'KNOWLEDGE'|'OTHER'|'ATTACHMENT'(KB 지표 제외). 답변률 분모는 KNOWLEDGE만 (NULL=차단 턴·옛 행)
     question_message_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("messages.id", ondelete="SET NULL")
-    )  # assistant: 답한 user 메시지 (짝을 데이터로)
-    block_reason: Mapped[
-        str | None
-    ]  # assistant(status='blocked'): 입력 가드(classify_and_guard) 차단 사유. 출력 가드는 제거됨(#26)
-    # ── 인간 피드백 1단계 (#8): 상담원의 답변 평가. 검증은 Pydantic Literal (태그 4종·별도 테이블은 과설계)
-    feedback: Mapped[bool | None]  # assistant: True=👍 False=👎 NULL=미선택/취소
-    feedback_tag: Mapped[
-        str | None
-    ]  # assistant: 👎 사유 슬러그(wrong_info|wrong_source|outdated_doc|insufficient). 옵셔널 — 👎인데 스킵하면 NULL
-    feedback_text: Mapped[
-        str | None
-    ]  # assistant: 👎 자유 서술 (옵셔널, 500자) — 태그가 못 잡는 사유 발굴용. 고객 정보 미기입 안내는 FE 몫
+    )  # assistant: 답한 user 메시지
+    block_reason: Mapped[str | None]  # assistant(status='blocked'): 입력 가드 차단 사유
+    # 상담원의 답변 평가 — 값 검증은 Pydantic Literal
+    feedback: Mapped[bool | None]  # True=👍 False=👎 NULL=미선택/취소
+    feedback_tag: Mapped[str | None]  # 👎 사유 슬러그(wrong_info|wrong_source|outdated_doc|insufficient). 스킵하면 NULL
+    feedback_text: Mapped[str | None]  # 👎 자유 서술 (500자)
 
 
 class TenantQuota(Base):
-    """테넌트별 동시 요청 상한 정책. 행이 없으면 config 기본값이 적용된다 (테이블은 오버라이드 전용).
-
-    실시간 in-flight 카운터는 Redis ZSET(rag/limiter.py) — 이 테이블은 정책값만 보관한다.
-    빈도 제한(RPM·일일 한도)·강제 차단·deep 모드 컬럼은 제거했다(#24): 정의만 있고 코드가
-    읽지 않아, 값을 넣어도 아무 일이 일어나지 않는 채로 "동작한다"고 읽히는 상태였다.
-    빈도 제한이 필요해지면 그때 설계와 함께 다시 도입한다.
-    """
+    """테넌트별 동시 요청 상한 정책(오버라이드 전용 — 행이 없으면 config 기본값).
+    실시간 in-flight 카운터는 Redis ZSET(rag/limiter.py)이다."""
 
     __tablename__ = "tenant_quotas"
 
-    tenant_id: Mapped[str] = mapped_column(primary_key=True)  # 테넌트당 row 1개
+    tenant_id: Mapped[str] = mapped_column(primary_key=True)
     concurrency_limit: Mapped[int] = mapped_column(
         default=5, server_default="5"
-    )  # 동시 in-flight (테넌트) — config 기본값과 동일하게 유지 (#101 하향)
+    )  # 테넌트 동시 in-flight — config 기본값과 같게 유지
     user_concurrency: Mapped[int] = mapped_column(
         default=1, server_default="1"
-    )  # 동시 in-flight (사용자) — config 기본값과 동일하게 유지 (#101 하향)
-    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())  # 갱신 시각
+    )  # 사용자 동시 in-flight — config 기본값과 같게 유지
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())

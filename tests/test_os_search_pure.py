@@ -11,7 +11,7 @@ from rag import os_search as S
 
 def test_nori_질의에_2_18_결함_회피가_붙어_있다():
     """auto_generate_synonyms_phrase_query=False가 빠지면 hybrid+nori가 500으로 죽는다
-    (실측 47/450 — rag/os_search.py의 lex_clause docstring). 조용히 사라지지 않게 묶는다."""
+    (rag/os_search.py의 lex_clause docstring). 조용히 사라지지 않게 묶는다."""
     clause = S.lex_clause(C.NORI_FIELD, "적립금 얼마")
     assert clause["match"][C.NORI_FIELD]["auto_generate_synonyms_phrase_query"] is False
 

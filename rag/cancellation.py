@@ -40,6 +40,7 @@ message_id만 받으므로, 호출부(HTTP 엔드포인트)가 tenant·created_b
 발행해 진행 중 생성을 죽일 수 있다. 리미터 ZSET이 이미 같은 수준으로 열려 있어(누구든
 ZREM 가능) 동일 신뢰 구역으로 보고 수용한다. 가용성 침해만 가능하고 데이터 노출은 없다.
 """
+
 import asyncio
 import logging
 
@@ -55,7 +56,7 @@ CANCEL_CHANNEL = 'kms:cancel'
 # 그래서 포기하지 않는다: 상한까지만 늘리고 무한히 재시도한다. 고정 간격이면 장기 장애에서
 # 로그가 폭주하고(인스턴스당 시간 1200줄), 상한이 없으면 복구가 한없이 늦어진다.
 SUBSCRIBE_RETRY_MIN_SECONDS = 1
-SUBSCRIBE_RETRY_MAX_SECONDS = 10   # 상한이 곧 '복구 후 원격 취소가 다시 먹기까지의 최대 지연'
+SUBSCRIBE_RETRY_MAX_SECONDS = 10  # 상한이 곧 '복구 후 원격 취소가 다시 먹기까지의 최대 지연'
 
 # 진행 중 생성 태스크: assistant_message_id → task. 등록/해제는 rag/streaming.py가 한다.
 _registry: dict[int, asyncio.Task] = {}
@@ -104,15 +105,15 @@ async def subscribe_forever() -> None:
     while True:
         pubsub = None
         try:
-            pubsub = clients.shared_redis.pubsub()   # 재연결 때마다 최신 클라이언트를 집는다
+            pubsub = clients.shared_redis.pubsub()  # 재연결 때마다 최신 클라이언트를 집는다
             await pubsub.subscribe(CANCEL_CHANNEL)
-            delay = SUBSCRIBE_RETRY_MIN_SECONDS      # 붙었으니 백오프 초기화
+            delay = SUBSCRIBE_RETRY_MIN_SECONDS  # 붙었으니 백오프 초기화
             async for raw in pubsub.listen():
                 if raw['type'] != 'message':
-                    continue          # subscribe 확인 메시지 등
+                    continue  # subscribe 확인 메시지 등
                 _handle_signal(raw['data'])
         except asyncio.CancelledError:
-            raise                     # 앱 종료 — 재시도하지 않는다
+            raise  # 앱 종료 — 재시도하지 않는다
         except Exception:
             # pubsub() 생성까지 try 안에 둔다 — 밖에 두면 거기서 터졌을 때 루프가 통째로 죽어
             # 정확히 "재기동 전까지 먹통"이 된다.
@@ -122,7 +123,7 @@ async def subscribe_forever() -> None:
                 try:
                     await pubsub.aclose()
                 except Exception:
-                    pass              # 정리 실패가 재연결을 막지 않게
+                    pass  # 정리 실패가 재연결을 막지 않게
         await asyncio.sleep(delay)
         delay = min(delay * 2, SUBSCRIBE_RETRY_MAX_SECONDS)
 
@@ -131,7 +132,7 @@ def _handle_signal(data) -> None:
     """채널 payload → 로컬 취소. 남의 신호(내가 안 들고 있는 id)는 조용히 무시한다."""
     try:
         message_id = int(data)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         logger.warning('취소 채널 payload 파싱 실패: %r', data)
         return
     if cancel_local(message_id):

@@ -3,9 +3,11 @@ import logging
 from arq import cron
 from arq.connections import RedisSettings
 from prometheus_client import start_http_server
+
 from config import settings
 from database import AsyncSessionLocal
 from rag import cache, os_client, outbox
+
 # 도메인 스윕과 아래 cron 래퍼가 같은 이름이라 별칭 — cron_jobs엔 래퍼가 등록돼야 한다
 from rag.turn_state import sweep_stale_generating as _sweep_generating
 
@@ -56,6 +58,7 @@ async def startup(ctx):
 async def shutdown(ctx):
     await os_client.close_client()
 
+
 async def sweep_stale_cache(ctx):
     """미히트 캐시 청소(#16) — cache_retention_days(90일) 지난 row 삭제. 일 1회면 충분."""
     async with AsyncSessionLocal() as session:
@@ -78,6 +81,7 @@ async def sweep_stale_generating(ctx):
     if swept:
         logger.info('고착 generating %d행을 failed로 정리', swept)
 
+
 async def drain_search_index_outbox(ctx):
     """색인 작업 대기열 드레인 (#139 outbox) — 1분 주기. **인제스션을 포함한 모든 색인 작업의
     유일한 처리 경로다.** 업로드·삭제·토글·FAQ 변경은 라우터가 같은 트랜잭션에 행을 남기고,
@@ -92,11 +96,11 @@ async def drain_search_index_outbox(ctx):
 
 
 class WorkerSettings:
-    functions = [ping]                  # 인제스션은 cron drain이 outbox에서 꺼내 처리한다 (#139)
+    functions = [ping]  # 인제스션은 cron drain이 outbox에서 꺼내 처리한다 (#139)
     on_startup = startup
     on_shutdown = shutdown
     cron_jobs = [
-        cron(sweep_stale_cache, hour=19, minute=30),   # arq는 UTC — 19:30 UTC = KST 새벽 4:30
+        cron(sweep_stale_cache, hour=19, minute=30),  # arq는 UTC — 19:30 UTC = KST 새벽 4:30
         # 1분 주기 — status='generating' 부분 인덱스(schema.sql #46)가 스캔을 받친다.
         # arq cron은 unique=True(기본) + 시각 기반 job_id라 워커가 여러 대여도 1회만 돈다.
         #
@@ -110,8 +114,10 @@ class WorkerSettings:
         cron(drain_search_index_outbox, minute=set(range(0, 60, 1))),
     ]
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
-    max_jobs = 10       # 한 워커가 동시 진행하는 잡 수 (asyncio 코루틴 동시성, 스레드 아님). arq 기본값과 동일 — 명시.
-    job_timeout = outbox.DRAIN_ROUND_SECONDS   # drain 한 회차 상한(변환 마감에서 계산 — 지금 1380). 행 시작 판정이 이 값을 본다(#223
-                        # 결정 2) — 문서 마감(900)을 넘기면 변환 프로세스가 먼저 끊어 행 실패(attempts 증가)로 끝나고,
-                        # 예산이 모자라면 새 행을 시작하지 않으므로 arq 취소(CancelledError, attempts 그대로)가 나지 않는다.
-    max_tries = 1       # cron 잡 자체의 재시도 없음 — 행 단위 재시도는 outbox.attempts가 담당
+    max_jobs = 10  # 한 워커가 동시 진행하는 잡 수 (asyncio 코루틴 동시성, 스레드 아님). arq 기본값과 동일 — 명시.
+    job_timeout = (
+        outbox.DRAIN_ROUND_SECONDS
+    )  # drain 한 회차 상한(변환 마감에서 계산 — 지금 1380). 행 시작 판정이 이 값을 본다(#223
+    # 결정 2) — 문서 마감(900)을 넘기면 변환 프로세스가 먼저 끊어 행 실패(attempts 증가)로 끝나고,
+    # 예산이 모자라면 새 행을 시작하지 않으므로 arq 취소(CancelledError, attempts 그대로)가 나지 않는다.
+    max_tries = 1  # cron 잡 자체의 재시도 없음 — 행 단위 재시도는 outbox.attempts가 담당

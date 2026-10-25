@@ -4,19 +4,17 @@ vLLM 전용인 것은 전부 이 파일에 있다: thinking 토글(chat_template
 출처 꼬리 강제(structural_tag). 셋 다 OpenAI SDK의 extra_body로 실려 요청 바디에 병합된다.
 요청 바디는 #287 전(단일 모듈 시절의 클라이언트·llm_schemas·prompts가 만들던 것)과 같다(tests/test_llm_providers.py가 고정).
 """
+
 from functools import cache
 
 from pydantic import BaseModel
 
-from config import settings
 from rag.llm.base import CitationTail
 from rag.llm.openai_compat import OpenAiCompatClient
 
 
 class VllmClient(OpenAiCompatClient):
-
-    def _constraint_params(self, schema: type[BaseModel] | None,
-                           citations: CitationTail | None) -> dict:
+    def _constraint_params(self, schema: type[BaseModel] | None, citations: CitationTail | None) -> dict:
         # thinking 토글은 매 요청에 실린다 — 덮어쓰면 유실되므로 제약과 같은 extra_body에 병합한다.
         # thinking 토글은 공통 설정 llm_reasoning_effort에서 파생한다(#288 결정 5) — vLLM(Qwen3)은 on/off만 있다
         thinking = self.reasoning_effort not in (None, "none")
@@ -71,10 +69,15 @@ def _citation_body(tail: CitationTail) -> dict:
     서버가 이 인자를 거부하면(400) 그대로 에러다 — #287에서 제약을 빼고 재시도하던 방어를 지웠다
     (사내 서버는 지원하는 버전이라 그 경로가 쓰이지 않았다, 사용자 결정 8).
     """
-    schema = ({"type": "array", "items": {"type": "integer", "enum": list(range(1, tail.count + 1))}}
-              if tail.count else {"type": "array", "maxItems": 0})
-    return {"response_format": {
-        "type": "structural_tag",
-        "triggers": [tail.start],
-        "structures": [{"begin": tail.start, "schema": schema, "end": tail.end}],
-    }}
+    schema = (
+        {"type": "array", "items": {"type": "integer", "enum": list(range(1, tail.count + 1))}}
+        if tail.count
+        else {"type": "array", "maxItems": 0}
+    )
+    return {
+        "response_format": {
+            "type": "structural_tag",
+            "triggers": [tail.start],
+            "structures": [{"begin": tail.start, "schema": schema, "end": tail.end}],
+        }
+    }

@@ -17,6 +17,7 @@
   finalize_turn이 done으로 덮어쓴다(경고 로그만 — 완성된 답변을 버릴 수 없다는 판단).
   실환경 빈도는 낮고(임계 500초) 이번 분리에서 고치지 않는다 — 상세는 finalize_turn.
 """
+
 import logging
 from datetime import timedelta
 
@@ -41,7 +42,6 @@ HISTORY_ISOLATED = (TurnStatus.BLOCKED, TurnStatus.GENERATING)
 # SSE done 이벤트의 finish_reason 어휘 = 전체 − {generating} — 소비: streaming.TurnResult.
 # 계산형으로 둔다: 상태가 추가되면 자동으로 따라와 나열이 다시 흩어지지 않는다.
 TERMINAL = tuple(s for s in TurnStatus if s is not TurnStatus.GENERATING)
-
 
 
 # 답을 못 받은 턴 — RETRY의 대상 (#59·#72). 사용자에겐 '멈췄든 오류가 났든' 같은 사건이다.
@@ -79,18 +79,23 @@ def last_unanswered_turn(messages: list[Message]) -> tuple[Message, Message] | N
         return None
     while i >= 2:
         prev_a, prev_u = messages[i - 1], messages[i - 2]
-        if not (prev_a.role == 'assistant' and prev_a.status in UNANSWERED
-                and prev_u.role == 'user' and prev_u.id == prev_a.question_message_id
-                and user.standalone_query is not None
-                and prev_u.standalone_query == user.standalone_query):
+        if not (
+            prev_a.role == 'assistant'
+            and prev_a.status in UNANSWERED
+            and prev_u.role == 'user'
+            and prev_u.id == prev_a.question_message_id
+            and user.standalone_query is not None
+            and prev_u.standalone_query == user.standalone_query
+        ):
             break
         user = prev_u
         i -= 2
     return user, last
 
 
-def _new_user_message(tenant_id: str, conversation_id: int, user_query: str,
-                      attachments: list[dict] | None, user_id: str | None) -> Message:
+def _new_user_message(
+    tenant_id: str, conversation_id: int, user_query: str, attachments: list[dict] | None, user_id: str | None
+) -> Message:
     """user Message 생성.
 
     standalone_query는 받지 않는다 — 이 행은 턴 **시작** 시점(라우팅·condense 전)에 만들어지므로
@@ -112,13 +117,14 @@ def _new_user_message(tenant_id: str, conversation_id: int, user_query: str,
 # 한 수명주기를 따르고, 즉시 경로는 자리표시를 곧바로 finalize한다.
 
 
-async def _touch_conversation(session: AsyncSession, tenant_id: str, conversation_id: int,
-                               first_query: str | None = None) -> None:
+async def _touch_conversation(
+    session: AsyncSession, tenant_id: str, conversation_id: int, first_query: str | None = None
+) -> None:
     """대화의 last_used_at 갱신 + 제목이 비어 있으면 첫 질문으로 세팅 (목록 표시용)."""
     await session.execute(
         update(Conversation)
         .where(Conversation.id == conversation_id)
-        .where(Conversation.tenant_id == tenant_id)   # 격리 — WHERE 절 명시
+        .where(Conversation.tenant_id == tenant_id)  # 격리 — WHERE 절 명시
         .values(last_used_at=func.now())
     )
     if first_query:
@@ -126,18 +132,18 @@ async def _touch_conversation(session: AsyncSession, tenant_id: str, conversatio
             update(Conversation)
             .where(Conversation.id == conversation_id)
             .where(Conversation.tenant_id == tenant_id)
-            .where(Conversation.title.is_(None))      # 첫 턴에만 — 이후 질문으로 안 바뀜
+            .where(Conversation.title.is_(None))  # 첫 턴에만 — 이후 질문으로 안 바뀜
             .values(title=first_query[:80])
         )
 
 
 async def add_pending_turn(
-        session: AsyncSession,
-        tenant_id: str,
-        conversation_id: int,
-        user_query: str,
-        attachments: list[dict] | None = None,
-        user_id: str | None = None,
+    session: AsyncSession,
+    tenant_id: str,
+    conversation_id: int,
+    user_query: str,
+    attachments: list[dict] | None = None,
+    user_id: str | None = None,
 ) -> Message:
     """user 메시지 + 생성 대기 상태의 assistant 자리표시를 세션에 등록한다.
 
@@ -152,7 +158,7 @@ async def add_pending_turn(
     """
     user_message = _new_user_message(tenant_id, conversation_id, user_query, attachments, user_id)
     session.add(user_message)
-    await session.flush()   # user id 확보 — 자리표시에 짝 FK를 처음부터 박는다
+    await session.flush()  # user id 확보 — 자리표시에 짝 FK를 처음부터 박는다
     assistant_message = Message(
         tenant_id=tenant_id,
         conversation_id=conversation_id,
@@ -167,19 +173,19 @@ async def add_pending_turn(
 
 
 async def finalize_turn(
-        session: AsyncSession,
-        tenant_id: str,
-        assistant_message_id: int,
-        answer: str,
-        sources: list[dict],
-        status: str = "done",
-        latency_ms: int | None = None,
-        cited_docs: list[str] | None = None,
-        intent: str | None = None,
-        standalone_query: str | None = None,
-        cache_kind: str | None = None,
-        block_reason: str | None = None,
-        cited_faq_ids: list[int] | None = None,
+    session: AsyncSession,
+    tenant_id: str,
+    assistant_message_id: int,
+    answer: str,
+    sources: list[dict],
+    status: str = "done",
+    latency_ms: int | None = None,
+    cited_docs: list[str] | None = None,
+    intent: str | None = None,
+    standalone_query: str | None = None,
+    cache_kind: str | None = None,
+    block_reason: str | None = None,
+    cited_faq_ids: list[int] | None = None,
 ) -> None:
     """자리표시를 최종 결과로 채운다 (id로 재조회 후 UPDATE) — **모든 경로의 유일한 종료 지점**.
 
@@ -195,7 +201,7 @@ async def finalize_turn(
     격리 필터가 non-done 턴을 이력에서 빼므로, 이 턴이 남의 이력에 보이기 시작하는 순간이
     곧 finalize 시점이다 — 그보다 먼저 채워둘 이유가 없다.
     """
-    status = TurnStatus(status)   # 5종 밖 값이 조용히 저장되던 것을 즉시 ValueError로 (#85)
+    status = TurnStatus(status)  # 5종 밖 값이 조용히 저장되던 것을 즉시 ValueError로 (#85)
     msg = await session.get(Message, assistant_message_id)
     if msg is None or msg.tenant_id != tenant_id:
         return
@@ -203,16 +209,20 @@ async def finalize_turn(
         # 자리표시가 아닌 상태를 덮어쓰는 중. 대표 경우: 스테일 스윕이 먼저 failed로 바꿔놨는데
         # 태스크가 살아서 완주했다(좀비 플립). 덮어쓰는 건 맞다 — 완성된 답변을 버릴 수 없다.
         # 다만 조용히 넘기면 "실패로 봤던 턴이 왜 done이 됐나"를 나중에 추적할 수 없어 경고를 남긴다.
-        logger.warning('finalize가 %s 상태를 %s로 덮어쓴다 (message_id=%s) — 스테일 스윕과 경쟁했을 수 있다',
-                       msg.status, status, assistant_message_id)
+        logger.warning(
+            'finalize가 %s 상태를 %s로 덮어쓴다 (message_id=%s) — 스테일 스윕과 경쟁했을 수 있다',
+            msg.status,
+            status,
+            assistant_message_id,
+        )
     msg.content = answer
     msg.sources = sources
     msg.status = status
     msg.latency_ms = latency_ms
     msg.cited_docs = cited_docs
-    msg.cited_faq_ids = cited_faq_ids   # FAQ 항목 인용(#278) — 문서 파일명과 종류가 달라 컬럼을 가른다
-    msg.intent = intent   # 라우팅 결과 — 답변률 분모(KNOWLEDGE) 집계용. DB 반영 완료로 원복 (#13)
-    msg.cache_kind = cache_kind      # 'semantic'=캐시 재생 답변 (기간별 히트율 집계용)
+    msg.cited_faq_ids = cited_faq_ids  # FAQ 항목 인용(#278) — 문서 파일명과 종류가 달라 컬럼을 가른다
+    msg.intent = intent  # 라우팅 결과 — 답변률 분모(KNOWLEDGE) 집계용. DB 반영 완료로 원복 (#13)
+    msg.cache_kind = cache_kind  # 'semantic'=캐시 재생 답변 (기간별 히트율 집계용)
     msg.block_reason = block_reason  # 입력 가드 차단 사유 — 차단 턴만 값이 있다 (#22)
 
     # 짝 user 행에 standalone_query 백필. tenant WHERE는 격리 원칙상 필수 —

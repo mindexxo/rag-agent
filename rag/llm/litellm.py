@@ -22,6 +22,7 @@ LiteLLM이 하는 일: OpenAI 모양 호출 하나를 벤더 문법(요청·응�
 - temperature·reasoning_effort → 설정값을 그대로 보낸다(결정 5). 벤더가 거부하는 조합(GPT-5 추론 모델의 temperature≠1,
               Claude 4.7+의 temperature<1)은 400으로 바로 드러나게 둔다 — 조용히 빼지 않는다. 표는 config.py 주석.
 """
+
 from collections.abc import AsyncIterator, Callable
 
 from pydantic import BaseModel
@@ -31,12 +32,15 @@ from rag.llm.base import CitationTail, FinishReason, LlmUsage
 
 # 벤더표 — LiteLLM 모델 접두 · 캐시 표시 필요 여부(모듈 docstring '캐싱'). 키·모델명은 공통 설정 하나다(결정 6).
 _VENDORS: dict[str, dict] = {
-    "gemini":    {"prefix": "gemini",    "cache_mark": False},   # 암시적 캐싱 자동. 표시하면 명시적 캐싱으로 번역돼 과금·429
-    "openai":    {"prefix": "openai",    "cache_mark": False},   # 자동 캐싱. 표시는 무시되지만 보낼 이유가 없다
-    "anthropic": {"prefix": "anthropic", "cache_mark": True},    # 표시가 없으면 캐싱 안 됨
+    "gemini": {"prefix": "gemini", "cache_mark": False},  # 암시적 캐싱 자동. 표시하면 명시적 캐싱으로 번역돼 과금·429
+    "openai": {"prefix": "openai", "cache_mark": False},  # 자동 캐싱. 표시는 무시되지만 보낼 이유가 없다
+    "anthropic": {"prefix": "anthropic", "cache_mark": True},  # 표시가 없으면 캐싱 안 됨
 }
 
-_FINISH: dict[str, FinishReason] = {"stop": "stop", "length": "length"}   # LiteLLM은 벤더 종료 사유를 OpenAI 어휘로 맞춰 준다
+_FINISH: dict[str, FinishReason] = {
+    "stop": "stop",
+    "length": "length",
+}  # LiteLLM은 벤더 종료 사유를 OpenAI 어휘로 맞춰 준다
 
 CACHE_MARK = {"type": "ephemeral"}
 
@@ -46,8 +50,9 @@ def with_cache_mark(messages: list[dict]) -> list[dict]:
     out = []
     for m in messages:
         if m.get("role") == "system" and isinstance(m.get("content"), str):
-            out.append({"role": "system",
-                        "content": [{"type": "text", "text": m["content"], "cache_control": CACHE_MARK}]})
+            out.append(
+                {"role": "system", "content": [{"type": "text", "text": m["content"], "cache_control": CACHE_MARK}]}
+            )
         else:
             out.append(m)
     return out
@@ -60,21 +65,26 @@ def _usage_of(obj) -> LlmUsage | None:
         return None
     details = getattr(usage, "prompt_tokens_details", None)
     cached = getattr(details, "cached_tokens", None) if details else None
-    return LlmUsage(prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-                    completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
-                    cached_tokens=cached or 0,
-                    cache_write_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0)
+    return LlmUsage(
+        prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+        completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+        cached_tokens=cached or 0,
+        cache_write_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+    )
 
 
 class LiteLlmClient:
-    def __init__(self, vendor: str, *, model: str | None = None, api_key: str | None = None,
-                 reasoning_effort: str | None = ""):
+    def __init__(
+        self, vendor: str, *, model: str | None = None, api_key: str | None = None, reasoning_effort: str | None = ""
+    ):
         if vendor not in _VENDORS:
             raise ValueError(f"LiteLLM 벤더가 아니다: {vendor!r} (가능: {sorted(_VENDORS)})")
         self.vendor = vendor
         self._model = f"{_VENDORS[vendor]['prefix']}/{model or settings.llm_model}"
         self._api_key = api_key or settings.llm_api_key
-        self._reasoning_effort = reasoning_effort   # ""면 요청 시점의 설정을 따른다(OpenAiCompatClient와 같은 규칙, #297)
+        self._reasoning_effort = (
+            reasoning_effort  # ""면 요청 시점의 설정을 따른다(OpenAiCompatClient와 같은 규칙, #297)
+        )
 
     @property
     def model_name(self) -> str:
@@ -92,32 +102,45 @@ class LiteLlmClient:
         kwargs: dict = {
             "model": self._model,
             "api_key": self._api_key,
-            "max_tokens": settings.generation_reserve_tokens,   # 생성 몫 예약 + 폭주 방지 (F100) — vLLM과 같은 값
+            "max_tokens": settings.generation_reserve_tokens,  # 생성 몫 예약 + 폭주 방지 (F100) — vLLM과 같은 값
         }
         if settings.llm_temperature is not None:
             kwargs["temperature"] = settings.llm_temperature
         if self.reasoning_effort is not None:
             kwargs["reasoning_effort"] = self.reasoning_effort
         if schema is not None:
-            kwargs["response_format"] = {"type": "json_object"}   # 결정 3 = b — 스키마 강제 아님, 검증은 Pydantic
+            kwargs["response_format"] = {"type": "json_object"}  # 결정 3 = b — 스키마 강제 아님, 검증은 Pydantic
         # citations는 보내지 않는다(모듈 docstring) — 꼬리는 프롬프트 + 파서
         return kwargs
 
-    async def acomplete(self, messages: list[dict], *, schema: type[BaseModel] | None = None,
-                        citations: CitationTail | None = None,
-                        on_usage: Callable[[LlmUsage], None] | None = None) -> str:
-        import litellm   # 지연 import — 118MB 패키지라 vLLM만 쓰는 프로세스(워커 등)가 비용을 안 내게
-        response = await litellm.acompletion(messages=self._messages(messages), stream=False,
-                                             **self._request_kwargs(schema, citations))
+    async def acomplete(
+        self,
+        messages: list[dict],
+        *,
+        schema: type[BaseModel] | None = None,
+        citations: CitationTail | None = None,
+        on_usage: Callable[[LlmUsage], None] | None = None,
+    ) -> str:
+        import litellm  # 지연 import — 118MB 패키지라 vLLM만 쓰는 프로세스(워커 등)가 비용을 안 내게
+
+        response = await litellm.acompletion(
+            messages=self._messages(messages), stream=False, **self._request_kwargs(schema, citations)
+        )
         if on_usage and (u := _usage_of(response)):
             on_usage(u)
         return response.choices[0].message.content
 
-    async def astream(self, messages: list[dict], *, schema: type[BaseModel] | None = None,
-                      citations: CitationTail | None = None,
-                      on_finish_reason: Callable[[FinishReason], None] | None = None,
-                      on_usage: Callable[[LlmUsage], None] | None = None) -> AsyncIterator[str]:
+    async def astream(
+        self,
+        messages: list[dict],
+        *,
+        schema: type[BaseModel] | None = None,
+        citations: CitationTail | None = None,
+        on_finish_reason: Callable[[FinishReason], None] | None = None,
+        on_usage: Callable[[LlmUsage], None] | None = None,
+    ) -> AsyncIterator[str]:
         import litellm
+
         kwargs = self._request_kwargs(schema, citations)
         # LiteLLM은 include_usage가 켜졌을 때만 스트림 끝에 usage 청크를 만든다(streaming_handler.send_stream_usage) — 벤더 무관.
         # 벤더가 이 인자를 몰라도 LiteLLM이 자체 처리하므로 거부되지 않는다(리뷰 지적 1, 소스 확인).

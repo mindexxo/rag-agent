@@ -40,6 +40,7 @@ degraded Lease는 zset에 등록된 적이 없으므로 release가 지울 것도
 
 '진행 중인 턴이 안 끊기는 것'은 별개 문제다 — 그건 이중 쓰기가 담당한다(rag/stream_resume.py).
 """
+
 import logging
 import time
 import uuid
@@ -49,8 +50,8 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-_T_PREFIX = 'kms:inflight:t:'   # 테넌트별
-_U_PREFIX = 'kms:inflight:u:'   # 사용자별 (tenant:user)
+_T_PREFIX = 'kms:inflight:t:'  # 테넌트별
+_U_PREFIX = 'kms:inflight:u:'  # 사용자별 (tenant:user)
 
 # 원자적 acquire. KEYS[1]=테넌트 zset, KEYS[2]=사용자 zset(선택).
 # ARGV: 1=now, 2=tenant_limit, 3=user_limit, 4=max_age(sec), 5=token
@@ -83,6 +84,7 @@ class Lease:
     True가 되면 요청 쪽(concurrency_guard의 finally)은 반납을 건너뛰고 태스크가 담당한다 —
     이 플래그 하나로 "정확히 한 번 반납"을 지킨다.
     """
+
     tenant_id: str
     token: str
     user_id: str | None = None
@@ -101,12 +103,15 @@ def _redis():
     LLM 클라이언트까지 만들어지지 않게 한다.
     """
     from rag import clients
+
     return clients.shared_redis
 
 
 async def try_acquire(
-        tenant_id: str, tenant_limit: int,
-        user_id: str | None = None, user_limit: int | None = None,
+    tenant_id: str,
+    tenant_limit: int,
+    user_id: str | None = None,
+    user_limit: int | None = None,
 ) -> Lease | None:
     """테넌트(+사용자) 상한 모두 미만이면 슬롯을 등록해 Lease 반환, 하나라도 꽉 차면 None.
     Lua로 원자 실행 — prune+판정+등록이 1왕복, race 없음.
@@ -144,11 +149,12 @@ async def release(lease: Lease | None) -> None:
     기반 prune이 inflight_max_seconds 뒤 유출분만 회수한다.
     """
     if lease is None or lease.degraded:
-        return          # degraded는 zset에 등록된 적이 없다 — 지울 것이 없다
+        return  # degraded는 zset에 등록된 적이 없다 — 지울 것이 없다
     try:
         await _redis().zrem(_T_PREFIX + lease.tenant_id, lease.token)
         if lease.user_id:
             await _redis().zrem(_U_PREFIX + f'{lease.tenant_id}:{lease.user_id}', lease.token)
     except Exception:
-        logger.warning('리미터 반납 실패 — prune(%ds)에 맡긴다 (tenant=%s)',
-                       settings.inflight_max_seconds, lease.tenant_id)
+        logger.warning(
+            '리미터 반납 실패 — prune(%ds)에 맡긴다 (tenant=%s)', settings.inflight_max_seconds, lease.tenant_id
+        )

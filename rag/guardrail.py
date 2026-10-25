@@ -19,19 +19,24 @@ prepare()의 디스패처가 상태(직전 턴 미답변 여부·첨부 유무)�
 뒤에야 판정이 끝나 차단이 아니라 화면 가림에 그치고, 원문이 DB에서 대체돼 사후 조사도 불가했다.
 되살릴 때는 사후 검사가 아닌 설계(전송 전 버퍼링·문장 단위 검사·사전 필터)여야 한다.
 """
+
 import logging
 
+from rag import otel
 from rag.llm import LlmClient
 from rag.llm_schemas import RouteDecision, acomplete_validated
-from rag import otel
-from rag.prompts import build_intent_guard_prompt, build_classify_user_message
+from rag.prompts import build_classify_user_message, build_intent_guard_prompt
 
 logger = logging.getLogger(__name__)
 
 
-async def classify_and_guard(llm: LlmClient, query: str, has_attachments: bool = False,
-                             domain_hint: str | None = None,
-                             prior_turns: list[dict] | None = None) -> RouteDecision:
+async def classify_and_guard(
+    llm: LlmClient,
+    query: str,
+    has_attachments: bool = False,
+    domain_hint: str | None = None,
+    prior_turns: list[dict] | None = None,
+) -> RouteDecision:
     """입력 안전성 + 인텐트를 한 번의 LLM 호출로 판단한다.
 
     safe=false면 차단(BLOCKED), 아니면 intent로 라우팅.
@@ -42,10 +47,22 @@ async def classify_and_guard(llm: LlmClient, query: str, has_attachments: bool =
     이미 저장돼 있으므로(턴 시작 자리표시), 실패해도 질문이 유실되지는 않는다.
     """
     with otel.span('classify_and_guard', 'GUARDRAIL') as sp:
-        decision = await acomplete_validated(llm, [
-            {'role': 'system', 'content': build_intent_guard_prompt(domain_hint)},
-            {'role': 'user', 'content': build_classify_user_message(query, has_attachments, prior_turns)},
-        ], RouteDecision, span=sp)
-        otel.set_attrs(sp, {otel.INPUT_VALUE: query, 'kms.intent': decision.intent, 'kms.safe': decision.safe,
-                            'kms.block_reason': decision.reason})   # 차단 사유 — 없으면 no-op (#22)
+        decision = await acomplete_validated(
+            llm,
+            [
+                {'role': 'system', 'content': build_intent_guard_prompt(domain_hint)},
+                {'role': 'user', 'content': build_classify_user_message(query, has_attachments, prior_turns)},
+            ],
+            RouteDecision,
+            span=sp,
+        )
+        otel.set_attrs(
+            sp,
+            {
+                otel.INPUT_VALUE: query,
+                'kms.intent': decision.intent,
+                'kms.safe': decision.safe,
+                'kms.block_reason': decision.reason,
+            },
+        )  # 차단 사유 — 없으면 no-op (#22)
         return decision

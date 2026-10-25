@@ -15,6 +15,7 @@
 벤더를 추가하려면: 구현 파일 하나 + 아래 `_PROVIDERS`에 한 줄 + config.py `llm_provider`의 Literal에 이름 하나.
 호출부는 바뀌지 않는다.
 """
+
 from collections.abc import Callable
 
 from config import settings
@@ -22,8 +23,16 @@ from rag.llm.base import CitationTail, ConstraintUnsupported, FinishReason, LlmC
 from rag.llm.litellm import LiteLlmClient
 from rag.llm.vllm import VllmClient
 
-__all__ = ["CitationTail", "ConstraintUnsupported", "FinishReason", "LlmClient", "LlmUsage", "aux_overridden",
-           "create_aux_llm", "create_llm"]
+__all__ = [
+    "CitationTail",
+    "ConstraintUnsupported",
+    "FinishReason",
+    "LlmClient",
+    "LlmUsage",
+    "aux_overridden",
+    "create_aux_llm",
+    "create_llm",
+]
 
 _PROVIDERS: dict[str, "Callable[..., LlmClient]"] = {
     "vllm": VllmClient,
@@ -33,7 +42,9 @@ _PROVIDERS: dict[str, "Callable[..., LlmClient]"] = {
 }
 
 
-def create_llm(provider: str | None = None, *, model: str | None = None, reasoning_effort: str | None = "") -> LlmClient:
+def create_llm(
+    provider: str | None = None, *, model: str | None = None, reasoning_effort: str | None = ""
+) -> LlmClient:
     """설정(또는 인자)의 공급자 구현을 만든다. 모르는 이름은 즉시 실패 — 엉뚱한 기본값으로 붙지 않게.
     model·reasoning_effort를 안 주면 요청에 생성 설정(llm_model·llm_reasoning_effort)이 실린다 — ""는 '설정을 따름'."""
     name = provider or settings.llm_provider

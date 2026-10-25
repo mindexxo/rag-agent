@@ -24,6 +24,7 @@ PG에만 있어 'missing'으로 판정돼 재등재된다 — 이미 있는 것�
 채우기**(PG에 있는 문서·FAQ 전부가 누락으로 잡혀 등재된다 — 워커가 분당 50건씩 처리), 또는
 "색인이 낡았다"는 의심이 들 때.
 """
+
 import argparse
 import asyncio
 
@@ -31,10 +32,9 @@ from sqlalchemy import select, update
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import os_client, outbox
+from rag import os_client, os_index, outbox
 from rag.models import Document, Faq
 from rag.os_client import client
-from rag import os_index
 
 
 def _tenant_term(tenant_id):
@@ -43,9 +43,10 @@ def _tenant_term(tenant_id):
 
 async def _indexed_parent_ids(field: str, tenant_id) -> set[int]:
     """색인에 있는 부모 id 집합(document_id 또는 faq_id) — terms 집계. 반드시 PG보다 **먼저** 읽는다."""
-    agg = await client().search(index=settings.opensearch_index, body={
-        "size": 0, "query": _tenant_term(tenant_id),
-        "aggs": {"p": {"terms": {"field": field, "size": 65536}}}})
+    agg = await client().search(
+        index=settings.opensearch_index,
+        body={"size": 0, "query": _tenant_term(tenant_id), "aggs": {"p": {"terms": {"field": field, "size": 65536}}}},
+    )
     return {int(b["key"]) for b in agg["aggregations"]["p"]["buckets"]}
 
 
@@ -80,8 +81,7 @@ async def reconcile(session, tenant_id: str | None = None) -> dict:
             outbox.enqueue(session, tenant_of[did], outbox.INDEX_DOCUMENT, document_id=did)
         await session.commit()
     deleted = await os_index.drop_documents_now(sorted(extra)) if extra else 0
-    return {'pg': len(pg_docs), 'os': len(os_docs), 'indexed': len(missing), 'deleted': deleted,
-            'unit': 'document'}
+    return {'pg': len(pg_docs), 'os': len(os_docs), 'indexed': len(missing), 'deleted': deleted, 'unit': 'document'}
 
 
 async def reconcile_faqs(session, tenant_id: str | None = None) -> dict:
@@ -107,8 +107,7 @@ async def reconcile_faqs(session, tenant_id: str | None = None) -> dict:
             outbox.enqueue(session, tenant_of[fid], outbox.INDEX_FAQ, faq_id=fid)
         await session.commit()
     deleted = await os_index.drop_faqs_now(sorted(extra)) if extra else 0
-    return {'pg': len(pg_faqs), 'os': len(os_faqs), 'indexed': len(missing), 'deleted': deleted,
-            'unit': 'faq'}
+    return {'pg': len(pg_faqs), 'os': len(os_faqs), 'indexed': len(missing), 'deleted': deleted, 'unit': 'faq'}
 
 
 async def _diff(session, tenant_id):
@@ -150,7 +149,7 @@ async def _run() -> None:
     try:
         await main()
     finally:
-        await os_client.close_client()      # aiohttp 세션 미종료 경고 방지
+        await os_client.close_client()  # aiohttp 세션 미종료 경고 방지
 
 
 if __name__ == '__main__':

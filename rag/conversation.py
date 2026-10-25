@@ -16,6 +16,7 @@
   _history_content가 turn_state의 상태 어휘(cancelled·failed)로 분기하지만 잔류다 —
   이력조립·condense 양쪽의 공용 렌더 유틸이라 어느 한쪽 전속이 아니다.
 """
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,12 +24,16 @@ from rag import otel
 from rag.llm import LlmClient
 from rag.llm_schemas import CondenseMultiResult, CondenseResult, acomplete_validated
 from rag.models import Conversation, Message, TurnStatus
-from rag.turn_state import HISTORY_ISOLATED
-from rag.tokens import estimate_tokens
-from rag.prompt_texts import (CANCELLED_TURN_EMPTY, CANCELLED_TURN_SUFFIX, FAILED_TURN_EMPTY,
-                              CONDENSE_MULTI_SYSTEM_PROMPT, CONDENSE_SYSTEM_PROMPT)
+from rag.prompt_texts import (
+    CANCELLED_TURN_EMPTY,
+    CANCELLED_TURN_SUFFIX,
+    CONDENSE_MULTI_SYSTEM_PROMPT,
+    CONDENSE_SYSTEM_PROMPT,
+    FAILED_TURN_EMPTY,
+)
 from rag.prompts import build_chat_prompt, build_condense_user_message
-
+from rag.tokens import estimate_tokens
+from rag.turn_state import HISTORY_ISOLATED
 
 # X-User-Id 미전송 시 created_by·스코핑에 쓰는 폴백 (#10).
 # 헤더 필수화는 ICCS 통합의 정식 인증으로 자연 해결 — 지금은 폴백으로 일관 저장·일관 필터.
@@ -55,15 +60,15 @@ def owned_filter(tenant_id: str, user_id: str | None):
 
 
 async def ensure_conversation(
-        session: AsyncSession,
-        tenant_id: str,
-        conversation_id: int | None,
-        user_id: str | None = None,
+    session: AsyncSession,
+    tenant_id: str,
+    conversation_id: int | None,
+    user_id: str | None = None,
 ) -> Conversation:
     """대화가 없으면 새로 만들고, 있으면 소유 대화인지 검증한다.
-      conversation_id=None이면 새 Conversation을 INSERT (created_by 저장, #10).
-      conversation_id가 있으면 owned_filter로 소유 검증 —
-      남의 대화 접근·삭제된 대화로의 질의 계속을 차단한다.
+    conversation_id=None이면 새 Conversation을 INSERT (created_by 저장, #10).
+    conversation_id가 있으면 owned_filter로 소유 검증 —
+    남의 대화 접근·삭제된 대화로의 질의 계속을 차단한다.
     """
     if conversation_id is None:
         # 저장값의 폴백은 필터와 별개 책임이라 여기서 직접 계산한다 — owned_filter의
@@ -73,20 +78,21 @@ async def ensure_conversation(
         await session.flush()
         return conversation
 
-    conversation = (await session.execute(
-        select(Conversation)
-        .where(Conversation.id == conversation_id)
-        .where(owned_filter(tenant_id, user_id))
-    )).scalar_one_or_none()
+    conversation = (
+        await session.execute(
+            select(Conversation).where(Conversation.id == conversation_id).where(owned_filter(tenant_id, user_id))
+        )
+    ).scalar_one_or_none()
     if conversation is None:
         raise ValueError(f'Conversation {conversation_id} not found')
     return conversation
 
+
 async def load_recent_messages(
-        session: AsyncSession,
-        tenant_id: str,
-        conversation_id: int,
-        limit: int = 30,
+    session: AsyncSession,
+    tenant_id: str,
+    conversation_id: int,
+    limit: int = 30,
 ) -> list[Message]:
     """최근 메시지를 오래된 순서로 반환한다.
     DB에서는 최신순으로 limit만큼 가져오고,
@@ -121,13 +127,15 @@ async def load_recent_messages(
     #          빈 답변·잘린 답변의 표시는 _history_content가 담당(조립 시점 표식).
     # user·assistant 짝을 함께 뺀다 — 한쪽만 빼면 build_prior_turns의 짝짓기가 밀린다.
     # 격리 집합의 정의·사유는 rag/turn_state.py(HISTORY_ISOLATED). 바꾸면 eval/_gold_history.py도 확인 (#77).
-    dropped_questions = {m.question_message_id for m in messages
-                         if m.role == 'assistant' and m.status in HISTORY_ISOLATED}
-    kept = [m for m in messages
-            if not (m.id in dropped_questions
-                    or (m.role == 'assistant' and m.status in HISTORY_ISOLATED))]
-    return kept[-limit:]   # 여유 조회분을 되돌려 원래 창 크기 유지
-
+    dropped_questions = {
+        m.question_message_id for m in messages if m.role == 'assistant' and m.status in HISTORY_ISOLATED
+    }
+    kept = [
+        m
+        for m in messages
+        if not (m.id in dropped_questions or (m.role == 'assistant' and m.status in HISTORY_ISOLATED))
+    ]
+    return kept[-limit:]  # 여유 조회분을 되돌려 원래 창 크기 유지
 
 
 def _history_content(message: Message) -> str:
@@ -143,14 +151,15 @@ def _history_content(message: Message) -> str:
     if message.role == 'assistant' and message.status == TurnStatus.CANCELLED:
         return message.content + CANCELLED_TURN_SUFFIX if message.content else CANCELLED_TURN_EMPTY
     if message.role == 'assistant' and message.status == TurnStatus.FAILED:
-        return FAILED_TURN_EMPTY   # 실패는 항상 content='' (finalize가 빈 답변으로 마감)
+        return FAILED_TURN_EMPTY  # 실패는 항상 content='' (finalize가 빈 답변으로 마감)
     return message.content
 
+
 async def _condense_call(
-        llm: LlmClient,
-        query: str,
-        messages: list[Message],
-        multi: bool,
+    llm: LlmClient,
+    query: str,
+    messages: list[Message],
+    multi: bool,
 ) -> list[str]:
     """condense_query·condense_to_queries 공용 골격(#46) — 두 함수의 34줄이 6단계
     (history 조립 → span → 프롬프트 조립 → LLM 호출 → 파싱/폴백 → 계측) 전부 동일했다.
@@ -163,10 +172,7 @@ async def _condense_call(
     span 이름은 둘 다 'condense' 그대로(Phoenix 대시보드 연속성). multi=True일 때만
     kms.expanded_queries를 남긴다 — 단일 경로 span엔 원래 이 속성이 없었다는 사실을 보존.
     """
-    history = [
-        {'role': m.role, 'content': _history_content(m)}
-        for m in messages
-    ]
+    history = [{'role': m.role, 'content': _history_content(m)} for m in messages]
 
     with otel.span('condense', 'LLM') as sp:
         # 폴백 없음 (#72). 재작성을 판단하지 못한 상태에서 "원문 그대로 검색"으로 넘어가면
@@ -177,22 +183,16 @@ async def _condense_call(
             CONDENSE_MULTI_SYSTEM_PROMPT if multi else CONDENSE_SYSTEM_PROMPT,
             build_condense_user_message(query, history),
         )
-        parsed = await acomplete_validated(
-            llm, llm_messages, CondenseMultiResult if multi else CondenseResult, span=sp)
+        parsed = await acomplete_validated(llm, llm_messages, CondenseMultiResult if multi else CondenseResult, span=sp)
         queries = _postprocess_queries(parsed, query)
-        attrs = {otel.INPUT_VALUE: query, otel.OUTPUT_VALUE: queries[0],
-                 'kms.history_messages': len(history)}
+        attrs = {otel.INPUT_VALUE: query, otel.OUTPUT_VALUE: queries[0], 'kms.history_messages': len(history)}
         if multi:
-            attrs['kms.expanded_queries'] = queries[1:]   # 멀티쿼리 변형 (#5) — DB에 저장 안 되는 유일한 기록처
+            attrs['kms.expanded_queries'] = queries[1:]  # 멀티쿼리 변형 (#5) — DB에 저장 안 되는 유일한 기록처
         otel.set_attrs(sp, attrs)
         return queries
 
 
-async def condense_query(
-        llm: LlmClient,
-        query: str,
-        messages: list[Message]
-) -> str:
+async def condense_query(llm: LlmClient, query: str, messages: list[Message]) -> str:
     """후속 질문을 독립 질문으로 변환한다.
 
     히스토리가 없으면 LLM을 호출하지 않고 원본 query를 그대로 반환한다 —
@@ -206,9 +206,9 @@ async def condense_query(
 
 
 async def condense_to_queries(
-        llm: LlmClient,
-        query: str,
-        messages: list[Message],
+    llm: LlmClient,
+    query: str,
+    messages: list[Message],
 ) -> list[str]:
     """질의 재작성 의미 확장(#5) — 1콜로 검색용 멀티쿼리를 만든다.
 
@@ -232,7 +232,7 @@ def _postprocess_queries(parsed: CondenseResult | CondenseMultiResult, query: st
     - variants[:2] 방어 슬라이스 (maxItems를 서버가 무시할 경우 대비)
     """
     standalone = parsed.standalone.strip() or query
-    raw_variants = getattr(parsed, 'variants', [])   # CondenseResult(단일)엔 variants가 없다
+    raw_variants = getattr(parsed, 'variants', [])  # CondenseResult(단일)엔 variants가 없다
     variants: list[str] = []
     for line in (v.strip() for v in raw_variants):
         if line and line != standalone and line not in variants:
@@ -250,7 +250,7 @@ def trim_messages_for_condense(messages: list, budget_tokens: int) -> list:
     selected, used = [], 0
     for m in reversed(messages):
         cost = estimate_tokens(m.content)
-        if selected and used + cost > budget_tokens:   # 최소 1개는 보장
+        if selected and used + cost > budget_tokens:  # 최소 1개는 보장
             break
         selected.append(m)
         used += cost
@@ -279,9 +279,8 @@ def build_prior_turns(messages: list, budget_tokens: int) -> list[dict]:
     selected, used = [], 0
     for turn in reversed(turns):
         cost = estimate_tokens(turn["q"]) + estimate_tokens(turn["a"])
-        if selected and used + cost > budget_tokens:   # 최소 1턴은 보장 (첫 턴은 예산 초과해도 포함)
+        if selected and used + cost > budget_tokens:  # 최소 1턴은 보장 (첫 턴은 예산 초과해도 포함)
             break
         selected.append(turn)
         used += cost
     return list(reversed(selected))
-

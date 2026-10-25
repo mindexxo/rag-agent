@@ -24,6 +24,7 @@ rag/citation_labels.py가 단일 정의점 (프롬프트 조립과 공유).
 malformed 꼬리는 부분 복구를 시도하지 않고 그 번호만 버린다 — 그럴듯한 복구는 실패를
 지표에서 숨긴다(탐지 가능한 오류를 탐지 불가능하게 만들지 않는다).
 """
+
 import re
 
 from rag.citation_labels import TAIL_END, TAIL_START, attachment_display
@@ -49,13 +50,13 @@ class TailSplitter:
     """
 
     def __init__(self):
-        self._hold = ''          # 본문 중 미방출분 (마커 접두 후보)
-        self._tail_buf = ''      # 마커 이후 흡수분 (TAIL_START 제외)
+        self._hold = ''  # 본문 중 미방출분 (마커 접두 후보)
+        self._tail_buf = ''  # 마커 이후 흡수분 (TAIL_START 제외)
         self._in_tail = False
         self._done = False
-        self.prose = ''          # 방출한 본문 전체 — feed 반환값의 누적과 항상 동일
-        self.tail_raw: str | None = None   # finish 시 확정 — 완결된 꼬리 내부(마커 제외)
-        self.truncated = False   # 꼬리가 시작됐지만 END 전에 스트림이 끝남
+        self.prose = ''  # 방출한 본문 전체 — feed 반환값의 누적과 항상 동일
+        self.tail_raw: str | None = None  # finish 시 확정 — 완결된 꼬리 내부(마커 제외)
+        self.truncated = False  # 꼬리가 시작됐지만 END 전에 스트림이 끝남
 
     def feed(self, chunk: str) -> str:
         assert not self._done, 'finish() 이후 feed 불가'
@@ -72,7 +73,7 @@ class TailSplitter:
         if idx != -1:
             out.append(self._hold[:idx])
             self._in_tail = True
-            rest = self._hold[idx + len(TAIL_START):]
+            rest = self._hold[idx + len(TAIL_START) :]
             self._hold = ''
             out.append(self._feed_tail(rest))
         else:
@@ -95,7 +96,7 @@ class TailSplitter:
         self._tail_buf += chunk
         end = self._tail_buf.find(TAIL_END)
         if end != -1:
-            rest = self._tail_buf[end + len(TAIL_END):]
+            rest = self._tail_buf[end + len(TAIL_END) :]
             # END 뒤 비공백 텍스트 — 진짜 꼬리는 스트림 마지막이므로 오탐이었다.
             # 공백·개행만 오는 것은 허용(모델·토크나이저가 끝에 공백류를 붙이는 관행) — 폐기.
             if rest.strip():
@@ -121,10 +122,10 @@ class TailSplitter:
         self._done = True
         if self._in_tail:
             end = self._tail_buf.find(TAIL_END)
-            if end != -1 and not self._tail_buf[end + len(TAIL_END):].strip():
-                self.tail_raw = self._tail_buf[:end]   # 후행 공백류는 허용·폐기
+            if end != -1 and not self._tail_buf[end + len(TAIL_END) :].strip():
+                self.tail_raw = self._tail_buf[:end]  # 후행 공백류는 허용·폐기
             else:
-                self.truncated = True   # END 전에 잘림(취소·max_tokens) — 버퍼는 폐기
+                self.truncated = True  # END 전에 잘림(취소·max_tokens) — 버퍼는 폐기
             return ''
         flushed, self._hold = self._hold, ''
         self.prose += flushed
@@ -149,8 +150,9 @@ def resolve_citations(tail_raw: str | None, sources, attachment_filenames: list[
     if not tail_raw:
         return []
     candidates: list[SourceCitation] = list(sources)
-    candidates += [SourceCitation(document_id=None, filename=attachment_display(n), version=1)
-                   for n in attachment_filenames]
+    candidates += [
+        SourceCitation(document_id=None, filename=attachment_display(n), version=1) for n in attachment_filenames
+    ]
     cited: list[SourceCitation] = []
     seen: set[int] = set()
     for token in re.findall(r'\d+', tail_raw):

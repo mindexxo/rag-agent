@@ -18,6 +18,7 @@ F99에서 인프로세스(FlagEmbedding) → TEI 원격 서버로, 하이브리�
 2026-07-17 비동기 전환: embed_texts/embed_query는 async(공용 AsyncClient)가 정식.
 동기 컨텍스트(RAGAS 래퍼·EPCov·스크립트)는 *_sync 변형을 쓴다 — 운영 경로 사용 금지.
 """
+
 from dataclasses import dataclass
 from typing import Literal
 
@@ -34,7 +35,8 @@ EMBED_DIM = 1024
 @dataclass
 class Embedding:
     """단일 텍스트의 임베딩 결과. dense-only."""
-    dense: list[float]                # 1024차원 의미 벡터
+
+    dense: list[float]  # 1024차원 의미 벡터
 
 
 # TEI가 요청 하나에 받는 입력 개수 상한 (`/info`의 max_client_batch_size, 실측 2026-08-04).
@@ -48,13 +50,16 @@ MAX_CLIENT_BATCH = 32
 # `outputDimensionality`+`taskType`(input_type 인자에서 변환), voyage→`output_dimension`+`input_type` 그대로.
 _VENDORS: dict[str, dict] = {
     "openai": {"prefix": "openai", "kind": None},
-    "gemini": {"prefix": "gemini", "kind": ("input_type", {"query": "RETRIEVAL_QUERY", "document": "RETRIEVAL_DOCUMENT"})},
+    "gemini": {
+        "prefix": "gemini",
+        "kind": ("input_type", {"query": "RETRIEVAL_QUERY", "document": "RETRIEVAL_DOCUMENT"}),
+    },
     "voyage": {"prefix": "voyage", "kind": ("input_type", {"query": "query", "document": "document"})},
 }
 
 
 def _batches(texts: list[str]) -> list[list[str]]:
-    return [texts[i:i + MAX_CLIENT_BATCH] for i in range(0, len(texts), MAX_CLIENT_BATCH)]
+    return [texts[i : i + MAX_CLIENT_BATCH] for i in range(0, len(texts), MAX_CLIENT_BATCH)]
 
 
 def _payload(batch: list[str]) -> dict:
@@ -103,7 +108,8 @@ async def embed_texts(texts: list[str], kind: Kind = "document") -> list[Embeddi
         return []
     out: list[Embedding] = []
     if settings.embed_provider == "tei":
-        from rag.clients import http_async   # 지연 import — 동기 스크립트가 이 모듈만 쓸 때 클라이언트 미생성
+        from rag.clients import http_async  # 지연 import — 동기 스크립트가 이 모듈만 쓸 때 클라이언트 미생성
+
         for batch in _batches(texts):
             resp = await http_async.post(
                 f"{settings.embed_base_url}/embed",
@@ -114,6 +120,7 @@ async def embed_texts(texts: list[str], kind: Kind = "document") -> list[Embeddi
             out.extend(Embedding(dense=vec) for vec in resp.json())
         return out
     import litellm
+
     kw = _vendor_kwargs(kind)
     for batch in _batches(texts):
         resp = await litellm.aembedding(input=batch, timeout=settings.embed_timeout, **kw)
@@ -134,7 +141,7 @@ def embed_texts_sync(texts: list[str], kind: Kind = "document") -> list[Embeddin
         return []
     out: list[Embedding] = []
     if settings.embed_provider == "tei":
-        for batch in _batches(texts):        # async 경로와 같은 이유로 분할 (MAX_CLIENT_BATCH 주석 참조)
+        for batch in _batches(texts):  # async 경로와 같은 이유로 분할 (MAX_CLIENT_BATCH 주석 참조)
             resp = httpx.post(
                 f"{settings.embed_base_url}/embed",
                 json=_payload(batch),
@@ -144,6 +151,7 @@ def embed_texts_sync(texts: list[str], kind: Kind = "document") -> list[Embeddin
             out.extend(Embedding(dense=vec) for vec in resp.json())
         return out
     import litellm
+
     kw = _vendor_kwargs(kind)
     for batch in _batches(texts):
         resp = litellm.embedding(input=batch, timeout=settings.embed_timeout, **kw)

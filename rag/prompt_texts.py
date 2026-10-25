@@ -39,8 +39,8 @@ BLOCKED_INPUT_ANSWER = '해당 요청은 처리할 수 없습니다. 상담 관�
 # 시점에만 rag/conversation.py의 _history_content가 붙인다(단일 정의점 — 소비처는
 # build_prior_turns·_condense_call 둘뿐). 취소 턴을 이력에 포함하면서 모델이 잘린 답을
 # 완결된 안내로 오인하지 않게 하는 맥락 정보이지, 지시문이 아니다.
-CANCELLED_TURN_SUFFIX = ' (안내 중단됨)'    # 부분 답변 뒤에 접미
-CANCELLED_TURN_EMPTY = '(답변 없음)'        # 첫 토큰 전 취소(content='') 대체
+CANCELLED_TURN_SUFFIX = ' (안내 중단됨)'  # 부분 답변 뒤에 접미
+CANCELLED_TURN_EMPTY = '(답변 없음)'  # 첫 토큰 전 취소(content='') 대체
 # 실패 턴(#72) — 취소와 구분한다. 사용자가 멈춘 것과 시스템이 못 답한 것은 다음 턴의
 # 응대가 달라야 한다("중단하신" vs "오류가 났던"). 실패는 항상 content=''이라 접미형은 없다.
 FAILED_TURN_EMPTY = '(오류로 답변하지 못함)'
@@ -48,7 +48,7 @@ FAILED_TURN_EMPTY = '(오류로 답변하지 못함)'
 # 테넌트 지식 범위 설명(domain_hint) — 인텐트 분류·KNOWLEDGE 생성·OTHER 생성 3곳에
 # 역할/범위 안내로만 주입한다. 답변의 근거가 아니다 (strict-grounded 유지).
 # [임시] ICCS 연동 전까지 요청 파라미터(KmsQueryRequest.domain_hint)로 받는다 (#1).
-DEFAULT_DOMAIN_HINT = '테넌트에 등록된 문서를 근거로 하는 상담 지식 전반'   # 도메인 중립 폴백
+DEFAULT_DOMAIN_HINT = '테넌트에 등록된 문서를 근거로 하는 상담 지식 전반'  # 도메인 중립 폴백
 
 # 출처 꼬리 마커 (#56) — 답변 끝에 아래 TAIL_EXAMPLE_MULTI 형태(문서 번호 목록)로 붙는다.
 # 안쪽 형식은 손으로 적지 않는다 — 그 상수가 정의점이다(#65에서 «1,3»→«[1,3]»로 바뀌었다).
@@ -390,7 +390,6 @@ _OTHER_SYSTEM_PROMPT_TEMPLATE = """당신은 한국어 콜센터 상담 지식 �
 - 근거 문서가 없으면 답하지 않고, 서비스와 무관한 주제는 다루지 않습니다.
 </역할 안내>
 """
-
 
 
 CONDENSE_SYSTEM_PROMPT = """당신은 한국어 콜센터 상담 대화에서 후속 질문을 검색 가능한 독립 질문으로 재작성하는 도우미입니다.

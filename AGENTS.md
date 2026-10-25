@@ -183,7 +183,8 @@ tests/test_code_quality.py`로 조인다). ruff는 `requirements.txt`에 버전 
    (코드줄 = 주석·docstring·빈 줄 제외). 쪼개는 것이 목적이 아니라 책임이 하나인지가 목적이다 — 잘게 흩어진 조각도 나쁜 구조다.
 3. **데이터**: 고정 키 dict가 함수 경계를 넘으면 `dataclass`·`NamedTuple`. 외부 JSON 경계(골드 파일·OpenSearch 응답)는 `TypedDict`.
 4. **클래스**: 상태와 불변식이 있을 때만. 상속 대신 조합, 인터페이스는 `Protocol`(#52 — 클래스를 모듈 함수로 되돌린 선례).
-5. **타입**: 공개 함수 시그니처에 힌트. 검사기 도입은 #308.
+5. **타입**: 함수 시그니처에 힌트 — 기존 파일까지 ruff ANN 래칫이 막는다(인자·가변 인자·공개/특수/static/class 메서드 반환). **새 파일은 mypy 오류 0**(`tests/test_typecheck.py`,
+   기존 파일은 `tests/typecheck_baseline.json`에 동결 — 리팩토링으로 깨끗해지면 갱신 명령이 목록에서 뺀다, #308).
 
 6. **모듈 경계**(#310) — 공식 표준은 없고 실무 기준 넷이다. ① 같이 바뀌는 것끼리 묶는다(기능 단위 — 형식별·계층별 서랍이 아니라)
    ② 의존은 한 방향(위 "아키텍처" 절 — `tests/test_architecture.py`가 강제) ③ 밖에서 쓰는 이름만 공개, 다른 모듈의 `_이름`을

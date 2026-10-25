@@ -68,7 +68,7 @@ cp .env ../consult-agent-issue<N>/.env   # 필수 — .env는 gitignore라 워�
 
 **품질 게이트(CI 대신 여기서 강제한다, #302)** — 구현과 리뷰 사이에 돌린다. 판단 기준은 AGENTS.md "코드 품질 기준".
 - 새로 만든 파일과 크게 고친 파일은 `ruff format <파일>`·`ruff check --fix <파일>`로 맞춘다(기존 파일 일괄 포맷은 #303 — 이 PR에서 하지 마라).
-- `pytest tests/test_code_quality.py`가 통과해야 리뷰로 넘어간다. 실패 = 새 위반·악화다. **고쳐서 통과시킨다** —
+- `pytest tests/test_code_quality.py tests/test_typecheck.py`가 통과해야 리뷰로 넘어간다(새 파일은 mypy 오류 0 — 함수에 힌트 필수, #308). 실패 = 새 위반·악화다. **고쳐서 통과시킨다** —
   복잡도·분기·인자·크기 초과는 "책임을 나누라"는 신호다. 고칠 수 없는 증가(파일·함수 이름 변경 포함)만
   `QUALITY_BASELINE_UPDATE=1 QUALITY_ALLOW_GROWTH=1`로 기준선에 올리고, **사용자에게 사유를 보고**한 뒤 PR 본문 `## 테스트`에 적는다.
 - 경고("품질 개선 N건")가 나오면 `QUALITY_BASELINE_UPDATE=1 pytest tests/test_code_quality.py`로 기준선을 조여 같은 PR에 넣는다.

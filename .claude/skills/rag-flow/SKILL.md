@@ -62,6 +62,9 @@ cp .env ../consult-agent-issue<N>/.env   # 필수 — .env는 gitignore라 워�
 사람이 읽을 수 있게 한다. 오답의 원인 축이 애매하면 `answer-triage` 스킬로 가른 뒤 설계한다.
 
 전체 테스트(`pytest`, DB·Redis·OpenSearch 필요)를 돌려 실패가 있으면 전부 명시한다.
+**운영 코드가 바뀌지 않은 PR**(테스트·문서·하네스만)은 전체를 돌리지 않는다 — 기존 테스트 결과가 달라질 이유가 없다(사용자 결정, #315).
+대신 바뀐 테스트 파일, 그 인접 파일(같은 픽스처·전역 상태를 쓰는 것 — 간섭 확인), `tests/test_invariants_registry.py`·
+`tests/test_docs_freshness.py`·`tests/test_code_quality.py`를 돌리고, PR `## 테스트`에 "운영 코드 변경 없음 — 전체 생략"을 적는다.
 
 **품질 게이트(CI 대신 여기서 강제한다, #302)** — 구현과 리뷰 사이에 돌린다. 판단 기준은 AGENTS.md "코드 품질 기준".
 - 새로 만든 파일과 크게 고친 파일은 `ruff format <파일>`·`ruff check --fix <파일>`로 맞춘다(기존 파일 일괄 포맷은 #303 — 이 PR에서 하지 마라).

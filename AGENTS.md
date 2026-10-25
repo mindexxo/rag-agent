@@ -125,7 +125,8 @@ TEI→인덱싱·검색·캐시(`EMBED_PROVIDER`·`RERANK_PROVIDER`가 tei가 �
 
 ## 데이터·평가
 
-**모든 측정 축이 읽는 파일은 `eval/gold_set_v2.jsonl` 하나뿐이다**(no_evidence 58 / trap 50).
+**Q&A 측정 축이 읽는 골드는 `eval/gold_set_v2.jsonl` 하나뿐이다**(no_evidence 58 / trap 50). 축 전용 질문셋(intent·cache·condense 등)은
+골드가 아니라 축마다 따로다. 옛 v1(`eval/gold_set_v1.jsonl`)은 레거시 실행 경로 둘만 연다(정리는 #306, 강제는 INV-82).
 예외 하나: 사내 실문서 골드는 원문 발췌라 공개 저장소에 올리지 않고 gitignore된 eval/gold_private 디렉터리에
 두며, `eval/generation.py`의 `load_gold`가 정본과 병합한다 — 검색축 `eval/retrieval_v2.py`가 이걸 읽는다.
 질문셋 파일이 아예 없는 축도 있다 — `eval/retrieval_article.py`(조 번호, #238)·`eval/retrieval_keyword.py`(상담원식 키워드

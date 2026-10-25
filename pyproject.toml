@@ -1,0 +1,47 @@
+# 코드 품질 도구 설정(#302). 판단 기준의 정의점은 AGENTS.md "코드 품질 기준"이고, 강제는 tests/test_code_quality.py
+# (래칫 — 기준선 tests/quality_baseline.json보다 나빠지면 실패)가 한다. 버전을 고정하는 이유는 requirements-dev.txt.
+
+[tool.ruff]
+line-length = 120          # 실측(main ffed729): 88이면 운영 코드 변경 6.8천 줄, 120이면 4.3천 줄 — 한국어 주석이 긴 저장소라 120
+target-version = "py314"   # Dockerfile python:3.14-slim
+extend-exclude = ["sample_docs", "serving"]   # 코퍼스 생성 스크립트·Triton 모델 코드 — 앱 코드가 아니다
+
+[tool.ruff.format]
+quote-style = "preserve"   # 따옴표 통일은 가독성 이득 없이 변경량만 늘린다(실측 4.9천 → 4.3천 줄)
+
+[tool.ruff.lint]
+preview = true
+explicit-preview-rules = true   # preview는 중첩 규칙(PLR1702) 하나 때문 — 명시한 preview 규칙만 켠다
+select = [
+    # ① 자동 강제 — 위반 0이 목표(기존분은 기준선 동결, #303이 일괄 정리)
+    "E4", "E7", "E9", "F",   # 문법·미사용 import·미정의 이름
+    "I",                     # import 정렬
+    "B",                     # 흔한 버그 패턴
+    # ② 리뷰 신호 — 기존분은 기준선 동결, 새로 넘으면 래칫이 막는다(책임을 나눌 신호). 상한은 pylint·Ruff 기본값, 중첩만 4
+    "C901",                  # 순환 복잡도
+    "PLR0911",               # return 개수
+    "PLR0912",               # 분기 수
+    "PLR0913",               # 인자 수
+    "PLR0915",               # 문장 수
+    "PLR1702",               # 중첩 블록 깊이
+]
+ignore = [
+    "B008",   # 기본값 인자에 함수 호출 — FastAPI Depends 관용구라 오탐(FastAPI도 이 규칙을 끈다)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PLR0913"]   # pytest 픽스처는 인자로 받는다 — 인자 수가 책임 수가 아니다
+"conftest.py" = ["PLR0913"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["rag", "routers", "schemas", "eval", "tests", "config", "database", "text_norm", "main"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-args = 5
+max-branches = 12
+max-returns = 6
+max-statements = 50
+max-nested-blocks = 4

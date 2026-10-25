@@ -59,7 +59,7 @@ import한다(118MB 패키지라 사내 vLLM·TEI만 쓰는 프로세스가 비�
   `rag/` 아래인 이유는 도커 이미지가 `eval/`을 빼기 때문이다 — 운영 복구 명령은 운영 이미지 안에 있어야 한다(#146).
 - 테스트: `pytest` — 전체 약 5분(DB·Redis·**OpenSearch** 필수, LLM·임베딩은 fake로 대체).
   DB 없이 순수 로직만 몇 초 만에 돌리려면 `pytest tests/test_service_pure.py tests/test_prompts.py
-  tests/test_turn_status_contract.py tests/test_docs_freshness.py`.
+  tests/test_turn_status_contract.py tests/test_docs_freshness.py tests/test_code_quality.py`.
   (건수는 적지 않는다 — 테스트를 추가할 때마다 어긋나고, 린터가 잡아주지 못하는 종류다.)
 - eval: `python -m eval.run_all --intent --condense --refusal --cache --other --retrieval --ragas`
   축마다 의존이 다르다 — `--retrieval`은 DB+OpenSearch+TEI, `--cache`는 임베딩·리랭커(TEI)+DB+LLM
@@ -163,3 +163,20 @@ TEI→인덱싱·검색·캐시(`EMBED_PROVIDER`·`RERANK_PROVIDER`가 tei가 �
 
 리팩토링 6원칙을 따른다(특히 원칙 2: 동작 보존 — 리팩토링에 기능 변경을 섞지 마라).
 판단 근거와 실측치는 주석에 남긴다. 문서·주석도 코드와 같은 리뷰 대상이다. 한국어로 쓴다.
+
+## 코드 품질 기준 — 래칫으로 강제한다(#302)
+
+강제는 `tests/test_code_quality.py`(설정 `pyproject.toml`, 기준선 `tests/quality_baseline.json`)가 한다. 지금의 위반은
+기준선에 동결돼 있고 **그보다 나빠지면 실패**한다(줄면 경고 — 정리한 PR이 `QUALITY_BASELINE_UPDATE=1 pytest
+tests/test_code_quality.py`로 조인다). ruff는 `pip install -r requirements-dev.txt`(버전 고정) — CI가 없으니(#90) 커밋 전에 돌린다.
+불가피한 증가·이름 변경·기준선 충돌 처리는 그 파일 docstring.
+
+1. **자동 강제(위반 0이 목표)**: Ruff 포매터, import 정렬, 미사용 코드, 버그 패턴. 새 파일은 처음부터 지킨다
+   (`ruff format <파일>`, `ruff check --fix <파일>`). 기존분 일괄 정리는 #303.
+2. **리뷰 신호(기존분은 동결, 새로 넘으면 막힌다 — 책임을 나눌 신호)**: 복잡도 10, 분기 12, 문장 50, 인자 5, 중첩 4, 함수 코드줄 50, 모듈 코드줄 300
+   (코드줄 = 주석·docstring·빈 줄 제외). 쪼개는 것이 목적이 아니라 책임이 하나인지가 목적이다 — 잘게 흩어진 조각도 나쁜 구조다.
+3. **데이터**: 고정 키 dict가 함수 경계를 넘으면 `dataclass`·`NamedTuple`. 외부 JSON 경계(골드 파일·OpenSearch 응답)는 `TypedDict`.
+4. **클래스**: 상태와 불변식이 있을 때만. 상속 대신 조합, 인터페이스는 `Protocol`(#52 — 클래스를 모듈 함수로 되돌린 선례).
+5. **타입**: 공개 함수 시그니처에 힌트. 검사기 도입은 #308.
+
+3·4는 기계 검사가 없다(오탐이 많아 #90이 경고한 실패 모드) — 리뷰에서 본다.

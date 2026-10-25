@@ -108,6 +108,36 @@ class TestTeiUnchanged:
         assert sent == [{"inputs": ["x"]}]
 
     @pytest.mark.anyio
+    async def test_async_batch_split_and_order(self, monkeypatch):
+        monkeypatch.setattr(settings, "embed_provider", "tei")
+        import rag.clients
+        sent = []
+
+        async def _post(url, json, timeout):
+            sent.append(json["inputs"])
+            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: [_vec(int(t)) for t in json["inputs"]])
+
+        monkeypatch.setattr(rag.clients.http_async, "post", _post)
+        texts = [str(i) for i in range(MAX_CLIENT_BATCH + 1)]
+        out = await embed_texts(texts)
+        assert [len(b) for b in sent] == [MAX_CLIENT_BATCH, 1]
+        assert [e.dense for e in out] == [_vec(i) for i in range(MAX_CLIENT_BATCH + 1)]
+
+    def test_sync_batch_split_and_order(self, monkeypatch):
+        monkeypatch.setattr(settings, "embed_provider", "tei")
+        import httpx
+        sent = []
+
+        def _post(url, json, timeout):
+            sent.append(json["inputs"])
+            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: [_vec(int(t)) for t in json["inputs"]])
+
+        monkeypatch.setattr(httpx, "post", _post)
+        out = embed_texts_sync([str(i) for i in range(MAX_CLIENT_BATCH + 1)])
+        assert [len(b) for b in sent] == [MAX_CLIENT_BATCH, 1]
+        assert [e.dense for e in out] == [_vec(i) for i in range(MAX_CLIENT_BATCH + 1)]
+
+    @pytest.mark.anyio
     async def test_rerank_body_and_index_offset(self, monkeypatch):
         import rag.clients
         sent = []

@@ -217,7 +217,6 @@
   "database.py": 1,
   "eval/_gold_history.py": 7,
   "eval/_golden_chunks.py": 3,
-  "eval/_golden_order.py": 1,
   "eval/_turn_cleanup.py": 4,
   "eval/absence_judge.py": 11,
   "eval/adversarial.py": 6,

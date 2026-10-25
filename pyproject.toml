@@ -27,14 +27,17 @@ select = [
     # ③ 모듈 경계(#310) — 의존 방향은 tests/test_architecture.py, 여기서는 공개 표면과 모듈 설명
     "PLC2701",               # 다른 모듈의 `_이름` import — 경계가 새는 신호(preview, 명시 활성)
     "D100", "D104",          # 모듈·패키지 docstring — "이 모듈이 하는 일을 한 문장으로" 적는 자리
+    # ④ 타입(#308) — 판단 기준 5: 시그니처 힌트. 새 파일 전체 검사는 mypy(tests/test_typecheck.py)
+    "ANN001", "ANN002", "ANN003",                # 인자 힌트 누락(ruff ANN001은 공개 여부를 안 가린다)·*args·**kwargs
+    "ANN201", "ANN204", "ANN205", "ANN206",      # 반환 힌트 누락 — 공개 함수·특수 메서드(__init__ 등)·static·classmethod
 ]
 ignore = [
     "B008",   # 기본값 인자에 함수 호출 — FastAPI Depends 관용구라 오탐(FastAPI도 이 규칙을 끈다)
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["PLR0913", "PLC2701"]   # 픽스처는 인자로 받는다(인자 수 ≠ 책임 수), 테스트는 내부(`_이름`)를 직접 검사한다
-"conftest.py" = ["PLR0913"]
+"tests/**" = ["PLR0913", "PLC2701", "ANN"]   # 픽스처는 인자로 받는다(인자 수 ≠ 책임 수), 테스트는 내부(`_이름`)를 직접 검사한다, 테스트 함수는 힌트를 달지 않는다
+"conftest.py" = ["PLR0913", "ANN"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["rag", "routers", "schemas", "eval", "tests", "config", "database", "text_norm", "main"]
@@ -48,3 +51,16 @@ max-branches = 12
 max-returns = 6
 max-statements = 50
 max-nested-blocks = 4
+
+[tool.mypy]
+# 새 파일 전용(#308) — 기존 파일은 tests/typecheck_baseline.json에 동결하고 tests/test_typecheck.py가 목록 밖 파일만 검사한다.
+# 실측(main 31bece0, mypy 2.4.0): 기존 rag/ 51·eval/ 163 오류(엄격 시 rag/ 169) — 기존 코드 적용은 리팩토링 뒤(#308 2단계).
+python_version = "3.14"
+explicit_package_bases = true   # rag/는 __init__ 없는 네임스페이스 패키지인데 rag/llm/만 패키지라 이게 없으면 모듈 경로를 못 정한다
+namespace_packages = true
+ignore_missing_imports = true   # 스텁 없는 서드파티 전부(docling·opensearchpy·litellm 등)를 Any로
+follow_imports = "silent"       # 새 파일이 import한 기존 모듈의 오류는 세지 않는다 — 새 파일 자신만. 대가: 힌트 없는 기존 함수는 Any로 흐른다
+disallow_untyped_defs = true    # 판단 기준 5 — 새 파일은 함수 정의에 힌트 필수
+disallow_incomplete_defs = true
+check_untyped_defs = true
+warn_unused_ignores = true

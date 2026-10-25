@@ -269,8 +269,6 @@ async def drain_once(limit: int = BATCH, *, row_ids: list[int] | None = None) ->
 
 async def pending_row_ids(session, *, document_id: int | None = None, faq_id: int | None = None) -> list[int]:
     """한 문서 또는 한 FAQ를 가리키는 pending 행 id(op 무관) — 테스트·eval이 row_ids로 넘길 값. 둘 중 하나만 넘긴다."""
-    from sqlalchemy import or_
-
     assert (document_id is None) != (faq_id is None), 'document_id 또는 faq_id 하나만'
     stmt = select(SearchIndexOutbox.id).where(SearchIndexOutbox.status == PENDING).order_by(SearchIndexOutbox.id)
     if document_id is not None:

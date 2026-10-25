@@ -27,7 +27,7 @@ from rag.metrics import (
 from rag.models import ALIVE_DOCUMENT_STATUSES, Document, Folder
 
 # 이미지 면적(%)이 이 값 이상이면 문서에 경고를 남긴다 — 작은 도표 하나에도 핵심 내용이 들 수 있어 낮게 잡는다.
-IMAGE_WARN_RATIO = 0.5
+IMAGE_WARN_PERCENT = 0.5
 
 _MIME_OVERRIDES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -199,7 +199,7 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         doc.is_active = True
         doc.char_count = sum(len(c.text) for c in chunks)
         # 이미지 비중이 큰 문서는 캡션·OCR 오류 가능성만 알린다 — 검색·인용은 정상이라 ready 그대로.
-        if image_ratio >= IMAGE_WARN_RATIO:
+        if image_ratio >= IMAGE_WARN_PERCENT:
             doc.status_reason = (
                 f'이미지가 쪽 면적의 {image_ratio:.0f}%를 차지합니다. '
                 f'그림은 AI가 설명을 만들고 표 이미지는 글자를 인식해 검색에 반영합니다. '

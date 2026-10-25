@@ -76,8 +76,8 @@ def _rank_multi(per_query_ids: list[list[int]]) -> list[int]:
     return [cid for cid, _ in sorted(scores.items(), key=lambda x: -x[1])]
 
 
-def _table_key(ch: RetrievedChunk) -> tuple:
-    """표 묶음이 속한 표. table_key는 엑셀은 시트명, PDF·DOCX는 문서 안 표 순번이다."""
+def table_identity(ch: RetrievedChunk) -> tuple:
+    """어느 문서의 어느 표인가 — 같은 표의 묶음을 접는 키. table_key 필드는 엑셀은 시트명, PDF·DOCX는 문서 안 표 순번."""
     return (ch.document_id, ch.table_key)
 
 
@@ -134,7 +134,7 @@ def prepare_evidence(chunks: list[RetrievedChunk], top_k: int) -> list[Retrieved
     seen, folded = set(), []
     for ch in chunks:
         if ch.is_table:
-            key = _table_key(ch)
+            key = table_identity(ch)
             if key in seen:
                 continue
             seen.add(key)

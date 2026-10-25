@@ -1,4 +1,4 @@
-"""xlsx 청커 단위 테스트 — _cell / _to_markdown / chunk_xlsx.
+"""xlsx 청커 단위 테스트 — _cell / to_markdown_table / chunk_xlsx.
 
 is_table·table_key·table_text meta와 표 설명 병합은 근거 준비(retriever.prepare_evidence)의 표 접기·확장과 검색 보강이 의존한다.
 """
@@ -11,9 +11,10 @@ from io import BytesIO
 
 from rag.chunking import TABLE_MAX_TOKENS
 
-from rag.xlsx_chunking import (XLSX_BATCH_TOKENS, CHARS_PER_TOKEN, XlsxDescriptionRequired,
-                               XlsxTableTooLarge, XlsxUploadRejected, _batch_rows, _cell, _to_markdown, chunk_xlsx,
-                               description_missing, estimate_tokens, xlsx_plain_text, validate_xlsx_upload)
+from rag.chunking import TABLE_BATCH_TOKENS, batch_table_rows, to_markdown_table
+from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN, estimate_tokens_conservative
+from rag.xlsx_chunking import (XlsxDescriptionRequired, XlsxTableTooLarge, XlsxUploadRejected, _cell, chunk_xlsx,
+                               description_missing, xlsx_plain_text, validate_xlsx_upload)
 
 CORPUS_XLSX = (Path(__file__).resolve().parent.parent
                / 'sample_docs' / 'corpus_v2' / 'homeplus' / 'homeplus_10_멤버십혜택표.xlsx')
@@ -39,7 +40,7 @@ class TestCell:
 
 class TestToMarkdown:
     def test_기본_표_형식(self):
-        md = _to_markdown(['등급', '적립률'], [['VIP', '2.0']])
+        md = to_markdown_table(['등급', '적립률'], [['VIP', '2.0']])
         assert md.splitlines() == [
             '| 등급 | 적립률 |',
             '| --- | --- |',
@@ -47,7 +48,7 @@ class TestToMarkdown:
         ]
 
     def test_짧은_행은_빈칸_패딩_긴_행은_잘림(self):
-        md = _to_markdown(['a', 'b'], [['1'], ['1', '2', '3']])
+        md = to_markdown_table(['a', 'b'], [['1'], ['1', '2', '3']])
         lines = md.splitlines()
         assert lines[2] == '| 1 |  |'
         assert lines[3] == '| 1 | 2 |'
@@ -56,7 +57,7 @@ class TestToMarkdown:
 def _max_rows_at_limit() -> int:
     """헤더 'col' + 숫자 1열 표에서 추정 토큰이 상한 이하인 최대 데이터 행 수 — 경계 테스트용(off-by-one 회귀 방지)."""
     n = 1
-    while estimate_tokens(_to_markdown(['col'], [[str(i)] for i in range(n + 1)])) <= TABLE_MAX_TOKENS:
+    while estimate_tokens_conservative(to_markdown_table(['col'], [[str(i)] for i in range(n + 1)])) <= TABLE_MAX_TOKENS:
         n += 1
     return n
 
@@ -103,7 +104,7 @@ class TestChunkXlsx:
         wb.save(p)
         chunks = chunk_xlsx(p, description='단가표')
         assert len(chunks) > 1
-        budget = int(XLSX_BATCH_TOKENS * CHARS_PER_TOKEN)
+        budget = int(TABLE_BATCH_TOKENS * CONSERVATIVE_CHARS_PER_TOKEN)
         for c in chunks:
             lines = c.text.splitlines()
             assert lines[:3] == ['[단가표]', '| 상품코드 | 상품명 | 단가 |', '| --- | --- | --- |']
@@ -124,26 +125,26 @@ class TestChunkXlsx:
     ], ids=['헤더_줄바꿈', '칸_줄바꿈_뒤_파이프', '대시_든_칸', '빈_칸'])
     def test_행_묶음은_행_단계에서_나눠_헤더와_행이_깨지지_않는다(self, header, body):
         # #222 리뷰 — 렌더한 글을 줄 단위로 다시 해석하던 첫 구현은 앞의 두 경우에서 헤더가 깨지고 행이 중간에서 잘렸다
-        batches = _batch_rows(header, body, budget_chars=400)
-        head = _to_markdown(header, [])
+        batches = batch_table_rows(header, body, budget_chars=400)
+        head = to_markdown_table(header, [])
         assert len(batches) > 1 and all(b.startswith(head + '\n') for b in batches)   # 묶음마다 헤더 전체 + 구분선
         rebuilt, i = [], 0                                                       # 묶음 = 원래 행을 순서대로 나눈 것
         for b in batches:
             k = 0
-            while i + k < len(body) and _to_markdown(header, body[i:i + k + 1]) == b[:len(_to_markdown(header, body[i:i + k + 1]))]:
+            while i + k < len(body) and to_markdown_table(header, body[i:i + k + 1]) == b[:len(to_markdown_table(header, body[i:i + k + 1]))]:
                 k += 1
-            assert b == _to_markdown(header, body[i:i + k])                       # 행 경계에서만 잘렸다
+            assert b == to_markdown_table(header, body[i:i + k])                       # 행 경계에서만 잘렸다
             rebuilt += body[i:i + k]
             i += k
         assert rebuilt == body
         assert all(len(b) <= 400 for b in batches)
 
     def test_행_하나가_예산보다_길면_혼자_한_묶음이고_자르지_않는다(self):
-        batches = _batch_rows(['h'], [['짧음'], ['긴' * 500], ['짧음2']], budget_chars=50)
-        assert batches == [_to_markdown(['h'], [['짧음']]), _to_markdown(['h'], [['긴' * 500]]), _to_markdown(['h'], [['짧음2']])]
+        batches = batch_table_rows(['h'], [['짧음'], ['긴' * 500], ['짧음2']], budget_chars=50)
+        assert batches == [to_markdown_table(['h'], [['짧음']]), to_markdown_table(['h'], [['긴' * 500]]), to_markdown_table(['h'], [['짧음2']])]
 
     def test_데이터_행이_없으면_헤더만(self):
-        assert _batch_rows(['h1', 'h2'], [], budget_chars=50) == [_to_markdown(['h1', 'h2'], [])]
+        assert batch_table_rows(['h1', 'h2'], [], budget_chars=50) == [to_markdown_table(['h1', 'h2'], [])]
 
     def test_크기_상한_초과시_거절_문구는_토큰을_말하지_않는다(self, tmp_path):
         wb = openpyxl.Workbook()

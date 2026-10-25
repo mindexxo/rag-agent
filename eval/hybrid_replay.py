@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from eval.retrieval import score_one
 from eval.axis_common import evidence_has
 from rag.retrieval_types import RetrievedChunk
-from rag.retriever import _table_key, apply_identifier_boost, prepare_evidence
+from rag.retriever import table_identity, apply_identifier_boost, prepare_evidence
 
 TOP_N = 20      # 운영 retrieve_candidates 기본 — rag.retriever.DEFAULT_TOP_N
 TOP_K = 5       # 모델이 받는 근거 수 — eval.generation.TOP_K
@@ -143,9 +143,9 @@ def evaluate(rec: dict, final: list[RetrievedChunk], chunks: dict[int, Retrieved
         in_ev = evidence_has(evidence, rec["token"])
     else:
         gold = set(rec["gold_ids"])
-        tables = {_table_key(c) for c in evidence if c.is_table}
+        tables = {table_identity(c) for c in evidence if c.is_table}
         in_ev = float(any(c.chunk_id in gold for c in evidence)
-                      or any(g in chunks and chunks[g].is_table and _table_key(chunks[g]) in tables for g in gold))
+                      or any(g in chunks and chunks[g].is_table and table_identity(chunks[g]) in tables for g in gold))
     return {**score_one([c.chunk_id for c in final], rec["gold_ids"]), "in_evidence": in_ev}
 
 

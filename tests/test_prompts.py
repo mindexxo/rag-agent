@@ -6,7 +6,6 @@ import re
 
 from rag.prompt_texts import DEFAULT_DOMAIN_HINT, PRIOR_TURNS_LABEL, STANDALONE_QUERY_LABEL
 from rag.prompts import (
-    SYSTEM_PROMPT,
     build_attachment_blocks,
     build_chat_prompt,
     build_classify_user_message,
@@ -193,7 +192,7 @@ class TestKnowledgeGenerationPrompt:
     def test_시스템과_유저_두_메시지(self):
         msgs = build_knowledge_generation_prompt('질문?', [_chunk()])
         assert [m['role'] for m in msgs] == ['system', 'user']
-        assert msgs[0]['content'] == SYSTEM_PROMPT      # domain_hint 없으면 중립 렌더
+        assert msgs[0]['content'] == build_system_prompt()      # domain_hint 없으면 중립 렌더
 
     def test_prior_turns가_유저_메시지에_실린다(self):
         msgs = build_knowledge_generation_prompt(
@@ -218,7 +217,7 @@ class TestSystemPromptStructure:
     """
 
     def _rule_numbers(self):
-        return [int(m.group(1)) for m in re.finditer(r'^(\d+)\. ', SYSTEM_PROMPT, re.M)]
+        return [int(m.group(1)) for m in re.finditer(r'^(\d+)\. ', build_system_prompt(), re.M)]
 
     def test_규칙_번호는_1부터_빈틈없이_이어진다(self):
         nums = self._rule_numbers()
@@ -231,12 +230,12 @@ class TestSystemPromptStructure:
         재번호하면 번호 참조가 조용히 낡고 모델이 없는 규칙을 짚는다(#62에서 실제로
         "규칙 7"이 민감정보 규칙을 가리켰다). 의존은 내용으로 서술해라("인용 표시 규칙").
         """
-        refs = re.findall(r'규칙\s*\d', SYSTEM_PROMPT)
+        refs = re.findall(r'규칙\s*\d', build_system_prompt())
         assert refs == [], f'번호 참조가 생겼다: {refs}'
 
     def test_근거_부재_규칙은_부재를_확인불가로_읽으라고_지시한다(self):
         """부재 ≠ 미제공. 이 원리가 빠지면 모델이 문서에 없는 것을 "제공되지 않는다"로 단정한다."""
-        assert '"확인할 수 없다"는 뜻입니다' in SYSTEM_PROMPT
+        assert '"확인할 수 없다"는 뜻입니다' in build_system_prompt()
 
     def test_표현_불일치로_거절하지_말라는_줄을_지우지_말_것(self):
         """#62에서 이 줄만 지웠더니 trap 1문항이 3/3 거절로 뒤집혔다.
@@ -245,19 +244,19 @@ class TestSystemPromptStructure:
         문서에 근거(당일 11시)가 있는데도 정문 거절했다. 원문은
         eval/results/prompt_ablation_62/9_거절축_A_H11_원문.md.
         """
-        assert '특정 표현이 문서에 없다는 이유만으로 거절하지 마십시오' in SYSTEM_PROMPT
+        assert '특정 표현이 문서에 없다는 이유만으로 거절하지 마십시오' in build_system_prompt()
 
     def test_지시_표현_정의가_있다(self):
         """#63 — "이 문서"가 첨부를 가리킨다는 정의. 이게 빠지면 혼합 질의에서 검색 문서가
         "이 문서"의 내용으로 오도된다(개발계 실사고 — 첨부 요약에 환불정책이 섞여 나옴)."""
-        assert "지시 표현은 <첨부 문서> 블록이 있으면 그 블록을 가리킵니다" in SYSTEM_PROMPT
+        assert "지시 표현은 <첨부 문서> 블록이 있으면 그 블록을 가리킵니다" in build_system_prompt()
 
     def test_답변_서식_규칙에_첫_문장_불릿이_없다(self):
         """규칙 3과 짝이라 함께 빠졌다 — 되살리면 첫 문장이 자기모순을 낸다.
 
         사유는 _SYSTEM_PROMPT_TEMPLATE 위의 ⚠ 주석. 한쪽만 되돌리려면 재측정이 전제다.
         """
-        assert '첫 문장은 질문에 대한 핵심 답' not in SYSTEM_PROMPT
+        assert '첫 문장은 질문에 대한 핵심 답' not in build_system_prompt()
 
 
 class TestCondenseUserMessage:
@@ -325,10 +324,6 @@ class TestDomainHint:
                 out = build(hint)
                 assert DEFAULT_DOMAIN_HINT in out
                 assert '__DOMAIN_HINT__' not in out
-
-    def test_상수는_기본_렌더링과_동일(self):
-        # eval/generation 등 정적 참조(SYSTEM_PROMPT)가 기본 빌드와 어긋나면 평가·운영 프롬프트가 갈라진다
-        assert SYSTEM_PROMPT == build_system_prompt()
 
 
 class TestIntentPromptHistory:

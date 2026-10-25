@@ -84,7 +84,7 @@ def effective_headings(headings: list[str], text: str) -> list[str]:
     return list(dict.fromkeys(out))
 
 
-def heading_identifier(line: str) -> str | None:
+def _heading_identifier(line: str) -> str | None:
     """헤딩 한 줄의 식별자 — 줄 머리의 것 하나만. 없으면 None.
 
     헤딩 줄에 본문이 붙어 오면("제93조 (…) 각 지점은 이 규정 제10조에 …") 본문 속 인용까지 이름표가 되므로 머리만 본다.
@@ -95,7 +95,7 @@ def heading_identifier(line: str) -> str | None:
 
 def chunk_identifiers(heading_path: list[str], headings: list[str]) -> list[str]:
     """조각의 식별자 사전 — 제목 경로 + 헤딩 줄(effective_headings의 결과)에서 줄마다 줄 머리 식별자 하나씩."""
-    out = [heading_identifier(h) for h in [*(heading_path or []), *(headings or [])]]
+    out = [_heading_identifier(h) for h in [*(heading_path or []), *(headings or [])]]
     return list(dict.fromkeys(t for t in out if t))
 
 
@@ -108,7 +108,7 @@ def cut_identifier_span(text: str, headings: list[str], token: str) -> str:
     heads = {h.strip() for h in headings or ()}
     idx = [i for i, line in enumerate(lines) if line.strip() in heads]
     for n, i in enumerate(idx):
-        if heading_identifier(lines[i]) == token:
+        if _heading_identifier(lines[i]) == token:
             j = idx[n + 1] if n + 1 < len(idx) else len(lines)
             return '\n'.join(lines[i:j])
     return text

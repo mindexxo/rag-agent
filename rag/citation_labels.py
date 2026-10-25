@@ -8,14 +8,8 @@
 된다 — 후보 목록 파생은 PreparedRag.citation_candidates(rag/service.py) 한 곳에서 한다.
 """
 
-# 꼬리 마커·안쪽 형식의 정의점은 rag/prompt_texts.py다 — 여기서 재노출만 한다.
-from rag.prompt_texts import (  # noqa: F401 (재노출)
-    TAIL_END,
-    TAIL_EXAMPLE_EMPTY,
-    TAIL_EXAMPLE_MULTI,
-    TAIL_EXAMPLE_SINGLE,
-    TAIL_START,
-)
+# 꼬리 마커의 정의점은 rag/prompt_texts.py다.
+from rag.prompt_texts import TAIL_END, TAIL_START
 from schemas.kms import SourceCitation
 
 

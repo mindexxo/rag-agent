@@ -93,7 +93,7 @@ class TestAttachmentBlocks:
 
 class TestCitationTail:
     """꼬리 제약의 **의도**(#287) — 후보 수와 꼬리 표식. 서버 문법(structural_tag)은 공급자 구현이 만들고
-    tests/test_llm_providers.py가 고정한다. 실제 강제 여부는 라이브 실측(rag/llm/vllm.py docstring의 반증 테스트)."""
+    tests/test_llm_providers.py가 고정한다. 실제 강제 여부는 라이브로 확인한다(반증 방법은 rag/llm/vllm.py `_citation_body` docstring)."""
 
     def _tail(self, sources_n: int, attachments: list[str]):
         from rag.prompts import build_citation_tail

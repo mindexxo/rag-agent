@@ -131,8 +131,8 @@ async def generate(llm: LlmClient, original_query: str, chunks: list[RetrievedCh
     첨부는 []다 — gold set에 첨부 문항이 0건이다.
 
     #65부터 이 제약이 **실제로 강제된다**(#56 도입 이후 처음). 그전 구현(정규식)은 vLLM에서
-    무효였고, 그래서 붙이기 전후 위반율이 같았다(oracle 1.1%·retrieved 1.6%) — 경위와 사다리
-    실측은 rag/llm/vllm.py docstring. 이 하네스가 그 강제 효과를 재는 1차 지표다: 위반율이 0으로
+    무효였고, 그래서 붙이기 전후 위반율이 같았다(oracle 1.1%·retrieved 1.6%).
+    이 하네스가 그 강제 효과를 재는 1차 지표다: 위반율이 0으로
     떨어지는지가 검증 대상이다. 제약을 거부하는 서버를 위한 재시도는 #287에서 지웠다(운영과 동일).
     """
     prompt = build_knowledge_generation_prompt(

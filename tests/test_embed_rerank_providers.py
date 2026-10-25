@@ -6,7 +6,7 @@
 3. 용도 전달(결정 4): gemini는 RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT, voyage는 query/document, openai는 안 보냄. embed_query는 "query".
 4. 배치 32 분할·응답 index 정렬·개수 검사는 상용에도 같다. 리랭크는 배치 안 index를 원본 위치로 환산하고 실패 시 None(graceful degrade).
 5. 설정: 상용 공급자인데 모델명이 비면 기동 시 ValueError.
-실제 벤더 요청 모양은 로컬 스텁 캡처로 확인했다(rag/embeddings.py·rag/reranker.py 벤더표 주석) — 품질·눈금은 라이브 측정 몫.
+실제 벤더 요청 모양은 로컬 스텁 캡처로 확인했다 — 품질·눈금은 라이브 측정 몫.
 """
 from types import SimpleNamespace
 

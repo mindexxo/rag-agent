@@ -112,6 +112,9 @@ TEI→인덱싱·검색·캐시(`EMBED_PROVIDER`·`RERANK_PROVIDER`가 tei가 �
 - 절대규칙: `grep -rn "금지\|말 것" rag/ eval/*.py`
   — 밀도 최상위는 `rag/prompt_texts.py`(모델에게 거는 규칙이라 성격이 다르다).
 
+불변식 대장 `INVARIANTS.md`는 예외로 표다 — 규칙 한 줄과 그것을 강제하는 테스트의 연결이라, 낡으면
+`tests/test_invariants_registry.py`가 깨진다(#312). 강제 칸이 `—`인 것이 할 일이다.
+
 ## 아직 없는 것 / 확인 불가한 것 — 지어내지 마라
 
 - 도구 호출(파일 읽기·쓰기)은 스콥 밖이다. 이 시스템은 검색+생성만 한다.

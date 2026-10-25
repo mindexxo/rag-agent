@@ -31,7 +31,7 @@ def _scan_files() -> list[Path]:
     for pkg in ('rag', 'rag/llm', 'routers', 'schemas', 'eval', 'tests'):   # rag/llm: 공급자 패키지(#287)도 래칫 안에
         files += sorted((_ROOT / pkg).glob('*.py'))
     files += [_ROOT / n for n in ('config.py', 'main.py', 'database.py', 'schema.sql')]
-    files += [_ROOT / n for n in ('AGENTS.md', 'CLAUDE.md', 'README.md')]
+    files += [_ROOT / n for n in ('AGENTS.md', 'CLAUDE.md', 'README.md', 'INVARIANTS.md')]
     # 이 파일 자신은 제외한다 — 없어진 경로를 '검사 대상 데이터'로 적어두므로(화이트리스트·에러
     # 메시지) 스스로를 검사하면 반드시 실패한다.
     here = Path(__file__).resolve()

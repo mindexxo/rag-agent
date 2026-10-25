@@ -287,7 +287,7 @@ class Settings(BaseSettings):
     # 검증했다(2026-09-17): CPU Triton은 표 이미지 1쪽·실문서 26쪽 모두 **바이트 동일**. GPU(CUDA EP, TF32 끔)는
     # 표 이미지는 바이트 동일, 26쪽은 글자 내용은 같고 줄 묶음만 6곳 다르다(글머리 유무·문단 병합) — conv 수치
     # 차이로 OCR 박스 좌표가 미세하게 달라 docling의 줄 그룹핑이 바뀐다. 언어(korean)·use_cls=False는
-    # 서버·클라이언트 상수다(rag/chunking.py).
+    # 서버 상수다(serving/triton-ocr/model_repository/ocr/1/model.py).
     # OCR 엔진(#299 결정 6). triton = 사내(위 docling_do_ocr·아래 ocr_kserve_*, 지금 동작 그대로) | llm = 상용 — Triton을 안 부르고
     # (docling_do_ocr 무시) 사진 표·스캔 쪽을 캡션과 같은 LLM(vlm_caption_url·model·api_key·temperature)이 읽는다. 라우팅·근거는
     # rag/chunking.py의 '상용 OCR' 절. 캡션과 연결을 공유하는 이유: #296에서 한 모델이 둘 다 Triton보다 잘 읽었고(표 숫자 오독 6 vs 26),

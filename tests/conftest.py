@@ -468,6 +468,7 @@ def _no_remote_ocr():
     test_retry_dispatch가 teardown에서 'Event loop is closed'로 깨졌다(2026-09-17 실측, origin/main에선 통과)."""
     from config import settings
     settings.docling_do_ocr = False
+    settings.ocr_provider = 'triton'   # 상용 OCR(#299)도 같은 이유로 끈다 — .env가 llm이면 PDF 테스트가 상용 LLM을 부른다. 켜는 건 tests/test_ocr_llm.py
 
 
 # ── 그림 캡션 VLM 대역 (#223) ──
@@ -485,6 +486,7 @@ class FakeVlm:
         self.status = 200          # 5xx로 바꾸면 docling은 빈 캡션을 준다 → CaptionFailedError
         self.delay = 0.0           # 초 — 마감 테스트용
         self.calls = 0
+        self.finish_reason = 'stop'   # 'length'면 출력이 상한에서 잘린 응답(#299 — 상용 OCR은 결정적 실패로 올린다)
 
 
 @pytest.fixture(scope='session')
@@ -503,7 +505,7 @@ def _fake_vlm_server():
             if vlm.delay:
                 time.sleep(vlm.delay)
             body = json.dumps({'id': 'fake', 'created': 0, 'model': 'fake',
-                               'choices': [{'index': 0, 'finish_reason': 'stop',
+                               'choices': [{'index': 0, 'finish_reason': vlm.finish_reason,
                                             'message': {'role': 'assistant', 'content': vlm.caption}}]}).encode()
             self.send_response(vlm.status)
             self.send_header('content-type', 'application/json')

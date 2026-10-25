@@ -91,7 +91,7 @@ async def rerank_maxpool(queries: list[str], chunks: list) -> tuple[list, list[f
     return [chunks[i] for i in order], [best[i] for i in order], [best_qi[i] for i in order]
 
 
-async def rerank(query: str, chunks: list, model_name: str | None = None) -> list:
-    """단일 쿼리 재정렬 — rerank_maxpool([query], ...)의 위임 래퍼(eval 호출부용). model_name은 무시한다."""
+async def rerank(query: str, chunks: list) -> list:
+    """단일 쿼리 재정렬 — rerank_maxpool([query], ...)의 위임 래퍼(eval 호출부용)."""
     reranked, _, _ = await rerank_maxpool([query], chunks)
     return reranked

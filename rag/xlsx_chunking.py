@@ -1,6 +1,6 @@
 """xlsx를 시트별 행 묶음 청크로 나누고, 업로드 사전검증(표 설명 필수·표 크기 상한)을 한다.
 
-- 청크: 시트 표를 약 `XLSX_BATCH_TOKENS` 크기의 행 묶음으로 나누고 묶음마다 표 설명·헤더를 반복한다 — 작은 묶음으로
+- 청크: 시트 표를 약 `TABLE_BATCH_TOKENS` 크기의 행 묶음으로 나누고 묶음마다 표 설명·헤더를 반복한다 — 작은 묶음으로
   정밀하게 검색되게. 묶음마다 시트 완성본(`meta['table_text']`)을 실어, 근거 준비(`rag.retriever.prepare_evidence`)가
   걸린 묶음을 완성본으로 바꿔 모델이 언제나 시트 전체를 보게 한다. meta 계약은 PDF·DOCX 큰 표와 같다.
 - 크기 상한: 시트 표 하나당 `TABLE_MAX_TOKENS` 생성 모델 토큰 — 행 수가 아니라 내용의 양으로 잰다(행당 토큰이 표 모양마다
@@ -28,24 +28,15 @@ from rag.chunking import (
     TABLE_BATCH_TOKENS,
     TABLE_MAX_TOKENS,
     ChunkData,
+    batch_table_rows,
     docling_block_text,
     docling_convert,
     docling_grid_rows,
-)
-from rag.chunking import (
-    batch_table_rows as _batch_rows,
-)
-from rag.chunking import (
-    to_markdown_table as _to_markdown,
+    to_markdown_table,
 )
 from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN, estimate_tokens_conservative
 
 logger = logging.getLogger(__name__)
-
-# 글자 → 토큰 추정 계수 — 정의점은 rag.tokens(근거 예산과 같은 추정기). 보수적이라 보통 표의 실제 상한은 명목보다 작다.
-CHARS_PER_TOKEN = CONSERVATIVE_CHARS_PER_TOKEN
-# 행 묶음 하나의 크기 — 정의점은 rag/chunking(PDF·DOCX 표도 같은 묶음 크기). 측정 근거 없이 잡은 값이다.
-XLSX_BATCH_TOKENS = TABLE_BATCH_TOKENS
 
 
 class XlsxUploadRejected(Exception):
@@ -93,14 +84,9 @@ def description_missing(description: str | None) -> bool:
     return not (description or '').strip()
 
 
-def estimate_tokens(text: str) -> int:
-    """렌더한 표의 생성 모델 토큰 보수 추정(추정 ≥ 실제)."""
-    return estimate_tokens_conservative(text)
-
-
 def _check_sheet_size(title: str, header: list, body: list) -> None:
     """크기 상한 비교식 — 색인(`chunk_xlsx`)과 사전검증(`validate_xlsx_upload`)이 공유한다(openpyxl 렌더 기준)."""
-    tokens = estimate_tokens(_to_markdown(header, body))
+    tokens = estimate_tokens_conservative(to_markdown_table(header, body))
     if tokens > TABLE_MAX_TOKENS:
         raise XlsxTableTooLarge(title, math.ceil(tokens * 100 / TABLE_MAX_TOKENS), len(body), len(header))
 
@@ -143,7 +129,7 @@ Block = tuple[str, object]
 
 def _render(block: Block) -> str:
     kind, value = block
-    return _to_markdown(value[0], value[1:]) if kind == 'table' else value
+    return to_markdown_table(value[0], value[1:]) if kind == 'table' else value
 
 
 def _sheet_chunks(title: str, blocks: list[Block], description: str, start: int) -> list[ChunkData]:
@@ -154,15 +140,17 @@ def _sheet_chunks(title: str, blocks: list[Block], description: str, start: int)
     """
     prefix = f'[{description}]\n' if description.strip() else ''
     sheet_text = prefix + '\n\n'.join(_render(b) for b in blocks)
-    if (est := estimate_tokens(sheet_text)) > TABLE_MAX_TOKENS:
+    if (est := estimate_tokens_conservative(sheet_text)) > TABLE_MAX_TOKENS:
         # 크기 판정 기준은 openpyxl 렌더다 — docling 완성본은 그림 캡션·병합 칸 반복·설명으로 더 클 수 있는데, 여기서
         # 거절하면 "업로드 통과·색인 거절"이 생기므로 경고만 남긴다. 근거 예산이 안전장치다.
         logger.warning(
             "시트 '%s' 완성본이 상한을 넘는다(추정 %d > %d토큰) — 색인은 계속한다", title, est, TABLE_MAX_TOKENS
         )
-    budget = int(XLSX_BATCH_TOKENS * CHARS_PER_TOKEN)
+    budget = int(TABLE_BATCH_TOKENS * CONSERVATIVE_CHARS_PER_TOKEN)
     parts = [
-        p for kind, value in blocks for p in (_batch_rows(value[0], value[1:], budget) if kind == 'table' else [value])
+        p
+        for kind, value in blocks
+        for p in (batch_table_rows(value[0], value[1:], budget) if kind == 'table' else [value])
     ]
     return [
         ChunkData(

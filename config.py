@@ -311,7 +311,7 @@ class Settings(BaseSettings):
     #   · 병합 셀 범위 소실(글자는 남음 — 2단 분류 머리글이 둘 다 필요할 때만 답이 틀림), 세로쓰기 헤더 미인식.
     #   · 작은 글씨·JPEG 재압축·표 안의 표 이미지는 docling 레이아웃이 **표가 아니라 그림**으로 분류 → OCR이 아니라 VLM 캡션
     #     경로(vlm_caption_*)로 간다. 선명하면 캡션이 값을 거의 다 옮기고(25/25), 작은 글씨·저품질은 틀린다(#247).
-    #   표 이미지 전용 경고는 두지 않는다(실문서 0건, #253 결정 2) — 기존 이미지 비율 경고(rag/documents.py IMAGE_WARN_RATIO)와
+    #   표 이미지 전용 경고는 두지 않는다(실문서 0건, #253 결정 2) — 기존 이미지 비율 경고(rag/documents.py IMAGE_WARN_PERCENT)와
     #   업로드 안내(FE 공유)로 전달한다.
 
     # 그림 캡션 — docling picture description 훅으로 그림을 사내 VLM에 보내 설명을 받아 청크에 싣는다 (#162).

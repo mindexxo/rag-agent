@@ -192,7 +192,7 @@ async def run_config(session, name, gold_rows, resolved, fingerprint):
             settings.rerank_enabled = prev_rerank
         if rerank_model:                                    # 후보 순서만 재정렬 (R@20 불변)
             from rag.reranker import rerank                  # 사용 시점에만 import (모듈은 직접 구현 예정)
-            cands.chunks = await rerank(row["query"], cands.chunks, rerank_model)
+            cands.chunks = await rerank(row["query"], cands.chunks)
         elapsed.append((time.perf_counter() - t0) * 1000)
         got = [c.chunk_id for c in cands.chunks]
 

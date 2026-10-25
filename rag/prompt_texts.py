@@ -34,7 +34,7 @@ FAILED_TURN_EMPTY = '(오류로 답변하지 못함)'
 DEFAULT_DOMAIN_HINT = '테넌트에 등록된 문서를 근거로 하는 상담 지식 전반'  # 도메인 중립 폴백
 
 # 출처 꼬리 마커의 정의점 — 답변 끝에 TAIL_EXAMPLE_MULTI 형태로 붙는다. 프롬프트가 f-string으로
-# 보간하므로 문구와 같은 파일에 둔다. 소비처는 rag/citation_labels.py 재노출을 거쳐 import한다 — 재정의 금지.
+# 보간하므로 문구와 같은 파일에 둔다. TAIL_START·TAIL_END의 소비처는 rag/citation_labels.py 재노출을 거쳐 import한다 — 재정의 금지.
 # «»는 한국어 상담 문서에 사실상 안 나오고, 두 겹이면 인용부호 오용까지 피한다. 꼬리 토큰이 곧 각주 지연이라 짧게 유지한다.
 TAIL_START = '««'
 TAIL_END = '»»'

@@ -1,4 +1,4 @@
-"""엑셀 크기 추정의 보수성 (#222 결정 8) — 글자 수 ÷ CHARS_PER_TOKEN 추정이 **실제 생성 모델 토큰 이상**인가.
+"""엑셀 크기 추정의 보수성 (#222 결정 8) — 글자 수 ÷ CONSERVATIVE_CHARS_PER_TOKEN 추정이 **실제 생성 모델 토큰 이상**인가.
 
 업로드 검증은 GPU 서버에 묶이지 않으려고 글자 수로 추정한다. 추정이 실제보다 작으면 상한(6,000토큰)을 넘는 표가
 통과해 품질 꺾임 구간(실측 1만 토큰 92%·표 중간 행 15/19)에 들어간다. 그래서 실제 토크나이저(vLLM /tokenize)로
@@ -15,7 +15,9 @@ import pytest
 from config import settings
 from contextlib import closing
 
-from rag.xlsx_chunking import _iter_sheets, _to_markdown, estimate_tokens
+from rag.chunking import to_markdown_table
+from rag.tokens import estimate_tokens_conservative
+from rag.xlsx_chunking import _iter_sheets
 
 ROOT = Path(__file__).resolve().parent.parent
 BASE = settings.llm_base_url.rstrip('/').removesuffix('/v1')
@@ -71,10 +73,10 @@ def _tables(tmp_path):
     for f in files:                                       # 상한 검사 없이 운영과 같은 렌더만 — 여기선 추정치 비교가 목적
         with closing(openpyxl.load_workbook(f, read_only=True, data_only=True)) as wb:
             for title, header, body in _iter_sheets(wb):
-                yield f'{f.name}:{title}', _to_markdown(header, body)
+                yield f'{f.name}:{title}', to_markdown_table(header, body)
 
 
 def test_추정_토큰은_실제_토큰_이상이다(tmp_path):
-    under = [(name, estimate_tokens(md), _count(md)) for name, md in _tables(tmp_path)
-             if estimate_tokens(md) < _count(md)]
+    under = [(name, estimate_tokens_conservative(md), _count(md)) for name, md in _tables(tmp_path)
+             if estimate_tokens_conservative(md) < _count(md)]
     assert not under, f'추정이 실제보다 작은 표: {under[:5]}'

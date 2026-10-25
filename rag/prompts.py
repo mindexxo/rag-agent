@@ -37,9 +37,6 @@ def build_system_prompt(domain_hint: str | None = None) -> str:
     return _SYSTEM_PROMPT_TEMPLATE.replace('__DOMAIN_HINT__', _resolve_domain_hint(domain_hint))
 
 
-SYSTEM_PROMPT = build_system_prompt()  # 기본(중립) 렌더링 — eval/generation 등 힌트 없는 정적 참조용
-
-
 def build_intent_guard_prompt(domain_hint: str | None = None) -> str:
     """입력 검사·인텐트 분류 시스템 프롬프트 — KNOWLEDGE 정의의 지식 범위 슬롯 치환."""
     return _INTENT_GUARD_SYSTEM_PROMPT_TEMPLATE.replace('__DOMAIN_HINT__', _resolve_domain_hint(domain_hint))

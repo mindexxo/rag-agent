@@ -91,14 +91,10 @@ def set_attrs(sp, attrs: dict) -> None:
             sp.set_attribute(k, v)
 
 
-def set_documents(sp, chunks, prefix: str = 'retrieval.documents') -> None:
+def set_documents(sp, chunks) -> None:
     """검색 결과 청크를 OpenInference 문서 속성으로 평탄화(순서·본문만). 채택 점수는 rerank 스팬이 기록한다."""
     if not sp.is_recording():
         return
     for i, c in enumerate(chunks):
-        sp.set_attribute(f'{prefix}.{i}.document.id', str(c.chunk_id))
-        sp.set_attribute(f'{prefix}.{i}.document.content', clip(c.text))
-
-
-def current_span():
-    return trace.get_current_span()
+        sp.set_attribute(f'retrieval.documents.{i}.document.id', str(c.chunk_id))
+        sp.set_attribute(f'retrieval.documents.{i}.document.content', clip(c.text))

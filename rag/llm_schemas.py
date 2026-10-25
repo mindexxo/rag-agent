@@ -1,32 +1,13 @@
-"""LLM 구조화 출력 — 스키마(Pydantic)와 강제 호출 헬퍼 (#43).
+"""LLM 구조화 출력 — 응답 스키마(Pydantic)와 스키마 강제 호출 + 검증 헬퍼.
 
-프롬프트로 형식을 간청하고 방어 파서로 수습하던 세 지점(가드+인텐트, condense 단일,
-condense 멀티)을 json 스키마 강제로 바꾼다(서버 문법은 공급자 구현 rag/llm이 안다). 모델 정의가 곧
-스키마(model_json_schema)이자 검증(model_validate_json) — 정의·검증이 한 곳이다.
+모델 정의가 곧 JSON 스키마이자 검증기다. 스키마를 서버 문법으로 바꾸는 일은 공급자 구현(rag/llm)이 하고,
+여기는 `schema=`로 의도만 넘긴다. 스키마 강제는 확률을 낮추는 최적화일 뿐이라 검증은 항상 돈다.
 
-공개 표면: RouteDecision · CondenseResult · CondenseMultiResult · acomplete_validated.
-나머지는 내부 헬퍼(_). 스키마를 서버 문법으로 바꾸는 일은 #287부터 공급자 구현(rag/llm)이 한다 —
-여기는 `schema=`로 의도만 넘긴다.
+계약은 두 갈래 — 검증을 통과한 모델 인스턴스이거나 예외다. 기본값을 추측해 진행하지 않는다
+(가드 폴백은 입력 검사를 끈 채 통과시키는 것이라 안전 측이 아니다).
 
-원칙 (rag/citation_tail.py #56과 동일): guided decoding은 확률을 낮추는 최적화지 신뢰의
-근거가 아니다 — 스키마가 걸렸어도 검증은 항상 돈다.
-
-경계: 이 모듈은 "구조를 신뢰할 수 있는가"까지만 책임진다. 계약은 **2갈래**다 (#72) —
-검증을 통과한 모델 인스턴스이거나, 예외다. 예전엔 "구조 신뢰 불가"를 None으로 돌려주고
-호출부가 각자 폴백(가드=safe·KNOWLEDGE, condense=[query])으로 채웠는데, 그 폴백들은
-**판단하지 못한 상태에서 기본값을 추측**하는 것이었다. 가드 쪽은 입력 검사가 꺼진 채
-통과시키는 것이라 특히 안전 측이 아니었고, 어느 쪽이든 LLM이 죽었다면 생성도 실패하므로
-폴백이 턴을 살리지도 못했다 — 에러를 검색까지 다 수행한 뒤로 미룰 뿐이었다.
-관측은 kms.schema_invalid(검증 실패)로 남는다.
-
-스키마 필드에 기본값을 주지 말 것: 기본값이 있으면 json 스키마에서 required가 빠져
-guided 경로에서 모델이 필드를 생략해도 합법이 된다 — 강제력이 조용히 약화된다.
-누락은 검증 실패 → 폴백으로 가는 게 맞고, 그 편이 kms.schema_invalid로 관측까지 된다.
-(이 원칙은 구조를 결정하는 필드 — safe·intent·standalone — 에 한한다. reason·variants는
-원래 없을 수 있는 값이라 옵셔널이 맞다.)
-
-배치가 schemas/가 아니라 rag/인 이유: schemas/는 FastAPI 요청·응답(API 경계) 계약이고,
-이건 LLM에 거는 생성 제약이라는 내부 계약이다 — build_citation_tail(rag/prompts)과 같은 축.
+구조를 결정하는 필드(safe·intent·standalone)에 기본값을 주지 말 것 — 기본값이 있으면 스키마의 required에서
+빠져 모델이 필드를 생략해도 합법이 된다. reason·variants는 원래 없을 수 있어 옵셔널이다.
 """
 
 import logging
@@ -41,12 +22,9 @@ logger = logging.getLogger(__name__)
 
 
 class LlmJudgmentFailed(RuntimeError):
-    """LLM이 판단을 내리지 못했다 — 구조화 출력 검증 실패 (#72).
+    """서버는 응답했지만 구조화 출력이 검증을 통과하지 못했다 — 호출 자체의 실패(타임아웃 등)와 구분한다.
 
-    호출 자체가 실패한 것(타임아웃·서버 다운)과 구분하기 위해 따로 둔다. 둘 다 턴을 실패로
-    끝내는 건 같지만, 이쪽은 "서버는 응답했는데 형식을 신뢰할 수 없다"라 원인 분리가 필요하다.
-    routers/kms.py가 이 타입을 503으로 매핑한다 — 재시도하면 될 수 있는 일시적 실패이므로
-    500(서버 버그)이 아니다.
+    routers/kms.py가 503으로 매핑한다(재시도로 풀릴 수 있는 일시적 실패).
     """
 
 
@@ -101,36 +79,24 @@ class CondenseMultiResult(BaseModel):
 
 
 def _extract_json_slice(raw: str) -> str:
-    """```json 펜스·부연 텍스트 방어 — 구 guardrail._extract_json의 승격. 첫 '{'부터 마지막 '}'까지.
-    스키마 강제 응답(순수 JSON)엔 항등이라 무해하고, 스키마를 못 거는 공급자가 와도 같은 검증을 탄다.
-    '{'가 없으면 ValueError — 호출자(acomplete_validated)의 검증 실패 처리로 합류."""
+    """첫 '{'부터 마지막 '}'까지 — 펜스·부연 텍스트 방어. '{'가 없으면 ValueError(검증 실패로 합류)."""
     return raw[raw.index('{') : raw.rindex('}') + 1]
 
 
 async def acomplete_validated(
     llm: LlmClient, messages: list[dict], model_cls: type[BaseModel], *, span=None
 ) -> BaseModel:
-    """스키마 강제 acomplete + 검증. 계약은 2갈래 (#72):
-
-      모델 인스턴스        정상 (스키마 경로든 무스키마 재시도 경로든 검증 통과)
-      LlmJudgmentFailed   구조를 신뢰할 수 없음 (kms.schema_invalid 기록됨)
-      그 외 예외 전파      호출 자체 실패(타임아웃·서버 다운)
-
-    호출부는 아무것도 잡지 않는다 — 판단하지 못했으면 그 턴은 실패다. 예전엔 None을 돌려주고
-    호출부가 각자 기본값을 추측했는데, 그건 판단 없이 진행하는 것이었다(사유는 모듈 docstring).
-
-    #287: 스키마를 거부하는 서버를 위한 "스키마 없이 재시도"는 지웠다 — 사내 서버는 지원 버전이라 그 경로가
-    쓰이지 않았고, 조용한 우회보다 즉시 실패가 낫다(사용자 결정 8). 거부·타임아웃은 그대로 전파된다.
+    """스키마 강제 호출 + 검증. 검증 실패는 LlmJudgmentFailed(kms.schema_invalid 기록),
+    호출 자체 실패(타임아웃·스키마 거부)는 그대로 전파한다. 호출부는 아무것도 잡지 않는다.
     """
     if span is not None:
-        otel.set_attrs(span, {otel.LLM_MODEL: getattr(llm, 'model_name', None)})  # 보조 호출이 어느 모델이었나(#297)
-    raw = await llm.acomplete(messages, schema=model_cls)  # 스키마 강제 문법은 공급자 구현이 안다(rag/llm)
+        otel.set_attrs(span, {otel.LLM_MODEL: getattr(llm, 'model_name', None)})  # 보조 호출이 어느 모델이었나
+    raw = await llm.acomplete(messages, schema=model_cls)
 
     try:
         return model_cls.model_validate_json(_extract_json_slice(raw or ''))
     except (ValidationError, ValueError) as exc:
-        # ValidationError는 ValueError의 서브클래스지만 의도를 드러내려 병기.
-        # 부분·퍼지 복구는 하지 않는다 — 그럴듯한 복구는 실패를 지표에서 숨긴다(#56 원칙).
+        # 부분·퍼지 복구는 하지 않는다 — 그럴듯한 복구는 실패를 지표에서 숨긴다.
         logger.warning('구조화 출력 검증 실패 (%s) raw=%r', model_cls.__name__, (raw or '')[:200])
         if span is not None:
             otel.set_attrs(span, {'kms.schema_invalid': True})

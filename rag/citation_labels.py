@@ -1,26 +1,14 @@
-"""인용 후보 번호의 단일 정의점 (#56).
+"""인용 후보 번호 순서의 정의점 — "번호 i가 어느 출처인가"를 여기 한 곳에서만 만든다.
 
-꼬리가 번호 목록(TAIL_EXAMPLE_MULTI 형태)이 되면서(파일명 라벨 ~25토큰 → ~6토큰, 각주 표시
-지연 해소) "번호 i가 어느 문서인가"의 순서 근거가 곧 계약이다. 같은 순서를 세 곳이 소비한다 —
-① 프롬프트 컨텍스트 블록의 [번호](rag/prompts.py), ② 꼬리 강제 제약의 번호 후보
-(rag/prompts.build_citation_tail), ③ 꼬리 파서의 번호→객체 매핑
-(rag/citation_tail.resolve_citations). 셋이 각자 순서를 세우면 어긋나는 순간
-**오귀속이 조용히**(에러 없이 엉뚱한 문서 인용) 생긴다 — 순서는 여기 한 곳만 만든다.
+같은 순서를 컨텍스트 블록의 [번호](rag/prompts.py)·꼬리 강제 제약(build_citation_tail)·꼬리 파서
+(rag/citation_tail.resolve_citations)가 소비한다. 셋이 어긋나면 에러 없이 엉뚱한 문서를 인용한다.
 
-번호 불변식: sources_from_chunks(chunks)가 만드는 문서 순서 그대로 1부터,
-그 뒤에 첨부 파일 순서로 이어진다. 첨부는 SourceCitation이 아니라서(검색 출처가 아님)
-후보 목록에서 빠뜨리기 쉽다(#41의 함정) — 제약·파서 양쪽 다 반드시 포함해야 한다.
-
-**#65에서 이 함정의 실패 방향이 바뀌었다.** 그전까지 꼬리 강제가 vLLM에서 무효였기 때문에
-(#61 실측) 후보 수를 잘못 세도 무해했다 — 모델이 자유롭게 쓰고 파서의 범위 검증이 걸러내
-"각주 누락"으로 끝났다. 강제가 실제로 걸리는 지금은, 후보 수를 작게 세면 모델이 그 축소된
-범위 **안에서** 골라야 하므로 빠진 후보를 가리키려던 시도가 **유효 범위 안의 다른 문서로
-확신에 차 대체된다** — 범위 검증을 통과하니 에러도 로그도 없다. 누락이 아니라 오답이다.
-그래서 후보 목록 파생을 PreparedRag.citation_candidates 한 곳으로 묶었다(rag/service.py).
+번호 불변식: sources_from_chunks(chunks)의 출처 순서대로 1부터, 이어서 첨부 파일 순서. 첨부는 검색 출처가
+아니라 빠뜨리기 쉬운데, 꼬리 강제가 걸려 있어 후보를 적게 세면 누락이 아니라 범위 안 다른 문서로의 오답이
+된다 — 후보 목록 파생은 PreparedRag.citation_candidates(rag/service.py) 한 곳에서 한다.
 """
 
-# 꼬리 마커·안쪽 형식의 정의점은 rag/prompt_texts.py다(프롬프트가 f-string으로 보간해야 해서
-# 문구와 같은 파일). 여기서 재노출만 한다 — 제약·파서·주석은 이 모듈만 보면 된다.
+# 꼬리 마커·안쪽 형식의 정의점은 rag/prompt_texts.py다 — 여기서 재노출만 한다.
 from rag.prompt_texts import (  # noqa: F401 (재노출)
     TAIL_END,
     TAIL_EXAMPLE_EMPTY,
@@ -32,27 +20,17 @@ from schemas.kms import SourceCitation
 
 
 def citation_tail(numbers) -> str:
-    """번호 목록 → 꼬리 문자열. 형식을 손으로 조립하지 않기 위한 단일 통로 (#65).
-
-    형식이 바뀔 때 산문·테스트가 조용히 낡는 것을 막는다 — #56→#65 사이에 옛 형식이
-    박힌 산문이 4곳 남아 있었다(citation_tail.py·citation_labels.py·prompt_texts.py·test_citation_tail.py
-    — 마지막 하나는 "3곳"이라 적은 이 주석 바로 위에 있었다. 헬퍼가 필요한 이유가 그것이다).
-    프롬프트 쪽 예시는 상수(TAIL_EXAMPLE_*)를 쓴다 — 저쪽은 f-string 보간이라 함수를 못 부른다.
-    """
+    """꼬리 문자열의 유일한 조립 통로 — 형식을 손으로 적은 산문·테스트가 형식 변경 때 조용히 낡지 않게.
+    프롬프트 쪽은 f-string 보간이라 함수 대신 TAIL_EXAMPLE_* 상수를 쓴다."""
     return f'{TAIL_START}[{",".join(str(n) for n in numbers)}]{TAIL_END}'
 
 
 def sources_from_chunks(chunks) -> list[SourceCitation]:
-    """검색 청크 목록 → 출처 단위 인용 후보 (번호 순서의 원천).
+    """검색 청크 → 출처 단위 인용 후보 (번호 순서의 원천).
 
-    출처는 청크 첫 등장 순서(=리랭크 순위 순)로 번호를 받는다 — 문서는 document_id 단위,
-    FAQ 청크(F3)는 **항목(faq_id) 단위**다(#278). #278 전에는 FAQ 전체를 'FAQ' 인용 1건으로
-    접어 마지막에 뒀는데, 그러면 어느 항목이 인용됐는지가 어디에도 남지 않아 항목별 인용 횟수
-    (FE 요청 ref_count)를 셀 수 없었다. 원본 파일이 없으므로 document_id 없이 내려가고,
-    FE는 document_id 없는 인용을 비클릭으로 처리한다. filename/version은 검색 시점에
-    청크에 비정규화돼 있어 DB 재조회가 필요 없다 — 구 _build_sources의 `WHERE id IN`은
-    반환 순서가 비보장이라 번호의 순서 근거로 쓸 수 없었다. FAQ의 표시명(질문)도 같은 이유로
-    색인 heading_path에서 읽는다(faq_question).
+    청크 첫 등장 순서(=리랭크 순위)로 번호를 받는다 — 문서는 document_id 단위, FAQ는 항목(faq_id) 단위다
+    (항목별 인용 횟수를 세기 위해). FAQ는 원본 파일이 없어 document_id=None으로 내려가고 FE는 비클릭 처리한다.
+    filename/version·FAQ 질문은 청크에 비정규화된 값을 쓴다 — DB 재조회(`WHERE id IN`)는 순서를 보장하지 않는다.
     """
     seen: set[tuple] = set()
     out: list[SourceCitation] = []
@@ -73,15 +51,14 @@ def sources_from_chunks(chunks) -> list[SourceCitation]:
 
 
 def source_key(item) -> tuple:
-    """청크·인용 객체 → 번호 묶음 키. 문서는 ('doc', document_id), FAQ는 ('faq', faq_id) — 둘의 id 공간이
-    겹치므로 종류를 같이 든다(캐시 키가 -faq_id 음수 네임스페이스를 쓰는 것과 같은 이유)."""
+    """청크·인용 객체 → 번호 묶음 키. 문서와 FAQ는 id 공간이 겹쳐 종류를 같이 든다."""
     faq_id = getattr(item, 'faq_id', None)
     return ('faq', faq_id) if faq_id is not None else ('doc', item.document_id)
 
 
 def faq_question(chunk) -> str:
-    """FAQ 청크의 질문 — 색인이 heading_path=[질문]으로 적는다(rag/os_index.index_parsed_faq, #139부터 전 항목).
-    없으면 청크 본문 첫 줄 'Q: …'에서 읽는다(rag/faq_indexing.build_faq_chunk_text의 형식) — 방어용."""
+    """FAQ 청크의 질문 — 색인이 heading_path=[질문]으로 적는다(rag/os_index.index_parsed_faq).
+    없으면 본문 첫 줄 'Q: …'(rag/faq_indexing.build_faq_chunk_text 형식)에서 읽는다 — 방어용."""
     if chunk.heading_path:
         return chunk.heading_path[0]
     first = (chunk.text or '').split('\n', 1)[0]
@@ -89,19 +66,17 @@ def faq_question(chunk) -> str:
 
 
 def faq_display(question: str) -> str:
-    """FAQ 인용의 표시명 — 'FAQ: 질문' (질문 전체. 칩에서 줄여 보이는 것과 툴팁 전체 표시는 FE 몫, 사용자 결정 2).
-    첨부 표시명('첨부: 파일명')과 같은 '종류: 이름' 꼴이라 FE가 접두로 종류를 알 수 있다."""
+    """'종류: 이름' 꼴(첨부와 같음)이라 FE가 접두로 종류를 안다. 질문은 줄이지 않는다 — 축약 표시는 FE 몫."""
     return f'FAQ: {question}'
 
 
 def source_display(source) -> str:
-    """검색 출처의 표시명 — 컨텍스트 블록에서 [번호] 뒤에 붙는 사람용 이름 (매칭에 안 쓰임).
-    청크(RetrievedChunk)와 인용 객체(SourceCitation) 둘 다 받는다 — FAQ는 faq_id로 가른다."""
+    """컨텍스트 블록의 [번호] 뒤에 붙는 사람용 이름(매칭에 안 쓰임). 청크와 SourceCitation 둘 다 받는다."""
     if getattr(source, 'faq_id', None) is not None:
         return faq_display(faq_question(source)) if hasattr(source, 'text') else source.filename
     return f'{source.filename} v{source.version}'
 
 
 def attachment_display(filename: str) -> str:
-    """첨부 문서의 표시명 — 인용되면 FAQ 선례를 따라 document_id=None 가짜 인용이 된다."""
+    """첨부 문서의 표시명 — 인용되면 document_id=None 인용 객체가 된다(FAQ와 같은 방식)."""
     return f'첨부: {filename}'

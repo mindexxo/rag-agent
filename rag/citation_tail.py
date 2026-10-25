@@ -1,28 +1,15 @@
-"""출처 꼬리 분리·해석 (#56) — 스트리밍 본문에서 ««[1,3]»» 꼬리를 걷어낸다 (형식은 #65).
+"""출처 꼬리 분리·해석 — 스트리밍 본문에서 꼬리(TAIL_EXAMPLE_MULTI 형태)를 걷어내고 인용으로 해석한다.
 
-인라인 인용을 없애면서 "이 답변이 실제로 어느 문서를 썼나"는 답변 끝의 출처 꼬리
-(structural_tag로 형식 강제, #65)가 나른다. 이 모듈이 하는 일 둘:
-
-  TailSplitter        스트리밍 도중 꼬리가 delta로 새어나가지 않게 분리 (상태 기계)
+  TailSplitter        스트리밍 도중 꼬리가 delta로 새어나가지 않게 분리하는 상태 기계
   resolve_citations   꼬리 번호 목록 → 범위 검증 → SourceCitation 목록
 
-이 모듈이 "무엇이 인용인가"의 단일 정의점이다. 번호↔문서의 순서는
-rag/citation_labels.py가 단일 정의점 (프롬프트 조립과 공유).
+"무엇이 인용인가"의 정의점이다(번호↔출처 순서는 rag/citation_labels.py).
 
-**근거없음(ungrounded) = resolve_citations 결과가 빈 목록** — 이 규약의 정의점도 여기다 (#61).
-옛 판정은 rag/answer_check.py의 문구 부분일치('제공된 문서에서 확인할 수 없')였고, 폐기 사유는
-프롬프트 문구에 묶여 있었다는 것이다: 생성 프롬프트 규칙 3을 완화하니 검출률이 **95~97% →
-3~7%로 붕괴**했다(#48 조사 실측). 게다가 문구가 조금 다른 부재 단정("해외 배송은 제공되지
-않습니다." + 빈 꼬리)을 아예 놓쳤다 — 인용 개수는 그것도 잡는다. 대신 범위가 넓어져서
-"근거 없이 확신하며 답한" 경우까지 포함하는데, 그건 원래 보고 싶던 신호다.
-소비처(rag/service.maybe_cache · routers/stats.py · eval/refusal.py)는 이 문단을 참조만 한다.
+근거없음(ungrounded) = resolve_citations 결과가 빈 목록 — 이 규약의 정의점도 여기다. 거절 문구 일치로
+판정하면 프롬프트 문구에 묶이고 문구가 다른 부재 단정을 놓친다. 근거 없이 확신한 답변까지 포함하는 것은 의도다.
 
-검증 원칙(#56): 생성 측 강제는 확률을 낮추는 최적화지 신뢰의 근거가 아니다 —
-제약이 붙었든(정상) 떨어졌든(fail-open) 파싱 결과는 항상 유효 범위 번호만 통과한다.
-#65가 이 원칙의 값을 실증했다: 옛 정규식은 배포 내내 무효였는데도 잘못된 인용이
-사용자에게 나가지 않았다 — 이 파일의 범위 검증이 유일한 방어선이었기 때문이다.
-malformed 꼬리는 부분 복구를 시도하지 않고 그 번호만 버린다 — 그럴듯한 복구는 실패를
-지표에서 숨긴다(탐지 가능한 오류를 탐지 불가능하게 만들지 않는다).
+생성 측 강제는 확률을 낮추는 최적화일 뿐이라, 제약이 걸렸든 풀렸든 파싱은 항상 유효 범위 번호만 통과시킨다.
+malformed 꼬리는 부분 복구하지 않고 그 번호만 버린다 — 그럴듯한 복구는 실패를 지표에서 숨긴다.
 """
 
 import re
@@ -30,9 +17,8 @@ import re
 from rag.citation_labels import TAIL_END, TAIL_START, attachment_display
 from schemas.kms import SourceCitation
 
-# 꼬리가 이 길이를 넘도록 END가 안 나오면 꼬리가 아니라 본문으로 판정(오탐 복구).
-# 번호 목록은 후보 30~40건 전부 인용해도 ~120자 — 200이면 여유 있는 상한이고,
-# 본문 속 우연한 마커(오탐)를 붙잡아 두는 창을 짧게 유지한다.
+# 이 길이를 넘도록 END가 안 나오면 꼬리가 아니라 본문 속 우연한 마커로 판정한다.
+# 후보 전부를 인용해도 ~120자라 여유 있는 상한이면서, 오탐을 붙잡아 두는 창은 짧다.
 MAX_TAIL_CHARS = 200
 
 
@@ -61,8 +47,7 @@ class TailSplitter:
     def feed(self, chunk: str) -> str:
         assert not self._done, 'finish() 이후 feed 불가'
         emitted = self._feed_tail(chunk) if self._in_tail else self._feed_body(chunk)
-        # prose 누적은 여기 최상위 한 곳뿐이다 — 내부 헬퍼(_feed_body/_flush_false_alarm)가
-        # 각자 더하면 오탐 복귀가 같은 feed 호출 안에서 재귀할 때 이중 누적된다(리뷰 발견).
+        # prose 누적은 여기 한 곳뿐이다 — 내부 헬퍼가 더하면 오탐 복귀 재귀에서 이중 누적된다.
         self.prose += emitted
         return emitted
 
@@ -133,19 +118,12 @@ class TailSplitter:
 
 
 def resolve_citations(tail_raw: str | None, sources, attachment_filenames: list[str]) -> list[SourceCitation]:
-    """꼬리의 번호 목록 → 인용 객체. 범위 밖·중복·비숫자는 버린다.
+    """꼬리의 번호 목록 → 인용 객체. 범위 밖·중복·비숫자는 버리고, 반환 순서는 꼬리 등장 순서.
 
-    번호 불변식(citation_labels): 후보 i(1-based) = sources[i-1], 이어서 첨부 순서 —
-    프롬프트 컨텍스트 블록의 [번호]와 같은 규칙이므로, 여기 sources는 반드시
-    프롬프트를 만든 그 청크의 sources_from_chunks 산출물(prepared.sources)이어야 한다.
-
-    파싱은 숫자 뭉치 추출(\\d+)만 — 구분자가 쉼표든 공백이든 관용한다(fail-open 경로의
-    자유 생성 대비). 구 라벨 방식이 필요로 했던 NFC 방어·대괄호 파일명 처리(b83dcd3)는
-    숫자에는 해당 없음. 반환 순서는 꼬리 등장 순서.
-
-    첨부 인용은 FAQ 선례(document_id=None인 가짜 인용)를 따라
-    SourceCitation(document_id=None, filename='첨부: 파일명', version=1)이 된다 —
-    cited_docs·stats 집계에 그대로 노출되는 것이 의도다(첨부 기반 답변도 지표에 잡히게).
+    sources는 반드시 프롬프트를 만든 그 청크의 sources_from_chunks 산출물(prepared.sources)이어야 한다 —
+    후보 i(1-based) = sources[i-1], 이어서 첨부 순서(citation_labels의 번호 불변식).
+    숫자 뭉치만 추출해 구분자는 관용한다(강제가 풀린 자유 생성 대비).
+    첨부 인용은 document_id=None 인용 객체가 되어 cited_docs·stats 집계에 그대로 잡힌다(의도).
     """
     if not tail_raw:
         return []

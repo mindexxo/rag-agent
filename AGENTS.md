@@ -187,3 +187,8 @@ tests/test_code_quality.py`로 조인다). ruff는 `requirements.txt`에 버전 
    하위 패키지는 같은 접두어 모듈이 여럿이고 그 밖으로 나가는 import가 적을 때만 만든다(#286 실측: 지금은 아니다).
 
 3·4·6①은 기계 검사가 없다(오탐이 많아 #90이 경고한 실패 모드) — 리뷰에서 본다.
+
+7. **에이전트 가드레일**(#311): `.claude/settings.json`(커밋됨) deny가 경로 없는 전체 스테이징·강제 push·main 직접 push의
+   **흔한 형태**를 막는다(보안 경계 아님 — 못 막는 형태는 `tests/test_guardrails.py` docstring). 그 테스트가 deny가 빠지지 않았는지·
+   평소 명령을 잘못 막지 않는지, 커밋된 설정(`.env*`·`docker-compose*`·`config.py`)에 평문 비밀값이 없는지 본다(공개 저장소).
+   개인 allow는 미추적 `.claude/settings.local.json`. PR 테스트 수치는 `tests/evidence.py` 출력을 붙인다.

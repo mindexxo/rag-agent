@@ -5,6 +5,7 @@
     python -m eval.table_parsing.run --only S01_basic S02_colspan --paths img pdf
     python -m eval.table_parsing.run --out eval/results/table_parsing/run2
     python -m eval.table_parsing.run --engine vlm --paths img   # #296: 쪽 전체를 VLM(VLM_CAPTION_*)으로 — eval/vlm_engine.py
+    python -m eval.table_parsing.run --engine llm --paths img   # #299: 운영 상용 OCR 경로(OCR_PROVIDER=llm — 사진 표는 잘라서 LLM)
 
 산출물(<out>/): docs/(생성 문서·png), results.jsonl(건별·즉시 기록), matrix_l1.md·matrix_l2.md(축 × 경로),
 mismatches.md(틀린 칸 기대↔실제 나란히 + 실제 markdown 행). 변환은 `_convert_local`(docling 인프로세스 — 워커의 변환
@@ -130,10 +131,17 @@ def main():
     ap.add_argument('--out', default='eval/results/table_parsing/run1')
     ap.add_argument('--only', nargs='*')
     ap.add_argument('--paths', nargs='*', default=list(PATHS))
-    ap.add_argument('--engine', choices=('triton', 'vlm'), default='triton',
-                    help="triton=현행(레이아웃+TableFormer+원격 RapidOCR) | vlm=쪽 전체 VLM(#296, PDF·표 이미지만 영향)")
+    ap.add_argument('--engine', choices=('triton', 'vlm', 'llm'), default='triton',
+                    help="triton=현행(레이아웃+TableFormer+원격 RapidOCR) | vlm=쪽 전체 VLM(#296, PDF·표 이미지만 영향) "
+                         "| llm=운영 상용 OCR(#299, OCR_PROVIDER=llm)")
     args = ap.parse_args()
     global _ENGINE
+    if args.engine == 'llm':
+        from eval import vlm_engine
+        from config import settings
+        settings.ocr_provider = 'llm'                    # 운영 코드 그대로 — _convert_local이 _convert_pdf_llm으로 보낸다
+        _ENGINE = vlm_engine.label().replace('vlm_', 'ocrllm_', 1)
+        print(f'engine={_ENGINE} max_tokens={settings.ocr_llm_max_tokens} concurrency={settings.ocr_llm_concurrency}', flush=True)
     if args.engine == 'vlm':
         from eval import vlm_engine
         _ENGINE = vlm_engine.label()

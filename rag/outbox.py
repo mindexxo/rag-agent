@@ -167,7 +167,7 @@ def is_transient(exc: BaseException) -> bool:
         PG를 읽고 쓰는 도중 커넥션이 끊긴 경우. 분류 뒤의 attempts UPDATE도 같은 DB라 함께 실패할 수
         있는데, 그때는 예외가 drain 밖으로 나가 이 회차가 끊기고 행은 pending 그대로 남는다 — 무해.
     docling 변환(rag/chunking, #223)도 이 기준에 맞춰 예외 종류를 고른다 — 문서 마감 초과는 TimeoutError,
-    그림 캡션 실패는 CaptionFailedError(ConnectionError 하위)라 일시, 그림 장수 초과는 PictureLimitError(ValueError
+    그림 캡션 실패는 CaptionFailedError·상용 OCR 빈 응답은 LlmReadFailedError(#299, 둘 다 ConnectionError 하위)라 일시, 그림 장수 초과는 PictureLimitError(ValueError
     하위)라 결정적이다. 마감 초과를 일시로 두는 것은 사용자 결정이다(#223 결정 5 — 병적인 문서 하나가 약 24시간에
     걸쳐 15분씩 재시도해도 영향이 작다고 봤다).
     그 밖은 전부 **결정적** — 파싱 ValueError, docling RuntimeError, blob 없음(FileNotFoundError),

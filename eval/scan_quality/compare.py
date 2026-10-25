@@ -12,7 +12,8 @@
   char_acc        공백 뺀 전체 글자 일치율(difflib ratio)
   space_kept      원본 띄어쓰기 중 스캔에 남은 비율(공백 뺀 글자 정렬 위에서 셈)
 
-사용: python -m eval.scan_quality.compare [remote|local_min736|local_max|local_min400|vlm ...]  (ocr_variant.VARIANTS + vlm=#296 쪽 전체 VLM)   → eval/results/scan224/compare.json · compare.html
+사용: python -m eval.scan_quality.compare [remote|local_min736|local_max|local_min400|vlm|llm ...]  (ocr_variant.VARIANTS + vlm=#296 쪽 전체 VLM
+      + llm=#299 운영 상용 OCR 경로 OCR_PROVIDER=llm)   → eval/results/scan224/compare.json · compare.html
 """
 import difflib
 import html
@@ -31,13 +32,15 @@ def _ns(t: str) -> str:
 
 def _chunk(path, variant: str):
     import rag.chunking as C
+    from config import settings
     from eval import vlm_engine
     from eval.scan_quality.ocr_variant import install
     vlm_engine.uninstall()                 # 앞 모드가 vlm이었으면 원복 — 디지털 기준·OCR 변형이 VLM을 타지 않게(#296)
+    settings.ocr_provider = 'llm' if variant == 'llm' else 'triton'   # 운영 상용 OCR 경로(#299) — 다른 모드엔 안 샌다
     if variant == 'vlm':
         vlm_engine.install()               # 쪽 전체 VLM(VLM_CAPTION_* 설정의 벤더), #296
     else:
-        install(variant)
+        install('remote' if variant == 'llm' else variant)   # llm은 OCR 옵션을 안 쓴다 — 변환만 이 프로세스로
     return C.chunk_file(path)
 
 

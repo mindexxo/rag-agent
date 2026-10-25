@@ -14,6 +14,7 @@
 
  - PDF : **docling**(레이아웃 ML + TableFormer + 원격 한국어 OCR #168)이 기본 — #143. 인쇄 부산물·제목 분할·표 빈 셀을
          모델이 구조적으로 처리하고, 헤딩 층만 한국 규정 번호 체계('제 N 장'/'제 N 조')로 복원한다.
+         OCR_PROVIDER=llm(상용)이면 OCR 자리를 LLM이 맡는다 — 사진 표는 잘라서, 스캔 쪽은 쪽 통째로(#299, '상용 OCR' 절).
          docling이 실패하면 색인은 failed로 끝난다 — 저품질 비상 경로로 조용히 바꾸지 않는다(#272).
          page는 **청크마다 실제 쪽**. 채팅 첨부(extract_text)는 pdfplumber — 사용자 대기 경로라 콜드 스타트를 안 태운다.
  - DOCX: **docling**(SimplePipeline — 레이아웃·OCR 없음)이 기본(#220). Heading 스타일 레벨 그대로 섹션 분할,
@@ -398,6 +399,16 @@ class CaptionFailedError(ConnectionError):
     """
 
 
+class LlmReadFailedError(ConnectionError):
+    """상용 OCR(OCR_PROVIDER=llm)의 LLM 읽기가 빈 응답이다 — **일시** 실패(#299 결정 5, CaptionFailedError와 같은 규칙).
+
+    docling의 요청 함수(api_image_request)는 429·5xx·401을 로그만 남기고 빈 글자로 돌려준다 — 상태 코드도 버린다. 그대로 두면
+    사진 표가 빈 격자로, 스캔 쪽이 빈 채로 문서가 ready가 된다. ConnectionError 하위라 outbox.is_transient가 일시로 분류해
+    문서를 백오프 재시도한다. 알려진 오분류 둘(사용자 결정 10/25): 키 오류(401)처럼 다시 해도 안 되는 실패도 MAX_ATTEMPTS까지 돈다
+    (기동 후 첫 실패 로그로 보인다), 정말 빈 스캔 쪽(백지)도 실패로 본다(관측되면 직접 호출로 상태 코드를 보는 안으로 간다).
+    """
+
+
 class _PictureGuard:
     """docling 캡션 모델을 감싸 그림 장수 상한과 캡션 실패를 건다(#223 결정 3·4).
 
@@ -520,8 +531,9 @@ def _docling_runtime():
             # 2.126의 기본 파이프라인이 그 값을 읽지 않는다(옛 Legacy 경로 전용).
             opts.layout_batch_size = settings.docling_layout_batch_size
             opts.queue_max_size = settings.docling_queue_max_size
-            opts.do_ocr = settings.docling_do_ocr
-            if settings.docling_do_ocr:
+            # 상용 OCR(OCR_PROVIDER=llm, #299)이면 Triton을 안 부른다 — 사진 표·스캔 쪽은 '상용 OCR' 절이 LLM으로 읽는다.
+            opts.do_ocr = settings.docling_do_ocr and settings.ocr_provider == 'triton'
+            if opts.do_ocr:
                 # 엔진은 워커가 아니라 원격 Triton(#168, config.py ocr_kserve_* 주석). 기본 OcrMode는 비트맵
                 # 영역만 OCR하고 텍스트 레이어는 건드리지 않는다 — OCR on/off의 본문이 동일함을 실측했다.
                 # 각도 분류기(use_cls=False)는 서버 쪽 상수다. 요청 실패는 docling이 삼키고 errors에만 남기므로
@@ -581,6 +593,259 @@ def _docling_runtime():
             _guard_picture_models(_docling_converter)
     return _docling_converter
 
+
+
+# ── 상용 OCR: 사진 표·스캔 쪽을 LLM이 읽는다 (#299) ─────────────────────────────────────
+# OCR_PROVIDER=llm일 때만 탄다 — triton(기본)이면 이 절의 어느 것도 불리지 않는다(사내 모드 불변, 테스트 고정).
+# 라우팅(결정 2·3): PDF를 쪽마다 판정해 연속된 같은 종류끼리 묶고 묶음마다 따로 변환한 뒤 합친다.
+#   - 디지털 쪽: 지금 경로(레이아웃+TableFormer+캡션)에서 OCR만 끈 것. OCR을 끄면 사진 표는 '글자 칸이 하나도 없는 표'로 나온다
+#     (실문서 실측 10/25 — 같은 쪽 디지털 표는 정상) → 그 표를 담은 사진을 잘라 LLM에 보내 칸을 채운다(_fill_photo_tables).
+#     화면 캡처·흐름도는 docling이 그림으로 분류해 지금처럼 캡션으로 간다.
+#   - 스캔 쪽: VlmPipeline — 쪽 통째로 LLM이 마크다운을 쓰고 docling이 문서로 만든다(#296 측정 엔진과 같은 모양).
+# 합치기는 DoclingDocument.concatenate — page_range로 변환해도 쪽 번호는 원래 번호다(실측 10/25, 테스트 고정). 묶음 경계에서 표·헤딩이
+# 끊길 수 있지만 실제 섞인 문서는 디지털 본문 + 스캔 첨부처럼 경계 앞뒤가 다른 내용이라 감수한다(사용자 결정 10/25).
+# 측정(gpt-5-mini, 표 22축, 10/25): 표만 잘라 셀 92.3%·숫자 오독 1 — Triton 80.9%·26, 쪽 통째 94.2%·6. 차이 2축(작은 글씨·저품질)은
+# 레이아웃이 그림으로 분류해 캡션으로 가고 캡션에 값이 들어간다(18/20·9/12). 스캔 5건 쪽 통째 헤딩 0.93·띄어쓰기 0.96(#296).
+
+# 스캔 쪽 판정(결정 3) — 둘 다 만족해야 스캔이다. 실측(10/25): 합성 스캔 14쪽 전부 0자·사진 면적 1.0, 스캔 아닌 쪽은 최소 21자(표 이미지
+# 축 하나 — 사진이 큰 쪽 중 최소)·실문서 266쪽 최소 81자·모의 104쪽 최소 47자. 글자 하한을 0이 아니라 20으로 둔 이유: 스캔본에도 쪽 번호·도장
+# 몇 글자가 글자층으로 박힐 수 있다. 사진 조건은 글자 없는 표지·빈 쪽(사진 없음)을 거른다. 스캐너가 보이지 않는 글자층을 깔아 둔 스캔본은
+# 디지털로 판정된다 — 그 글자층이 그대로 색인된다(사내 모드도 같다).
+_SCAN_MAX_CHARS = 20
+_SCAN_MIN_IMAGE_AREA = 0.5
+_OCR_LLM_SCALE = 2.0         # 쪽·사진을 LLM에 보낼 때의 해상도 배수(72dpi 기준) — #296 측정 엔진 값(docling ApiVlmOptions 기본). 바꿔 잰 적 없다
+# 사진 속 표 제목(결정 4): docling 표 영역은 사진의 표 부분뿐이라 사진 안 제목 줄이 빠진다(실문서 07 — 사진 247pt 중 위 39pt) → 표를
+# 담은 사진 전체를 잘라 보낸다. 단 사진이 표보다 지나치게 크면(쪽 배경·레터헤드 사진) 표 영역만 — 사진 밖 디지털 글이 섞여 두 번 색인되지 않게.
+# 실문서 07의 사진/표 면적비 1.48. 알려진 한계(리뷰, 사용자 결정 10/25 — 유지): CropBox가 MediaBox와 다른 쪽은 pdfplumber 사진 좌표(종이 기준)와
+# docling 표 좌표(CropBox 기준)가 어긋나 사진을 못 찾고 표 영역만 잘린다 — 표 칸은 맞고 제목만 빠진다. 실문서 26·모의 39건 중 0건.
+# 90도 회전 쪽은 두 좌표가 같은 기준이라 정상(실측).
+_PHOTO_MAX_AREA_RATIO = 3.0
+_PHOTO_BBOX_TOL = 2.0        # pt — 표 영역이 사진 안에 드는지 볼 때의 여유(레이아웃 상자가 사진 경계를 살짝 넘는다)
+
+# 쪽 통째 프롬프트 — #296 PROMPT_V2. 절 제목 표시를 규칙으로 못박는다: V1에서 gpt-5-mini가 절 제목('2. 증빙 요건')을 평문으로 써서 docling
+# 마크다운 해석기가 앞 번호 목록에 합치고 번호를 다시 매겼다('2.'→'6.', 글자가 바뀐다). '## '를 붙이면 목록으로 합쳐지지 않는다.
+# 스캔 헤딩 13/13 원본 일치(#296 실측). 문서 제목 '#'는 맨 앞 하나 — 쪽 단위 호출이라 쪽마다 '#'가 생기던 것을 막는다.
+_SCAN_PAGE_PROMPT = ("이 쪽을 마크다운으로 옮겨 적어라. 규칙:\n"
+                     "1. 문서 제목(문서 맨 앞의 큰 제목)만 '# '로 쓴다. 쪽 중간이나 둘째 쪽 이후의 제목은 문서 제목이 아니다.\n"
+                     "2. 절·항 제목은 번호가 있든 없든 반드시 '## '로 시작한다. 예: '## 1. 접수 원칙', '## 2.1 사진 증빙'. 번호는 원문 그대로 쓴다.\n"
+                     "3. 목록은 원문 표시 그대로 — 글머리표는 '- ', 번호 목록은 원문 번호 그대로.\n"
+                     "4. 표는 마크다운 표(| 칸 | 칸 |)로. 병합된 칸은 그 값을 해당 칸마다 반복해 적고, 빈 칸은 비워 둔다.\n"
+                     "5. 보이는 글자를 그대로 쓰고 없는 내용을 지어내지 마라. 설명·주석 없이 마크다운만 출력.")
+# 사진 표 프롬프트 — #299 측정 엔진 TABLE_PROMPT에 표 밖 줄(결정 4)을 더했다. 머리글을 지어내지 말라는 규칙은 머리글 없는 표에서 LLM이
+# '구분 | 내용' 같은 머리글을 만들어 넣던 것을 막는다(측정 엔진).
+_PHOTO_TABLE_PROMPT = ("이 이미지의 표를 마크다운 표(| 칸 | 칸 |)로 옮겨 적어라. 규칙:\n"
+                       "1. 표 밖(위·아래)에 제목·설명 같은 글 줄이 있으면 표 앞에 그 줄을 그대로 쓴다. 없으면 쓰지 않는다.\n"
+                       "2. 원본에 머리글 행이 있으면 첫 행에 쓰고, 없으면 머리글을 만들어 넣지 말고 첫 데이터 행을 첫 행에 쓴다.\n"
+                       "3. 병합된 칸은 그 값을 해당 칸마다 반복해 적고, 빈 칸은 비워 둔다.\n"
+                       "4. 보이는 글자를 띄어쓰기까지 그대로 쓰고 지어내지 마라. 설명 없이 출력.")
+
+_vlm_converter = None
+
+
+class _PdfPage(NamedTuple):
+    width: float
+    height: float
+    chars: int                                              # 글자층 글자 수
+    images: tuple[tuple[float, float, float, float], ...]  # 박힌 사진 (x0, top, x1, bottom) — 왼쪽 위 원점, pt, 쪽 안으로 자름
+
+
+def _scan_profile(file_path: str | Path, max_pages: int | None) -> list[_PdfPage] | None:
+    """쪽마다 글자 수·사진 위치(pdfplumber). 쪽 수가 max_pages를 넘으면 None — 거절은 docling이 사내 모드와 같은 실패로 한다."""
+    pages = []
+    with pdfplumber.open(str(file_path)) as pdf:
+        if max_pages is not None and len(pdf.pages) > max_pages:
+            return None
+        for p in pdf.pages:
+            w, h = float(p.width), float(p.height)
+            boxes = ((max(0.0, float(im['x0'])), max(0.0, float(im['top'])), min(w, float(im['x1'])), min(h, float(im['bottom'])))
+                     for im in p.images)
+            pages.append(_PdfPage(w, h, len(p.chars), tuple(b for b in boxes if b[2] > b[0] and b[3] > b[1])))
+    return pages
+
+
+def _is_scan_page(page: _PdfPage) -> bool:
+    area = page.width * page.height
+    biggest = max(((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in page.images), default=0.0)
+    return page.chars < _SCAN_MAX_CHARS and area > 0 and biggest / area >= _SCAN_MIN_IMAGE_AREA
+
+
+def _page_runs(scan_flags: list[bool]) -> list[tuple[bool, int, int]]:
+    """쪽별 스캔 여부 → 연속된 같은 종류 묶음 [(스캔인가, 첫 쪽, 끝 쪽)] — 쪽 번호는 1부터, 끝 쪽 포함(docling page_range와 같다)."""
+    runs: list[tuple[bool, int, int]] = []
+    for no, flag in enumerate(scan_flags, start=1):
+        if runs and runs[-1][0] == flag:
+            runs[-1] = (flag, runs[-1][1], no)
+        else:
+            runs.append((flag, no, no))
+    return runs
+
+
+def _vlm_runtime():
+    """프로세스당 1회: 스캔 쪽용 VlmPipeline 변환기(#299). 연결은 캡션 설정을 공유한다(config.py ocr_provider 주석)."""
+    global _vlm_converter
+    with _DOCLING_LOCK:
+        if _vlm_converter is None:
+            from docling.datamodel.base_models import InputFormat
+            from docling.datamodel.pipeline_options import VlmPipelineOptions
+            from docling.datamodel.pipeline_options_vlm_model import ApiVlmOptions, ResponseFormat
+            from docling.document_converter import DocumentConverter, PdfFormatOption
+            from docling.pipeline.vlm_pipeline import VlmPipeline
+            vlm_opts = ApiVlmOptions(
+                url=settings.vlm_caption_url, headers=_caption_headers(), prompt=_SCAN_PAGE_PROMPT,
+                response_format=ResponseFormat.MARKDOWN, scale=_OCR_LLM_SCALE,
+                timeout=settings.ocr_llm_timeout_seconds, concurrency=settings.ocr_llm_concurrency,
+                # 온도는 **옵션 필드**로 — docling ApiVlmModel이 params 위에 vlm_options.temperature를 덮어쓴다(실측: params에만 1.0을 주니
+                # gpt-5가 0.0 거부 400, #296). 출력 상한 이름은 캡션과 같은 새 표기(#290 결정 3)
+                temperature=settings.vlm_caption_temperature,
+                params={'model': settings.vlm_caption_model, 'max_completion_tokens': settings.ocr_llm_max_tokens})
+            _vlm_converter = DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(
+                pipeline_cls=VlmPipeline,
+                pipeline_options=VlmPipelineOptions(enable_remote_services=True, vlm_options=vlm_opts))})
+    return _vlm_converter
+
+
+def _convert_pdf_llm(file_path: str | Path, **kwargs):
+    """상용 OCR의 PDF 변환 — 쪽 묶음마다 경로를 골라 변환하고 합친다(이 절 머리 주석). 실패 분류는 _convert_with·LlmReadFailedError."""
+    pages = _scan_profile(file_path, kwargs.get('max_num_pages'))
+    if not pages:                # 쪽 상한 초과(None)·빈 PDF — docling이 사내 모드와 같은 방식으로 거절·처리한다
+        return _convert_with(_docling_runtime(), file_path, **kwargs)
+    parts = []
+    for scan, first, last in _page_runs([_is_scan_page(p) for p in pages]):
+        span = {} if (first, last) == (1, len(pages)) else {'page_range': (first, last)}
+        if scan:
+            doc = _convert_with(_vlm_runtime(), file_path, **kwargs, **span)
+            _require_pages(doc, first, last)
+            _titles_to_section_headers(doc)
+        else:
+            doc = _convert_with(_docling_runtime(), file_path, **kwargs, **span)
+            _fill_photo_tables(doc, file_path, pages)
+        parts.append(doc)
+    if len(parts) == 1:
+        return parts[0]
+    from docling_core.types.doc import DoclingDocument   # 지연 import — docling은 톱레벨에 안 들인다
+    return DoclingDocument.concatenate(parts)
+
+
+def _require_pages(doc, first: int, last: int) -> None:
+    """스캔 쪽마다 글 요소가 하나는 있어야 한다 — LLM 빈 응답(docling이 오류를 빈 글자로 삼킨다)은 그 쪽이 통째로 빈다(결정 5)."""
+    seen = {prov.page_no for item, _ in doc.iterate_items() for prov in (getattr(item, 'prov', None) or [])}
+    missing = [n for n in range(first, last + 1) if n not in seen]
+    if missing:
+        raise LlmReadFailedError(f'스캔 쪽 {missing} LLM 응답 없음(오류·한도 초과) — 나중에 다시 시도한다')
+
+
+def _titles_to_section_headers(doc) -> None:
+    """LLM이 '#'로 쓴 줄은 docling에서 title 라벨이 되는데 PDF 청킹(_sections_from_docling_elements)은 section_header만 헤딩으로 본다 —
+    그대로면 문서 제목이 본문 줄로 떨어진다(#296 실측). section_header로 바꾸면 청킹이 첫 헤딩을 문서 제목으로 층을 만든다.
+    기각(#296): 번호 꼴 글 줄을 헤딩으로 올리는 추측 보정 — 확인 항목 목록을 헤딩으로 올렸다(오탐). 원인은 프롬프트로 막았다."""
+    from docling_core.types.doc import DocItemLabel   # 지연 import — docling은 톱레벨에 안 들인다
+    for item, _ in doc.iterate_items():
+        if item.label == DocItemLabel.TITLE:
+            item.label = DocItemLabel.SECTION_HEADER
+
+
+def _fill_photo_tables(doc, file_path: str | Path, pages: list[_PdfPage]) -> None:
+    """글자 칸이 하나도 없는 표(= 사진 표, OCR을 끈 디지털 경로)를 LLM으로 채운다(결정 2·4). 표 밖 줄(제목)은 표 바로 앞 글로 넣는다."""
+    from concurrent.futures import ThreadPoolExecutor
+    from docling_core.types.doc import DocItemLabel, TableItem   # 지연 import — docling은 톱레벨에 안 들인다
+    targets = [item for item, _ in doc.iterate_items()
+               if isinstance(item, TableItem) and item.prov and not any((c.text or '').strip() for c in item.data.table_cells)]
+    if not targets:
+        return
+    crops = _photo_crops(doc, file_path, pages, targets)
+    with ThreadPoolExecutor(max_workers=max(1, settings.ocr_llm_concurrency)) as pool:
+        replies = list(pool.map(_read_photo_table, crops))
+    for item, reply in zip(targets, replies):
+        outside, rows = _split_table_reply(reply)
+        if rows:
+            _fill_table_cells(item, rows)
+        if outside:
+            doc.insert_text(sibling=item, label=DocItemLabel.TEXT, text=outside, prov=item.prov[0], after=False)
+
+
+def _photo_box(table: tuple[float, float, float, float],
+               images: tuple[tuple[float, float, float, float], ...]) -> tuple[float, float, float, float]:
+    """잘라 보낼 영역 — 표를 담은 사진 중 가장 작은 것(면적 상한 안), 없으면 표 영역 그대로. 좌표는 왼쪽 위 원점 pt."""
+    l, t, r, b = table
+    limit = _PHOTO_MAX_AREA_RATIO * (r - l) * (b - t)
+    tol = _PHOTO_BBOX_TOL
+    holders = [box for box in images
+               if box[0] <= l + tol and box[1] <= t + tol and box[2] >= r - tol and box[3] >= b - tol
+               and (box[2] - box[0]) * (box[3] - box[1]) <= limit]
+    return min(holders, key=lambda x: (x[2] - x[0]) * (x[3] - x[1])) if holders else table
+
+
+def _photo_crops(doc, file_path: str | Path, pages: list[_PdfPage], targets) -> list:
+    """표마다 잘라 보낼 이미지(PIL). 쪽 렌더는 pypdfium2(docling의 PDF 백엔드) — 쪽 하나씩 렌더해 자르고 버린다(쪽 이미지를 문서 내내
+    들고 있는 generate_page_images는 100쪽이면 수백 MB라 안 쓴다)."""
+    import pypdfium2   # 지연 import — docling 의존성이고 상용 OCR에서만 쓴다
+    crops, rendered_no, rendered = [], None, None
+    pdf = pypdfium2.PdfDocument(str(file_path))
+    try:
+        for item in targets:
+            prov = item.prov[0]
+            page = pages[prov.page_no - 1]
+            bb = prov.bbox.to_top_left_origin(doc.pages[prov.page_no].size.height)
+            box = _photo_box((bb.l, bb.t, bb.r, bb.b), page.images)
+            if rendered_no != prov.page_no:
+                rendered_no, rendered = prov.page_no, pdf[prov.page_no - 1].render(scale=_OCR_LLM_SCALE).to_pil()
+            crops.append(rendered.crop(tuple(round(v * _OCR_LLM_SCALE) for v in box)))
+    finally:
+        pdf.close()
+    return crops
+
+
+def _read_photo_table(image) -> str:
+    """사진 표 하나를 LLM에 보낸다 — 요청 함수는 캡션과 같은 docling api_image_request(429·5xx 재시도 포함). 빈 응답이면 일시 실패.
+
+    출력이 상한에서 잘렸거나(length) 벤더가 걸렀으면(content_filter) **결정적** 실패(RuntimeError, 리뷰 반영 10/25) — 잘린 표는 행이 빠진 채
+    조용히 색인된다(#272 저품질 금지). 같은 이미지는 다시 보내도 같은 길이라 재시도로 안 풀린다. 스캔 쪽은 docling VlmPipeline이 같은 두
+    경우를 PARTIAL_SUCCESS로 내고 _convert_with가 RuntimeError로 올려 이미 같은 분류다.
+    """
+    from docling.datamodel.base_models import VlmStopReason          # 지연 import — docling은 톱레벨에 안 들인다
+    from docling.utils.api_image_request import api_image_request
+    reply = api_image_request(
+        image=image, prompt=_PHOTO_TABLE_PROMPT, url=settings.vlm_caption_url, timeout=settings.ocr_llm_timeout_seconds,
+        headers=_caption_headers(), model=settings.vlm_caption_model, temperature=settings.vlm_caption_temperature,
+        max_completion_tokens=settings.ocr_llm_max_tokens)
+    text = (reply.text or '').strip()
+    if not text:
+        raise LlmReadFailedError('사진 표 LLM 응답 없음(오류·한도 초과) — 나중에 다시 시도한다')
+    if reply.stop_reason == VlmStopReason.LENGTH:
+        raise RuntimeError(f'사진 표 LLM 출력이 상한({settings.ocr_llm_max_tokens}토큰)에서 잘렸다 — OCR_LLM_MAX_TOKENS를 올려 다시 올린다')
+    if reply.stop_reason == VlmStopReason.CONTENT_FILTERED:
+        raise RuntimeError('사진 표 LLM 응답이 벤더 콘텐츠 필터에 걸렸다')
+    return text
+
+
+_MD_SEPARATOR_CELL = re.compile(r'^:?-+:?$')
+
+
+def _split_table_reply(text: str) -> tuple[str, list[list[str]]]:
+    """LLM 답 → (표 밖 줄을 이은 글, 표 행 목록). '|'로 시작하는 줄이 표다 — 구분선(|---|)은 버리고 칸 수는 가장 긴 행에 맞춰 빈 칸으로
+    채운다. 코드 울타리(```)는 버리고, 표 밖 줄의 마크다운 머리 표시('#', '**')는 뗀다. 표 아래 줄(출처 등)도 표 앞 글에 합친다."""
+    rows, outside = [], []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('```'):
+            continue
+        if line.startswith('|'):
+            cells = [c.strip() for c in line.strip('|').split('|')]
+            if not all(_MD_SEPARATOR_CELL.match(c) for c in cells):
+                rows.append(cells)
+        else:
+            outside.append(re.sub(r'^#+\s*', '', line).strip('*').strip())
+    width = max((len(r) for r in rows), default=0)
+    return ' '.join(o for o in outside if o), [r + [''] * (width - len(r)) for r in rows]
+
+
+def _fill_table_cells(item, rows: list[list[str]]) -> None:
+    """표 요소의 칸을 행 목록으로 바꾼다 — 첫 행이 머리글(docling_grid_rows가 첫 행을 헤더로 쓴다)."""
+    from docling_core.types.doc import TableCell, TableData   # 지연 import — docling은 톱레벨에 안 들인다
+    cells = [TableCell(text=text, start_row_offset_idx=i, end_row_offset_idx=i + 1,
+                       start_col_offset_idx=j, end_col_offset_idx=j + 1, column_header=(i == 0))
+             for i, row in enumerate(rows) for j, text in enumerate(row)]
+    item.data = TableData(num_rows=len(rows), num_cols=len(rows[0]), table_cells=cells)
 
 # ── docling 텍스트 정제 (#204) — 각주 표시 인라인·VLM 캡션 잡담 ──────────────────
 
@@ -903,8 +1168,16 @@ def _convert_local(file_path: str | Path, **kwargs):
     docling이 그 예외를 RuntimeError('Pipeline … failed')로 감싸므로 원래 예외로 풀어 다시 던진다
     (감싼 채면 outbox.is_transient가 둘 다 결정적으로 본다).
     kwargs는 converter.convert로 넘긴다(PDF의 max_num_pages — 쪽 개념이 없는 형식엔 주지 않는다).
+    상용 OCR(OCR_PROVIDER=llm)의 PDF는 _convert_pdf_llm이 쪽 묶음마다 이 가드를 거쳐 변환한다(#299).
     """
-    converter = _docling_runtime()
+    if settings.ocr_provider == 'llm' and Path(file_path).suffix.lower() == '.pdf':
+        return _convert_pdf_llm(file_path, **kwargs)
+    return _convert_with(_docling_runtime(), file_path, **kwargs)
+
+
+def _convert_with(converter, file_path: str | Path, **kwargs):
+    """변환기 하나로 변환 + 불완전 결과 가드(_convert_local docstring). 상용 OCR은 쪽 묶음마다 이것을 부른다 — 그림 장수 상한도
+    묶음마다 센다(섞인 문서가 묶음 합으로 상한을 넘을 수 있다 — 드물어 감수)."""
     for guard in _picture_guards:
         guard.arm()
     try:
@@ -972,7 +1245,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # MD가 변환 프로세스를 타면서 통합 테스트 75개가 2분 8초 → 5분 55초(2026-10-19). 운영은 설정이 고정이라 차이 없다.
 # 이 모듈이 읽는 settings 필드가 모두 이 접두사 안인지는 tests/test_chunking_md.py가 검사한다 — 새 접두사의 설정을 자식에서
 # 읽으면서 여기 안 넣으면, 값을 바꿔도 자식이 옛 값으로 계속 돈다.
-_CHILD_SETTING_PREFIXES = ('docling_', 'ocr_kserve_', 'vlm_caption_')
+_CHILD_SETTING_PREFIXES = ('docling_', 'ocr_', 'vlm_caption_')   # ocr_ = ocr_kserve_*(#168) + ocr_provider·ocr_llm_*(#299)
 
 
 def _child_settings() -> dict:
@@ -1090,7 +1363,7 @@ def docling_convert(file_path: str | Path, **kwargs):
     """docling 변환 한 번 → DoclingDocument. PDF·DOCX·XLSX가 공유한다(#220). 변환 프로세스에 맡긴다(#223).
 
     실패는 예외로 올린다 — 분류(일시/결정적)는 outbox.is_transient: 마감 초과 TimeoutError·캡션 실패
-    CaptionFailedError는 일시, 그림 장수 PictureLimitError·불완전 변환 RuntimeError는 결정적.
+    CaptionFailedError·상용 OCR 빈 응답 LlmReadFailedError(#299)는 일시, 그림 장수 PictureLimitError·불완전 변환 RuntimeError는 결정적.
     rag/xlsx_chunking이 이 이름을 import한다.
     """
     return _convert_process.convert(file_path, kwargs)
@@ -1108,6 +1381,7 @@ def _docling_sections(file_path: str | Path) -> list[_Section]:
     실패(예외·타임아웃)는 그대로 올린다 — pdfplumber 폴백 없음. 저품질 색인을 조용히 만들지 않는다
     (strict-grounded). 호출부(index_pending_document)가 failed로 기록한다. 불완전 결과 가드는 _convert_local.
     이미지 도표는 VLM 캡션으로 읽고(#162), 격자 표 이미지(TableItem)는 원격 한국어 OCR이 셀을 채운다(#168).
+    OCR_PROVIDER=llm이면 표 이미지·스캔 쪽을 LLM이 읽는다(#299, _convert_pdf_llm).
     """
     document = docling_convert(file_path, max_num_pages=settings.docling_max_num_pages)
     # 위첨자 각주 표시(#204) — 변환이 성공한 뒤에만 연다(변환 프로세스 밖, 쪽당 수십 ms). 가드보다 뒤에 두는 이유:

@@ -10,7 +10,8 @@
 
 ## 아키텍처 — leaf → 조립점 → 진입점
 
-의존은 아래에서 위로만 흐른다. 계층은 `rag/` 톱레벨 import로 실측한 것이다.
+의존은 아래에서 위로만 흐른다. 계층은 `rag/` 톱레벨 import로 실측한 것이고, `tests/test_architecture.py`가 이 절의 문장을 코드와 대조한다
+(모든 모듈이 층에 있는지·0층 예외·진입점·지연 import 목록·순환).
 
 - **0층(leaf, 다른 `rag/` 모듈을 안 씀)**: `config.py`, `rag/models.py`, `rag/tokens.py`,
   `rag/prompt_texts.py`, `rag/llm/`(공급자별 구현 — `base.py`·`openai_compat.py`·`vllm.py`·`litellm.py`, #287·#288), `rag/embeddings.py`, `rag/chunking.py`,
@@ -23,14 +24,15 @@
   `rag/turn_state.py`, `rag/cache.py`, `rag/reranker.py`, `rag/retriever.py`,
   `rag/stream_resume.py`, `rag/cancellation.py`, `rag/citation_tail.py`, `rag/documents.py`,
   `rag/prompts.py`, `rag/conversation.py`, `rag/guardrail.py`, `rag/outbox.py`,
-  `rag/os_search.py`, `rag/os_index.py`, `rag/os_reconcile.py`
+  `rag/os_search.py`, `rag/os_index.py`, `rag/os_reconcile.py`, `rag/xlsx_chunking.py`(톱레벨에서 `chunking`을 쓴다 —
+  그래서 `chunking`이 함수 안에서 되부른다), `rag/conversation_search.py`(`models`만 쓴다)
 - **조립점**: `rag/service.py` — 한 턴의 수명(prepare → generate → finalize)을 조율한다.
-- **진입점**(아무도 이들을 import하지 않는다): `rag/streaming.py`(SSE),
+- **진입점**(다른 모듈이 톱레벨에서 import하지 않는다 — 예외는 아래 지연 목록의 `stream_resume`→`streaming`): `rag/streaming.py`(SSE),
   `rag/worker.py`(arq 백그라운드), `routers/*.py`(HTTP), `main.py`(FastAPI 부트스트랩 전용).
 
 절대 규칙 둘:
 - `rag/`는 `routers/`·`eval/`을 import하지 않는다(역방향 금지).
-- `config.py`는 아무것도 import하지 않는다.
+- `config.py`는 프로젝트 모듈을 import하지 않는다.
 
 **함수 안 지연 import은 순환 회피용이며 의도된 것이다 — 톱레벨로 끌어올리지 마라.**
 이걸 하는 모듈: `chunking`(→xlsx_chunking), `embeddings`·`limiter`(→clients),
@@ -179,4 +181,9 @@ tests/test_code_quality.py`로 조인다). ruff는 `requirements.txt`에 버전 
 4. **클래스**: 상태와 불변식이 있을 때만. 상속 대신 조합, 인터페이스는 `Protocol`(#52 — 클래스를 모듈 함수로 되돌린 선례).
 5. **타입**: 공개 함수 시그니처에 힌트. 검사기 도입은 #308.
 
-3·4는 기계 검사가 없다(오탐이 많아 #90이 경고한 실패 모드) — 리뷰에서 본다.
+6. **모듈 경계**(#310) — 공식 표준은 없고 실무 기준 넷이다. ① 같이 바뀌는 것끼리 묶는다(기능 단위 — 형식별·계층별 서랍이 아니라)
+   ② 의존은 한 방향(위 "아키텍처" 절 — `tests/test_architecture.py`가 강제) ③ 밖에서 쓰는 이름만 공개, 다른 모듈의 `_이름`을
+   가져다 쓰면 경계가 새는 것(래칫) ④ 모듈은 하는 일을 한 문장으로 말할 수 있어야 한다(모듈 docstring — 래칫). 크기는 결과다.
+   하위 패키지는 같은 접두어 모듈이 여럿이고 그 밖으로 나가는 import가 적을 때만 만든다(#286 실측: 지금은 아니다).
+
+3·4·6①은 기계 검사가 없다(오탐이 많아 #90이 경고한 실패 모드) — 리뷰에서 본다.

@@ -1,11 +1,12 @@
-"""검색 결과 순서 골든 — 리팩터링 전/후를 바이트로 대조한다 (#38에서 만듦).
+"""검색 결과 순서 골든 — 리팩토링 전/후의 후보 순서(chunk_id)를 대조한다.
 
-검색은 **순서가 곧 결과**라 프롬프트처럼 해시로 동일성을 증명할 수 없다. 그렇다고
-eval을 매번 돌릴 수도 없다(TEI 필요, 수십 분). 그 사이를 메우는 도구다 —
-결정적 가짜 임베딩·가짜 리랭커로 **실제 DB**를 태워 chunk_id 순서만 뽑는다.
+임베딩·리랭커를 결정적 가짜로 바꾸고 **개발계 DB·OpenSearch 색인**을 그대로 태운다(TEI 불필요, 수십 초).
+질의 벡터가 가짜라 순위의 의미는 없고, 같은 색인에서 같은 순서가 나오는지만 본다.
+dense·어휘·식별자 채널과 멀티쿼리·리랭크 on/off를 함께 덮는다. 청킹은 `_golden_chunks.py`로 본다.
 
-TEI 없이 돌아가고 30초면 끝난다. 검색 로직을 건드리는 축마다 재사용할 것.
-청킹을 건드릴 때는 `_golden_chunks.py`(청크 자체를 대조 — 더 직접적)를 쓴다.
+색인은 공유 자원이다 — 전후 실행 사이에 누가 업로드하면 순서가 달라진다. diff가 나오면 main에서 한 번 더
+떠서 색인 변화인지 먼저 가른다.
+검색 채널 설정(하이브리드·식별자 채널·가산)은 `.env`에서 읽으므로 전후를 같은 환경에서 뜬다.
 
 사용:
     python -m eval._golden_order > before.json     # 변경 전
@@ -24,8 +25,7 @@ from config import settings
 
 
 def _fake_dense(text: str) -> list[float]:
-    """tests/conftest.py의 fake_vector와 **완전히 동일한 구현**.
-    직접 만든 변형은 NaN이 섞여 pgvector가 거부했다 — 검증된 것을 그대로 쓴다."""
+    """tests/conftest.py의 fake_vector와 같은 구현."""
     out: list[float] = []
     block = 0
     while len(out) < 1024:
@@ -43,9 +43,10 @@ QUERIES = [
     '적립금 사용 조건',
     '회원 등급별 혜택',
     'RF-01',
+    '제3조 내용 알려줘',
     '아무 질의',
 ]
-# 멀티쿼리(#5) 경로도 덮는다 — 단일 경로만 보면 분기 절반이 미검증
+# 멀티쿼리 경로도 덮는다 — 단일 경로만 보면 분기 절반이 미검증
 EXPANDED = {
     '교환은 몇 번까지 가능해?': ['교환 횟수 제한', '재교환 가능 여부'],
     '반품 기간': ['반품 신청 기한', '환불 접수 기간'],
@@ -102,6 +103,7 @@ async def main():
                         key = f'{tenant}|{q}|{label}|rerank={rerank_on}'
                         out[key] = {
                             'ids': [c.chunk_id for c in cands.chunks],
+                            'ident': [c.matched_ident for c in cands.chunks],
                             'dist': round(cands.top_dense_distance, 9),
                         }
     await engine.dispose()

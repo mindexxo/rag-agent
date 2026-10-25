@@ -61,7 +61,9 @@ import한다(118MB 패키지라 사내 vLLM·TEI만 쓰는 프로세스가 비�
   `rag/` 아래인 이유는 도커 이미지가 `eval/`을 빼기 때문이다 — 운영 복구 명령은 운영 이미지 안에 있어야 한다(#146).
 - 테스트: `pytest` — 전체 약 5분(DB·Redis·**OpenSearch** 필수, LLM·임베딩은 fake로 대체).
   DB 없이 순수 로직만 몇 초 만에 돌리려면 `pytest tests/test_service_pure.py tests/test_prompts.py
-  tests/test_turn_status_contract.py tests/test_docs_freshness.py tests/test_code_quality.py`.
+  tests/test_turn_status_contract.py tests/test_docs_freshness.py tests/test_code_quality.py
+  tests/test_prompt_bytes.py`. 리팩토링의 동작 보존 증거는 프롬프트 = `tests/test_prompt_bytes.py`(모델에 가는 문자열 해시),
+  청킹 = `python -m eval._golden_chunks`, 검색 순서 = `python -m eval._golden_order`(둘 다 전후 diff).
   (건수는 적지 않는다 — 테스트를 추가할 때마다 어긋나고, 린터가 잡아주지 못하는 종류다.)
 - eval: `python -m eval.run_all --intent --condense --refusal --cache --other --retrieval --ragas`
   축마다 의존이 다르다 — `--retrieval`은 DB+OpenSearch+TEI, `--cache`는 임베딩·리랭커(TEI)+DB+LLM

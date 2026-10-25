@@ -16,10 +16,12 @@ import httpx
 import redis.asyncio as aioredis
 
 from config import settings
-from rag.llm import create_llm
+from rag.llm import aux_overridden, create_aux_llm, create_llm
 
 # 공용 LLM 클라이언트 — 어느 공급자인지는 settings.llm_provider가 정한다(#287). stateless라 동시 재사용 가능
 shared_llm = create_llm()
+# 보조 호출(의도 분류·질의 재작성·캐시 재사용 판정)용(#297). llm_aux_*가 비면 생성 클라이언트 그 자체 — 요청 바디·커넥션 풀이 이전과 같다
+shared_aux_llm = create_aux_llm() if aux_overridden() else shared_llm
 
 # TEI(임베딩·리랭커) 비동기 HTTP 공용 클라이언트 — 커넥션 풀 재사용.
 # 타임아웃은 호출별로 다르므로(embed vs rerank) 요청 시점에 지정한다.

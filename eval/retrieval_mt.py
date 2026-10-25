@@ -25,7 +25,7 @@ from eval.retrieval import resolve_gold, score_one
 from eval.retrieval_v2 import METRICS
 from rag.conversation import (condense_query, condense_to_queries,
                               trim_messages_for_condense)
-from rag.llm import create_llm
+from rag.llm import create_aux_llm
 from rag.retriever import retrieve_candidates
 
 
@@ -47,7 +47,7 @@ async def compute(multi: bool = False) -> dict:
     gold = load_gold()      # 정본 + gold_private(실문서 multi_turn 15행) — #199와 같은 이전. GOLD 상수는 8/24에 사라졌는데 이 축만 남아 import가 깨져 있었다(#209)
     target = [g for g in gold if g['type'] in TYPES]
 
-    llm = create_llm()
+    llm = create_aux_llm()   # 재작성은 운영과 같은 보조 클라이언트(#297) — LLM_AUX_*가 비면 생성 설정 그대로
     sem = asyncio.Semaphore(CONCURRENCY)
 
     async def _condense(g: dict) -> tuple[str, list[str]]:

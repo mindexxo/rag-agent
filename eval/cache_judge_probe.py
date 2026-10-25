@@ -39,7 +39,7 @@ import json
 import sys
 from pathlib import Path
 
-from rag.clients import shared_llm
+from rag.clients import shared_aux_llm
 from rag.llm_schemas import ReuseJudgment, acomplete_validated
 from rag.prompts import build_cache_reuse_judge_messages
 
@@ -77,7 +77,7 @@ async def _judge(cs: str, ns: str, co: str | None, no: str | None) -> bool | Non
     async with _sem:
         try:
             j = await acomplete_validated(
-                shared_llm, build_cache_reuse_judge_messages(cs, ns, co, no), ReuseJudgment)
+                shared_aux_llm, build_cache_reuse_judge_messages(cs, ns, co, no), ReuseJudgment)
             return j.same_answer
         except Exception:
             return None

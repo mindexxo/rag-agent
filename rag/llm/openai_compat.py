@@ -24,8 +24,11 @@ def normalize_finish_reason(raw: str) -> FinishReason:
 class OpenAiCompatClient:
     """OpenAI SDK 위의 공통 구현. 단독으로 쓰면 제약 없는 평범한 OpenAI 호환 호출이다."""
 
-    def __init__(self, *, base_url: str | None = None, model: str | None = None, api_key: str | None = None):
+    def __init__(self, *, base_url: str | None = None, model: str | None = None, api_key: str | None = None,
+                 reasoning_effort: str | None = ""):
         self._model = model or settings.llm_model
+        # ""면 요청 시점의 settings.llm_reasoning_effort를 따른다(생성 클라이언트·기본). 보조 클라이언트(#297)만 값을 넘긴다
+        self._reasoning_effort = reasoning_effort
         self._client = AsyncOpenAI(
             base_url=base_url or settings.llm_base_url,
             api_key=api_key or settings.llm_api_key,
@@ -33,6 +36,16 @@ class OpenAiCompatClient:
             # 기본 read=600(10분)은 서버 멈춤 시 자원을 너무 오래 물어서 단축.
             timeout=httpx.Timeout(300.0, connect=5.0),
         )
+
+    @property
+    def model_name(self) -> str:
+        """요청에 실리는 모델 이름 — 스팬 llm.model_name 기록용(#297)."""
+        return self._model
+
+    @property
+    def reasoning_effort(self) -> str | None:
+        """이 클라이언트의 생각 수준 — 생성 클라이언트는 설정을 요청 시점에 읽는다(테스트가 설정을 바꿔 끼울 수 있게)."""
+        return settings.llm_reasoning_effort if self._reasoning_effort == "" else self._reasoning_effort
 
     # ── 하위 클래스가 고치는 곳 ─────────────────────────────
 

@@ -28,7 +28,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
-from rag.llm import create_llm
+from rag.llm import create_aux_llm
 from rag.guardrail import classify_and_guard
 
 GOLD = Path("eval/intent_set_v1.jsonl")
@@ -56,7 +56,7 @@ async def compute() -> dict:
     차단 케이스가 소수라 합산 지표는 "아무것도 차단하지 않아도 높게" 나와 안전성 회귀를 못 잡는다.
     """
     cases = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
-    llm = create_llm()
+    llm = create_aux_llm()   # 운영과 같은 보조 클라이언트(#297) — LLM_AUX_*가 비면 생성 설정 그대로
     sem = asyncio.Semaphore(CONCURRENCY)
 
     async def run(case: dict) -> dict:

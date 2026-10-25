@@ -341,10 +341,11 @@ class FakeLlm:
 
 @pytest.fixture
 def fake_llm(monkeypatch):
-    """RagService가 쓰는 공용 LLM(shared_llm)을 가짜로 치환."""
+    """RagService가 쓰는 공용 LLM(shared_llm)과 보조 LLM(shared_aux_llm, #297)을 같은 가짜로 치환."""
     fake = FakeLlm()
     import rag.service
     monkeypatch.setattr(rag.service, 'shared_llm', fake)
+    monkeypatch.setattr(rag.service, 'shared_aux_llm', fake)
     return fake
 
 

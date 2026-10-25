@@ -89,7 +89,8 @@ class Settings(BaseSettings):
     # 0.0(greedy)은 배제 — Qwen3 모델 카드가 "성능 저하·무한 반복" 위험으로 명시 금지.
     # 0.2는 greedy를 피하는 최소 대역이고 저온이라 top_p·top_k는 거의 개입하지 않아 따로 안 보낸다.
     llm_temperature: float | None = 0.2
-    # 추론(thinking) 수준 — None 또는 "none"이면 끔. 전 호출(인텐트·condense·생성) 공유. 벤더별 변환(#288 결정 5):
+    # 추론(thinking) 수준 — None 또는 "none"이면 끔. 생성의 값이고, 보조 호출(인텐트·condense·캐시 판정)은 llm_aux_reasoning_effort가
+    # 비어 있으면 이 값을 따른다(#297). 벤더별 변환(#288 결정 5):
     #   vllm(Qwen3)  : none→enable_thinking=False, 그 외→True (서버가 --reasoning-parser라 추론은 reasoning 필드로 분리,
     #                  답변엔 안 섞이지만 첫 토큰 지연·max_tokens 예산을 먹는다)
     #   gemini       : LiteLLM이 thinking_level/thinking_budget으로 변환
@@ -97,6 +98,15 @@ class Settings(BaseSettings):
     #   anthropic    : none→thinking 끔, 그 외→모델에 따라 adaptive 또는 budget. ⚠ 4.7+는 temperature<1이면 400
     # 거부되는 조합은 400으로 바로 드러난다 — 조용히 빼지 않는다. 값: none | minimal | low | medium | high
     llm_reasoning_effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
+    # 보조 호출(의도 분류·질의 재작성·캐시 재사용 판정) 전용(#297). 출력이 짧은 JSON 판정이라 생성보다 싼 하위 모델·낮은 생각 수준으로
+    # 돌려 비용과 첫 토큰 지연을 줄인다. **비우면 생성 값(llm_model·llm_reasoning_effort)과 같다 — 기본 동작 불변.**
+    # 공급자·주소·키·온도는 생성과 공유한다 — 같은 벤더의 상하위 짝(예: gpt-5/gpt-5-mini, Sonnet/Haiku, Gemini Pro/Flash)만 쓴다
+    # (키 하나·장애 영역 하나, 사용자 결정 10/25). 온도를 공유해도 되는 이유: 같은 계열이면 온도 제약도 같다(gpt-5는 생각을 켜면 1.0만).
+    # 모델 선택 근거(품질·단가·지연·프롬프트 캐싱 최소 길이)는 이슈 #297 측정 코멘트가 정본.
+    llm_aux_model: str = ""
+    llm_aux_reasoning_effort: Literal["", "none", "minimal", "low", "medium", "high"] = ""   # ""=생성 값을 따름, none=끔
+    # ⚠ 벤더마다 받는 값이 다르다 — gpt-5-mini는 'none'을 400으로 거부하고 'minimal'부터 받는다(실측 10/25, "Supported values
+    #   are: 'minimal', 'low'…"). 맞지 않는 값은 조용히 빼지 않고 400으로 드러난다(위 llm_reasoning_effort와 같은 규칙).
 
     # embedding (F99: TEI 원격 서버, dense-only). 저장 벡터도 같은 공급자·모델 출력이어야 검색 정상 — 바꾸면 재인제스트 필수.
     # 공급자(#289, 정의점 rag/embeddings.py): tei(사내, 기본) | openai | gemini | voyage — 상용은 LiteLLM 경유, 모델명은 접두 없이

@@ -94,8 +94,8 @@ async def compute(expand: bool = False, tenants: set[str] | None = None) -> dict
     queries_map: dict[str, list[str]] = {}
     if expand:
         from rag.conversation import condense_to_queries
-        from rag.llm import create_llm
-        llm = create_llm()
+        from rag.llm import create_aux_llm
+        llm = create_aux_llm()   # 재작성은 운영과 같은 보조 클라이언트(#297)
         sem = asyncio.Semaphore(6)   # worker15 공유 장비 — RAGAS와 동일 안전선
 
         async def _expand(g):

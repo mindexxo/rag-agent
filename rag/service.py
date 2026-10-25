@@ -30,7 +30,7 @@ from rag.conversation import (build_prior_turns, condense_query, condense_to_que
 from rag.models import TurnStatus
 from rag.turn_state import add_pending_turn, finalize_turn, last_unanswered_turn
 from rag.guardrail import classify_and_guard
-from rag.clients import shared_llm
+from rag.clients import shared_aux_llm, shared_llm
 from rag.citation_labels import sources_from_chunks
 from rag.models import Conversation, Message
 from rag.prompt_texts import BLOCKED_INPUT_ANSWER, NO_EVIDENCE_ANSWER, SMALLTALK_ANSWER
@@ -199,6 +199,7 @@ class RagService:
         self.session = session
         self.user_id = user_id          # 지표 씨앗 — user 메시지에 기록 (X-User-Id)
         self._llm = shared_llm          # 공용 싱글톤 재사용 (요청마다 HTTP 풀 생성 방지 — P1-12)
+        self._aux_llm = shared_aux_llm  # 분류·재작성·캐시 판정용(#297) — 설정이 비면 _llm과 같은 객체
         # LLM 스트림 종료 사유(stop|length|other — 공통 어휘, rag/llm/base.FinishReason) — generate() 완주 후
         # streaming.py가 읽어 지표·스팬에 기록한다 (#129). TurnStatus finish_reason과 이름이 같지만 다른 축이다
         # (AGENTS.md '헷갈리는 것'). 인스턴스가 요청 단위라 동시 요청 간 안 섞인다.
@@ -288,7 +289,7 @@ class RagService:
         # 회상("아까 그거 다시")과 갈린다. 예산은 condense와 같은 눈금(600토큰): 둘 다 "참조 해소에
         # 최근 몇 턴"이 목적이고, 분류는 매 턴 도는 경로라 생성용 2000토큰을 실을 이유가 없다.
         decision = await classify_and_guard(
-            self._llm, query, has_attachments=bool(attachment_dicts), domain_hint=domain_hint,
+            self._aux_llm, query, has_attachments=bool(attachment_dicts), domain_hint=domain_hint,
             prior_turns=build_prior_turns(messages, settings.condense_history_budget_tokens))
         if not decision.safe:
             logger.warning('입력 가드 차단 (tenant=%s, conversation=%s): %s',
@@ -458,10 +459,10 @@ class RagService:
         else:
             history_for_condense = trim_messages_for_condense(messages, settings.condense_history_budget_tokens)
             if settings.condense_multi_query_enabled and messages:
-                queries = await condense_to_queries(self._llm, query, history_for_condense)
+                queries = await condense_to_queries(self._aux_llm, query, history_for_condense)
                 standalone_query, expanded = queries[0], queries[1:]
             else:
-                standalone_query = await condense_query(self._llm, query, history_for_condense)
+                standalone_query = await condense_query(self._aux_llm, query, history_for_condense)
 
         # 검색 (exact 캐시 제거 — semantic 캐시가 검색 후 doc집합 비교로 처리)
         retrieval = await retrieve(self.session, self.tenant_id, standalone_query, expanded_queries=expanded)
@@ -484,7 +485,7 @@ class RagService:
                 self.session, self.tenant_id, standalone_query, source_doc_ids,
                 # 검색이 방금 만든 벡터를 그대로 넘긴다 — 같은 문자열을 다시 임베딩하지 않는다 (#50)
                 query_embedding=retrieval.query_embedding,
-                llm=self._llm,   # 임계 아래 대역 후보의 재사용 판정기 (#113)
+                llm=self._aux_llm,   # 임계 아래 대역 후보의 재사용 판정기 (#113) — 보조 클라이언트(#297)
                 # 판정기에만 쓰이는 원문(#153) — 키·임베딩은 standalone_query 기준 그대로다.
                 # RETRY 턴에서 query는 이미 직전 실질 질문으로 치환돼 있다("다시"가 아니다, #59)
                 # — 자리마다 다른 "다시"가 판정기에서 충돌하지 않는 이유가 이것이다.

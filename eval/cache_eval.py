@@ -89,8 +89,8 @@ async def compute() -> dict:
     """
     pairs = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
     rows = []
-    from rag.clients import shared_llm
-    llm = shared_llm
+    from rag.clients import shared_aux_llm
+    llm = shared_aux_llm   # 운영 판정기와 같은 보조 클라이언트(#297)
 
     async with AsyncSessionLocal() as session:
         await _clear(session)

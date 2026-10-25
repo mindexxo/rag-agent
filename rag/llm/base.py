@@ -57,6 +57,11 @@ class ConstraintUnsupported(Exception):
 class LlmClient(Protocol):
     """LLM이 갖춰야 할 모양. 인스턴스는 rag.llm.create_llm()이 설정을 보고 만든다."""
 
+    @property
+    def model_name(self) -> str:
+        """요청에 실리는 모델 이름 — 스팬 llm.model_name 기록용(#297)."""
+        ...
+
     async def acomplete(self, messages: list[dict], *, schema: type[BaseModel] | None = None,
                         citations: CitationTail | None = None,
                         on_usage: Callable[[LlmUsage], None] | None = None) -> str:

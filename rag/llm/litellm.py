@@ -67,12 +67,23 @@ def _usage_of(obj) -> LlmUsage | None:
 
 
 class LiteLlmClient:
-    def __init__(self, vendor: str, *, model: str | None = None, api_key: str | None = None):
+    def __init__(self, vendor: str, *, model: str | None = None, api_key: str | None = None,
+                 reasoning_effort: str | None = ""):
         if vendor not in _VENDORS:
             raise ValueError(f"LiteLLM 벤더가 아니다: {vendor!r} (가능: {sorted(_VENDORS)})")
         self.vendor = vendor
         self._model = f"{_VENDORS[vendor]['prefix']}/{model or settings.llm_model}"
         self._api_key = api_key or settings.llm_api_key
+        self._reasoning_effort = reasoning_effort   # ""면 요청 시점의 설정을 따른다(OpenAiCompatClient와 같은 규칙, #297)
+
+    @property
+    def model_name(self) -> str:
+        """요청에 실리는 모델 이름(LiteLLM 접두 포함) — 스팬 llm.model_name 기록용(#297)."""
+        return self._model
+
+    @property
+    def reasoning_effort(self) -> str | None:
+        return settings.llm_reasoning_effort if self._reasoning_effort == "" else self._reasoning_effort
 
     def _messages(self, messages: list[dict]) -> list[dict]:
         return with_cache_mark(messages) if _VENDORS[self.vendor]["cache_mark"] else messages
@@ -85,8 +96,8 @@ class LiteLlmClient:
         }
         if settings.llm_temperature is not None:
             kwargs["temperature"] = settings.llm_temperature
-        if settings.llm_reasoning_effort is not None:
-            kwargs["reasoning_effort"] = settings.llm_reasoning_effort
+        if self.reasoning_effort is not None:
+            kwargs["reasoning_effort"] = self.reasoning_effort
         if schema is not None:
             kwargs["response_format"] = {"type": "json_object"}   # 결정 3 = b — 스키마 강제 아님, 검증은 Pydantic
         # citations는 보내지 않는다(모듈 docstring) — 꼬리는 프롬프트 + 파서

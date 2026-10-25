@@ -116,6 +116,8 @@ async def acomplete_validated(llm: LlmClient, messages: list[dict],
     #287: 스키마를 거부하는 서버를 위한 "스키마 없이 재시도"는 지웠다 — 사내 서버는 지원 버전이라 그 경로가
     쓰이지 않았고, 조용한 우회보다 즉시 실패가 낫다(사용자 결정 8). 거부·타임아웃은 그대로 전파된다.
     """
+    if span is not None:
+        otel.set_attrs(span, {otel.LLM_MODEL: getattr(llm, 'model_name', None)})   # 보조 호출이 어느 모델이었나(#297)
     raw = await llm.acomplete(messages, schema=model_cls)   # 스키마 강제 문법은 공급자 구현이 안다(rag/llm)
 
     try:

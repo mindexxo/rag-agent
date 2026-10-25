@@ -34,7 +34,7 @@ from rag.retriever import prepare_evidence, retrieve_candidates
 from rag.retrieval_types import RetrievedChunk
 from rag.embeddings import embed_texts_sync
 from rag.prompts import build_citation_tail, build_knowledge_generation_prompt
-from rag.llm import LlmClient, create_llm
+from rag.llm import LlmClient, aux_overridden, create_aux_llm, create_llm
 from eval.retrieval import resolve_gold
 from eval.absence_judge import judge_llm
 from eval.misinfo_judge import confirm_violations
@@ -524,6 +524,7 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, e
     'rule-only'로 기록. 생성 일관성 축(eval/consistency.py)이 끈다: N×R 반복 생성마다 심판을 부르면 비용이 R배다.
     """
     gen_llm = gen_llm or llm
+    condense_llm = create_aux_llm() if aux_overridden() else llm   # 재작성은 운영처럼 보조 클라이언트(#297) — 설정이 비면 llm 그대로
     misinfo_judge_llm = judge_llm()        # 오정보 2단계 판정자(#214) — 거절축과 동일, 모드당 1회 생성
     # EPCov 2단계 판정자(#221) — 전용 스위치 EPCOV_JUDGE(기본 claude). 끄면 규칙만.
     epcov_llm = epcov_judge.judge_llm() if epcov_judging else None
@@ -545,7 +546,7 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, e
             # 이력을, 생성 맥락은 자르지 않은 원본을 받는다(build_prior_turns가 2000으로 자체
             # 트리밍한다). rag/service.py가 같은 messages에서 두 경로를 독립으로 뽑는 구조다.
             standalone = await condense_query(
-                llm, g["query"],
+                condense_llm, g["query"],
                 trim_messages_for_condense(history, settings.condense_history_budget_tokens))
         return g["id"], (standalone, build_prior_turns(history, settings.history_budget_tokens))
 

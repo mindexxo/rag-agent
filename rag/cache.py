@@ -65,7 +65,8 @@ async def _verify_reuse(llm, cached_query: str, new_query: str,
         judgment = await acomplete_validated(
             llm, build_cache_reuse_judge_messages(cached_query, new_query,
                                                   cached_original, new_original), ReuseJudgment)
-        logger.info('캐시 재사용 판정: %s — %s', judgment.same_answer, judgment.reason[:120])
+        logger.info('캐시 재사용 판정(%s): %s — %s', getattr(llm, 'model_name', '?'), judgment.same_answer,
+                    judgment.reason[:120])   # 모델 이름 — 보조 클라이언트(#297) 확인용
         return judgment.same_answer
     except Exception:
         logger.exception('캐시 재사용 판정 실패 — 거절로 처리')

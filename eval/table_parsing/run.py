@@ -4,6 +4,7 @@
     python -m eval.table_parsing.run                      # 전체(변환 약 4분 + 모델 로딩, OCR·VLM 서버 필요)
     python -m eval.table_parsing.run --only S01_basic S02_colspan --paths img pdf
     python -m eval.table_parsing.run --out eval/results/table_parsing/run2
+    python -m eval.table_parsing.run --engine vlm --paths img   # #296: 쪽 전체를 VLM(VLM_CAPTION_*)으로 — eval/vlm_engine.py
 
 산출물(<out>/): docs/(생성 문서·png), results.jsonl(건별·즉시 기록), matrix_l1.md·matrix_l2.md(축 × 경로),
 mismatches.md(틀린 칸 기대↔실제 나란히 + 실제 markdown 행). 변환은 `_convert_local`(docling 인프로세스 — 워커의 변환
@@ -25,6 +26,7 @@ from eval.table_parsing.score import (Score, all_row_texts, all_texts, chunk_tab
 from eval.table_parsing.specs import BY_ID, PATH_LABEL, paths_of
 
 PATHS = ('img', 'pdf', 'docx', 'xlsx')
+_ENGINE = 'triton'          # --engine 값(결과 행 자기서술, #296)
 
 
 def _score_pair(spec, path, doc, chunks):
@@ -65,7 +67,7 @@ def _failed(spec, kind: str, err: Exception, path: str = 'docx') -> list[Score]:
 
 
 def _row(spec, path, k, s: Score, layer, seconds, actual_rows=None):
-    return dict(id=spec['id'], axis=spec['axis'], path=path, table=k, layer=layer, seconds=round(seconds, 1),
+    return dict(id=spec['id'], axis=spec['axis'], path=path, table=k, layer=layer, seconds=round(seconds, 1), engine=_ENGINE,
                 detected=s.detected, dims_ok=s.dims_ok, clean=s.clean, exp_dims=s.exp_dims, act_dims=s.act_dims,
                 cells=[s.cells_ok, s.cells_total], numeric=[s.numeric_ok, s.numeric_total],
                 spans=[s.span_ok, s.span_total], presence=[s.presence_ok, s.presence_total],
@@ -128,7 +130,15 @@ def main():
     ap.add_argument('--out', default='eval/results/table_parsing/run1')
     ap.add_argument('--only', nargs='*')
     ap.add_argument('--paths', nargs='*', default=list(PATHS))
+    ap.add_argument('--engine', choices=('triton', 'vlm'), default='triton',
+                    help="triton=현행(레이아웃+TableFormer+원격 RapidOCR) | vlm=쪽 전체 VLM(#296, PDF·표 이미지만 영향)")
     args = ap.parse_args()
+    global _ENGINE
+    if args.engine == 'vlm':
+        from eval import vlm_engine
+        _ENGINE = vlm_engine.label()
+        vlm_engine.install()
+        print(f'engine={vlm_engine.label()} scale={vlm_engine.SCALE} max_tokens={vlm_engine.MAX_TOKENS}', flush=True)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     made = build_all(out / 'docs', set(args.only) if args.only else None, set(args.paths))

@@ -33,7 +33,7 @@ git worktree add -b <type>/issue-<N>-<slug> ../consult-agent-issue<N> origin/mai
 cp .env ../consult-agent-issue<N>/.env   # 필수 — .env는 gitignore라 워크트리에 안 딸려온다
 ```
 
-- `.env` 복사를 빠뜨리면 개발계 DB 인증 실패(#122에서 실측). `.env.dev`의 비번은 플레이스홀더다.
+- `.env` 복사를 빠뜨리면 개발계 DB 인증 실패. `.env.dev`의 비번은 플레이스홀더다.
   측정이 필요한 작업이면 `eval/gold_private`·`eval/results`도 챙긴다(둘 다 gitignore).
 - 이후 모든 파일 작업은 워크트리 안에서만. 원본 저장소 경로의 파일은 절대 건드리지 마라.
 
@@ -50,7 +50,7 @@ cp .env ../consult-agent-issue<N>/.env   # 필수 — .env는 gitignore라 워�
   축 하나마다 ① 코드·문서에서 확인한 사실 ② 대안 표(안 × 내용 × 대가) ③ 추천 1개와 이유를 적고
   "a로 갈까?"로 묻는다. 사용자가 고르면 "결정 N = a"로 확정하고 다음 축으로. 앞 축의 선택이 뒤 축의
   대안을 바꾸면 반영해서 낸다. 순서는 영향이 큰 것(경계·범위)부터, 문서 정리 같은 작은 것은 뒤로.
-- 설계에서 "반드시/절대" 문장이 나오면 정의점 docstring(또는 AGENTS.md)에 적고, `INVARIANTS.md`에 한 줄 올린 뒤 그 항목을 **강제하는 테스트**를 구현과 같이 짠다(#312).
+- 설계에서 "반드시/절대" 문장이 나오면 `INVARIANTS.md`에 한 줄 올리고 그 항목을 **강제하는 테스트**를 구현과 같이 짠다(#312). 코드 주석에는 이해에 꼭 필요할 때만 한 줄.
   강제 수단 칸을 비워 두지 않는다 — AGENTS.md의 경로·심볼·숫자는 `tests/test_docs_freshness.py`가 그 예다.
 - 구현 중 새 결정이 필요하면 멈추고 묻는다. 추측으로 채우지 않는다.
 - 리뷰: code-reviewer 에이전트 결과는 **수정하지 말고 먼저 보고**한다 — 전체 목록(심각도·파일:행·한 줄)을 보인 뒤
@@ -72,7 +72,8 @@ cp .env ../consult-agent-issue<N>/.env   # 필수 — .env는 gitignore라 워�
   복잡도·분기·인자·크기 초과는 "책임을 나누라"는 신호다. 고칠 수 없는 증가(파일·함수 이름 변경 포함)만
   `QUALITY_BASELINE_UPDATE=1 QUALITY_ALLOW_GROWTH=1`로 기준선에 올리고, **사용자에게 사유를 보고**한 뒤 PR 본문 `## 테스트`에 적는다.
 - 경고("품질 개선 N건")가 나오면 `QUALITY_BASELINE_UPDATE=1 pytest tests/test_code_quality.py`로 기준선을 조여 같은 PR에 넣는다.
-- 리뷰어 프롬프트에 3·4·5번(데이터는 dict 대신 dataclass/TypedDict, 클래스 절제, 공개 함수 타입 힌트)을 점검 항목으로 넣는다 — 기계 검사가 없는 규칙이다.
+- 리뷰어 프롬프트에 3·4·5번(데이터는 dict 대신 dataclass/TypedDict, 클래스 절제, 공개 함수 타입 힌트)과 **주석 기준**(이해하기 어려운 곳에만 간결하게, 히스토리·코드 반복 금지 — AGENTS.md 규약)을 점검 항목으로 넣는다 — 기계 검사가 없는(또는 일부만 있는) 규칙이다.
+- 주석·docstring에 이슈 번호·날짜·실측 경위를 쓰지 않는다 — 그건 커밋 메시지·PR 본문에. 히스토리 표지 래칫이 늘면 막는다.
 - ruff가 없다는 skip이 나오면 `pip install -r requirements.txt` 후 다시 돌린다 — skip을 통과로 보고하지 마라.
 
 ## 4. E2E 테스트케이스 리스트업

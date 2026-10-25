@@ -1,10 +1,12 @@
-"""코드 품질 래칫 게이트(#302) — 판단 기준(AGENTS.md "코드 품질 기준")을 기계로 강제하는 정의점.
+"""코드 품질 래칫 게이트 — AGENTS.md "코드 품질 기준"을 기계로 강제한다.
 
-기준선 tests/quality_baseline.json에 지금의 위반을 동결하고, **그보다 나빠지면 실패**한다. 세 가지를 본다:
+기준선 tests/quality_baseline.json에 지금의 위반을 동결하고, **그보다 나빠지면 실패**한다. 네 가지를 본다:
   - ruff: 파일 × 규칙 코드별 위반 수(설정은 pyproject.toml). 줄 번호가 아니라 개수라서 무관한 수정으로 줄이 밀려도 안 깨진다.
   - format: `ruff format`이 고칠 파일 목록. 목록에 없는 파일(새 파일 포함)이 포맷에서 벗어나면 실패.
   - size: 함수 코드줄 > FUNC_MAX, 모듈 코드줄 > MODULE_MAX(Ruff에 규칙이 없어 여기서 잰다). 코드줄 = 주석·docstring·빈 줄 제외
-    — 이 저장소는 판단 근거를 주석에 남기는 규약이라 원줄 수로 재면 문서화가 벌점이 된다(rag/ 실측: 원줄 10,263 중 코드 5,044).
+    — 설명을 크기 벌점으로 세지 않는다(설명의 양은 history 항목과 리뷰가 본다).
+  - history: 파일별 주석·docstring 안의 히스토리 표지 수(이슈 번호·날짜·경위 낱말). 주석은 이해하기 어려운 곳에만 간결하게 쓰고
+    경위는 이슈·PR·커밋에 둔다(AGENTS.md 규약) — 새 파일은 0, 기존 파일은 늘지 않게.
 대상 파일은 git이 아는 파일(추적 + 미추적이되 무시되지 않은 것)이다 — 로컬에만 있는 gitignore 파일(eval/results 등)이
 사람마다 결과를 다르게 만들지 않게 ruff와 크기 스캔이 같은 목록을 쓴다.
 
@@ -19,7 +21,7 @@
   - 기준선 JSON이 머지 충돌하면 손으로 풀지 말고 한쪽을 받은 뒤 갱신 명령으로 다시 만든다.
   - `# noqa`는 위반을 센 수에서 뺀다 — "명시적으로 끈 것"이라 리뷰에서 사유를 본다. pyproject.toml의 상한·제외 완화도 같다.
 
-ruff는 requirements.txt에 버전 고정돼 있다. 없으면 건너뛰되 CI=1(또는 true)이면 실패한다(#90이 CI에서 부른다).
+ruff는 requirements.txt에 버전 고정돼 있다. 없으면 건너뛰되 CI=1(또는 true)이면 실패한다.
 버전이 다르면 실패한다 — 규칙 판정이 버전마다 달라 기준선이 흔들린다. ruff를 올릴 때는 같은 PR에서 기준선을 다시 만든다
 (QUALITY_BASELINE_UPDATE=1 QUALITY_ALLOW_GROWTH=1).
 """
@@ -28,6 +30,7 @@ import ast
 import io
 import json
 import os
+import re
 import subprocess
 import tokenize
 import warnings
@@ -53,6 +56,8 @@ FUNC_MAX = (
     50  # 함수 코드줄 — Google 가이드는 "약 40줄이면 분해 검토"(원줄 기준). 코드줄만 세므로 문장 수 상한(50)에 맞춘다
 )
 MODULE_MAX = 300  # 모듈 코드줄 — 넘으면 책임이 하나인지 검토(AGENTS.md)
+# 이슈 번호는 앞에 글자가 붙어도(PR 표기)·뒤에 한글 조사가 붙어도 잡는다 — 그래서 단어 경계 대신 숫자 경계
+HISTORY = re.compile(r'(?<![&#/])#\d{2,4}(?!\d)|(?<!\d)20\d\d-\d\d(?:-\d\d)?(?!\d)|실측|기각|선례|결정 ?\d+')
 
 
 def _flag(name: str) -> bool:
@@ -173,6 +178,28 @@ def _size_violations(files: list[str]) -> dict[str, int]:
     return out
 
 
+def _explanations(source: str) -> list[str]:
+    """주석 본문과 docstring — 코드 안 문자열(프롬프트·SQL 등)은 넣지 않는다."""
+    tree = ast.parse(source)
+    texts = [
+        ast.get_docstring(node, clean=False) or ''
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+    texts += [tok.string.lstrip('#') for tok in tokens if tok.type == tokenize.COMMENT]
+    return texts
+
+
+def _history_counts(files: list[str]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for rel in files:
+        n = sum(len(HISTORY.findall(text)) for text in _explanations((ROOT / rel).read_text(encoding='utf-8')))
+        if n:
+            out[rel] = n
+    return out
+
+
 def _compare(kind: str, base: dict[str, int], now: dict[str, int]) -> tuple[list[str], list[str]]:
     """(악화, 개선) — 악화는 새 키이거나 값이 커진 것, 개선은 사라졌거나 값이 작아진 것."""
     worse = [f'{kind} {k}: {base.get(k, 0)} → {v}' for k, v in sorted(now.items()) if v > base.get(k, 0)]
@@ -193,6 +220,7 @@ def test_품질_기준선보다_나빠지지_않는다():
         'ruff': _ruff_counts(ruff, files),
         'format': {f: 1 for f in _unformatted(ruff, files)},
         'size': _size_violations(files),
+        'history': _history_counts(files),
     }
     base = json.loads(BASELINE.read_text(encoding='utf-8')) if BASELINE.exists() else {}
     base = {kind: base.get(kind, {}) for kind in now}
@@ -245,3 +273,20 @@ def test_함수_목록은_조건부_정의와_중첩을_모두_훑는다():
         'if True:\n    def k(): pass\n'
     )
     assert [name for name, _ in _functions(ast.parse(source))] == ['A.m', 'A.m.g', 'h', 'h', 'k']
+
+
+def test_히스토리_표지는_주석과_docstring에서만_센다():
+    source = (
+        '"""모듈 설명(#123) 2026-10-25 실측."""\n'
+        'PROMPT = "#999 이건 문자열이라 안 센다"\n'
+        'x = 1  # 기각한 안, 결정 3\n'
+        '# 다음 줄 설명 — 번호 없음\n'
+        'y = 2  #12 주석 기호 바로 뒤 숫자는 세지 않는다(포매터가 "# "로 고친다)\n'
+        'z = 3  # 이 값은 #287에서 정했다(2026-10-25에), PR#141 참고\n'
+        'w = 4  # 결정\n'
+        '# 3개를 본다\n'
+    )
+    texts = _explanations(source)
+    assert (
+        sum(len(HISTORY.findall(t)) for t in texts) == 8
+    )  # #123·날짜·실측·기각·결정 3·#287·날짜·PR#141 — 줄 넘은 '결정/3개'는 아님

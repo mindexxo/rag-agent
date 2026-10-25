@@ -21,21 +21,23 @@ invalidate_source · sweep_stale. 나머지는 내부 헬퍼(_).
 - 모델 교체: 미보호 — 교체 시 일괄 flush로 처리한다 (조회 model 필터는 기각 #113:
   답을 바꾸는 미보호 축이 여럿이라 그 하나만 막는 건 착시).
 """
+
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-
 from hashlib import sha256
-from sqlalchemy import select, update, func, delete
+
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from rag.embeddings import embed_query
-from rag.llm_schemas import acomplete_validated, ReuseJudgment
+from rag.llm_schemas import ReuseJudgment, acomplete_validated
+from rag.models import AnswerCache as AnswerCacheRow
+from rag.models import Faq
 from rag.prompts import build_cache_reuse_judge_messages
 from schemas.kms import SourceCitation
-from rag.models import AnswerCache as AnswerCacheRow, Faq
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +49,9 @@ class CacheHit:
     source_doc_ids: list[int]
 
 
-async def _verify_reuse(llm, cached_query: str, new_query: str,
-                        cached_original: str | None = None,
-                        new_original: str | None = None) -> bool:
+async def _verify_reuse(
+    llm, cached_query: str, new_query: str, cached_original: str | None = None, new_original: str | None = None
+) -> bool:
     """판정기(#113) — 캐시 후보의 재사용 가부를 LLM에 묻는다. 모든 히트의 필요조건이다.
 
     True=재사용 승인. 판정 실패(스키마 불신·호출 실패)는 False — 오판 비용 비대칭
@@ -63,10 +65,14 @@ async def _verify_reuse(llm, cached_query: str, new_query: str,
     """
     try:
         judgment = await acomplete_validated(
-            llm, build_cache_reuse_judge_messages(cached_query, new_query,
-                                                  cached_original, new_original), ReuseJudgment)
-        logger.info('캐시 재사용 판정(%s): %s — %s', getattr(llm, 'model_name', '?'), judgment.same_answer,
-                    judgment.reason[:120])   # 모델 이름 — 보조 클라이언트(#297) 확인용
+            llm, build_cache_reuse_judge_messages(cached_query, new_query, cached_original, new_original), ReuseJudgment
+        )
+        logger.info(
+            '캐시 재사용 판정(%s): %s — %s',
+            getattr(llm, 'model_name', '?'),
+            judgment.same_answer,
+            judgment.reason[:120],
+        )  # 모델 이름 — 보조 클라이언트(#297) 확인용
         return judgment.same_answer
     except Exception:
         logger.exception('캐시 재사용 판정 실패 — 거절로 처리')
@@ -95,7 +101,9 @@ def _sources_from_json(raw_sources: list[dict]) -> list[SourceCitation]:
 
 
 async def snapshot_faq_versions(
-        session: AsyncSession, tenant_id: str, source_doc_ids: list[int],
+    session: AsyncSession,
+    tenant_id: str,
+    source_doc_ids: list[int],
 ) -> dict[int, datetime]:
     """근거에 포함된 FAQ들의 {faq_id: updated_at} 스냅샷 — save_answer의 낙관적 검증 기준값.
 
@@ -106,20 +114,24 @@ async def snapshot_faq_versions(
     faq_ids = [-i for i in source_doc_ids if i < 0]
     if not faq_ids:
         return {}
-    rows = (await session.execute(
-        select(Faq.id, Faq.updated_at)
-        .where(Faq.tenant_id == tenant_id)     # 격리 — 모든 조회에 tenant WHERE (프로젝트 원칙)
-        .where(Faq.id.in_(faq_ids))
-    )).all()
+    rows = (
+        await session.execute(
+            select(Faq.id, Faq.updated_at)
+            .where(Faq.tenant_id == tenant_id)  # 격리 — 모든 조회에 tenant WHERE (프로젝트 원칙)
+            .where(Faq.id.in_(faq_ids))
+        )
+    ).all()
     return {fid: ts for fid, ts in rows}
 
 
 async def get_semantic(
-        session: AsyncSession, tenant_id: str, query: str,
-        current_source_doc_ids: list[int],
-        query_embedding: list[float] | None = None,
-        llm=None,
-        original_query: str | None = None,
+    session: AsyncSession,
+    tenant_id: str,
+    query: str,
+    current_source_doc_ids: list[int],
+    query_embedding: list[float] | None = None,
+    llm=None,
+    original_query: str | None = None,
 ) -> CacheHit | None:
     """Postgres semantic cache를 조회한다.
 
@@ -160,12 +172,7 @@ async def get_semantic(
         distance = AnswerCacheRow.query_embedding.cosine_distance(query_embedding).label("distance")
 
         # 3. 같은 tenant의 캐시 중 새 질문과 가장 가까운 캐시 row 1개만 조회한다.
-        stmt = (
-            select(AnswerCacheRow, distance)
-            .where(AnswerCacheRow.tenant_id == tenant_id)
-            .order_by(distance)
-            .limit(1)
-        )
+        stmt = select(AnswerCacheRow, distance).where(AnswerCacheRow.tenant_id == tenant_id).order_by(distance).limit(1)
         row = (await session.execute(stmt)).first()
 
         # 4. 캐시 row가 하나도 없으면 semantic cache miss.
@@ -188,10 +195,8 @@ async def get_semantic(
 
         # 7. 재사용 판정(#113) — 모든 히트의 필요조건. 판정 실패(예외 포함)는 miss.
         # 원문도 함께 넘긴다(#153) — 같은 입력이 이력 차이로 다르게 재작성된 경우를 구제한다.
-        if not await _verify_reuse(llm, cache_row.query_text, query,
-                                   cache_row.original_query, original_query):
-            logger.info('판정기가 캐시 재사용 거절 — miss (tenant=%s, sim=%.4f)',
-                        tenant_id, similarity)
+        if not await _verify_reuse(llm, cache_row.query_text, query, cache_row.original_query, original_query):
+            logger.info('판정기가 캐시 재사용 거절 — miss (tenant=%s, sim=%.4f)', tenant_id, similarity)
             return None
 
         # 8. semantic hit 통계 갱신.
@@ -215,15 +220,15 @@ async def get_semantic(
 
 
 async def save_answer(
-        session: AsyncSession,
-        tenant_id: str,
-        query: str,
-        answer: str,
-        sources: list[SourceCitation],
-        source_doc_ids: list[int],
-        faq_versions: dict[int, datetime] | None = None,
-        query_embedding: list[float] | None = None,
-        original_query: str | None = None,
+    session: AsyncSession,
+    tenant_id: str,
+    query: str,
+    answer: str,
+    sources: list[SourceCitation],
+    source_doc_ids: list[int],
+    faq_versions: dict[int, datetime] | None = None,
+    query_embedding: list[float] | None = None,
+    original_query: str | None = None,
 ) -> None:
     """LLM 응답을 Postgres semantic cache에 저장한다.
 
@@ -251,8 +256,7 @@ async def save_answer(
         # FAQ PATCH의 무효화 커밋 '이후'에 옛 내용 기반 답변을 다시 심는 레이스 차단.
         # FOR SHARE로 재조회 — 검증과 INSERT 커밋 사이의 ms 창까지 닫는다: 동시 FAQ UPDATE는
         # 이 트랜잭션 커밋까지 대기하고, 대기 후 실행되는 무효화가 방금 쓴 row를 지운다.
-        if faq_versions is not None and not await _faqs_unchanged(
-                session, tenant_id, source_doc_ids, faq_versions):
+        if faq_versions is not None and not await _faqs_unchanged(session, tenant_id, source_doc_ids, faq_versions):
             logger.info('근거 FAQ가 생성 중 변경됨 — 캐시 저장 스킵 (tenant=%s)', tenant_id)
             return
 
@@ -282,7 +286,7 @@ async def save_answer(
             index_elements=["tenant_id", "cache_key"],
             set_={
                 "query_text": query,
-                "original_query": original_query,   # 답변이 교체되면 그 턴의 원문으로 함께 교체 (#153)
+                "original_query": original_query,  # 답변이 교체되면 그 턴의 원문으로 함께 교체 (#153)
                 "query_embedding": query_embedding,
                 "answer": answer,
                 "sources": _sources_to_json(sources),
@@ -298,10 +302,10 @@ async def save_answer(
 
 
 async def _faqs_unchanged(
-        session: AsyncSession,
-        tenant_id: str,
-        source_doc_ids: list[int],
-        snapshot: dict[int, datetime],
+    session: AsyncSession,
+    tenant_id: str,
+    source_doc_ids: list[int],
+    snapshot: dict[int, datetime],
 ) -> bool:
     """근거 FAQ들이 prepare 스냅샷 이후 안 바뀌었는가 — 등치 비교(순서 아님).
 
@@ -311,12 +315,14 @@ async def _faqs_unchanged(
     faq_ids = [-i for i in source_doc_ids if i < 0]
     if not faq_ids:
         return True
-    rows = (await session.execute(
-        select(Faq.id, Faq.updated_at, Faq.is_active)
-        .where(Faq.tenant_id == tenant_id)
-        .where(Faq.id.in_(faq_ids))
-        .with_for_update(read=True)          # FOR SHARE — 커밋까지 동시 FAQ UPDATE 차단
-    )).all()
+    rows = (
+        await session.execute(
+            select(Faq.id, Faq.updated_at, Faq.is_active)
+            .where(Faq.tenant_id == tenant_id)
+            .where(Faq.id.in_(faq_ids))
+            .with_for_update(read=True)  # FOR SHARE — 커밋까지 동시 FAQ UPDATE 차단
+        )
+    ).all()
     current = {fid: (ts, active) for fid, ts, active in rows}
     for fid in faq_ids:
         got = current.get(fid)
@@ -333,17 +339,17 @@ async def sweep_stale(session: AsyncSession) -> int:
     전 테넌트 일괄 — 보존 기간은 테넌트 무관 위생 정책.
     """
     result = await session.execute(
-        delete(AnswerCacheRow)
-        .where(AnswerCacheRow.last_hit_at
-               < func.now() - func.make_interval(0, 0, 0, settings.cache_retention_days))
+        delete(AnswerCacheRow).where(
+            AnswerCacheRow.last_hit_at < func.now() - func.make_interval(0, 0, 0, settings.cache_retention_days)
+        )
     )
     return result.rowcount
 
 
 async def invalidate_source(
-        session: AsyncSession,
-        tenant_id: str,
-        source_id: int,
+    session: AsyncSession,
+    tenant_id: str,
+    source_id: int,
 ) -> None:
     """source_id를 근거로 만든 semantic 캐시 row를 무효화한다.
 

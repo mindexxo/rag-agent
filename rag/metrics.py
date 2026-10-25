@@ -50,6 +50,7 @@ tenant_id·conversation_id·filename 같은 고카디널리티 값 금지(Promet
 워커의 /metrics(WORKER_METRICS_PORT, #151)에만, TTFT는 앱의 /metrics(main.py)에만 나온다.
 프로메테우스가 두 타깃(kms_app·kms_worker)을 각각 긁어 합친다.
 """
+
 from prometheus_client import Counter, Histogram
 
 TTFT_SECONDS = Histogram(
@@ -79,7 +80,7 @@ def ext_label(filename: str) -> str:
 INDEX_DURATION_SECONDS = Histogram(
     'kms_index_duration_seconds',
     '문서 1건 인제스션 소요(초) — 단계별·형식별 (성공 건만)',
-    labelnames=('stage', 'ext'),      # stage=parse|embed|index|total
+    labelnames=('stage', 'ext'),  # stage=parse|embed|index|total
     # 상한 900초 = docling_document_timeout_seconds(변환 마감) — 그 위는 실패로 끝나 기록되지 않는다(성공 건만).
     # 600·900은 #223에서 더했다: 정상 최악이 약 810초(PDF 100쪽 + 그림 100장)라 300 위를 한 칸에 뭉치면
     # 큰 문서가 400초인지 850초인지(마감 직전인지) 못 읽는다.
@@ -90,7 +91,7 @@ INDEX_DURATION_SECONDS = Histogram(
 INDEX_TOTAL = Counter(
     'kms_index_total',
     '문서 인제스션 결과 (문서 단위 — 재시도 단위인 kms_search_index_sync_total과 다르다)',
-    labelnames=('ext', 'result'),     # result=ok|retry|failed
+    labelnames=('ext', 'result'),  # result=ok|retry|failed
 )
 
 INDEX_PICTURE_PLACEHOLDER_TOTAL = Counter(
@@ -107,8 +108,8 @@ EVIDENCE_BUDGET_TRIM_TOTAL = Counter(
 SEARCH_INDEX_SYNC_TOTAL = Counter(
     'kms_search_index_sync_total',
     '외부 검색 색인 동기화 (#139), 재시도 단위. error가 늘면 색인이 낡는다 — rag.os_reconcile로 복구',
-    labelnames=('op', 'result'),      # op=rag/outbox.py의 op 어휘 (index_document|drop_documents|…)
-)                                     # result=ok|error  (라벨 카디널리티 고정 — 규율 참조)
+    labelnames=('op', 'result'),  # op=rag/outbox.py의 op 어휘 (index_document|drop_documents|…)
+)  # result=ok|error  (라벨 카디널리티 고정 — 규율 참조)
 
 SEARCH_INDEX_FAILED_TOTAL = Counter(
     'kms_search_index_failed_total',

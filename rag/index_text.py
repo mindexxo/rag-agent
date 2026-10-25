@@ -21,11 +21,11 @@ DB의 chunks.text는 원문 그대로 둔다 — 인용·프롬프트 컨텍스�
 파생 정보를 섞지 않는다. 프롬프트는 이미 build_context_blocks가 '[번호] 파일명 vN 섹션: ...'
 라벨을 따로 찍으므로 본문에까지 넣으면 중복이다.
 """
+
 from pathlib import Path
 
 
-def build_index_text(text: str, filename: str | None, heading_path: list[str] | None,
-                     folder: str | None = None) -> str:
+def build_index_text(text: str, filename: str | None, heading_path: list[str] | None, folder: str | None = None) -> str:
     """본문 앞에 '[폴더] > 파일명 > 헤딩 > 헤딩' 한 줄을 붙인다. 붙일 게 없으면 본문 그대로.
 
     확장자는 뗀다 — '.pdf'/'.docx'는 의미 벡터에 잡음만 얹는다.
@@ -38,7 +38,7 @@ def build_index_text(text: str, filename: str | None, heading_path: list[str] | 
     — 파일명과 헤딩이 같은 문서(예: '배송지연대응.docx' + '# 배송지연대응')는 형식과 무관하다.
     """
     parts = []
-    if folder:                      # 리랭커 전용 (위 docstring 참조)
+    if folder:  # 리랭커 전용 (위 docstring 참조)
         parts.append(folder.strip())
     if filename:
         parts.append(Path(filename).stem)

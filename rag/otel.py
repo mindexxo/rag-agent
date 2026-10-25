@@ -15,6 +15,7 @@
 otel_text_limit(기본 500자) 절단 — 개발계 진단 가치와 개인정보 노출 면적의 절충.
 답변 절단은 generate 스팬과 루트 kms.query의 output.value(턴 결과, #54) 양쪽에 적용.
 """
+
 from contextlib import contextmanager
 
 from opentelemetry import context as otel_context
@@ -23,14 +24,14 @@ from opentelemetry import trace
 from config import settings
 
 # ── OpenInference 속성 이름 (규격 문자열 — Phoenix 전용 뷰가 이 이름을 렌더링) ──
-SPAN_KIND = 'openinference.span.kind'          # CHAIN|LLM|RETRIEVER|RERANKER|GUARDRAIL ...
+SPAN_KIND = 'openinference.span.kind'  # CHAIN|LLM|RETRIEVER|RERANKER|GUARDRAIL ...
 INPUT_VALUE = 'input.value'
 OUTPUT_VALUE = 'output.value'
 LLM_MODEL = 'llm.model_name'
 RERANK_QUERY = 'reranker.query'
 RERANK_TOP_K = 'reranker.top_k'
 
-_tracer = trace.get_tracer('consult-agent')    # Proxy — init 전/미설정이면 no-op 스팬 생성
+_tracer = trace.get_tracer('consult-agent')  # Proxy — init 전/미설정이면 no-op 스팬 생성
 
 
 def init_tracing() -> bool:

@@ -12,6 +12,7 @@ Redis도 여기 있다(#30). 답변 캐시의 exact 계층이 제거되며(#16) 
 **소비자는 이 모듈의 속성을 호출 시점에 읽어야 한다**(`clients.shared_redis.publish(...)`).
 생성자나 import 시점에 붙잡으면 아래 http_async와 같은 이유로 교체가 먹지 않는다.
 """
+
 import httpx
 import redis.asyncio as aioredis
 

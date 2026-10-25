@@ -31,11 +31,12 @@ HNSW(m·ef_construction·ef_search)와 BM25(k1=1.2·b=0.75)는 **엔진 기본�
 (Nori 기본 사전의 고유명 오분할은 `search_lexical` docstring, 규모에 따른 근사 탐색 리콜과 `ef_search` 재검토 트리거는
 아래 MAPPING의 `ef_search` 주석이 정의점이다 — 여기서 반복하지 않는다.)
 """
+
 import logging
 
 from config import settings
 
-DIM = 1024              # 임베딩 모델 차원 (rag/embeddings.py)
+DIM = 1024  # 임베딩 모델 차원 (rag/embeddings.py)
 # HNSW·BM25 파라미터는 엔진 기본값 — 모듈 docstring "파라미터 — OpenSearch 기본값".
 
 NORI_FIELD = "index_text_nori"
@@ -44,8 +45,8 @@ LEX_BIGRAM_FIELD = "lex_bigram"
 MAPPING = {
     "settings": {
         "index": {
-            "number_of_shards": 1,      # 샤드를 늘리면 df가 샤드별로 갈려 BM25 점수가 흔들린다.
-            "number_of_replicas": 0,    # 배포는 자체 설치 단일 노드(#139 결정) — 레플리카 둘 곳이 없다.
+            "number_of_shards": 1,  # 샤드를 늘리면 df가 샤드별로 갈려 BM25 점수가 흔들린다.
+            "number_of_replicas": 0,  # 배포는 자체 설치 단일 노드(#139 결정) — 레플리카 둘 곳이 없다.
             "knn": True,
             # ef_search·BM25 similarity는 명시하지 않는다 — 엔진 기본값(ef_search 100, BM25 k1=1.2 b=0.75).
             # lucene 엔진은 규모와 무관하게 HNSW 근사 탐색을 탄다 — index.knn.advanced.approximate_threshold
@@ -107,7 +108,7 @@ MAPPING = {
             # 비검색 청크도 색인하고 이 플래그로 가른다 — 토글 on/off가 문서 추가·삭제가 아니라
             # 플래그 부분 갱신이 되어 fan-out이 가볍고 재임베딩이 없다.
             "searchable": {"type": "boolean"},
-            "folder_id": {"type": "long"},            # 폴더 단위 fan-out update의 필터 키
+            "folder_id": {"type": "long"},  # 폴더 단위 fan-out update의 필터 키
             "folder_name": {"type": "keyword"},
             # 폴더 설명은 리랭커 입력에만 들어간다(rag/index_text.py) — 검색 대상이 아니다.
             "folder_description": {"type": "text", "index": False},
@@ -140,7 +141,7 @@ MAPPING = {
                 "dimension": DIM,
                 "method": {
                     "name": "hnsw",
-                    "engine": "lucene",       # cosinesimil 지원 + 필터를 kNN 탐색 단계에서 처리
+                    "engine": "lucene",  # cosinesimil 지원 + 필터를 kNN 탐색 단계에서 처리
                     "space_type": "cosinesimil",
                     # m·ef_construction 미명시 = 엔진 기본값 (모듈 docstring)
                 },
@@ -166,12 +167,16 @@ def client():
     global _client
     if _client is None:
         from opensearchpy import AsyncOpenSearch
-        _client = AsyncOpenSearch([settings.opensearch_url],
-                                  timeout=settings.opensearch_timeout,
-                                  # 안 주면 기본 10 — aiohttp TCPConnector(limit=)로 그대로 들어가
-                                  # 프로세스 전체의 동시 OS 요청이 10으로 묶인다 (#201, 런타임 실측).
-                                  maxsize=settings.opensearch_maxsize,
-                                  retry_on_timeout=True, max_retries=2)
+
+        _client = AsyncOpenSearch(
+            [settings.opensearch_url],
+            timeout=settings.opensearch_timeout,
+            # 안 주면 기본 10 — aiohttp TCPConnector(limit=)로 그대로 들어가
+            # 프로세스 전체의 동시 OS 요청이 10으로 묶인다 (#201, 런타임 실측).
+            maxsize=settings.opensearch_maxsize,
+            retry_on_timeout=True,
+            max_retries=2,
+        )
     return _client
 
 
@@ -208,9 +213,10 @@ async def _add_missing_fields(os_client) -> None:
         missing = {f: props[f] for f in ADDITIVE_FIELDS if f not in have}
         if missing:
             await os_client.indices.put_mapping(index=settings.opensearch_index, body={"properties": missing})
-    except Exception as e:                       # noqa: BLE001 — 부가 작업 실패로 색인을 막지 않는다
-        logging.getLogger(__name__).warning('검색 저장소 매핑 필드 추가 실패 — 색인은 계속한다(%s): %s',
-                                            ', '.join(ADDITIVE_FIELDS), e)
+    except Exception as e:  # noqa: BLE001 — 부가 작업 실패로 색인을 막지 않는다
+        logging.getLogger(__name__).warning(
+            '검색 저장소 매핑 필드 추가 실패 — 색인은 계속한다(%s): %s', ', '.join(ADDITIVE_FIELDS), e
+        )
 
 
 async def ensure_index() -> None:
@@ -226,7 +232,7 @@ async def ensure_index() -> None:
         return
     try:
         await os_client.indices.create(settings.opensearch_index, body=MAPPING)
-    except Exception as e:                       # noqa: BLE001 — 경합의 already-exists만 삼킨다
+    except Exception as e:  # noqa: BLE001 — 경합의 already-exists만 삼킨다
         if 'resource_already_exists_exception' not in str(e):
             raise
 
@@ -243,8 +249,10 @@ async def ensure_index_soft() -> bool:
     try:
         await ensure_index()
         return True
-    except Exception as e:                       # noqa: BLE001 — 기동을 막지 않는 것이 목적
+    except Exception as e:  # noqa: BLE001 — 기동을 막지 않는 것이 목적
         logging.getLogger(__name__).error(
             '검색 저장소(OpenSearch) 연결 실패 — 검색·색인이 동작하지 않는 상태로 기동한다. url=%s: %s',
-            settings.opensearch_url, e)
+            settings.opensearch_url,
+            e,
+        )
         return False

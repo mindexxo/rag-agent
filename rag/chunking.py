@@ -1,47 +1,47 @@
 """문서 파싱 + 청킹 모듈 (비ML 추출).
 
- 형식별 섹션 파서 → _pack_sections(묶기) → SentenceSplitter(크기 cap) → ChunkData.
- 워커(rag/documents.py)가 이 결과를 받아 임베딩 + DB 적재.
+형식별 섹션 파서 → _pack_sections(묶기) → SentenceSplitter(크기 cap) → ChunkData.
+워커(rag/documents.py)가 이 결과를 받아 임베딩 + DB 적재.
 
- **형식 분기는 chunk_file 한 곳뿐이다** — 두 곳에 있던 게 CLI로 xlsx를 넣으면 ZIP
- 바이너리가 색인되던 버그의 원인이었다(#42).
+**형식 분기는 chunk_file 한 곳뿐이다** — 두 곳에 있던 게 CLI로 xlsx를 넣으면 ZIP
+바이너리가 색인되던 버그의 원인이었다(#42).
 
- ================================================================
-   형식별 파싱 — heading_path는 xlsx 포함 네 형식 모두 채운다 (txt만 빈다)
- ================================================================
- 채움률은 문서 조판에 달렸다. 모의 코퍼스에서 100%였으나(2026-08-15) 실문서 PDF에서는
- 93%였다 — 절 제목이 본문과 같은 크기인 문서는 헤딩이 안 잡힌다 (#137).
+================================================================
+  형식별 파싱 — heading_path는 xlsx 포함 네 형식 모두 채운다 (txt만 빈다)
+================================================================
+채움률은 문서 조판에 달렸다. 모의 코퍼스에서 100%였으나(2026-08-15) 실문서 PDF에서는
+93%였다 — 절 제목이 본문과 같은 크기인 문서는 헤딩이 안 잡힌다 (#137).
 
- - PDF : **docling**(레이아웃 ML + TableFormer + 원격 한국어 OCR #168)이 기본 — #143. 인쇄 부산물·제목 분할·표 빈 셀을
-         모델이 구조적으로 처리하고, 헤딩 층만 한국 규정 번호 체계('제 N 장'/'제 N 조')로 복원한다.
-         OCR_PROVIDER=llm(상용)이면 OCR 자리를 LLM이 맡는다 — 사진 표는 잘라서, 스캔 쪽은 쪽 통째로(#299, '상용 OCR' 절).
-         docling이 실패하면 색인은 failed로 끝난다 — 저품질 비상 경로로 조용히 바꾸지 않는다(#272).
-         page는 **청크마다 실제 쪽**. 채팅 첨부(extract_text)는 pdfplumber — 사용자 대기 경로라 콜드 스타트를 안 태운다.
- - DOCX: **docling**(SimplePipeline — 레이아웃·OCR 없음)이 기본(#220). Heading 스타일 레벨 그대로 섹션 분할,
-         스타일이 없으면 조문 패턴 폴백(#205). 그림은 VLM 캡션, 표 셀 안 중첩 표·워드 자동 번호까지 읽는다.
-         채팅 첨부만 python-docx(그림·중첩 표·자동 번호를 잃는다 — 첨부는 통째로 넣는 평문이라 감수).
- - MD  : **docling**(MD 백엔드, #267) — 헤딩(밑줄식 포함)·표를 문법대로. 표 칸 '\\|'·'<br>', 링크 주소, 인라인 서식
-         조각을 보정한다(_md_sections). 채팅 첨부는 원문 그대로.
- - TXT : 평문(인코딩 감지 utf-8→cp949). 헤딩 구조가 없어 heading_path는 빈다.
- - XLSX: rag/xlsx_chunking. 행 묶음 청크 + 시트 완성본(#222)이라 이 파이프라인 밖 — 크기 상한(내용의 양) 초과면 업로드를 거절한다.
-         읽기는 docling(시트 위 그림 캡션·병합 셀), 행 세기는 openpyxl(#220).
+- PDF : **docling**(레이아웃 ML + TableFormer + 원격 한국어 OCR #168)이 기본 — #143. 인쇄 부산물·제목 분할·표 빈 셀을
+        모델이 구조적으로 처리하고, 헤딩 층만 한국 규정 번호 체계('제 N 장'/'제 N 조')로 복원한다.
+        OCR_PROVIDER=llm(상용)이면 OCR 자리를 LLM이 맡는다 — 사진 표는 잘라서, 스캔 쪽은 쪽 통째로(#299, '상용 OCR' 절).
+        docling이 실패하면 색인은 failed로 끝난다 — 저품질 비상 경로로 조용히 바꾸지 않는다(#272).
+        page는 **청크마다 실제 쪽**. 채팅 첨부(extract_text)는 pdfplumber — 사용자 대기 경로라 콜드 스타트를 안 태운다.
+- DOCX: **docling**(SimplePipeline — 레이아웃·OCR 없음)이 기본(#220). Heading 스타일 레벨 그대로 섹션 분할,
+        스타일이 없으면 조문 패턴 폴백(#205). 그림은 VLM 캡션, 표 셀 안 중첩 표·워드 자동 번호까지 읽는다.
+        채팅 첨부만 python-docx(그림·중첩 표·자동 번호를 잃는다 — 첨부는 통째로 넣는 평문이라 감수).
+- MD  : **docling**(MD 백엔드, #267) — 헤딩(밑줄식 포함)·표를 문법대로. 표 칸 '\\|'·'<br>', 링크 주소, 인라인 서식
+        조각을 보정한다(_md_sections). 채팅 첨부는 원문 그대로.
+- TXT : 평문(인코딩 감지 utf-8→cp949). 헤딩 구조가 없어 heading_path는 빈다.
+- XLSX: rag/xlsx_chunking. 행 묶음 청크 + 시트 완성본(#222)이라 이 파이프라인 밖 — 크기 상한(내용의 양) 초과면 업로드를 거절한다.
+        읽기는 docling(시트 위 그림 캡션·병합 셀), 행 세기는 openpyxl(#220).
 
- 공통: SentenceSplitter(chunk_size=512, chunk_overlap=50)로 크기 cap.
-   - 큰 섹션이 비대해져 검색 정확도 떨어지는 것 방지 + LLM 컨텍스트 부담 완화
-   - overlap 50으로 경계 의미 단절 완화
+공통: SentenceSplitter(chunk_size=512, chunk_overlap=50)로 크기 cap.
+  - 큰 섹션이 비대해져 검색 정확도 떨어지는 것 방지 + LLM 컨텍스트 부담 완화
+  - overlap 50으로 경계 의미 단절 완화
 
- 결과 ChunkData: text / heading_path / page / chunk_index / meta.
- 묶음 2개 이상으로 나뉜 표(PDF·DOCX)의 묶음은 meta에 {"is_table": True, "table_key": 문서 안 표 순번, "table_text": 표 전체}를
- 싣는다(표 전체 = 앞 설명 + 표 + 아래 주석, #268) — 근거 준비(rag/retriever.prepare_evidence)가 걸린 묶음을 '걸린 묶음 + 표 전체'로
- 바꾼다(#257·#268 결정 4, 엑셀 #222와 같은 계약).
- 표 하나가 TABLE_MAX_TOKENS를 넘으면 문서를 색인하지 않는다(TableTooLargeError).
- (LlamaIndex 의존성은 이 모듈 안에 격리 — 호출부는 ChunkData 도메인 타입만 본다.)
- """
+결과 ChunkData: text / heading_path / page / chunk_index / meta.
+묶음 2개 이상으로 나뉜 표(PDF·DOCX)의 묶음은 meta에 {"is_table": True, "table_key": 문서 안 표 순번, "table_text": 표 전체}를
+싣는다(표 전체 = 앞 설명 + 표 + 아래 주석, #268) — 근거 준비(rag/retriever.prepare_evidence)가 걸린 묶음을 '걸린 묶음 + 표 전체'로
+바꾼다(#257·#268 결정 4, 엑셀 #222와 같은 계약).
+표 하나가 TABLE_MAX_TOKENS를 넘으면 문서를 색인하지 않는다(TableTooLargeError).
+(LlamaIndex 의존성은 이 모듈 안에 격리 — 호출부는 ChunkData 도메인 타입만 본다.)
+"""
 
-import re
 import logging
 import os
 import pickle
+import re
 import socket
 import subprocess
 import sys
@@ -62,7 +62,7 @@ from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN, estimate_tokens_conservativ
 
 logger = logging.getLogger(__name__)
 
-_DOCX_HEADING_RE = re.compile(r'^Heading (\d+)$')     # python-docx는 빌트인 헤딩을 영문명으로 준다
+_DOCX_HEADING_RE = re.compile(r'^Heading (\d+)$')  # python-docx는 빌트인 헤딩을 영문명으로 준다
 # 섹션 묶음 예산(문자). 섹션 하나하나는 보통 100~150자라, 섹션=청크로 두면 top_k=5가
 # 실어 나르는 컨텍스트가 옛 방식의 1/3로 줄어든다(실측 2211자→707자).
 # 주의: 이 값이 상한으로 작동하는 일은 드물다 — _pack_sections의 경계 규칙(같은 대분류
@@ -76,10 +76,10 @@ _ORPHAN_MARKER_RE = re.compile(r'(?:^|\n)[ \t]*(\d{1,2}\.|\(\d{1,2}\))[ \t]*\n?$
 
 # OCR 상수 (#168) — 서버(serving/triton-ocr/model_repository/ocr/1/model.py)와 짝이다. 설정으로 빼지 않는다:
 # 값이 바뀌면 서버 모델도 같이 바뀌어야 하고, 둘 다 실측으로 고정한 것이라 환경별로 다를 이유가 없다.
-_OCR_LANG = 'korean'   # docling 기본은 ['chinese'] — 중국어 모델로 한글 표를 읽으면 '3년'→'34' 같은 틀린 값이
-                       # 채워진다(#144의 'OCR 기각'은 이 상태의 측정이었다 — #168에서 정정)
-_OCR_SCALE = 3.0       # 크롭 렌더 배수(72dpi 기준). 인프로세스 RapidOcrOptions 기본값과 같다. **KserveV2OcrOptions의
-                       # 기본값은 2.0**이라 명시하지 않으면 인프로세스 실측과 결과가 달라진다
+_OCR_LANG = 'korean'  # docling 기본은 ['chinese'] — 중국어 모델로 한글 표를 읽으면 '3년'→'34' 같은 틀린 값이
+# 채워진다(#144의 'OCR 기각'은 이 상태의 측정이었다 — #168에서 정정)
+_OCR_SCALE = 3.0  # 크롭 렌더 배수(72dpi 기준). 인프로세스 RapidOcrOptions 기본값과 같다. **KserveV2OcrOptions의
+# 기본값은 2.0**이라 명시하지 않으면 인프로세스 실측과 결과가 달라진다
 
 # 한국 규정 문서의 장(章) 제목 — '제 3 장 복 무', '제3장 총칙'. docling은 장과 조를 같은 레벨로
 # 내놓으므로(#143 실측: 26쪽 141개 헤딩 전부 level 1) 이 패턴으로 층을 복원한다. 마크다운의 '#'처럼
@@ -125,14 +125,18 @@ _PICTURE_CAPTION_PROMPT = (
 # 적는다. 문구 목록 후처리는 두지 않는다(모델 말버릇에 맞춘 예외 목록이 자라는 구조 — 리뷰에서 기각). 머리말이
 # 남더라도 캡션당 한 줄 15자라 검색·생성에 무해하다.
 
+
 @dataclass
 class ChunkData:
     """청킹 단계 중간 결과 (임베딩 / DB insert 전)."""
-    text: str                   # 청크 본문
-    heading_path: list[str]     # 예: ["3. 배송지연 보상", "3.2 지급 기준"]
-    page: int | None            # PDF는 페이지 번호, DOCX는 None
-    chunk_index: int            # 문서 내 순서 (0부터)
-    meta: dict | None = None    # 청크 metadata — 표 묶음은 {"is_table", "table_key", "table_text"}(#257), 묶음 헤딩은 {"headings"}(#238)
+
+    text: str  # 청크 본문
+    heading_path: list[str]  # 예: ["3. 배송지연 보상", "3.2 지급 기준"]
+    page: int | None  # PDF는 페이지 번호, DOCX는 None
+    chunk_index: int  # 문서 내 순서 (0부터)
+    meta: dict | None = (
+        None  # 청크 metadata — 표 묶음은 {"is_table", "table_key", "table_text"}(#257), 묶음 헤딩은 {"headings"}(#238)
+    )
 
 
 @dataclass
@@ -142,8 +146,9 @@ class _Section:
     파서 넷(_pdf/_docx/_md/_txt_sections)이 전부 이 형태를 내놓기 때문에 그 뒤 단계
     (묶기 → 크기 분할 → ChunkData)를 형식과 무관하게 한 번만 쓴다. 표는 blocks에 _TableBlock으로 운반된다(#252).
     """
+
     heading_path: list[str]
-    page: int | None            # PDF만 채운다 — 나머지는 파일에 페이지 개념이 없다
+    page: int | None  # PDF만 채운다 — 나머지는 파일에 페이지 개념이 없다
     body: str
     # body를 '\n'으로 나눈 줄과 1:1로 대응하는 쪽 번호. PDF만 채운다.
     # page 하나로는 여러 쪽에 걸친 섹션을 표현할 수 없어 뒤쪽 청크가 앞 쪽 번호를
@@ -167,6 +172,7 @@ class _TableBlock(NamedTuple):
     row_pages — 행마다의 쪽 번호(헤더 포함, PDF만). 쪽을 넘긴 표를 이으면(#252 E) 뒷 쪽 행이 앞 쪽 번호를 물려받는 #137
     결함 6이 되살아나므로 행 단위로 들고 다닌다(리뷰 지적). None이면 블록 전체가 한 쪽.
     """
+
     rows: list[list[str]]
     row_pages: list[int | None] | None = None
 
@@ -226,7 +232,7 @@ def batch_table_rows(header: list[str], body: list[list[str]], budget_chars: int
     head_len = len(to_markdown_table(header, []))
     batches, cur, size = [], [], head_len
     for row in body:
-        row_len = len(to_markdown_table(header, [row])) - head_len      # '\n' + 그 행 한 줄(들)
+        row_len = len(to_markdown_table(header, [row])) - head_len  # '\n' + 그 행 한 줄(들)
         if cur and size + row_len > budget_chars:
             batches.append(to_markdown_table(header, cur))
             cur, size = [], head_len
@@ -243,11 +249,10 @@ def to_markdown_table(header: list[str], body: list[list[str]]) -> str:
     빈 셀은 자리를 지킨다 — 지우면 뒷 열이 앞으로 당겨져 값이 다른 열로 읽힌다
     (#137 결함 5: 개인부담 O가 회사지원 O로 읽히는 형태. 유실이 0이라 커버리지에 안 잡히고 답만 틀린다).
     """
-    lines = ['| ' + ' | '.join(header) + ' |',
-             '| ' + ' | '.join('---' for _ in header) + ' |']
+    lines = ['| ' + ' | '.join(header) + ' |', '| ' + ' | '.join('---' for _ in header) + ' |']
     for row in body:
         # 행 길이를 헤더에 맞춤 (짧으면 빈칸 채움)
-        cells = (row + [''] * len(header))[:len(header)]
+        cells = (row + [''] * len(header))[: len(header)]
         lines.append('| ' + ' | '.join(cells) + ' |')
     return '\n'.join(lines)
 
@@ -277,6 +282,7 @@ def _pdf_pages(file_path: str | Path) -> list[tuple[int, str]]:
 
 # ── 섹션 조립 — PDF·DOCX·MD 공통 후단 ──────────────────────────────────────────────
 
+
 def _build_sections(items: list[_Item]) -> list[_Section]:
     """(page, text, level) 흐름을 헤딩 스택으로 _Section 목록에 접는다. PDF·DOCX·MD가 이 함수 하나로 조립한다(#233).
 
@@ -300,9 +306,9 @@ def _build_sections(items: list[_Item]) -> list[_Section]:
     """
     sections: list[_Section] = []
     stack: list[str] = []
-    stack_pos: list[int] = []         # stack 원소마다 items 속 위치 — 고아를 되살릴 때 문서 순서로 놓으려고
-    orphans: list[tuple[int, str]] = []   # (items 속 위치, 헤딩)
-    emitted = 0                        # stack 앞에서 몇 개가 이미 섹션 경로로 나갔나 — 그 헤딩들은 고아가 될 수 없다
+    stack_pos: list[int] = []  # stack 원소마다 items 속 위치 — 고아를 되살릴 때 문서 순서로 놓으려고
+    orphans: list[tuple[int, str]] = []  # (items 속 위치, 헤딩)
+    emitted = 0  # stack 앞에서 몇 개가 이미 섹션 경로로 나갔나 — 그 헤딩들은 고아가 될 수 없다
     buf: list[str] = []
     buf_pages: list[int | None] = []
     buf_blocks: list[str | _TableBlock] = []
@@ -323,7 +329,9 @@ def _build_sections(items: list[_Item]) -> list[_Section]:
         nonlocal emitted
         if not buf:
             return
-        sections.append(_Section(list(path), start_page, '\n'.join(buf), list(buf_pages), blocks=_join_blocks(buf_blocks)))
+        sections.append(
+            _Section(list(path), start_page, '\n'.join(buf), list(buf_pages), blocks=_join_blocks(buf_blocks))
+        )
         emitted = len(path)
         buf.clear()
         buf_pages.clear()
@@ -334,10 +342,10 @@ def _build_sections(items: list[_Item]) -> list[_Section]:
             last_page = page
         if level is not None:
             flush(stack)
-            cut = max(emitted, level - 1)                       # 걷어낼 헤딩 중 경로로 한 번도 안 나간 것
+            cut = max(emitted, level - 1)  # 걷어낼 헤딩 중 경로로 한 번도 안 나간 것
             orphans.extend(zip(stack_pos[cut:], stack[cut:]))
             emitted = min(emitted, level - 1)
-            del stack[level - 1:], stack_pos[level - 1:]
+            del stack[level - 1 :], stack_pos[level - 1 :]
             stack.append(text)
             stack_pos.append(pos)
         else:
@@ -345,13 +353,13 @@ def _build_sections(items: list[_Item]) -> list[_Section]:
             # 본문은 다음 쪽에서 시작하고, 인용은 본문이 있는 쪽을 가리켜야 맞다.
             if not buf:
                 start_page = page
-                for _, orphan in sorted(orphans):   # 빠진 순서가 아니라 문서 순서 — 상위가 하위보다 늦게 빠질 수 있다
+                for _, orphan in sorted(orphans):  # 빠진 순서가 아니라 문서 순서 — 상위가 하위보다 늦게 빠질 수 있다
                     add(orphan, page)
                 orphans.clear()
             add(text, page)
     if buf:
         flush(stack)
-    elif sections:                     # 문서가 본문 없는 헤딩으로 끝났다 — 버리지 않고 본문으로(경로는 이미 나간 앞부분)
+    elif sections:  # 문서가 본문 없는 헤딩으로 끝났다 — 버리지 않고 본문으로(경로는 이미 나간 앞부분)
         start_page = last_page
         for _, heading in sorted([*orphans, *zip(stack_pos[emitted:], stack[emitted:])]):
             add(heading, last_page)
@@ -377,8 +385,10 @@ class TableTooLargeError(ValueError):
         self.page, self.percent, self.rows, self.cols = page, percent, rows, cols
         name = ' | '.join(h for h in header if h.strip())[:30]
         where = f"{page}쪽 표" if page else "표"
-        super().__init__(f"{where}('{name}')가 허용 크기의 {percent}%입니다(현재 {rows}행 × {cols}열). "
-                         "상담에 필요 없는 열이나 긴 설명을 줄여 다시 올려 주세요.")
+        super().__init__(
+            f"{where}('{name}')가 허용 크기의 {percent}%입니다(현재 {rows}행 × {cols}열). "
+            "상담에 필요 없는 열이나 긴 설명을 줄여 다시 올려 주세요."
+        )
 
 
 class PictureLimitError(ValueError):
@@ -441,7 +451,9 @@ class _PictureGuard:
             self._counted = True
             n = _captionable_count(doc, self._inner.options.picture_area_threshold)
             if n > settings.docling_max_pictures:
-                raise PictureLimitError(f'그림 {n}장 — 문서당 {settings.docling_max_pictures}장을 넘는 문서는 받지 않는다')
+                raise PictureLimitError(
+                    f'그림 {n}장 — 문서당 {settings.docling_max_pictures}장을 넘는 문서는 받지 않는다'
+                )
         for item in self._inner(doc, element_batch):
             desc = item.meta.description if item.meta is not None else None
             if desc is not None and not (desc.text or '').strip():
@@ -455,7 +467,8 @@ def _captionable_count(doc, area_threshold: float) -> int:
     순회도 docling과 같은 doc.iterate_items()다(본문 층만 — doc.pictures는 머리글 등 furniture도 담아 더 크다).
     분류 허용·거부 목록(classification_allow/deny)은 쓰지 않으므로 그 판정은 옮기지 않았다.
     """
-    from docling_core.types.doc import PictureItem   # 지연 import — docling은 톱레벨에 안 들인다
+    from docling_core.types.doc import PictureItem  # 지연 import — docling은 톱레벨에 안 들인다
+
     n = 0
     for item, _ in doc.iterate_items():
         if not isinstance(item, PictureItem):
@@ -471,7 +484,7 @@ def _captionable_count(doc, area_threshold: float) -> int:
     return n
 
 
-_XLSX_PICTURE_AREA_THRESHOLD = 0.0   # 엑셀 그림 캡션 면적 하한(#249 결정 1) — 근거는 _docling_runtime의 xlsx_opts 주석
+_XLSX_PICTURE_AREA_THRESHOLD = 0.0  # 엑셀 그림 캡션 면적 하한(#249 결정 1) — 근거는 _docling_runtime의 xlsx_opts 주석
 
 _picture_guards: list[_PictureGuard] = []
 
@@ -485,6 +498,7 @@ def _guard_picture_models(converter) -> None:
     """
     from docling.datamodel.base_models import InputFormat
     from docling.models.picture_description_base_model import PictureDescriptionBaseModel
+
     for fmt in (InputFormat.PDF, InputFormat.DOCX, InputFormat.XLSX):
         converter.initialize_pipeline(fmt)
     for pipeline in converter.initialized_pipelines.values():
@@ -519,12 +533,19 @@ def _docling_runtime():
         if _docling_converter is None:
             from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
             from docling.datamodel.base_models import InputFormat
-            from docling.datamodel.pipeline_options import (ConvertPipelineOptions, KserveV2OcrOptions,
-                                                            PdfPipelineOptions,
-                                                            PictureDescriptionApiOptions,
-                                                            TableFormerMode)
-            from docling.document_converter import (DocumentConverter, ExcelFormatOption, PdfFormatOption,
-                                                    WordFormatOption)
+            from docling.datamodel.pipeline_options import (
+                ConvertPipelineOptions,
+                KserveV2OcrOptions,
+                PdfPipelineOptions,
+                PictureDescriptionApiOptions,
+                TableFormerMode,
+            )
+            from docling.document_converter import (
+                DocumentConverter,
+                ExcelFormatOption,
+                PdfFormatOption,
+                WordFormatOption,
+            )
 
             opts = PdfPipelineOptions(artifacts_path=settings.docling_artifacts_path)
             # 메모리 노브 — config.py 주석 참조. docling_settings(perf.page_batch_size)는 쓰지 않는다:
@@ -539,42 +560,51 @@ def _docling_runtime():
                 # 각도 분류기(use_cls=False)는 서버 쪽 상수다. 요청 실패는 docling이 삼키고 errors에만 남기므로
                 # _docling_sections가 errors를 보고 실패로 올린다.
                 opts.ocr_options = KserveV2OcrOptions(
-                    url=settings.ocr_kserve_url, model_name=settings.ocr_kserve_model_name,
-                    transport='http', lang=[_OCR_LANG], scale=_OCR_SCALE,
-                    timeout=settings.ocr_kserve_timeout_seconds)
+                    url=settings.ocr_kserve_url,
+                    model_name=settings.ocr_kserve_model_name,
+                    transport='http',
+                    lang=[_OCR_LANG],
+                    scale=_OCR_SCALE,
+                    timeout=settings.ocr_kserve_timeout_seconds,
+                )
             opts.do_table_structure = True
-            opts.table_structure_options.mode = (TableFormerMode.FAST if settings.docling_table_mode == 'fast'
-                                                 else TableFormerMode.ACCURATE)
+            opts.table_structure_options.mode = (
+                TableFormerMode.FAST if settings.docling_table_mode == 'fast' else TableFormerMode.ACCURATE
+            )
             opts.table_structure_options.do_cell_matching = settings.docling_do_cell_matching
             # opts.document_timeout은 걸지 않는다(#223) — 문서 마감은 _ConvertProcess가 프로세스째 끊는다.
             # docling의 것은 PDF 쪽 루프에서만 검사하고, 걸리면 PARTIAL_SUCCESS(→ 아래 가드가 결정적 실패)로
             # 끝나 "마감 초과 = 일시 실패"(결정 5)와 어긋난다. 같은 900초 둘이 경쟁하게 두지 않는다.
             opts.accelerator_options = AcceleratorOptions(
-                num_threads=settings.docling_num_threads,
-                device=AcceleratorDevice(settings.docling_device))
+                num_threads=settings.docling_num_threads, device=AcceleratorDevice(settings.docling_device)
+            )
             # 그림 캡션(#162). enable_remote_services를 안 켜면 do_picture_description이 설정
             # 단계에서 OperationNotAllowed로 죽는다 — 항상 같이 켠다. VLM에 못 닿으면 docling은 빈 캡션을
             # 주는데, _PictureGuard가 그것을 CaptionFailedError(일시)로 올린다(#223 — 조용한 자리표시 색인 폐지).
             caption_opts = PictureDescriptionApiOptions(
                 url=settings.vlm_caption_url,
-                params={'model': settings.vlm_caption_model,
-                        'temperature': settings.vlm_caption_temperature,    # 결정적 캡션(#209) — params는 요청 body에 그대로 들어간다
-                        # 반복 고리 폭주 상한(#247 결정 16, config 주석). 이름은 새 OpenAI 표기(#290 결정 3) — gpt-5 계열은
-                        # 'max_tokens'를 400으로 거부하고, 사내 vLLM·Gemini는 둘 다 받아 상한으로 작동한다(5로 보내면 잘림, 실측 10/24)
-                        'max_completion_tokens': settings.vlm_caption_max_tokens},
+                params={
+                    'model': settings.vlm_caption_model,
+                    'temperature': settings.vlm_caption_temperature,  # 결정적 캡션(#209) — params는 요청 body에 그대로 들어간다
+                    # 반복 고리 폭주 상한(#247 결정 16, config 주석). 이름은 새 OpenAI 표기(#290 결정 3) — gpt-5 계열은
+                    # 'max_tokens'를 400으로 거부하고, 사내 vLLM·Gemini는 둘 다 받아 상한으로 작동한다(5로 보내면 잘림, 실측 10/24)
+                    'max_completion_tokens': settings.vlm_caption_max_tokens,
+                },
                 prompt=_PICTURE_CAPTION_PROMPT,
-                picture_area_threshold=settings.vlm_caption_area_threshold,      # 기본 0.05 → 0.01(#247 결정 17, config 주석)
+                picture_area_threshold=settings.vlm_caption_area_threshold,  # 기본 0.05 → 0.01(#247 결정 17, config 주석)
                 scale=settings.vlm_caption_scale,
-                headers=_caption_headers(),                                      # 상용 VLM 키(#290) — 비면 {} = 전과 동일
+                headers=_caption_headers(),  # 상용 VLM 키(#290) — 비면 {} = 전과 동일
                 timeout=settings.vlm_caption_timeout_seconds,
-                concurrency=settings.vlm_caption_concurrency)
+                concurrency=settings.vlm_caption_concurrency,
+            )
             opts.enable_remote_services = True
             opts.do_picture_description = True
             opts.picture_description_options = caption_opts
             # DOCX·XLSX(#220) — 본문이 원래 텍스트라 레이아웃·OCR 없는 SimplePipeline이다. 캡션만 PDF와 같은
             # 설정을 공유한다(같은 VLM·프롬프트·온도). 시간 상한은 PDF와 같은 _ConvertProcess 마감이다(#223).
-            office_opts = ConvertPipelineOptions(enable_remote_services=True, do_picture_description=True,
-                                                 picture_description_options=caption_opts)
+            office_opts = ConvertPipelineOptions(
+                enable_remote_services=True, do_picture_description=True, picture_description_options=caption_opts
+            )
             # XLSX만 면적 하한 0(#249 결정 1) — 엑셀은 쪽이 없어 docling이 시트를 칸 단위로 재고(그림 앵커까지 포함한
             # 최대 행·열) OneCellAnchor 그림을 크기와 무관하게 1×1칸으로 잡는다. 비율이 그림 크기가 아니라 '시트에 데이터가
             # 얼마나 많은가'를 재게 되어, 칸이 100개만 넘어도 큰 차트가 하한 1%에 걸려 캡션 없이 빠졌다(homeplus_17: 6×26칸
@@ -583,16 +613,21 @@ def _docling_runtime():
             # 엑셀 차트 객체(데이터 칸에 연결된 네이티브 차트)도 그림으로 세지지만 이미지가 없어 캡션되지 않는다 — 값은 시트 칸에
             # 있어 표로 색인되고 자리표시만 남는다(실측). 차트+그림 100개 넘는 엑셀만 과대 집계로 거절될 수 있어 두었다(리뷰, 결정 2 = a).
             xlsx_opts = ConvertPipelineOptions(
-                enable_remote_services=True, do_picture_description=True,
+                enable_remote_services=True,
+                do_picture_description=True,
                 picture_description_options=caption_opts.model_copy(
-                    update={'picture_area_threshold': _XLSX_PICTURE_AREA_THRESHOLD}))
+                    update={'picture_area_threshold': _XLSX_PICTURE_AREA_THRESHOLD}
+                ),
+            )
             _docling_converter = DocumentConverter(
-                format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts),
-                                InputFormat.DOCX: WordFormatOption(pipeline_options=office_opts),
-                                InputFormat.XLSX: ExcelFormatOption(pipeline_options=xlsx_opts)})
+                format_options={
+                    InputFormat.PDF: PdfFormatOption(pipeline_options=opts),
+                    InputFormat.DOCX: WordFormatOption(pipeline_options=office_opts),
+                    InputFormat.XLSX: ExcelFormatOption(pipeline_options=xlsx_opts),
+                }
+            )
             _guard_picture_models(_docling_converter)
     return _docling_converter
-
 
 
 # ── 상용 OCR: 사진 표·스캔 쪽을 LLM이 읽는다 (#299) ─────────────────────────────────────
@@ -613,31 +648,35 @@ def _docling_runtime():
 # 디지털로 판정된다 — 그 글자층이 그대로 색인된다(사내 모드도 같다).
 _SCAN_MAX_CHARS = 20
 _SCAN_MIN_IMAGE_AREA = 0.5
-_OCR_LLM_SCALE = 2.0         # 쪽·사진을 LLM에 보낼 때의 해상도 배수(72dpi 기준) — #296 측정 엔진 값(docling ApiVlmOptions 기본). 바꿔 잰 적 없다
+_OCR_LLM_SCALE = 2.0  # 쪽·사진을 LLM에 보낼 때의 해상도 배수(72dpi 기준) — #296 측정 엔진 값(docling ApiVlmOptions 기본). 바꿔 잰 적 없다
 # 사진 속 표 제목(결정 4): docling 표 영역은 사진의 표 부분뿐이라 사진 안 제목 줄이 빠진다(실문서 07 — 사진 247pt 중 위 39pt) → 표를
 # 담은 사진 전체를 잘라 보낸다. 단 사진이 표보다 지나치게 크면(쪽 배경·레터헤드 사진) 표 영역만 — 사진 밖 디지털 글이 섞여 두 번 색인되지 않게.
 # 실문서 07의 사진/표 면적비 1.48. 알려진 한계(리뷰, 사용자 결정 10/25 — 유지): CropBox가 MediaBox와 다른 쪽은 pdfplumber 사진 좌표(종이 기준)와
 # docling 표 좌표(CropBox 기준)가 어긋나 사진을 못 찾고 표 영역만 잘린다 — 표 칸은 맞고 제목만 빠진다. 실문서 26·모의 39건 중 0건.
 # 90도 회전 쪽은 두 좌표가 같은 기준이라 정상(실측).
 _PHOTO_MAX_AREA_RATIO = 3.0
-_PHOTO_BBOX_TOL = 2.0        # pt — 표 영역이 사진 안에 드는지 볼 때의 여유(레이아웃 상자가 사진 경계를 살짝 넘는다)
+_PHOTO_BBOX_TOL = 2.0  # pt — 표 영역이 사진 안에 드는지 볼 때의 여유(레이아웃 상자가 사진 경계를 살짝 넘는다)
 
 # 쪽 통째 프롬프트 — #296 PROMPT_V2. 절 제목 표시를 규칙으로 못박는다: V1에서 gpt-5-mini가 절 제목('2. 증빙 요건')을 평문으로 써서 docling
 # 마크다운 해석기가 앞 번호 목록에 합치고 번호를 다시 매겼다('2.'→'6.', 글자가 바뀐다). '## '를 붙이면 목록으로 합쳐지지 않는다.
 # 스캔 헤딩 13/13 원본 일치(#296 실측). 문서 제목 '#'는 맨 앞 하나 — 쪽 단위 호출이라 쪽마다 '#'가 생기던 것을 막는다.
-_SCAN_PAGE_PROMPT = ("이 쪽을 마크다운으로 옮겨 적어라. 규칙:\n"
-                     "1. 문서 제목(문서 맨 앞의 큰 제목)만 '# '로 쓴다. 쪽 중간이나 둘째 쪽 이후의 제목은 문서 제목이 아니다.\n"
-                     "2. 절·항 제목은 번호가 있든 없든 반드시 '## '로 시작한다. 예: '## 1. 접수 원칙', '## 2.1 사진 증빙'. 번호는 원문 그대로 쓴다.\n"
-                     "3. 목록은 원문 표시 그대로 — 글머리표는 '- ', 번호 목록은 원문 번호 그대로.\n"
-                     "4. 표는 마크다운 표(| 칸 | 칸 |)로. 병합된 칸은 그 값을 해당 칸마다 반복해 적고, 빈 칸은 비워 둔다.\n"
-                     "5. 보이는 글자를 그대로 쓰고 없는 내용을 지어내지 마라. 설명·주석 없이 마크다운만 출력.")
+_SCAN_PAGE_PROMPT = (
+    "이 쪽을 마크다운으로 옮겨 적어라. 규칙:\n"
+    "1. 문서 제목(문서 맨 앞의 큰 제목)만 '# '로 쓴다. 쪽 중간이나 둘째 쪽 이후의 제목은 문서 제목이 아니다.\n"
+    "2. 절·항 제목은 번호가 있든 없든 반드시 '## '로 시작한다. 예: '## 1. 접수 원칙', '## 2.1 사진 증빙'. 번호는 원문 그대로 쓴다.\n"
+    "3. 목록은 원문 표시 그대로 — 글머리표는 '- ', 번호 목록은 원문 번호 그대로.\n"
+    "4. 표는 마크다운 표(| 칸 | 칸 |)로. 병합된 칸은 그 값을 해당 칸마다 반복해 적고, 빈 칸은 비워 둔다.\n"
+    "5. 보이는 글자를 그대로 쓰고 없는 내용을 지어내지 마라. 설명·주석 없이 마크다운만 출력."
+)
 # 사진 표 프롬프트 — #299 측정 엔진 TABLE_PROMPT에 표 밖 줄(결정 4)을 더했다. 머리글을 지어내지 말라는 규칙은 머리글 없는 표에서 LLM이
 # '구분 | 내용' 같은 머리글을 만들어 넣던 것을 막는다(측정 엔진).
-_PHOTO_TABLE_PROMPT = ("이 이미지의 표를 마크다운 표(| 칸 | 칸 |)로 옮겨 적어라. 규칙:\n"
-                       "1. 표 밖(위·아래)에 제목·설명 같은 글 줄이 있으면 표 앞에 그 줄을 그대로 쓴다. 없으면 쓰지 않는다.\n"
-                       "2. 원본에 머리글 행이 있으면 첫 행에 쓰고, 없으면 머리글을 만들어 넣지 말고 첫 데이터 행을 첫 행에 쓴다.\n"
-                       "3. 병합된 칸은 그 값을 해당 칸마다 반복해 적고, 빈 칸은 비워 둔다.\n"
-                       "4. 보이는 글자를 띄어쓰기까지 그대로 쓰고 지어내지 마라. 설명 없이 출력.")
+_PHOTO_TABLE_PROMPT = (
+    "이 이미지의 표를 마크다운 표(| 칸 | 칸 |)로 옮겨 적어라. 규칙:\n"
+    "1. 표 밖(위·아래)에 제목·설명 같은 글 줄이 있으면 표 앞에 그 줄을 그대로 쓴다. 없으면 쓰지 않는다.\n"
+    "2. 원본에 머리글 행이 있으면 첫 행에 쓰고, 없으면 머리글을 만들어 넣지 말고 첫 데이터 행을 첫 행에 쓴다.\n"
+    "3. 병합된 칸은 그 값을 해당 칸마다 반복해 적고, 빈 칸은 비워 둔다.\n"
+    "4. 보이는 글자를 띄어쓰기까지 그대로 쓰고 지어내지 마라. 설명 없이 출력."
+)
 
 _vlm_converter = None
 
@@ -645,8 +684,10 @@ _vlm_converter = None
 class _PdfPage(NamedTuple):
     width: float
     height: float
-    chars: int                                              # 글자층 글자 수
-    images: tuple[tuple[float, float, float, float], ...]  # 박힌 사진 (x0, top, x1, bottom) — 왼쪽 위 원점, pt, 쪽 안으로 자름
+    chars: int  # 글자층 글자 수
+    images: tuple[
+        tuple[float, float, float, float], ...
+    ]  # 박힌 사진 (x0, top, x1, bottom) — 왼쪽 위 원점, pt, 쪽 안으로 자름
 
 
 def _scan_profile(file_path: str | Path, max_pages: int | None) -> list[_PdfPage] | None:
@@ -657,8 +698,15 @@ def _scan_profile(file_path: str | Path, max_pages: int | None) -> list[_PdfPage
             return None
         for p in pdf.pages:
             w, h = float(p.width), float(p.height)
-            boxes = ((max(0.0, float(im['x0'])), max(0.0, float(im['top'])), min(w, float(im['x1'])), min(h, float(im['bottom'])))
-                     for im in p.images)
+            boxes = (
+                (
+                    max(0.0, float(im['x0'])),
+                    max(0.0, float(im['top'])),
+                    min(w, float(im['x1'])),
+                    min(h, float(im['bottom'])),
+                )
+                for im in p.images
+            )
             pages.append(_PdfPage(w, h, len(p.chars), tuple(b for b in boxes if b[2] > b[0] and b[3] > b[1])))
     return pages
 
@@ -690,24 +738,35 @@ def _vlm_runtime():
             from docling.datamodel.pipeline_options_vlm_model import ApiVlmOptions, ResponseFormat
             from docling.document_converter import DocumentConverter, PdfFormatOption
             from docling.pipeline.vlm_pipeline import VlmPipeline
+
             vlm_opts = ApiVlmOptions(
-                url=settings.vlm_caption_url, headers=_caption_headers(), prompt=_SCAN_PAGE_PROMPT,
-                response_format=ResponseFormat.MARKDOWN, scale=_OCR_LLM_SCALE,
-                timeout=settings.ocr_llm_timeout_seconds, concurrency=settings.ocr_llm_concurrency,
+                url=settings.vlm_caption_url,
+                headers=_caption_headers(),
+                prompt=_SCAN_PAGE_PROMPT,
+                response_format=ResponseFormat.MARKDOWN,
+                scale=_OCR_LLM_SCALE,
+                timeout=settings.ocr_llm_timeout_seconds,
+                concurrency=settings.ocr_llm_concurrency,
                 # 온도는 **옵션 필드**로 — docling ApiVlmModel이 params 위에 vlm_options.temperature를 덮어쓴다(실측: params에만 1.0을 주니
                 # gpt-5가 0.0 거부 400, #296). 출력 상한 이름은 캡션과 같은 새 표기(#290 결정 3)
                 temperature=settings.vlm_caption_temperature,
-                params={'model': settings.vlm_caption_model, 'max_completion_tokens': settings.ocr_llm_max_tokens})
-            _vlm_converter = DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(
-                pipeline_cls=VlmPipeline,
-                pipeline_options=VlmPipelineOptions(enable_remote_services=True, vlm_options=vlm_opts))})
+                params={'model': settings.vlm_caption_model, 'max_completion_tokens': settings.ocr_llm_max_tokens},
+            )
+            _vlm_converter = DocumentConverter(
+                format_options={
+                    InputFormat.PDF: PdfFormatOption(
+                        pipeline_cls=VlmPipeline,
+                        pipeline_options=VlmPipelineOptions(enable_remote_services=True, vlm_options=vlm_opts),
+                    )
+                }
+            )
     return _vlm_converter
 
 
 def _convert_pdf_llm(file_path: str | Path, **kwargs):
     """상용 OCR의 PDF 변환 — 쪽 묶음마다 경로를 골라 변환하고 합친다(이 절 머리 주석). 실패 분류는 _convert_with·LlmReadFailedError."""
     pages = _scan_profile(file_path, kwargs.get('max_num_pages'))
-    if not pages:                # 쪽 상한 초과(None)·빈 PDF — docling이 사내 모드와 같은 방식으로 거절·처리한다
+    if not pages:  # 쪽 상한 초과(None)·빈 PDF — docling이 사내 모드와 같은 방식으로 거절·처리한다
         return _convert_with(_docling_runtime(), file_path, **kwargs)
     parts = []
     for scan, first, last in _page_runs([_is_scan_page(p) for p in pages]):
@@ -722,7 +781,8 @@ def _convert_pdf_llm(file_path: str | Path, **kwargs):
         parts.append(doc)
     if len(parts) == 1:
         return parts[0]
-    from docling_core.types.doc import DoclingDocument   # 지연 import — docling은 톱레벨에 안 들인다
+    from docling_core.types.doc import DoclingDocument  # 지연 import — docling은 톱레벨에 안 들인다
+
     return DoclingDocument.concatenate(parts)
 
 
@@ -738,7 +798,8 @@ def _titles_to_section_headers(doc) -> None:
     """LLM이 '#'로 쓴 줄은 docling에서 title 라벨이 되는데 PDF 청킹(_sections_from_docling_elements)은 section_header만 헤딩으로 본다 —
     그대로면 문서 제목이 본문 줄로 떨어진다(#296 실측). section_header로 바꾸면 청킹이 첫 헤딩을 문서 제목으로 층을 만든다.
     기각(#296): 번호 꼴 글 줄을 헤딩으로 올리는 추측 보정 — 확인 항목 목록을 헤딩으로 올렸다(오탐). 원인은 프롬프트로 막았다."""
-    from docling_core.types.doc import DocItemLabel   # 지연 import — docling은 톱레벨에 안 들인다
+    from docling_core.types.doc import DocItemLabel  # 지연 import — docling은 톱레벨에 안 들인다
+
     for item, _ in doc.iterate_items():
         if item.label == DocItemLabel.TITLE:
             item.label = DocItemLabel.SECTION_HEADER
@@ -747,9 +808,14 @@ def _titles_to_section_headers(doc) -> None:
 def _fill_photo_tables(doc, file_path: str | Path, pages: list[_PdfPage]) -> None:
     """글자 칸이 하나도 없는 표(= 사진 표, OCR을 끈 디지털 경로)를 LLM으로 채운다(결정 2·4). 표 밖 줄(제목)은 표 바로 앞 글로 넣는다."""
     from concurrent.futures import ThreadPoolExecutor
-    from docling_core.types.doc import DocItemLabel, TableItem   # 지연 import — docling은 톱레벨에 안 들인다
-    targets = [item for item, _ in doc.iterate_items()
-               if isinstance(item, TableItem) and item.prov and not any((c.text or '').strip() for c in item.data.table_cells)]
+
+    from docling_core.types.doc import DocItemLabel, TableItem  # 지연 import — docling은 톱레벨에 안 들인다
+
+    targets = [
+        item
+        for item, _ in doc.iterate_items()
+        if isinstance(item, TableItem) and item.prov and not any((c.text or '').strip() for c in item.data.table_cells)
+    ]
     if not targets:
         return
     crops = _photo_crops(doc, file_path, pages, targets)
@@ -763,22 +829,30 @@ def _fill_photo_tables(doc, file_path: str | Path, pages: list[_PdfPage]) -> Non
             doc.insert_text(sibling=item, label=DocItemLabel.TEXT, text=outside, prov=item.prov[0], after=False)
 
 
-def _photo_box(table: tuple[float, float, float, float],
-               images: tuple[tuple[float, float, float, float], ...]) -> tuple[float, float, float, float]:
+def _photo_box(
+    table: tuple[float, float, float, float], images: tuple[tuple[float, float, float, float], ...]
+) -> tuple[float, float, float, float]:
     """잘라 보낼 영역 — 표를 담은 사진 중 가장 작은 것(면적 상한 안), 없으면 표 영역 그대로. 좌표는 왼쪽 위 원점 pt."""
     l, t, r, b = table
     limit = _PHOTO_MAX_AREA_RATIO * (r - l) * (b - t)
     tol = _PHOTO_BBOX_TOL
-    holders = [box for box in images
-               if box[0] <= l + tol and box[1] <= t + tol and box[2] >= r - tol and box[3] >= b - tol
-               and (box[2] - box[0]) * (box[3] - box[1]) <= limit]
+    holders = [
+        box
+        for box in images
+        if box[0] <= l + tol
+        and box[1] <= t + tol
+        and box[2] >= r - tol
+        and box[3] >= b - tol
+        and (box[2] - box[0]) * (box[3] - box[1]) <= limit
+    ]
     return min(holders, key=lambda x: (x[2] - x[0]) * (x[3] - x[1])) if holders else table
 
 
 def _photo_crops(doc, file_path: str | Path, pages: list[_PdfPage], targets) -> list:
     """표마다 잘라 보낼 이미지(PIL). 쪽 렌더는 pypdfium2(docling의 PDF 백엔드) — 쪽 하나씩 렌더해 자르고 버린다(쪽 이미지를 문서 내내
     들고 있는 generate_page_images는 100쪽이면 수백 MB라 안 쓴다)."""
-    import pypdfium2   # 지연 import — docling 의존성이고 상용 OCR에서만 쓴다
+    import pypdfium2  # 지연 import — docling 의존성이고 상용 OCR에서만 쓴다
+
     crops, rendered_no, rendered = [], None, None
     pdf = pypdfium2.PdfDocument(str(file_path))
     try:
@@ -802,17 +876,26 @@ def _read_photo_table(image) -> str:
     조용히 색인된다(#272 저품질 금지). 같은 이미지는 다시 보내도 같은 길이라 재시도로 안 풀린다. 스캔 쪽은 docling VlmPipeline이 같은 두
     경우를 PARTIAL_SUCCESS로 내고 _convert_with가 RuntimeError로 올려 이미 같은 분류다.
     """
-    from docling.datamodel.base_models import VlmStopReason          # 지연 import — docling은 톱레벨에 안 들인다
+    from docling.datamodel.base_models import VlmStopReason  # 지연 import — docling은 톱레벨에 안 들인다
     from docling.utils.api_image_request import api_image_request
+
     reply = api_image_request(
-        image=image, prompt=_PHOTO_TABLE_PROMPT, url=settings.vlm_caption_url, timeout=settings.ocr_llm_timeout_seconds,
-        headers=_caption_headers(), model=settings.vlm_caption_model, temperature=settings.vlm_caption_temperature,
-        max_completion_tokens=settings.ocr_llm_max_tokens)
+        image=image,
+        prompt=_PHOTO_TABLE_PROMPT,
+        url=settings.vlm_caption_url,
+        timeout=settings.ocr_llm_timeout_seconds,
+        headers=_caption_headers(),
+        model=settings.vlm_caption_model,
+        temperature=settings.vlm_caption_temperature,
+        max_completion_tokens=settings.ocr_llm_max_tokens,
+    )
     text = (reply.text or '').strip()
     if not text:
         raise LlmReadFailedError('사진 표 LLM 응답 없음(오류·한도 초과) — 나중에 다시 시도한다')
     if reply.stop_reason == VlmStopReason.LENGTH:
-        raise RuntimeError(f'사진 표 LLM 출력이 상한({settings.ocr_llm_max_tokens}토큰)에서 잘렸다 — OCR_LLM_MAX_TOKENS를 올려 다시 올린다')
+        raise RuntimeError(
+            f'사진 표 LLM 출력이 상한({settings.ocr_llm_max_tokens}토큰)에서 잘렸다 — OCR_LLM_MAX_TOKENS를 올려 다시 올린다'
+        )
     if reply.stop_reason == VlmStopReason.CONTENT_FILTERED:
         raise RuntimeError('사진 표 LLM 응답이 벤더 콘텐츠 필터에 걸렸다')
     return text
@@ -841,11 +924,22 @@ def _split_table_reply(text: str) -> tuple[str, list[list[str]]]:
 
 def _fill_table_cells(item, rows: list[list[str]]) -> None:
     """표 요소의 칸을 행 목록으로 바꾼다 — 첫 행이 머리글(docling_grid_rows가 첫 행을 헤더로 쓴다)."""
-    from docling_core.types.doc import TableCell, TableData   # 지연 import — docling은 톱레벨에 안 들인다
-    cells = [TableCell(text=text, start_row_offset_idx=i, end_row_offset_idx=i + 1,
-                       start_col_offset_idx=j, end_col_offset_idx=j + 1, column_header=(i == 0))
-             for i, row in enumerate(rows) for j, text in enumerate(row)]
+    from docling_core.types.doc import TableCell, TableData  # 지연 import — docling은 톱레벨에 안 들인다
+
+    cells = [
+        TableCell(
+            text=text,
+            start_row_offset_idx=i,
+            end_row_offset_idx=i + 1,
+            start_col_offset_idx=j,
+            end_col_offset_idx=j + 1,
+            column_header=(i == 0),
+        )
+        for i, row in enumerate(rows)
+        for j, text in enumerate(row)
+    ]
     item.data = TableData(num_rows=len(rows), num_cols=len(rows[0]), table_cells=cells)
+
 
 # ── docling 텍스트 정제 (#204) — 각주 표시 인라인·VLM 캡션 잡담 ──────────────────
 
@@ -855,8 +949,8 @@ def _fill_table_cells(item, rows: list[list[str]]) -> None:
 # 유일한 물리적 차이는 **글자 크기 비율**(각주 0.67~0.73, 열거 1.0)이라 pdfplumber 단어 크기로 판정한다.
 # docling의 정의 줄("2) PM 없는 경우 생략")은 9쪽 중 2쪽에서만 나와(3·6·7쪽 누락) 정의 줄 기반 판정은 기각했다.
 _FOOTNOTE_TOKEN_RE = re.compile(r'^\d{1,2}\)$')
-_FOOTNOTE_SUP_RATIO = 0.8        # 같은 줄 최대 글자 크기 대비. 실측 각주 ≤0.73, 정의 줄·열거 ≥0.81
-_FOOTNOTE_LINE_TOL = 4.0         # 같은 줄로 묶는 top 차이(pt). 위첨자는 본문보다 2~3pt 올라간다
+_FOOTNOTE_SUP_RATIO = 0.8  # 같은 줄 최대 글자 크기 대비. 실측 각주 ≤0.73, 정의 줄·열거 ≥0.81
+_FOOTNOTE_LINE_TOL = 4.0  # 같은 줄로 묶는 top 차이(pt). 위첨자는 본문보다 2~3pt 올라간다
 
 
 def _markers_from_words(words: list[tuple[str, float, float]]) -> set[str]:
@@ -898,12 +992,14 @@ def _footnote_markers(file_path: str | Path) -> dict[int, set[str]]:
     try:
         with pdfplumber.open(str(file_path)) as pdf:
             for page_no, page in enumerate(pdf.pages, start=1):
-                words = [(w['text'], float(w.get('size') or 0.0), float(w['top']))
-                         for w in page.extract_words(extra_attrs=['size'])]
+                words = [
+                    (w['text'], float(w.get('size') or 0.0), float(w['top']))
+                    for w in page.extract_words(extra_attrs=['size'])
+                ]
                 found = _markers_from_words(words)
                 if found:
                     out[page_no] = found
-    except Exception as e:   # noqa: BLE001 — 보조 경로. 사유는 남기고 본 경로는 계속 간다
+    except Exception as e:  # noqa: BLE001 — 보조 경로. 사유는 남기고 본 경로는 계속 간다
         logger.warning('각주 사이드카 실패(각주 표시 제거 없이 진행) %s: %s', file_path, e)
     return out
 
@@ -914,8 +1010,7 @@ def _strip_footnote_markers(text: str, markers: set[str]) -> str:
     for marker in sorted(markers, key=len, reverse=True):
         # 앞의 공백은 같은 줄 안에서만([ \t]) — 줄바꿈을 허용하면 다음 줄 머리의 정의 줄 "2) PM …"까지 지운다.
         # (?<!\d): "서식 12)"의 "2)"는 각주가 아니라 숫자의 일부다 — 우리 정규식의 안전장치이지 문서에 거는 규칙이 아니다.
-        pattern = (r'(?<=[\w\)\]）」])[ \t]?(?<!\d)' + re.escape(marker)
-                   + r'(?=$|[\s,.;:)>\]）」→])')
+        pattern = r'(?<=[\w\)\]）」])[ \t]?(?<!\d)' + re.escape(marker) + r'(?=$|[\s,.;:)>\]）」→])'
         text = re.sub(pattern, '', text)
     return text
 
@@ -977,11 +1072,15 @@ def _cell_text_norm(text: str) -> str:
 
 def _grid_cell_text(cell, doc) -> str:
     """표 칸 하나의 글자 — 칸 원문(_cell_text_norm) + 칸 안 그림의 설명(docling_grid_markdown 참조)."""
-    from docling_core.types.doc import PictureItem, RichTableCell   # 지연 import — docling은 톱레벨에 안 들인다
+    from docling_core.types.doc import PictureItem, RichTableCell  # 지연 import — docling은 톱레벨에 안 들인다
+
     parts = [_cell_text_norm(cell.text)]
     if doc is not None and isinstance(cell, RichTableCell):
-        parts += [re.sub(r'\s+', ' ', docling_picture_text(item))
-                  for item, _ in doc.iterate_items(root=cell.ref.resolve(doc)) if isinstance(item, PictureItem)]
+        parts += [
+            re.sub(r'\s+', ' ', docling_picture_text(item))
+            for item, _ in doc.iterate_items(root=cell.ref.resolve(doc))
+            if isinstance(item, PictureItem)
+        ]
     return ' '.join(p for p in parts if p)
 
 
@@ -996,7 +1095,8 @@ def docling_block_text(item, doc) -> str:
     표는 docling_grid_markdown, 그림은 캡션 또는 자리표시, 목록 항목은 번호를 되붙인 글자(_docling_elements와 같은 규칙 —
     빠뜨리면 '2.1 얼리버드…'가 번호 없이 색인된다), 그 밖의 글자 요소는 글자. 헤딩 판정은 형식마다 달라 호출부가 한다.
     """
-    from docling_core.types.doc import ListItem, PictureItem, TableItem, TextItem   # 지연 import
+    from docling_core.types.doc import ListItem, PictureItem, TableItem, TextItem  # 지연 import
+
     match item:
         case TableItem():
             return docling_grid_markdown(item, doc) or ''
@@ -1049,7 +1149,7 @@ def _docling_elements(doc, footnote_markers: dict[int, set[str]] | None = None):
         label = element.label.value if hasattr(element.label, 'value') else str(element.label)
         page = element.prov[0].page_no if getattr(element, 'prov', None) else None
         if label == 'table':
-            yield label, '', page, docling_grid_rows(element, doc) or None     # #252 결정 2 — DOCX·XLSX와 같은 렌더
+            yield label, '', page, docling_grid_rows(element, doc) or None  # #252 결정 2 — DOCX·XLSX와 같은 렌더
         elif label == 'picture':
             # 캡션(#162)은 element.text가 아니라 annotations에 붙는다 — text만 보면 조용히 버려진다.
             # 캡션 대상이 아닌 그림(면적 하한 미만)은 annotations가 비어 빈 문자열이 나가고, 소비자가 자리표시로 되돌린다.
@@ -1075,8 +1175,14 @@ def _join_split_article_titles(elements):
         label, text, page, table = elements[i]
         nxt = elements[i + 1] if i + 1 < len(elements) else None
         t = _docling_norm(text or '')
-        if (label in ('section_header', 'text') and nxt is not None and _docling_norm(nxt[1] or '') in (')', '）')
-                and (head := split_heading_line(t)) and head[0] == t and not any(c in t for c in ')）')):
+        if (
+            label in ('section_header', 'text')
+            and nxt is not None
+            and _docling_norm(nxt[1] or '') in (')', '）')
+            and (head := split_heading_line(t))
+            and head[0] == t
+            and not any(c in t for c in ')）')
+        ):
             yield label, f'{t} {_docling_norm(nxt[1])}', page, table
             i += 2
             continue
@@ -1116,7 +1222,7 @@ def _sections_from_docling_elements(elements) -> list[_Section]:
     seen_chapter = False
     for label, text, page, table_markdown in _join_split_article_titles(elements):
         if label == 'text' and seen_title and (head := split_heading_line(_docling_norm(text))):
-            items.append((page, head[0], 3 if seen_chapter else 2))     # ① 조 제목 꼴 본문 요소 → 제목(+ 이어진 글은 본문)
+            items.append((page, head[0], 3 if seen_chapter else 2))  # ① 조 제목 꼴 본문 요소 → 제목(+ 이어진 글은 본문)
             if head[1]:
                 items.append((page, head[1], None))
             continue
@@ -1134,7 +1240,7 @@ def _sections_from_docling_elements(elements) -> list[_Section]:
         elif label == 'table':
             if not table_markdown:
                 continue
-            if isinstance(table_markdown, str):               # 옛 계약(markdown 문자열) — 튜플만 먹이는 단위 테스트 호환
+            if isinstance(table_markdown, str):  # 옛 계약(markdown 문자열) — 튜플만 먹이는 단위 테스트 호환
                 items.append((page, table_markdown, None))
                 continue
             block = _TableBlock(table_markdown, [page] * len(table_markdown))
@@ -1143,8 +1249,11 @@ def _sections_from_docling_elements(elements) -> list[_Section]:
             # 때만 — 열 수만 같은 연속 표를 붙이는 안은 오판 위험으로 기각. 행별 쪽 번호는 각자 것을 지킨다(row_pages).
             if items and isinstance(items[-1][1], _TableBlock) and items[-1][1].rows[0] == block.rows[0]:
                 prev_page, prev_block, _ = items[-1]
-                items[-1] = (prev_page, _TableBlock(prev_block.rows + block.rows[1:],
-                                                    prev_block.row_pages + block.row_pages[1:]), None)
+                items[-1] = (
+                    prev_page,
+                    _TableBlock(prev_block.rows + block.rows[1:], prev_block.row_pages + block.row_pages[1:]),
+                    None,
+                )
                 continue
             items.append((page, block, None))
         elif label == 'picture':
@@ -1189,12 +1298,13 @@ def _convert_with(converter, file_path: str | Path, **kwargs):
                 raise cause from None
             cause = cause.__cause__
         raise
-    from docling.datamodel.base_models import ConversionStatus   # 지연 import — docling은 톱레벨에 안 들인다
+    from docling.datamodel.base_models import ConversionStatus  # 지연 import — docling은 톱레벨에 안 들인다
+
     if result.status != ConversionStatus.SUCCESS or result.errors:
-        detail = '; '.join(f'{e.category.value}/{e.module_name}: {(e.error_message or "")[:100]}'
-                           for e in result.errors[:3])
-        raise RuntimeError(f'docling 변환 불완전 — status={result.status.value}, '
-                           f'errors={len(result.errors)}: {detail}')
+        detail = '; '.join(
+            f'{e.category.value}/{e.module_name}: {(e.error_message or "")[:100]}' for e in result.errors[:3]
+        )
+        raise RuntimeError(f'docling 변환 불완전 — status={result.status.value}, errors={len(result.errors)}: {detail}')
     return result.document
 
 
@@ -1203,7 +1313,7 @@ def _picklable(exc: BaseException) -> BaseException:
     try:
         pickle.dumps(exc)
         return exc
-    except Exception:            # noqa: BLE001 — 직렬화 불가 예외는 종류를 잃는다(문구는 남긴다)
+    except Exception:  # noqa: BLE001 — 직렬화 불가 예외는 종류를 잃는다(문구는 남긴다)
         return RuntimeError(f'{type(exc).__name__}: {exc}')
 
 
@@ -1215,28 +1325,29 @@ def _convert_child_main(fd: int) -> None:
     기동 시간(첫 실행이면 모델 다운로드까지)이 첫 문서의 마감을 깎지 않게.
     """
     from multiprocessing.connection import Connection
+
     conn = Connection(fd)
     for key, value in conn.recv().items():
         setattr(settings, key, value)
     try:
         _docling_runtime()
-    except Exception as e:       # noqa: BLE001 — 기동 실패도 부모에 사유로 돌려준다
+    except Exception as e:  # noqa: BLE001 — 기동 실패도 부모에 사유로 돌려준다
         conn.send(('err', _picklable(e)))
         return
     conn.send(('ready', None))
     while True:
         try:
             file_path, kwargs = conn.recv()
-        except EOFError:             # 부모가 끊었다(재기동·종료) — 부모가 죽어도 여기서 빠진다
+        except EOFError:  # 부모가 끊었다(재기동·종료) — 부모가 죽어도 여기서 빠진다
             return
         try:
             conn.send(('ok', _convert_local(file_path, **kwargs)))
-        except Exception as e:       # noqa: BLE001 — 문서 단위 실패는 부모가 분류한다(outbox.is_transient)
+        except Exception as e:  # noqa: BLE001 — 문서 단위 실패는 부모가 분류한다(outbox.is_transient)
             conn.send(('err', _picklable(e)))
 
 
-_CHILD_START_TIMEOUT_SECONDS = 300   # 변환 프로세스 기동(모델 로딩) 상한. 맥 실측 콜드 4~5.5초 + 첫 변환 3~4초(#223) —
-                                     # 300은 첫 실행의 모델 다운로드(docling_artifacts_path 미지정)까지 품는 여유다.
+_CHILD_START_TIMEOUT_SECONDS = 300  # 변환 프로세스 기동(모델 로딩) 상한. 맥 실측 콜드 4~5.5초 + 첫 변환 3~4초(#223) —
+# 300은 첫 실행의 모델 다운로드(docling_artifacts_path 미지정)까지 품는 여유다.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -1245,7 +1356,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # MD가 변환 프로세스를 타면서 통합 테스트 75개가 2분 8초 → 5분 55초(2026-10-19). 운영은 설정이 고정이라 차이 없다.
 # 이 모듈이 읽는 settings 필드가 모두 이 접두사 안인지는 tests/test_chunking_md.py가 검사한다 — 새 접두사의 설정을 자식에서
 # 읽으면서 여기 안 넣으면, 값을 바꿔도 자식이 옛 값으로 계속 돈다.
-_CHILD_SETTING_PREFIXES = ('docling_', 'ocr_', 'vlm_caption_')   # ocr_ = ocr_kserve_*(#168) + ocr_provider·ocr_llm_*(#299)
+_CHILD_SETTING_PREFIXES = (
+    'docling_',
+    'ocr_',
+    'vlm_caption_',
+)  # ocr_ = ocr_kserve_*(#168) + ocr_provider·ocr_llm_*(#299)
 
 
 def _child_settings() -> dict:
@@ -1282,13 +1397,13 @@ class _ConvertProcess:
             if self._proc is None or self._proc.poll() is not None or snapshot != self._snapshot:
                 self._start(snapshot)
             deadline = settings.docling_document_timeout_seconds
-            self._conn.send((str(Path(file_path).resolve()), kwargs))   # 자식의 cwd는 저장소 루트다
+            self._conn.send((str(Path(file_path).resolve()), kwargs))  # 자식의 cwd는 저장소 루트다
             if not self._conn.poll(deadline):
                 self._stop()
                 raise TimeoutError(f'docling 변환이 {deadline:.0f}초를 넘겨 중단했다(변환 프로세스 재기동)')
             try:
                 kind, value = self._conn.recv()
-            except EOFError:             # 자식이 죽었다(OOM kill 등) — poll은 EOF에도 True다
+            except EOFError:  # 자식이 죽었다(OOM kill 등) — poll은 EOF에도 True다
                 code = self._exit_code()
                 self._stop()
                 raise RuntimeError(f'docling 변환 프로세스가 비정상 종료했다(exitcode={code})') from None
@@ -1298,16 +1413,25 @@ class _ConvertProcess:
 
     def _start(self, snapshot: dict) -> None:
         from multiprocessing.connection import Connection
+
         self._stop()
         parent_sock, child_sock = socket.socketpair()
-        env = {**os.environ, 'PYTHONPATH': os.pathsep.join(
-            p for p in (str(_PROJECT_ROOT), os.environ.get('PYTHONPATH')) if p)}
+        env = {
+            **os.environ,
+            'PYTHONPATH': os.pathsep.join(p for p in (str(_PROJECT_ROOT), os.environ.get('PYTHONPATH')) if p),
+        }
         try:
             self._proc = subprocess.Popen(
-                [sys.executable, '-c',
-                 'import sys; from rag.chunking import _convert_child_main; _convert_child_main(int(sys.argv[1]))',
-                 str(child_sock.fileno())],
-                pass_fds=(child_sock.fileno(),), cwd=_PROJECT_ROOT, env=env)
+                [
+                    sys.executable,
+                    '-c',
+                    'import sys; from rag.chunking import _convert_child_main; _convert_child_main(int(sys.argv[1]))',
+                    str(child_sock.fileno()),
+                ],
+                pass_fds=(child_sock.fileno(),),
+                cwd=_PROJECT_ROOT,
+                env=env,
+            )
         except BaseException:
             parent_sock.close()
             raise
@@ -1346,7 +1470,7 @@ class _ConvertProcess:
         if self._conn is not None:
             self._conn.close()
         if self._proc is not None and self._proc.poll() is None:
-            self._proc.kill()            # 자식은 지킬 상태가 없다 — C 코드에 묶여 있어도 끊기는 SIGKILL로
+            self._proc.kill()  # 자식은 지킬 상태가 없다 — C 코드에 묶여 있어도 끊기는 SIGKILL로
             self._proc.wait(10)
         self._proc = self._conn = self._snapshot = None
 
@@ -1409,14 +1533,14 @@ def _docx_items(file_path: str | Path):
             # style이 None인 문단이 실제로 있다 (스타일 정의가 빠진 docx) — getattr로 방어
             m = _DOCX_HEADING_RE.match(getattr(para.style, 'name', None) or '')
             yield (bool(m), int(m.group(1)) if m else 0, text, False)
-        elif tag == 'tbl':                         # docx 표는 구조화 포맷 → 셀 값 안정 추출
+        elif tag == 'tbl':  # docx 표는 구조화 포맷 → 셀 값 안정 추출
             for row in DocxTable(child, doc).rows:
                 # 빈 셀도 자리를 지킨다 — 걸러내면 뒷 컬럼이 앞으로 당겨져 헤더와 어긋난다.
                 # ['제주','','5000원','도서산간 별도'] → '제주 | 5000원 | 도서산간 별도'가 되어
                 # LLM이 '조건=5000원'으로 읽는다. 완전 빈 행만 스킵 (xlsx 파서와 같은 원리).
                 cells = [c.text.strip() for c in row.cells]
                 if any(cells):
-                    yield (False, 0, ' | '.join(cells), True)     # from_table — 폴백 헤딩 승격 대상에서 제외
+                    yield (False, 0, ' | '.join(cells), True)  # from_table — 폴백 헤딩 승격 대상에서 제외
 
 
 def _docx_text(file_path: str | Path) -> str:
@@ -1436,7 +1560,7 @@ def _split_heading_head(text: str) -> tuple[str, str]:
     괄호 짝을 세므로 '제2조(시향 예약(단체))'가 안쪽 닫는 괄호에서 잘리지 않는다(예전 정규식은 잘랐다).
     """
     first, _, rest_lines = text.partition('\n')
-    head, rest = split_heading_line(first) or (first.strip(), '')     # 장('제 N 장 …')은 첫 줄 전체가 머리
+    head, rest = split_heading_line(first) or (first.strip(), '')  # 장('제 N 장 …')은 첫 줄 전체가 머리
     return head, (rest + ('\n' + rest_lines if rest_lines else '')).strip()
 
 
@@ -1465,10 +1589,15 @@ def _docx_fallback_headings(items: list[tuple[bool, int, str, bool]]) -> list[tu
             out.append((is_heading, level, text, from_table))
             continue
         first_line = text.split('\n', 1)[0].strip()
-        if i == 0 and len(first_line) <= _DOCX_TITLE_MAX and not _CHAPTER_RE.match(first_line) and not is_heading_line(first_line):
+        if (
+            i == 0
+            and len(first_line) <= _DOCX_TITLE_MAX
+            and not _CHAPTER_RE.match(first_line)
+            and not is_heading_line(first_line)
+        ):
             has_title = True
             out.append((True, 1, first_line, False))
-            rest = text[len(text.split('\n', 1)[0]):].strip()
+            rest = text[len(text.split('\n', 1)[0]) :].strip()
             if rest:
                 out.append((False, 0, rest, False))
             continue
@@ -1497,10 +1626,11 @@ class _DocxItem(NamedTuple):
 
     튜플이라 기존 코드·테스트의 (is_heading, level, text, from_table) 풀어 쓰기가 그대로 통한다.
     """
+
     is_heading: bool
-    level: int              # 헤딩 레벨(본문 줄은 0)
+    level: int  # 헤딩 레벨(본문 줄은 0)
     text: str
-    from_table: bool        # 표·그림 — 폴백 헤딩 승격에서 제외하는 표지
+    from_table: bool  # 표·그림 — 폴백 헤딩 승격에서 제외하는 표지
 
 
 def _docx_table_rows(table, doc) -> list[list[str]]:
@@ -1512,25 +1642,30 @@ def _docx_table_rows(table, doc) -> list[list[str]]:
     그 행은 안쪽 행 수만큼 늘며, 같은 행의 다른 칸은 세로로 반복, 다른 행의 그 열 칸은 넓어진 열마다 반복한다
     (docling_grid_rows의 병합 반복 규칙 — #252 결정 9). 안쪽 표가 둘 이상인 칸은 위아래로 이어 붙인다.
     """
-    from docling_core.types.doc import RichTableCell, TableItem   # 지연 import
+    from docling_core.types.doc import RichTableCell, TableItem  # 지연 import
+
     grid = table.data.grid
     nested: dict[tuple[int, int], list[list[str]]] = {}
     for r, row in enumerate(grid):
         for c, cell in enumerate(row):
-            if not (isinstance(cell, RichTableCell) and cell.start_row_offset_idx == r and cell.start_col_offset_idx == c):
+            if not (
+                isinstance(cell, RichTableCell) and cell.start_row_offset_idx == r and cell.start_col_offset_idx == c
+            ):
                 continue
             inner = [it for it, _ in doc.iterate_items(root=cell.ref.resolve(doc)) if isinstance(it, TableItem)]
             deeper = {d.self_ref for it in inner for d, _ in doc.iterate_items(root=it) if d is not it}
-            inner = [it for it in inner if it.self_ref not in deeper]        # 3단 중첩은 재귀가 맡는다 — 중복 금지(리뷰 지적)
+            inner = [it for it in inner if it.self_ref not in deeper]  # 3단 중첩은 재귀가 맡는다 — 중복 금지(리뷰 지적)
             rows = [row2 for it in inner for row2 in _docx_table_rows(it, doc)]
             if rows:
-                own = _cell_text_norm(cell.text)                            # 칸에 안쪽 표와 함께 적힌 글자(라벨)는 첫 행으로 남긴다
+                own = _cell_text_norm(cell.text)  # 칸에 안쪽 표와 함께 적힌 글자(라벨)는 첫 행으로 남긴다
                 nested[(r, c)] = ([[own] + [''] * (len(rows[0]) - 1)] if own else []) + rows
     base = [[_grid_cell_text(cell, doc) for cell in row] for row in grid]
     if not nested:
         return [row for row in base if any(row)]
-    width = {c: max(len(x) for (_, cc), rows in nested.items() if cc == c for x in rows)        # 열 c → 안쪽 열 수(최대)
-             for c in {c for (_, c) in nested}}
+    width = {
+        c: max(len(x) for (_, cc), rows in nested.items() if cc == c for x in rows)  # 열 c → 안쪽 열 수(최대)
+        for c in {c for (_, c) in nested}
+    }
     out: list[list[str]] = []
     for r, row in enumerate(base):
         inner_rows = max((len(rows) for (rr, _), rows in nested.items() if rr == r), default=0)
@@ -1541,19 +1676,18 @@ def _docx_table_rows(table, doc) -> list[list[str]]:
                     rows = nested.get((r, c))
                     if rows:
                         cells = rows[i] if i < len(rows) else []
-                        line.extend((cells + [''] * width[c])[:width[c]])
+                        line.extend((cells + [''] * width[c])[: width[c]])
                     else:
-                        line.extend([text] * width[c])     # 넓어진 열에 걸친 칸 = 가로 병합 — 칸마다 반복(결정 9)
+                        line.extend([text] * width[c])  # 넓어진 열에 걸친 칸 = 가로 병합 — 칸마다 반복(결정 9)
                 else:
-                    line.append(text)                      # 안쪽 행마다 반복 — 세로 병합 반복 규칙(docling_grid_rows)과 같다
+                    line.append(text)  # 안쪽 행마다 반복 — 세로 병합 반복 규칙(docling_grid_rows)과 같다
             out.append(line)
     return [row for row in out if any(row)]
 
 
 def _table_descendants(doc) -> set[str]:
     """표 칸 안에 든 요소들의 self_ref. 표 자신은 빼고, 중첩 표는 바깥 표의 후손이라 들어간다(_docx_table_rows가 평탄화해 싣는다)."""
-    return {item.self_ref for table in doc.tables
-            for item, _ in doc.iterate_items(root=table) if item is not table}
+    return {item.self_ref for table in doc.tables for item, _ in doc.iterate_items(root=table) if item is not table}
 
 
 def _docx_docling_items(doc):
@@ -1573,7 +1707,8 @@ def _docx_docling_items(doc):
     표는 _TableBlock(행 목록)으로 내놓는다(#252 — chunk_file이 행 단위로 나눈다). 표와 그림은 from_table=True — 폴백 헤딩
     승격에서 제외하는 표지다(그림 캡션이 '제1장 …'로 시작해도 헤딩이 되면 안 된다). 그림은 캡션, 없으면 자리표시.
     """
-    from docling_core.types.doc import PictureItem, SectionHeaderItem, TableItem   # 지연 import
+    from docling_core.types.doc import PictureItem, SectionHeaderItem, TableItem  # 지연 import
+
     inside_tables = _table_descendants(doc)
     for item, _ in doc.iterate_items():
         if item.self_ref in inside_tables:
@@ -1603,22 +1738,23 @@ def _docx_sections(file_path: str | Path) -> list[_Section]:
     PDF에만 있어서 워드에서 본문 없는 조가 색인에서 사라졌다. page는 docx에 없다(None).
     """
     items = list(_docx_docling_items(docling_convert(file_path)))
-    return _build_sections([(None, text, level if is_heading else None)
-                            for is_heading, level, text, _ in _docx_fallback_headings(items)])
+    return _build_sections(
+        [(None, text, level if is_heading else None) for is_heading, level, text, _ in _docx_fallback_headings(items)]
+    )
 
 
 def _common_prefix(paths: list[list[str]]) -> list[str]:
     """heading_path들의 공통 조상 경로."""
     common = list(paths[0])
     for path in paths[1:]:
-        while common != path[:len(common)]:
+        while common != path[: len(common)]:
             common.pop()
     return common
 
 
 def _pack_sections(
-        sections: list[_Section],
-        max_chars: int = _PACK_CHARS,
+    sections: list[_Section],
+    max_chars: int = _PACK_CHARS,
 ) -> list[_Section]:
     """연속 섹션을 예산까지 묶는다 — 섹션 하나가 청크 하나면 너무 잘아지므로.
     묶음의 page는 첫 섹션 것을 쓴다.
@@ -1655,7 +1791,7 @@ def _pack_sections(
         heads: list[str] = []
         blocks: list[str | _TableBlock] = []
         for s in buf:
-            extra = s.heading_path[len(common):]   # 공통 조상보다 깊은 헤딩은 본문에 보존
+            extra = s.heading_path[len(common) :]  # 공통 조상보다 깊은 헤딩은 본문에 보존
             lines.extend(extra)
             heads.extend(extra)
             pages.extend([s.page] * len(extra))
@@ -1670,8 +1806,9 @@ def _pack_sections(
                 pages.extend(s.line_pages)
             else:
                 pages.extend([s.page] * len(body_lines))
-        packed.append(_Section(common, buf[0].page, '\n'.join(lines), pages,
-                               headings=heads, blocks=_join_blocks(blocks)))
+        packed.append(
+            _Section(common, buf[0].page, '\n'.join(lines), pages, headings=heads, blocks=_join_blocks(blocks))
+        )
         buf.clear()
         size = 0
 
@@ -1703,8 +1840,7 @@ def pdf_image_area_ratio(file_path: str | Path) -> float:
         for page in pdf.pages:
             page_area += (page.width or 0) * (page.height or 0)
             for image in page.images:
-                image_area += (abs(image['x1'] - image['x0'])
-                               * abs(image['bottom'] - image['top']))
+                image_area += abs(image['x1'] - image['x0']) * abs(image['bottom'] - image['top'])
     return image_area / page_area * 100 if page_area else 0.0
 
 
@@ -1718,10 +1854,9 @@ def _page_at(section: _Section, offset: int) -> int | None:
         return section.page
     position = 0
     for index, line in enumerate(section.body.split('\n')):
-        position += len(line) + 1                      # '\n' 포함
+        position += len(line) + 1  # '\n' 포함
         if offset < position:
-            return (section.line_pages[index] if index < len(section.line_pages)
-                    else section.page)
+            return section.line_pages[index] if index < len(section.line_pages) else section.page
     return section.line_pages[-1]
 
 
@@ -1734,7 +1869,7 @@ def _strip_orphan_marker(chunk: str) -> str:
     아무 의미가 없으므로 뗀다 — 항목 쪽에 붙이는 것은 _restore_leading_marker가 한다.
     """
     match = _ORPHAN_MARKER_RE.search(chunk)
-    return chunk[:match.start()].rstrip() if match and match.end() == len(chunk) else chunk
+    return chunk[: match.start()].rstrip() if match and match.end() == len(chunk) else chunk
 
 
 def _restore_leading_marker(body: str, offset: int, chunk: str) -> str:
@@ -1772,7 +1907,10 @@ def extract_text(file_path: str | Path) -> str:
     if low.endswith('.docx'):
         return _docx_text(file_path).strip()
     if low.endswith('.xlsx'):
-        from rag.xlsx_chunking import xlsx_plain_text   # 첨부는 openpyxl — docling 변환 프로세스를 색인과 나누지 않는다(#220 결정 6)
+        from rag.xlsx_chunking import (
+            xlsx_plain_text,
+        )  # 첨부는 openpyxl — docling 변환 프로세스를 색인과 나누지 않는다(#220 결정 6)
+
         return xlsx_plain_text(str(file_path)).strip()  # 첨부는 행 묶음 없이 시트 전체(#222)
     return _read_text(file_path).strip()  # txt/md/기타
 
@@ -1790,7 +1928,7 @@ def _txt_sections(file_path: str | Path) -> list[_Section]:
 # MD 표 칸에서 docling(2.126)이 망가뜨리는 두 표기 — 변환 전에 유니코드 사용자 영역 문자로 숨겼다가 결과에서 되돌린다(#267).
 # 이스케이프 '\|'는 칸 구분으로 읽어 넘친 칸을 **버리고**(실측: '협업 라벨 홀로그램 확인' 칸이 출력 어디에도 없음), '<br>'은 그 행의
 # 값을 표 밖 글 한 줄로 내보낸다(구조 손상). 되돌릴 때 '<br>' 변형('<br/>'·'<BR />')은 '<br>' 하나로 적는다 — 뜻이 같다.
-_MD_PIPE_MARK, _MD_BR_MARK = '\uE000', '\uE001'
+_MD_PIPE_MARK, _MD_BR_MARK = '\ue000', '\ue001'
 _MD_BR_RE = re.compile(r'<br\s*/?>', re.IGNORECASE)
 
 
@@ -1825,8 +1963,16 @@ def _md_sections(file_path: str | Path) -> list[_Section]:
       - 큰 MD 표도 PDF·DOCX와 같이 TABLE_MAX_TOKENS를 넘으면 색인하지 않는다(#257 — 정규식 시절에는 글로 색인됐다)
     """
     import tempfile
-    from docling_core.types.doc import (CodeItem, InlineGroup, SectionHeaderItem, TableItem, TextItem,   # 지연 import
-                                        TitleItem)
+
+    from docling_core.types.doc import (
+        CodeItem,
+        InlineGroup,
+        SectionHeaderItem,
+        TableItem,
+        TextItem,  # 지연 import
+        TitleItem,
+    )
+
     source = _MD_BR_RE.sub(_MD_BR_MARK, _read_text(file_path).replace('\\|', _MD_PIPE_MARK))
     with tempfile.NamedTemporaryFile('w', suffix='.md', encoding='utf-8', delete=False) as tmp:
         tmp.write(source)
@@ -1837,8 +1983,8 @@ def _md_sections(file_path: str | Path) -> list[_Section]:
 
     inside = _table_descendants(doc)
     items: list[_Item] = []
-    cursor = 0              # 원문에서 직전 글 조각이 끝난 자리 — ③ 띄어쓰기 판정
-    group = None            # 직전 조각이 속한 InlineGroup
+    cursor = 0  # 원문에서 직전 글 조각이 끝난 자리 — ③ 띄어쓰기 판정
+    group = None  # 직전 조각이 속한 InlineGroup
     for item, _ in doc.iterate_items():
         if item.self_ref in inside:
             continue
@@ -1876,9 +2022,9 @@ def _md_sections(file_path: str | Path) -> list[_Section]:
 # xlsx만 빠져 있다 — 행 묶음 + 시트 완성본·크기 상한 초과 시 거절이라 계약이 근본적으로 다르다(#222).
 _SECTION_PARSERS = {
     '.pdf': _docling_sections,  # docling — 레이아웃 ML + TableFormer + 원격 OCR(#143)
-    '.docx': _docx_sections,    # docling SimplePipeline — Heading 스타일 레벨, 없으면 조문 폴백(#220·#205)
-    '.md': _md_sections,        # docling MD 백엔드 + 보정 3개(#267)
-    '.txt': _txt_sections,      # 헤딩 없음 — 통째로 섹션 1개
+    '.docx': _docx_sections,  # docling SimplePipeline — Heading 스타일 레벨, 없으면 조문 폴백(#220·#205)
+    '.md': _md_sections,  # docling MD 백엔드 + 보정 3개(#267)
+    '.txt': _txt_sections,  # 헤딩 없음 — 통째로 섹션 1개
 }
 
 
@@ -1896,7 +2042,8 @@ def chunk_file(file_path: str | Path, *, description: str = '') -> list[ChunkDat
     splitter = SentenceSplitter(chunk_size=512, chunk_overlap=50)
 
     if suffix == '.xlsx':
-        from rag.xlsx_chunking import chunk_xlsx   # 지연 import (xlsx_chunking → chunking 순환 방지)
+        from rag.xlsx_chunking import chunk_xlsx  # 지연 import (xlsx_chunking → chunking 순환 방지)
+
         return chunk_xlsx(str(file_path), description=description)
 
     parser = _SECTION_PARSERS.get(suffix)
@@ -1906,7 +2053,7 @@ def chunk_file(file_path: str | Path, *, description: str = '') -> list[ChunkDat
         raise ValueError(f'지원하지 않는 형식: {suffix or "확장자 없음"}')
 
     out: list[ChunkData] = []
-    table_keys: dict[tuple[int, int], str] = {}     # (섹션 번호, 섹션 안 블록 번호) → 문서 안 표 순번(#257)
+    table_keys: dict[tuple[int, int], str] = {}  # (섹션 번호, 섹션 안 블록 번호) → 문서 안 표 순번(#257)
     for si, section in enumerate(_pack_sections(parser(file_path))):
         for text, offset, table in _split_section(section, splitter):
             # 이 조각에 실린 헤딩만 — 색인이 식별자 사전으로, 근거 준비가 구간 경계로 쓴다(#238 결정 15).
@@ -1916,13 +2063,21 @@ def chunk_file(file_path: str | Path, *, description: str = '') -> list[ChunkDat
             if table is not None:
                 key = table_keys.setdefault((si, table.block), f't{len(table_keys) + 1}')
                 meta |= {'is_table': True, 'table_key': key, 'table_text': table.text}
-            out.append(ChunkData(text=text, heading_path=list(section.heading_path),
-                                 page=_page_at(section, offset), chunk_index=len(out),
-                                 meta=meta or None))
+            out.append(
+                ChunkData(
+                    text=text,
+                    heading_path=list(section.heading_path),
+                    page=_page_at(section, offset),
+                    chunk_index=len(out),
+                    meta=meta or None,
+                )
+            )
     return out
 
 
-_TABLE_LEAD_MAX = 150   # 큰 표 묶음마다 붙이는 '표 바로 위 한 줄'의 최대 길이 — 이보다 길면 표 설명이 아니라 본문 문단으로 본다
+_TABLE_LEAD_MAX = (
+    150  # 큰 표 묶음마다 붙이는 '표 바로 위 한 줄'의 최대 길이 — 이보다 길면 표 설명이 아니라 본문 문단으로 본다
+)
 
 # 표 전체(table_text)에 함께 싣는 표 앞뒤 글(#268 결정 1·2) — 묶음 청크 본문(검색 입력)은 그대로 두고 모델이 받는 표 전체에만 넣는다.
 # 설명이 여러 줄이면 마지막 줄만(B1 '단위: kg당 원' 유실), 150자를 넘으면 아예(B2) 표와 떨어졌고, 표 아래 '※ 단위 ‰' 주석은 다른
@@ -1940,15 +2095,21 @@ _TABLE_CONTEXT_LINES = 3
 _TABLE_CONTEXT_CHARS = 200
 _TABLE_NOTE_CHARS = 100
 # '* 항목' 글머리표 목록도 걸린다 — 띄어 쓴 별표 주석('* 재검사는 1회')이 흔해 받아들였다(#268 리뷰 2: 잘못 잡혀도 100자 상한 안의 복사본뿐).
-TABLE_NOTE = re.compile(r'^\s*(※|\*(?!\*)|주\s*[)）:：]|[(（]\s*단위|단위\s*[:：]|출처\s*[:：])')   # 표 주석 표지 — eval/chunk_boundary가 import한다
+TABLE_NOTE = re.compile(
+    r'^\s*(※|\*(?!\*)|주\s*[)）:：]|[(（]\s*단위|단위\s*[:：]|출처\s*[:：])'
+)  # 표 주석 표지 — eval/chunk_boundary가 import한다
 
 
 def _table_lead_lines(text: str, headings: set[str]) -> list[str]:
     """표 바로 위 글 블록 → 표 설명 줄(문서 순). 끝에서부터 모으고 제목 줄·줄 수·글자 수 한도에서 멈춘다(#268 결정 2)."""
     out: list[str] = []
     for line in reversed([l.strip() for l in text.split('\n') if l.strip()]):
-        if line in headings or is_heading_line(line) or len(out) >= _TABLE_CONTEXT_LINES \
-                or sum(map(len, out)) + len(line) > _TABLE_CONTEXT_CHARS:
+        if (
+            line in headings
+            or is_heading_line(line)
+            or len(out) >= _TABLE_CONTEXT_LINES
+            or sum(map(len, out)) + len(line) > _TABLE_CONTEXT_CHARS
+        ):
             break
         out.append(line)
     return out[::-1]
@@ -1958,7 +2119,11 @@ def _table_note_lines(text: str) -> list[str]:
     """표 바로 아래 글 블록 → 주석 줄. 첫 줄부터 TABLE_NOTE 표지로 시작하는 줄이 이어지는 동안만(#268 결정 2)."""
     out: list[str] = []
     for line in (l.strip() for l in text.split('\n') if l.strip()):
-        if not TABLE_NOTE.match(line) or len(out) >= _TABLE_CONTEXT_LINES or sum(map(len, out)) + len(line) > _TABLE_NOTE_CHARS:
+        if (
+            not TABLE_NOTE.match(line)
+            or len(out) >= _TABLE_CONTEXT_LINES
+            or sum(map(len, out)) + len(line) > _TABLE_NOTE_CHARS
+        ):
             break
         out.append(line)
     return out
@@ -1966,13 +2131,14 @@ def _table_note_lines(text: str) -> list[str]:
 
 class _TableRef(NamedTuple):
     """큰 표(묶음 둘 이상) 묶음이 어느 표의 것인가 — chunk_file이 문서 안 표 순번(table_key)으로 바꾼다(#257)."""
-    block: int      # 섹션 안 블록 번호
-    text: str       # 표 전체 — 표 앞 설명 줄(최대 3줄) + 헤더 한 번 + 전체 행 + 표 아래 주석 줄(#268). 근거 준비가 걸린 묶음을 이것으로 바꾼다
+
+    block: int  # 섹션 안 블록 번호
+    text: str  # 표 전체 — 표 앞 설명 줄(최대 3줄) + 헤더 한 번 + 전체 행 + 표 아래 주석 줄(#268). 근거 준비가 걸린 묶음을 이것으로 바꾼다
 
 
 class _Piece(NamedTuple):
     text: str
-    offset: int                     # section.body 안의 위치
+    offset: int  # section.body 안의 위치
     table: _TableRef | None = None  # 큰 표의 묶음일 때만
 
 
@@ -2001,7 +2167,9 @@ def _split_section(section: _Section, splitter) -> list[_Piece]:
     표 전체에는 표 앞 설명 여러 줄과 표 아래 주석 줄도 싣는다(#268 — _table_lead_lines·_table_note_lines). 묶음 본문은 그대로다.
     표 하나가 TABLE_MAX_TOKENS를 넘으면 TableTooLargeError(#257 결정 2).
     """
-    pieces: list[tuple[str, int, int, bool, _TableRef | None]] = []   # (글, 오프셋, 블록 번호, 이웃과 합칠 수 있나, 표 정보)
+    pieces: list[
+        tuple[str, int, int, bool, _TableRef | None]
+    ] = []  # (글, 오프셋, 블록 번호, 이웃과 합칠 수 있나, 표 정보)
     cursor = 0
     last_text = ''
     blocks = _blocks_of(section)
@@ -2017,7 +2185,7 @@ def _split_section(section: _Section, splitter) -> list[_Piece]:
             lead = last_text.strip().split('\n')[-1].strip() if last_text.strip() else ''
             lead = lead if len(batches) > 1 and len(lead) <= _TABLE_LEAD_MAX else ''
             if lead and pieces and pieces[-1][0].strip() == lead:
-                pieces.pop()        # 그 줄만 든 조각은 묶음마다 머리로 들어가므로 혼자 남기지 않는다(실문서: '[ 별표 1] 징계 양정 기준')
+                pieces.pop()  # 그 줄만 든 조각은 묶음마다 머리로 들어가므로 혼자 남기지 않는다(실문서: '[ 별표 1] 징계 양정 기준')
             after = blocks[bi + 1] if bi + 1 < len(blocks) and isinstance(blocks[bi + 1], str) else ''
             table_text = '\n'.join([*_table_lead_lines(last_text, heading_set), rendered, *_table_note_lines(after)])
             _check_table_size(block, table_text, block.row_pages[0] if block.row_pages else section.page)
@@ -2043,9 +2211,14 @@ def _split_section(section: _Section, splitter) -> list[_Piece]:
     out: list[_Piece] = []
     prev_block, prev_mergeable = None, False
     for text, offset, bi, mergeable, ref in pieces:
-        if (out and mergeable and prev_mergeable and bi != prev_block
-                and len(out[-1].text) + 1 + len(text) <= TABLE_BATCH_CHARS):
-            out[-1] = out[-1]._replace(text=f'{out[-1].text}\n{text}')   # 합칠 수 있는 조각은 큰 표가 아니다(ref 없음)
+        if (
+            out
+            and mergeable
+            and prev_mergeable
+            and bi != prev_block
+            and len(out[-1].text) + 1 + len(text) <= TABLE_BATCH_CHARS
+        ):
+            out[-1] = out[-1]._replace(text=f'{out[-1].text}\n{text}')  # 합칠 수 있는 조각은 큰 표가 아니다(ref 없음)
         else:
             out.append(_Piece(text, offset, ref))
         prev_block, prev_mergeable = bi, mergeable

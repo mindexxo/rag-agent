@@ -22,6 +22,7 @@ outbox를 거치는지, 반영 지연(최대 1~5분)을 왜 받아들이는지�
 정의점이다** — 여기서 반복하지 않는다. 색인이 서빙의 정본이라는 전제(그래서 낡은 색인이 낡은
 답을 낸다)는 `fetch_chunk_map` docstring에 있다.
 """
+
 import json
 from collections import defaultdict
 
@@ -36,6 +37,7 @@ from rag.lexical import bigrams
 from rag.models import Document, Faq, Folder
 from rag.os_client import LEX_BIGRAM_FIELD, NORI_FIELD, client
 
+
 def lex_text(text: str, filename: str | None, heading_path) -> str:
     """어휘·Nori 필드의 입력 텍스트 — 인제스션·운영 어휘 채널과 **동일 조립**.
 
@@ -48,9 +50,7 @@ def lex_text(text: str, filename: str | None, heading_path) -> str:
     return build_index_text(text, filename, list(heading_path or []))
 
 
-
-def chunk_os_id(*, document_id: int | None = None, faq_id: int | None = None,
-                chunk_index: int = 0) -> int:
+def chunk_os_id(*, document_id: int | None = None, faq_id: int | None = None, chunk_index: int = 0) -> int:
     """**결정적** chunk_id — PG 시퀀스가 없으므로 (부모 id, chunk_index)로 계산한다.
 
     같은 입력이면 같은 id다 —
@@ -69,9 +69,15 @@ def chunk_os_id(*, document_id: int | None = None, faq_id: int | None = None,
     return (document_id << 20) | chunk_index
 
 
-def effective_searchable(*, is_faq: bool, doc_is_active=None, doc_status=None,
-                         doc_is_searchable=None, folder_is_searchable=None,
-                         faq_is_active=None) -> bool:
+def effective_searchable(
+    *,
+    is_faq: bool,
+    doc_is_active=None,
+    doc_status=None,
+    doc_is_searchable=None,
+    folder_is_searchable=None,
+    faq_is_active=None,
+) -> bool:
     """검색 가능 판정의 **정의점** — 색인 시점에 계산해 `searchable` 플래그로 넣는다.
 
     문서: 활성 + ready + 검색가능 + (폴더 없음 또는 폴더 검색가능) / FAQ: 활성.
@@ -79,13 +85,24 @@ def effective_searchable(*, is_faq: bool, doc_is_active=None, doc_status=None,
     """
     if is_faq:
         return bool(faq_is_active)
-    return bool(doc_is_active and doc_status == 'ready' and doc_is_searchable
-                and (folder_is_searchable is None or folder_is_searchable))
+    return bool(
+        doc_is_active
+        and doc_status == 'ready'
+        and doc_is_searchable
+        and (folder_is_searchable is None or folder_is_searchable)
+    )
 
 
-def build_doc(chunk, filename: str | None, version: int | None, *,
-              folder_id: int | None = None, folder_name: str | None = None,
-              folder_description: str | None = None, searchable: bool = True) -> dict:
+def build_doc(
+    chunk,
+    filename: str | None,
+    version: int | None,
+    *,
+    folder_id: int | None = None,
+    folder_name: str | None = None,
+    folder_description: str | None = None,
+    searchable: bool = True,
+) -> dict:
     """OpenSearch 문서 본문 — **정의점**. 인제스션(index_parsed_document·index_parsed_faq)이 쓴다.
 
     chunk는 `_ParsedChunk`(id·tenant_id·document_id·faq_id·text·heading_path·page·meta·dense).
@@ -110,17 +127,17 @@ def build_doc(chunk, filename: str | None, version: int | None, *,
         "filename": filename or "FAQ",
         "heading_path": list(chunk.heading_path or []),
         "headings": headings,
-        "identifiers": chunk_identifiers(list(chunk.heading_path or []), headings),   # #238 식별자 채널
+        "identifiers": chunk_identifiers(list(chunk.heading_path or []), headings),  # #238 식별자 채널
         "searchable": bool(searchable),
         "folder_id": folder_id,
         "folder_name": folder_name,
         "folder_description": folder_description,
         "text": chunk.text,
-        "table_key": (chunk.meta or {}).get("table_key"),     # 표 묶음(#222 엑셀·#257 PDF·DOCX)만 — 그 밖은 None
+        "table_key": (chunk.meta or {}).get("table_key"),  # 표 묶음(#222 엑셀·#257 PDF·DOCX)만 — 그 밖은 None
         "table_text": (chunk.meta or {}).get("table_text"),
         NORI_FIELD: lex,
         LEX_BIGRAM_FIELD: " ".join(bigrams(lex)),
-        "dense": [float(x) for x in vec],      # float32 → float: json 직렬화 때문
+        "dense": [float(x) for x in vec],  # float32 → float: json 직렬화 때문
     }
 
 
@@ -134,8 +151,7 @@ async def bulk_index(docs: list[dict]) -> int:
         return 0
     lines = []
     for d in docs:
-        lines.append(json.dumps({"index": {"_index": settings.opensearch_index,
-                                           "_id": str(d["chunk_id"])}}))
+        lines.append(json.dumps({"index": {"_index": settings.opensearch_index, "_id": str(d["chunk_id"])}}))
         lines.append(json.dumps(d, ensure_ascii=False))
     resp = await client().bulk(body="\n".join(lines) + "\n", refresh="wait_for")
     if resp.get("errors"):
@@ -149,8 +165,8 @@ async def _delete_by_terms(field: str, values: list) -> int:
     if not values:
         return 0
     resp = await client().delete_by_query(
-        index=settings.opensearch_index, refresh=True,
-        body={"query": {"terms": {field: list(values)}}})
+        index=settings.opensearch_index, refresh=True, body={"query": {"terms": {field: list(values)}}}
+    )
     return int(resp.get("deleted", 0))
 
 
@@ -171,9 +187,14 @@ async def _update_meta(field: str, values: list, meta: dict) -> int:
         return 0
     script = "; ".join(f"ctx._source.{k} = params.{k}" for k in meta)
     resp = await client().update_by_query(
-        index=settings.opensearch_index, refresh=True, conflicts='proceed',
-        body={"query": {"terms": {field: list(values)}},
-              "script": {"source": script, "params": meta, "lang": "painless"}})
+        index=settings.opensearch_index,
+        refresh=True,
+        conflicts='proceed',
+        body={
+            "query": {"terms": {field: list(values)}},
+            "script": {"source": script, "params": meta, "lang": "painless"},
+        },
+    )
     return int(resp.get("updated", 0))
 
 
@@ -183,20 +204,28 @@ class _ParsedChunk:
     id는 chunk_os_id로 계산한 결정적 값이다.
     """
 
-    __slots__ = ('id', 'tenant_id', 'document_id', 'faq_id',
-                 'text', 'heading_path', 'page', 'meta', 'dense')
+    __slots__ = ('id', 'tenant_id', 'document_id', 'faq_id', 'text', 'heading_path', 'page', 'meta', 'dense')
 
-    def __init__(self, *, cid, tenant_id, document_id, faq_id, text,
-                 heading_path, page, meta, dense):
+    def __init__(self, *, cid, tenant_id, document_id, faq_id, text, heading_path, page, meta, dense):
         self.id, self.tenant_id = cid, tenant_id
         self.document_id, self.faq_id = document_id, faq_id
         self.text, self.heading_path, self.page, self.meta = text, heading_path, page, meta
         self.dense = dense
 
 
-async def index_parsed_document(*, document_id: int, tenant_id: str, filename: str,
-                                version: int, folder_id, folder_name, folder_description,
-                                searchable: bool, chunks, embeddings) -> int:
+async def index_parsed_document(
+    *,
+    document_id: int,
+    tenant_id: str,
+    filename: str,
+    version: int,
+    folder_id,
+    folder_name,
+    folder_description,
+    searchable: bool,
+    chunks,
+    embeddings,
+) -> int:
     """파싱 결과를 곧장 색인한다 (#139) — 인제스션이 손에 든 청크·임베딩 그대로.
 
     같은 문서를 다시 색인할 때 **옛 청크를 먼저 지운다** — 청크 수가 줄면 chunk_index가 큰
@@ -205,27 +234,51 @@ async def index_parsed_document(*, document_id: int, tenant_id: str, filename: s
     await _delete_by_terms('document_id', [document_id])
     docs = []
     for c, e in zip(chunks, embeddings):
-        docs.append(build_doc(
-            _ParsedChunk(cid=chunk_os_id(document_id=document_id, chunk_index=c.chunk_index),
-                         tenant_id=tenant_id, document_id=document_id, faq_id=None,
-                         text=c.text, heading_path=c.heading_path, page=c.page,
-                         meta=c.meta or {}, dense=list(e.dense)),
-            filename, version,
-            folder_id=folder_id, folder_name=folder_name,
-            folder_description=folder_description, searchable=searchable))
+        docs.append(
+            build_doc(
+                _ParsedChunk(
+                    cid=chunk_os_id(document_id=document_id, chunk_index=c.chunk_index),
+                    tenant_id=tenant_id,
+                    document_id=document_id,
+                    faq_id=None,
+                    text=c.text,
+                    heading_path=c.heading_path,
+                    page=c.page,
+                    meta=c.meta or {},
+                    dense=list(e.dense),
+                ),
+                filename,
+                version,
+                folder_id=folder_id,
+                folder_name=folder_name,
+                folder_description=folder_description,
+                searchable=searchable,
+            )
+        )
     return await bulk_index(docs)
 
 
-async def index_parsed_faq(*, faq_id: int, tenant_id: str, text: str, question: str,
-                           searchable: bool, embedding) -> int:
+async def index_parsed_faq(
+    *, faq_id: int, tenant_id: str, text: str, question: str, searchable: bool, embedding
+) -> int:
     """FAQ 청크 색인. 항목당 청크 1개라 chunk_index는 0 고정이다."""
     await _delete_by_terms('faq_id', [faq_id])
     doc = build_doc(
-        _ParsedChunk(cid=chunk_os_id(faq_id=faq_id), tenant_id=tenant_id,
-                     document_id=None, faq_id=faq_id, text=text,
-                     heading_path=[question], page=None, meta={},
-                     dense=list(embedding.dense)),
-        None, None, searchable=searchable)
+        _ParsedChunk(
+            cid=chunk_os_id(faq_id=faq_id),
+            tenant_id=tenant_id,
+            document_id=None,
+            faq_id=faq_id,
+            text=text,
+            heading_path=[question],
+            page=None,
+            meta={},
+            dense=list(embedding.dense),
+        ),
+        None,
+        None,
+        searchable=searchable,
+    )
     return await bulk_index([doc])
 
 
@@ -245,11 +298,15 @@ async def index_faq_chunks(session, faq_id: int) -> int:
     if faq is None:
         return 0
     text = build_faq_chunk_text(faq.question, faq.variants or [], faq.answer)
-    embs = await embed_texts([text])          # FAQ는 프리픽스 없이 원문 (임베딩 입력 규약)
+    embs = await embed_texts([text])  # FAQ는 프리픽스 없이 원문 (임베딩 입력 규약)
     return await index_parsed_faq(
-        faq_id=faq_id, tenant_id=faq.tenant_id, text=text, question=faq.question,
+        faq_id=faq_id,
+        tenant_id=faq.tenant_id,
+        text=text,
+        question=faq.question,
         searchable=effective_searchable(is_faq=True, faq_is_active=faq.is_active),
-        embedding=embs[0])
+        embedding=embs[0],
+    )
 
 
 async def sync_meta_documents_now(session, document_ids) -> int:
@@ -258,34 +315,52 @@ async def sync_meta_documents_now(session, document_ids) -> int:
 
     같은 메타 값을 갖는 문서끼리 묶어 호출 수를 줄인다 — 폴더 변경이면 대개 1~2번이다.
     """
-    rows = (await session.execute(
-        select(Document.id, Document.is_active, Document.status, Document.is_searchable,
-               Folder.id, Folder.name, Folder.description, Folder.is_searchable)
-        .outerjoin(Folder, Document.folder_id == Folder.id)
-        .where(Document.id.in_(list(document_ids)))
-    )).all()
+    rows = (
+        await session.execute(
+            select(
+                Document.id,
+                Document.is_active,
+                Document.status,
+                Document.is_searchable,
+                Folder.id,
+                Folder.name,
+                Folder.description,
+                Folder.is_searchable,
+            )
+            .outerjoin(Folder, Document.folder_id == Folder.id)
+            .where(Document.id.in_(list(document_ids)))
+        )
+    ).all()
 
     groups = defaultdict(list)
-    for (did, d_active, d_status, d_searchable,
-         f_id, f_name, f_desc, f_searchable) in rows:
-        key = (effective_searchable(
-            is_faq=False, doc_is_active=d_active, doc_status=d_status,
-            doc_is_searchable=d_searchable, folder_is_searchable=f_searchable),
-            f_id, f_name, f_desc)
+    for did, d_active, d_status, d_searchable, f_id, f_name, f_desc, f_searchable in rows:
+        key = (
+            effective_searchable(
+                is_faq=False,
+                doc_is_active=d_active,
+                doc_status=d_status,
+                doc_is_searchable=d_searchable,
+                folder_is_searchable=f_searchable,
+            ),
+            f_id,
+            f_name,
+            f_desc,
+        )
         groups[key].append(did)
 
     n = 0
     for (searchable, f_id, f_name, f_desc), dids in groups.items():
-        n += await _update_meta('document_id', dids, {
-            'searchable': searchable, 'folder_id': f_id,
-            'folder_name': f_name, 'folder_description': f_desc})
+        n += await _update_meta(
+            'document_id',
+            dids,
+            {'searchable': searchable, 'folder_id': f_id, 'folder_name': f_name, 'folder_description': f_desc},
+        )
     return n
 
 
 async def sync_meta_faqs_now(session, faq_ids) -> int:
     """FAQ 활성 토글 부분 갱신."""
-    rows = (await session.execute(
-        select(Faq.id, Faq.is_active).where(Faq.id.in_(list(faq_ids))))).all()
+    rows = (await session.execute(select(Faq.id, Faq.is_active).where(Faq.id.in_(list(faq_ids))))).all()
     groups = defaultdict(list)
     for fid, active in rows:
         groups[bool(active)].append(fid)
@@ -293,4 +368,3 @@ async def sync_meta_faqs_now(session, faq_ids) -> int:
     for active, fids in groups.items():
         n += await _update_meta('faq_id', fids, {'searchable': active})
     return n
-

@@ -28,6 +28,7 @@ guided 경로에서 모델이 필드를 생략해도 합법이 된다 — 강제
 배치가 schemas/가 아니라 rag/인 이유: schemas/는 FastAPI 요청·응답(API 경계) 계약이고,
 이건 LLM에 거는 생성 제약이라는 내부 계약이다 — build_citation_tail(rag/prompts)과 같은 축.
 """
+
 import logging
 from typing import Literal
 
@@ -62,9 +63,10 @@ class RouteDecision(BaseModel):
     저장 라벨(messages.intent='ATTACHMENT')로는 남는다 — 첨부만 근거인 턴이
     KNOWLEDGE로 집계되면 stats의 KB 커버리지 지표가 오염되기 때문(#63 리뷰).
     """
+
     safe: bool
     intent: Literal['KNOWLEDGE', 'OTHER', 'RETRY', 'ATTACHMENT']
-    reason: str | None = None   # safe=false일 때 차단 사유 — 옵셔널은 의도(정상 턴엔 없음)
+    reason: str | None = None  # safe=false일 때 차단 사유 — 옵셔널은 의도(정상 턴엔 없음)
 
 
 class ReuseJudgment(BaseModel):
@@ -73,12 +75,14 @@ class ReuseJudgment(BaseModel):
     reason은 관측용(Phoenix 스팬·로그) — 판정 근거가 남아야 오판 사례를 역추적할 수 있다.
     검증 실측은 rag/prompt_texts.py의 CACHE_REUSE_JUDGE_SYSTEM 주석 참조.
     """
+
     same_answer: bool
     reason: str
 
 
 class CondenseResult(BaseModel):
     """condense_query(단일) 출력 — 검색 가능한 독립 질문 한 문장."""
+
     standalone: str
 
 
@@ -91,6 +95,7 @@ class CondenseMultiResult(BaseModel):
     max_length로 걸면 무스키마 폴백 응답이 변형 3개를 줬을 때 멀쩡한 standalone까지
     통째로 폴백된다(과잉). 초과분은 후처리의 [:2] 슬라이스가 자른다.
     """
+
     standalone: str
     variants: list[str] = Field(default_factory=list, json_schema_extra={'maxItems': 2})
 
@@ -99,11 +104,12 @@ def _extract_json_slice(raw: str) -> str:
     """```json 펜스·부연 텍스트 방어 — 구 guardrail._extract_json의 승격. 첫 '{'부터 마지막 '}'까지.
     스키마 강제 응답(순수 JSON)엔 항등이라 무해하고, 스키마를 못 거는 공급자가 와도 같은 검증을 탄다.
     '{'가 없으면 ValueError — 호출자(acomplete_validated)의 검증 실패 처리로 합류."""
-    return raw[raw.index('{'):raw.rindex('}') + 1]
+    return raw[raw.index('{') : raw.rindex('}') + 1]
 
 
-async def acomplete_validated(llm: LlmClient, messages: list[dict],
-                              model_cls: type[BaseModel], *, span=None) -> BaseModel:
+async def acomplete_validated(
+    llm: LlmClient, messages: list[dict], model_cls: type[BaseModel], *, span=None
+) -> BaseModel:
     """스키마 강제 acomplete + 검증. 계약은 2갈래 (#72):
 
       모델 인스턴스        정상 (스키마 경로든 무스키마 재시도 경로든 검증 통과)
@@ -117,8 +123,8 @@ async def acomplete_validated(llm: LlmClient, messages: list[dict],
     쓰이지 않았고, 조용한 우회보다 즉시 실패가 낫다(사용자 결정 8). 거부·타임아웃은 그대로 전파된다.
     """
     if span is not None:
-        otel.set_attrs(span, {otel.LLM_MODEL: getattr(llm, 'model_name', None)})   # 보조 호출이 어느 모델이었나(#297)
-    raw = await llm.acomplete(messages, schema=model_cls)   # 스키마 강제 문법은 공급자 구현이 안다(rag/llm)
+        otel.set_attrs(span, {otel.LLM_MODEL: getattr(llm, 'model_name', None)})  # 보조 호출이 어느 모델이었나(#297)
+    raw = await llm.acomplete(messages, schema=model_cls)  # 스키마 강제 문법은 공급자 구현이 안다(rag/llm)
 
     try:
         return model_cls.model_validate_json(_extract_json_slice(raw or ''))
@@ -128,5 +134,4 @@ async def acomplete_validated(llm: LlmClient, messages: list[dict],
         logger.warning('구조화 출력 검증 실패 (%s) raw=%r', model_cls.__name__, (raw or '')[:200])
         if span is not None:
             otel.set_attrs(span, {'kms.schema_invalid': True})
-        raise LlmJudgmentFailed(
-            f'{model_cls.__name__} 구조화 출력 검증 실패') from exc
+        raise LlmJudgmentFailed(f'{model_cls.__name__} 구조화 출력 검증 실패') from exc

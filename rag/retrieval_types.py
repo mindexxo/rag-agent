@@ -8,29 +8,36 @@
 
 자료형만 둔다 — 판정·조립 로직은 `rag/retriever.py`다.
 """
+
 from dataclasses import dataclass, field
 
 
 @dataclass
 class RetrievedChunk:
     """검색 결과 1건. RagService가 인용 메타 + LLM 컨텍스트 구성에 사용."""
+
     chunk_id: int
-    document_id: int | None         # 부모 문서 id (FAQ 청크는 None)
-    text: str                       # 청크 본문 — LLM 컨텍스트로 전달
-    heading_path: list[str]         # 인용 표시용 ["3. 보상", "3.2 지급기준"]
-    page: int | None                # PDF 페이지 (있으면)
-    filename: str                   # FAQ 청크는 'FAQ' — 컨텍스트 라벨·인용 표기가 이 값을 따름
+    document_id: int | None  # 부모 문서 id (FAQ 청크는 None)
+    text: str  # 청크 본문 — LLM 컨텍스트로 전달
+    heading_path: list[str]  # 인용 표시용 ["3. 보상", "3.2 지급기준"]
+    page: int | None  # PDF 페이지 (있으면)
+    filename: str  # FAQ 청크는 'FAQ' — 컨텍스트 라벨·인용 표기가 이 값을 따름
     version: int
-    faq_id: int | None = None       # FAQ 출처면 항목 id (캐시 키·인용 분기용)
-    is_table: bool = False          # 표 묶음 여부 — 엑셀 시트 묶음(#222)·PDF·DOCX 큰 표 묶음(#257). 근거 준비가 접고 확장한다
-    table_key: str | None = None    # 문서 안에서 어느 표인가 — 엑셀은 시트명, PDF·DOCX는 표 순번('t1'…). 접기 키 = (document_id, table_key)
-    table_text: str | None = None   # 표 전체 — 근거 준비가 이 묶음을 '걸린 묶음 + 표 전체'로 바꿀 때 쓴다(#268 결정 4)
-    folder_name: str | None = None          # 소속 폴더 (미분류·FAQ는 None)
-    folder_description: str | None = None   # 폴더 '참조 설명' — 리랭커 입력에만 사용 (임베딩엔 미포함)
+    faq_id: int | None = None  # FAQ 출처면 항목 id (캐시 키·인용 분기용)
+    is_table: bool = False  # 표 묶음 여부 — 엑셀 시트 묶음(#222)·PDF·DOCX 큰 표 묶음(#257). 근거 준비가 접고 확장한다
+    table_key: str | None = (
+        None  # 문서 안에서 어느 표인가 — 엑셀은 시트명, PDF·DOCX는 표 순번('t1'…). 접기 키 = (document_id, table_key)
+    )
+    table_text: str | None = None  # 표 전체 — 근거 준비가 이 묶음을 '걸린 묶음 + 표 전체'로 바꿀 때 쓴다(#268 결정 4)
+    folder_name: str | None = None  # 소속 폴더 (미분류·FAQ는 None)
+    folder_description: str | None = None  # 폴더 '참조 설명' — 리랭커 입력에만 사용 (임베딩엔 미포함)
     # 식별자 채널(#238, 정의점 rag/identifiers). 색인 필드 그대로 — 가산 판정·구간 오리기가 읽는다.
-    identifiers: list[str] = field(default_factory=list)   # '11조'·'43조의2'·'3장'
-    headings: list[str] = field(default_factory=list)      # 묶음이 본문으로 내려보낸 헤딩 원문
-    matched_ident: str | None = None   # 질문의 식별자와 일치해 가산을 받았으면 그 토큰 — prepare_evidence가 이걸 보고 오린다
+    identifiers: list[str] = field(default_factory=list)  # '11조'·'43조의2'·'3장'
+    headings: list[str] = field(default_factory=list)  # 묶음이 본문으로 내려보낸 헤딩 원문
+    matched_ident: str | None = (
+        None  # 질문의 식별자와 일치해 가산을 받았으면 그 토큰 — prepare_evidence가 이걸 보고 오린다
+    )
+
 
 # 아래 두 자료형이 함께 실어 나르는 필드 — 검색 "결과"가 아니라 입력의 파생물이다 (#50).
 #
@@ -42,16 +49,19 @@ class RetrievedChunk:
 # 확장 변형(index 1+)은 담지 않는다 — 검색·RRF 융합 전용이고 캐시 키와 무관하다.
 # repr=False: 1024차원 float가 예외 트레이스백·로그에 통째로 새는 것을 막는다.
 
+
 @dataclass
 class RetrievalResult:
     """검색 최종 결과. no_evidence=True면 LLM 호출 건너뜀."""
-    chunks: list[RetrievedChunk]    # top-K 결과 (no_evidence여도 비어있지 않을 수 있음)
-    no_evidence: bool               # True면 근거 부족으로 판정
-    reason: str | None              # 'no_results' (아예 빈 결과) |
-                                    # 'low_similarity' (top-1 거리 임계값 초과) |
-                                    # None (정상)
+
+    chunks: list[RetrievedChunk]  # top-K 결과 (no_evidence여도 비어있지 않을 수 있음)
+    no_evidence: bool  # True면 근거 부족으로 판정
+    reason: str | None  # 'no_results' (아예 빈 결과) |
+    # 'low_similarity' (top-1 거리 임계값 초과) |
+    # None (정상)
     # 원본 쿼리 dense 벡터 — 판정과 무관한 pass-through (#50, 사유는 위 주석 블록)
     query_embedding: list[float] | None = field(default=None, repr=False)
+
 
 @dataclass
 class RetrievalCandidates:
@@ -67,6 +77,7 @@ class RetrievalCandidates:
     - query_embedding: 원본 쿼리 dense 벡터 (#50). retrieve()가 RetrievalResult로 그대로
                        옮긴다 — 사유는 위 주석 블록 참조.
     """
+
     chunks: list[RetrievedChunk]
     top_dense_distance: float
     query_embedding: list[float] | None = field(default=None, repr=False)

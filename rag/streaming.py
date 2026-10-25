@@ -28,6 +28,7 @@
 - done은 생성 태스크가 값과 함께 큐에 넣고 queue_reader는 순수 전달자다 — 이전처럼 리더가
   빈 done을 합성하지 않는다. done 없이 스트림이 끊기면 비정상 종료다(FE는 이미 그렇게 처리).
 """
+
 import asyncio
 import json
 import logging
@@ -35,12 +36,11 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
-
 from config import settings
 from database import AsyncSessionLocal
 from rag import cancellation, limiter, metrics, otel, stream_resume
-from rag.limiter import Lease
 from rag.citation_tail import TailSplitter, resolve_citations
+from rag.limiter import Lease
 from rag.models import TurnStatus
 from rag.service import PreparedRag, RagService
 from schemas.kms import SourceCitation
@@ -74,7 +74,7 @@ def _meta_payload(prepared: PreparedRag) -> dict:
     두 경로가 각자 조립하면 재접속 화면의 meta만 조용히 달라진다."""
     return {
         "conversation_id": prepared.conversation_id,
-        "assistant_message_id": prepared.assistant_message_id,   # FE 재접속·상태조회용
+        "assistant_message_id": prepared.assistant_message_id,  # FE 재접속·상태조회용
         "cached": prepared.is_cache_hit,
         "cache_kind": prepared.cache_kind,
         "reason": "no_evidence" if prepared.no_evidence else "ok",
@@ -93,10 +93,11 @@ class TurnResult:
     4개 종료 분기(즉시/완료/취소/실패)가 여기서 한 번 조립하고, 이후는 읽기만 한다.
     citations는 실제 인용된 출처 객체만 담는다(후보 전체가 아니라).
     """
+
     answer: str
     citations: list[SourceCitation]
-    finish_reason: TurnStatus   # 어휘 = turn_state.TERMINAL (전체 − generating). 와이어 값은 #56 그대로
-    latency_ms: int | None          # failed는 None (DB 규칙과 동일)
+    finish_reason: TurnStatus  # 어휘 = turn_state.TERMINAL (전체 − generating). 와이어 값은 #56 그대로
+    latency_ms: int | None  # failed는 None (DB 규칙과 동일)
 
 
 def _done_payload(result: TurnResult) -> dict:
@@ -122,16 +123,20 @@ def _record_turn_result(root_span, result: TurnResult) -> None:
     """
     if not root_span.is_recording():
         return
-    otel.set_attrs(root_span, {
-        otel.OUTPUT_VALUE: otel.clip(result.answer),   # 답변은 절단 — 스팬 텍스트 정책(#7)
-        'kms.status': result.finish_reason,
-        'kms.latency_ms': result.latency_ms,           # failed는 None → 속성 자체가 안 실림 (DB NULL과 대응)
-        'kms.cited_docs': [c.filename for c in result.citations],
-    })
+    otel.set_attrs(
+        root_span,
+        {
+            otel.OUTPUT_VALUE: otel.clip(result.answer),  # 답변은 절단 — 스팬 텍스트 정책(#7)
+            'kms.status': result.finish_reason,
+            'kms.latency_ms': result.latency_ms,  # failed는 None → 속성 자체가 안 실림 (DB NULL과 대응)
+            'kms.cited_docs': [c.filename for c in result.citations],
+        },
+    )
 
 
-async def immediate_stream(service: RagService, prepared: PreparedRag, session,
-                           t_request: float, root_span) -> AsyncIterator[str]:
+async def immediate_stream(
+    service: RagService, prepared: PreparedRag, session, t_request: float, root_span
+) -> AsyncIterator[str]:
     """즉시 경로(입력차단·캐시히트·근거없음): 답이 확정 → 인라인 저장·스트림. 태스크 불필요.
 
     persist-before-stream(#16): 답이 이미 확정된 경로이므로 저장·commit을 먼저 한다 —
@@ -146,26 +151,30 @@ async def immediate_stream(service: RagService, prepared: PreparedRag, session,
     """
     try:
         answer = ''.join([chunk async for chunk in service.generate(prepared)])
-        latency_ms = _elapsed_ms(t_request)   # 저장·스팬·done이 같은 값을 쓰도록 한 번만 계산 (#54)
+        latency_ms = _elapsed_ms(t_request)  # 저장·스팬·done이 같은 값을 쓰도록 한 번만 계산 (#54)
         # 즉시 경로의 인용 = prepared.sources 그대로 (#56): 캐시 히트는 저장 시점에 이미
         # 인용만 남긴 값이 복원된 것이고, 차단·근거없음은 sources가 애초에 빈 목록이다.
         # #61에서 답변 텍스트 판정(옛 is_refusal)을 걷어냈다 — 이 경로엔 애초에 불필요했다.
         # 세 경우 모두 sources가 라우팅·저장 단계에서 이미 확정돼 있어, 답변 문구를 다시
         # 들여다볼 근거가 없었다(차단·근거없음은 rag/service.py에서 [], 히트는 복원값).
-        result = TurnResult(answer=answer, citations=list(prepared.sources),
-                            finish_reason=prepared.terminal_status, latency_ms=latency_ms)
+        result = TurnResult(
+            answer=answer,
+            citations=list(prepared.sources),
+            finish_reason=prepared.terminal_status,
+            latency_ms=latency_ms,
+        )
         # 저장 실패가 이미 확정된 답변의 '전달'까지 막으면 안 된다 (fail-open — 리뷰 반영).
         # StreamingResponse는 첫 yield 전에 200 헤더가 이미 나가므로, 여기서 예외가 새면
         # 사용자는 빈 스트림을 받는다. 실패는 로그만 남기고 전달은 계속한다.
         # 여기서 실패해도 질문 자체는 남는다 — 자리표시가 턴 시작에 이미 커밋됐다(#72).
         # 그 경우 자리표시는 generating으로 남고 스테일 스윕이 failed로 회수한다.
         try:
-            await service.finalize(prepared, answer, result.citations,
-                                   status=prepared.terminal_status, latency_ms=latency_ms)
+            await service.finalize(
+                prepared, answer, result.citations, status=prepared.terminal_status, latency_ms=latency_ms
+            )
             await session.commit()
         except Exception:
-            logger.exception("즉시 경로 저장 실패 — 답변 전달은 계속 (conversation=%s)",
-                             prepared.conversation_id)
+            logger.exception("즉시 경로 저장 실패 — 답변 전달은 계속 (conversation=%s)", prepared.conversation_id)
         _record_turn_result(root_span, result)
 
         yield _meta_event(prepared)
@@ -174,11 +183,12 @@ async def immediate_stream(service: RagService, prepared: PreparedRag, session,
         yield sse_event(EVENT_DELTA, {"text": answer})
         yield sse_event(EVENT_DONE, _done_payload(result))
     finally:
-        root_span.end()                       # 핸드오프된 턴 루트 스팬 (#54)
+        root_span.end()  # 핸드오프된 턴 루트 스팬 (#54)
 
 
-def spawn_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Lease,
-                     t_request: float, root_span) -> asyncio.Task:
+def spawn_generation(
+    prepared: PreparedRag, queue: asyncio.Queue, lease: Lease, t_request: float, root_span
+) -> asyncio.Task:
     """생성 태스크를 띄우고 참조를 보관한다. 호출자는 lease.handed_off를 True로 이미 세워둘 것.
 
     이 태스크가 리미터 반납과 OTel 루트 스팬 종료를 이어받는다 — 요청이 먼저 반환되므로
@@ -193,8 +203,9 @@ def spawn_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Lease,
     return task
 
 
-async def _finalize_out_of_band(lease: Lease, prepared: PreparedRag, answer: str,
-                                status: TurnStatus, latency_ms: int | None) -> None:
+async def _finalize_out_of_band(
+    lease: Lease, prepared: PreparedRag, answer: str, status: TurnStatus, latency_ms: int | None
+) -> None:
     """비정상 종료(취소·실패)의 상태 기록 — 새 세션으로, 실패는 삼킨다.
 
     본 흐름의 세션은 이미 롤백/닫힘 상태일 수 있어 자기 세션을 새로 연다.
@@ -204,15 +215,18 @@ async def _finalize_out_of_band(lease: Lease, prepared: PreparedRag, answer: str
     try:
         async with AsyncSessionLocal() as session:
             await RagService(tenant_id=lease.tenant_id, session=session).finalize(
-                prepared, answer, citations=[], status=status, latency_ms=latency_ms)
+                prepared, answer, citations=[], status=status, latency_ms=latency_ms
+            )
             await session.commit()
     except Exception:
-        logger.exception("%s 상태 기록 실패 (tenant=%s, conversation=%s)",
-                         status, lease.tenant_id, prepared.conversation_id)
+        logger.exception(
+            "%s 상태 기록 실패 (tenant=%s, conversation=%s)", status, lease.tenant_id, prepared.conversation_id
+        )
 
 
-async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Lease,
-                          t_request: float, root_span) -> None:
+async def _run_generation(
+    prepared: PreparedRag, queue: asyncio.Queue, lease: Lease, t_request: float, root_span
+) -> None:
     """백그라운드: 생성 → 큐로 토큰 전달 → 완료 시 DB finalize. 연결과 무관하게 끝까지.
     자기 세션의 RagService 사용 (요청 세션은 응답 종료 시 닫히므로).
     """
@@ -242,8 +256,8 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
     try:
         async with AsyncSessionLocal() as session:
             svc = RagService(tenant_id=lease.tenant_id, session=session)
-            with otel.span('generate', 'LLM') as sp:   # 배경 태스크 — 컨텍스트 복사로 kms.query의 자식 (#7)
-                first_token_at = None                   # 체감 TTFT (#129) — 첫 청크 도착 시각
+            with otel.span('generate', 'LLM') as sp:  # 배경 태스크 — 컨텍스트 복사로 kms.query의 자식 (#7)
+                first_token_at = None  # 체감 TTFT (#129) — 첫 청크 도착 시각
                 async for chunk in svc.generate(prepared):
                     if first_token_at is None:
                         first_token_at = time.monotonic()
@@ -255,24 +269,28 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
                         parts.append(text)
                         await emit(EVENT_DELTA, {"text": text})
                 if splitter and (tail_flush := splitter.finish()):
-                    parts.append(tail_flush)             # 마커 접두인 줄 알았던 본문 끝자락
+                    parts.append(tail_flush)  # 마커 접두인 줄 알았던 본문 끝자락
                     await emit(EVENT_DELTA, {"text": tail_flush})
                 answer = "".join(parts)
                 # LLM 종료 사유 (#129, 공통 어휘 stop|length|other) — 완주한 스트림만 여기 도달하므로 값이 있으면 신뢰 가능.
                 # 카운터(집계)와 스팬 속성(개별 드릴다운)을 같이 남긴다: 대시보드에서 length
                 # 비율이 튀면 Phoenix에서 해당 대화를 찾아 들어갈 수 있어야 한다.
                 if svc.last_finish_reason is not None:
-                    metrics.FINISH_REASON_TOTAL.labels(
-                        route=prepared.route, reason=svc.last_finish_reason).inc()
-                if sp.is_recording():   # 가드가 먼저 — no-op이면 clip 비용도 없어야 한다 (otel.py 규약, #54 시정)
+                    metrics.FINISH_REASON_TOTAL.labels(route=prepared.route, reason=svc.last_finish_reason).inc()
+                if sp.is_recording():  # 가드가 먼저 — no-op이면 clip 비용도 없어야 한다 (otel.py 규약, #54 시정)
                     otel.set_attrs(sp, {otel.LLM_MODEL: settings.llm_model, otel.OUTPUT_VALUE: otel.clip(answer)})
                     if svc.last_finish_reason is not None:
                         otel.set_attrs(sp, {'kms.llm_finish_reason': svc.last_finish_reason})
-                    if svc.last_usage is not None:   # 상용 공급자만(#288) — 캐시 적중 토큰이 0이면 캐싱 전제가 깨진 것
-                        otel.set_attrs(sp, {'kms.llm_prompt_tokens': svc.last_usage.prompt_tokens,
-                                            'kms.llm_completion_tokens': svc.last_usage.completion_tokens,
-                                            'kms.llm_cached_tokens': svc.last_usage.cached_tokens,
-                                            'kms.llm_cache_write_tokens': svc.last_usage.cache_write_tokens})
+                    if svc.last_usage is not None:  # 상용 공급자만(#288) — 캐시 적중 토큰이 0이면 캐싱 전제가 깨진 것
+                        otel.set_attrs(
+                            sp,
+                            {
+                                'kms.llm_prompt_tokens': svc.last_usage.prompt_tokens,
+                                'kms.llm_completion_tokens': svc.last_usage.completion_tokens,
+                                'kms.llm_cached_tokens': svc.last_usage.cached_tokens,
+                                'kms.llm_cache_write_tokens': svc.last_usage.cache_write_tokens,
+                            },
+                        )
                     if splitter and splitter.tail_raw is not None:
                         # 꼬리 원문(번호 목록) — OUTPUT_VALUE는 걷어낸 본문이라 여기 없으면 어디에도
                         # 안 남는다. 고객이 "인용 문서가 잘못됐다"고 할 때 모델 판단(번호 자체가
@@ -287,13 +305,15 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
             # 모델 모순을 []로 덮는 안전장치였는데, 비대칭이었다 — 반대 방향(확신에 찬
             # 답변인데 꼬리가 빈 경우)은 원래 못 잡았다. 그 절을 지우면 후자가 처음으로
             # 드러난다. 범위 검증은 resolve_citations가 제약 유무와 무관하게 수행한다.
-            citations = [] if splitter is None else resolve_citations(
-                splitter.tail_raw, *prepared.citation_candidates)   # 제약과 같은 파생점 (#65)
-            latency_ms = _elapsed_ms(t_request)   # 저장·스팬·done이 같은 값을 쓰도록 한 번만 계산 (#54)
+            citations = (
+                [] if splitter is None else resolve_citations(splitter.tail_raw, *prepared.citation_candidates)
+            )  # 제약과 같은 파생점 (#65)
+            latency_ms = _elapsed_ms(t_request)  # 저장·스팬·done이 같은 값을 쓰도록 한 번만 계산 (#54)
             await svc.finalize(prepared, answer, citations, status=TurnStatus.DONE, latency_ms=latency_ms)
             await session.commit()
-            result = TurnResult(answer=answer, citations=citations,
-                                finish_reason=TurnStatus.DONE, latency_ms=latency_ms)
+            result = TurnResult(
+                answer=answer, citations=citations, finish_reason=TurnStatus.DONE, latency_ms=latency_ms
+            )
             _record_turn_result(root_span, result)
             # done은 finalize·commit '뒤'에 — 값이 전부 확정된 다음 최종 상태로 내보낸다 (#56)
             await emit(EVENT_DONE, _done_payload(result))
@@ -308,8 +328,7 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
                 await svc.maybe_cache(prepared, answer, citations)
                 await session.commit()
             except Exception:
-                logger.exception('캐시 저장 실패 — 턴은 이미 done (conversation=%s)',
-                                 prepared.conversation_id)
+                logger.exception('캐시 저장 실패 — 턴은 이미 done (conversation=%s)', prepared.conversation_id)
     except asyncio.CancelledError:
         # 명시적 취소(#30). CancelledError는 BaseException 계열이라 아래 except Exception이
         # 잡지 못한다 — 이 절이 없으면 finalize를 못 타고 generating으로 남아 스테일 스윕이
@@ -319,11 +338,10 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
         await _finalize_out_of_band(lease, prepared, answer, TurnStatus.CANCELLED, latency_ms)
         # 저장 규칙(finalize: status≠done → refusal=False·citations=[])과 동일 값 — 부분 텍스트는 저장값 그대로.
         # 구 계약의 "인용 [] 정정 이벤트"는 불필요해졌다 — 인용은 done에서만 확정되므로 (#56)
-        result = TurnResult(answer=answer, citations=[], finish_reason=TurnStatus.CANCELLED,
-                            latency_ms=latency_ms)
+        result = TurnResult(answer=answer, citations=[], finish_reason=TurnStatus.CANCELLED, latency_ms=latency_ms)
         _record_turn_result(root_span, result)
         await emit(EVENT_DONE, _done_payload(result))
-        raise                                    # 태스크가 '취소됨'으로 끝나도록 재전파
+        raise  # 태스크가 '취소됨'으로 끝나도록 재전파
     except Exception:
         logger.exception("답변 생성 실패 (tenant=%s, conversation=%s)", lease.tenant_id, prepared.conversation_id)
         # 부분 텍스트를 **취소와 같게** 저장한다. 예전엔 ""로 지웠는데, 그러면 화면엔 흐르던
@@ -336,26 +354,27 @@ async def _run_generation(prepared: PreparedRag, queue: asyncio.Queue, lease: Le
         # 고친 버그가 재발한다.
         answer, latency_ms = "".join(parts), _elapsed_ms(t_request)
         await _finalize_out_of_band(lease, prepared, answer, TurnStatus.FAILED, latency_ms)
-        result = TurnResult(answer=answer, citations=[], finish_reason=TurnStatus.FAILED,
-                            latency_ms=latency_ms)
+        result = TurnResult(answer=answer, citations=[], finish_reason=TurnStatus.FAILED, latency_ms=latency_ms)
         _record_turn_result(root_span, result)
         # 예외 원문은 서버 로그로만 — str(exc)에 내부 경로·설정이 섞일 수 있어 클라이언트에 노출 금지
-        await emit(EVENT_ERROR, {"code": "generation_failed",
-                                 "message": "답변 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."})
-        await emit(EVENT_DONE, _done_payload(result))   # 계약: error 뒤에도 done으로 닫는다
+        await emit(
+            EVENT_ERROR,
+            {"code": "generation_failed", "message": "답변 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."},
+        )
+        await emit(EVENT_DONE, _done_payload(result))  # 계약: error 뒤에도 done으로 닫는다
     finally:
         # 취소 대상에서 먼저 빠진다 (#30) — 반드시 아래 await들보다 앞, 그리고 동기 문장으로.
         # 답변이 done으로 커밋된 뒤 리미터를 반납하는 찰나에 취소가 도착하면 이 finally가
         # 중간에 끊겨 반납·스팬 종료가 유실된다(실측). 자기를 먼저 빼두면 그 요청은 대상을
         # 못 찾아 cancel()을 호출하지 않고, 상태(done)를 근거로 404를 받는다.
         cancellation.unregister(prepared.assistant_message_id)
-        await queue.put(None)                    # 리더 종료 sentinel — finalize·commit '뒤'에 넣는다
+        await queue.put(None)  # 리더 종료 sentinel — finalize·commit '뒤'에 넣는다
         # 스트림 쪽 종료 마커 — 위 sentinel과 **같은 사실**의 다른 인코딩이다 (#75).
         # 두 줄이 나란히 있어야 하는 이유: Redis Stream은 nil 엔트리를 표현할 수 없어
         # sentinel을 그대로 미러링할 수 없다. 한쪽만 남기면 재접속 리더가 종료를 못 알아본다.
         await writer.aclose()
-        await limiter.release(lease)              # 리미터는 태스크 수명 끝에 (실제 GPU 점유 구간)
-        root_span.end()                           # 핸드오프된 턴 루트 스팬 — duration=턴 전체 (#7)
+        await limiter.release(lease)  # 리미터는 태스크 수명 끝에 (실제 GPU 점유 구간)
+        root_span.end()  # 핸드오프된 턴 루트 스팬 — duration=턴 전체 (#7)
 
 
 async def queue_reader(prepared: PreparedRag, queue: asyncio.Queue) -> AsyncIterator[str]:

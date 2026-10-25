@@ -62,11 +62,13 @@ def sources_from_chunks(chunks) -> list[SourceCitation]:
             continue
         seen.add(key)
         if chunk.faq_id is not None:
-            out.append(SourceCitation(document_id=None, faq_id=chunk.faq_id,
-                                      filename=faq_display(faq_question(chunk)), version=1))
+            out.append(
+                SourceCitation(
+                    document_id=None, faq_id=chunk.faq_id, filename=faq_display(faq_question(chunk)), version=1
+                )
+            )
         else:
-            out.append(SourceCitation(document_id=chunk.document_id,
-                                      filename=chunk.filename, version=chunk.version))
+            out.append(SourceCitation(document_id=chunk.document_id, filename=chunk.filename, version=chunk.version))
     return out
 
 

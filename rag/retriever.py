@@ -32,6 +32,7 @@ gate 전/후·threshold sweep 을 본다. 운영 /kms/query 는 retrieve() wrapp
 LLM 호출 없음. Stage D의 RagService가 이 결과를 받아 답변 생성 또는
 "확인 불가" 응답으로 분기.
 """
+
 import logging
 from dataclasses import replace
 
@@ -46,14 +47,15 @@ from rag.tokens import estimate_tokens_conservative
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TOP_N = 20      # 후보 수 — retrieve_candidates 기본값과 retrieve() 호출부의 단일 출처
-                        # (평가가 Recall@N을 보려면 최종 top_k보다 넓어야 한다)
-GATE_DISABLED = float("inf")   # 거리 게이트를 끈 상태에 붙인 이름 — retrieve()의 운영 기본값.
-                               # 사유는 retrieve() 인자 주석 참조. eval은 이 상수를 쓰지 않고
-                               # 자기 임계값을 apply_gate에 직접 넘긴다 (threshold sweep).
+DEFAULT_TOP_N = 20  # 후보 수 — retrieve_candidates 기본값과 retrieve() 호출부의 단일 출처
+# (평가가 Recall@N을 보려면 최종 top_k보다 넓어야 한다)
+GATE_DISABLED = float("inf")  # 거리 게이트를 끈 상태에 붙인 이름 — retrieve()의 운영 기본값.
+# 사유는 retrieve() 인자 주석 참조. eval은 이 상수를 쓰지 않고
+# 자기 임계값을 apply_gate에 직접 넘긴다 (threshold sweep).
 
 
 # ===== RRF (Reciprocal Rank Fusion) =================================
+
 
 def _rrf_fuse(
     rank_lists: list[list[int]],
@@ -125,8 +127,9 @@ def _table_key(ch: RetrievedChunk) -> tuple:
 EVIDENCE_BUDGET_TOKENS = 22000
 
 
-def apply_identifier_boost(chunks: list[RetrievedChunk], scores: list[float], query_idx: list[int],
-                           tokens: list[str], boost: float):
+def apply_identifier_boost(
+    chunks: list[RetrievedChunk], scores: list[float], query_idx: list[int], tokens: list[str], boost: float
+):
     """리랭커 점수에 식별자 일치 가산(+boost)을 더해 재정렬한다 — 식별자 채널(#238)의 순위 정의점.
 
     질문 토큰이 조각의 `identifiers`(제목 경로 + 묶음 헤딩, rag/identifiers)에 **정확히** 있으면 가산하고
@@ -198,8 +201,12 @@ def prepare_evidence(chunks: list[RetrievedChunk], top_k: int) -> list[Retrieved
     # ⑤ 식별자로 걸린 묶음 조각은 그 구간만(#238 결정 13·18) — 색인·순위·라벨은 그대로, 넘기는 글만 바뀐다.
     #    묶음을 통째로 주면 모델이 옆 조를 읽는다(실측: 실질문 23건 18→21 정답, 회귀 0). 조 하나짜리 조각은 불변.
     #    표 근거(③에서 바뀐 것)는 오리지 않는다 — 걸린 묶음 머리의 조 제목 줄부터 잘라 [검색에 걸린 행] 머리말이 떨어졌다(#268).
-    out = [replace(ch, text=cut_identifier_span(ch.text, ch.headings, ch.matched_ident))
-           if ch.matched_ident and ch.headings and not (ch.is_table and ch.table_text) else ch for ch in out]
+    out = [
+        replace(ch, text=cut_identifier_span(ch.text, ch.headings, ch.matched_ident))
+        if ch.matched_ident and ch.headings and not (ch.is_table and ch.table_text)
+        else ch
+        for ch in out
+    ]
     while len(out) > 1 and sum(estimate_tokens_conservative(c.text) for c in out) > EVIDENCE_BUDGET_TOKENS:
         drop = next((i for i in range(len(out) - 1, 0, -1) if not out[i].is_table), len(out) - 1)
         logger.warning('근거 예산 초과 — 순위 %d의 청크(%s)를 뺀다', drop + 1, out[drop].filename)
@@ -210,15 +217,16 @@ def prepare_evidence(chunks: list[RetrievedChunk], top_k: int) -> list[Retrieved
 
 # ===== 후보 검색 (게이트 미적용) ====================================
 
+
 async def retrieve_candidates(
     session: AsyncSession,
     tenant_id: str,
     query: str,
-    top_n: int = DEFAULT_TOP_N,           # 리랭크 **후** 남길 후보 수 (리랭커 입력 수가 아니다)
-    candidates_per_branch: int = 30,      # 각 쿼리의 dense 검색에서 가져올 후보 수
-                                          # = 리랭커가 실제로 보는 수 (단일 경로 기준).
-                                          # TEI 배치 상한 32 이내라 20→30이 왕복을 늘리지 않는다.
-    expanded_queries: list[str] | None = None,   # 쿼리 확장(#5) 변형 — 검색·RRF 융합 전용
+    top_n: int = DEFAULT_TOP_N,  # 리랭크 **후** 남길 후보 수 (리랭커 입력 수가 아니다)
+    candidates_per_branch: int = 30,  # 각 쿼리의 dense 검색에서 가져올 후보 수
+    # = 리랭커가 실제로 보는 수 (단일 경로 기준).
+    # TEI 배치 상한 32 이내라 20→30이 왕복을 늘리지 않는다.
+    expanded_queries: list[str] | None = None,  # 쿼리 확장(#5) 변형 — 검색·RRF 융합 전용
 ) -> RetrievalCandidates:
     """dense 검색 → 순위 → 본문 → 리랭크 → 표 필터. 근거 게이트는 apply_gate가 담당.
 
@@ -233,14 +241,18 @@ async def retrieve_candidates(
     # `rag.retriever.embed_texts`를 monkeypatch하므로, 이 호출을 다른 모듈로 옮기면
     # (헬퍼로 감싸도 그 헬퍼가 retriever.py 밖이면 마찬가지) 패치가 안 먹고
     # 테스트가 실제 임베딩 서버를 때린다. 옮기려면 conftest부터 함께 고칠 것.
-    q_embs = await embed_texts(queries, kind="query")   # 임베딩 호출 1회 — 배치 분할은 embed_texts가 담당. 질의 용도(#289)
-    query_embedding = q_embs[0].dense     # 원본 쿼리 벡터 — 캐시가 재사용한다 (#50).
-                                          # Embedding 래퍼를 여기서 벗긴다: 도착지(cache.py·
-                                          # AnswerCacheRow.query_embedding)가 list[float]를 받으므로
-                                          # 하위 모듈이 rag.embeddings.Embedding을 알 필요가 없다.
+    q_embs = await embed_texts(
+        queries, kind="query"
+    )  # 임베딩 호출 1회 — 배치 분할은 embed_texts가 담당. 질의 용도(#289)
+    query_embedding = q_embs[0].dense  # 원본 쿼리 벡터 — 캐시가 재사용한다 (#50).
+    # Embedding 래퍼를 여기서 벗긴다: 도착지(cache.py·
+    # AnswerCacheRow.query_embedding)가 list[float]를 받으므로
+    # 하위 모듈이 rag.embeddings.Embedding을 알 필요가 없다.
 
     per_query_ids, dense_results = await _dense_candidates(
-        tenant_id, q_embs, candidates_per_branch,
+        tenant_id,
+        q_embs,
+        candidates_per_branch,
     )
 
     # 분기 판정은 여기 한 곳. 아래 리랭크가 이 값을 그대로 받는다.
@@ -252,8 +264,7 @@ async def retrieve_candidates(
     # dense가 비면 어휘 주입도 안 한다 — 게이트 신호(top-1 거리)가 dense 기준이라,
     # 어휘 후보만으로 채우면 '근거 없음' 판정이 조용히 무력화된다.
     if not top_ids:
-        return RetrievalCandidates(chunks=[], top_dense_distance=999.0,
-                                   query_embedding=query_embedding)
+        return RetrievalCandidates(chunks=[], top_dense_distance=999.0, query_embedding=query_embedding)
 
     # 하이브리드 어휘 주입 (#135) — 원본 쿼리 기준 BM25 상위 중 dense 미포함분을 뒤에 붙인다.
     # '뒤에'가 계약이다: 리랭크 꺼짐/실패 폴백에서 dense 순위가 깨지지 않아야 한다
@@ -261,7 +272,7 @@ async def retrieve_candidates(
     if settings.hybrid_lexical_enabled:
         lex_ids = await _lexical_candidates(tenant_id, query, candidates_per_branch)
         seen = set(top_ids)
-        top_ids = top_ids + [cid for cid in lex_ids if cid not in seen][:settings.hybrid_lexical_inject]
+        top_ids = top_ids + [cid for cid in lex_ids if cid not in seen][: settings.hybrid_lexical_inject]
 
     # 식별자 채널 주입(#238) — 질문에 사전 식별자('11조')가 있을 때만. 정확 일치 조각 중 dense·BM25가 놓친 것을
     # 뒤에 붙인다(순서 계약은 BM25 주입과 같다). 주입만으로는 부족하고(585문항 실패 15→6, 실질문 1위 7/23)
@@ -270,7 +281,7 @@ async def retrieve_candidates(
     if ident_tokens:
         ident_ids = await os_search.search_identifiers(tenant_id, ident_tokens, settings.ident_inject)
         seen = set(top_ids)
-        top_ids = top_ids + [cid for cid in ident_ids if cid not in seen][:settings.ident_inject]
+        top_ids = top_ids + [cid for cid in ident_ids if cid not in seen][: settings.ident_inject]
 
     chunk_map = await _chunk_map(top_ids)
     # 순위 순서 그대로 재배열. `if cid in chunk_map`은 필수다 — 검색과 본문 조회가 다른
@@ -284,24 +295,39 @@ async def retrieve_candidates(
     # 서버 실패 시 원 순서 유지(graceful) — 이때도 top_n 슬라이스는 보장된다.
     if settings.rerank_enabled and result:
         with otel.span('rerank', 'RERANKER') as sp:
-            otel.set_attrs(sp, {otel.RERANK_QUERY: query, otel.RERANK_TOP_K: top_n,
-                                'kms.pool_size': len(result), 'kms.mode': 'maxpool' if multi else 'single'})
+            otel.set_attrs(
+                sp,
+                {
+                    otel.RERANK_QUERY: query,
+                    otel.RERANK_TOP_K: top_n,
+                    'kms.pool_size': len(result),
+                    'kms.mode': 'maxpool' if multi else 'single',
+                },
+            )
             # 단일/멀티 공통 — 쿼리 1개의 max-pool은 단일 리랭크와 동일하다(#54, 골든 대조).
-            from rag.reranker import rerank_maxpool   # 지연 import (retriever ↔ reranker 순환 방지)
+            from rag.reranker import rerank_maxpool  # 지연 import (retriever ↔ reranker 순환 방지)
+
             result, best, best_qi = await rerank_maxpool(queries, result)
             if best is None:
                 # 점수 실패 → 넘겨받은 순서 유지 (멀티=RRF 융합, 단일=dense)
                 otel.set_attrs(sp, {'kms.fallback': 'rrf' if multi else 'dense'})
             elif ident_tokens:
                 # 식별자 가산(#238 결정 12·17) — 리랭커 **뒤**, 리랭커 입력은 불변. 점수 실패 시엔 가산도 없다(주입만 남는다).
-                result, best, best_qi = apply_identifier_boost(result, best, best_qi, ident_tokens, settings.ident_boost)
-                otel.set_attrs(sp, {'kms.ident_tokens': list(ident_tokens),
-                                    'kms.ident_matched': [str(c.chunk_id) for c in result if c.matched_ident]})
-            if best is not None and sp.is_recording():   # 채택 점수·기여 쿼리 — DB에 안 남는 진단 정보 (#5·#7·#54)
+                result, best, best_qi = apply_identifier_boost(
+                    result, best, best_qi, ident_tokens, settings.ident_boost
+                )
+                otel.set_attrs(
+                    sp,
+                    {
+                        'kms.ident_tokens': list(ident_tokens),
+                        'kms.ident_matched': [str(c.chunk_id) for c in result if c.matched_ident],
+                    },
+                )
+            if best is not None and sp.is_recording():  # 채택 점수·기여 쿼리 — DB에 안 남는 진단 정보 (#5·#7·#54)
                 for i, (ch, score, qi) in enumerate(zip(result[:top_n], best[:top_n], best_qi[:top_n])):
                     sp.set_attribute(f'reranker.output_documents.{i}.document.id', str(ch.chunk_id))
                     sp.set_attribute(f'reranker.output_documents.{i}.document.score', float(score))
-                    sp.set_attribute(f'reranker.output_documents.{i}.document.query_index', qi)   # 0=원본, 1..=확장
+                    sp.set_attribute(f'reranker.output_documents.{i}.document.query_index', qi)  # 0=원본, 1..=확장
 
     # top_n이 확정되는 유일한 지점 — 두 경로 공통이다. 리랭크 뒤라서
     # 리랭커가 하위 후보를 끌어올릴 여지를 슬라이스가 미리 깎지 않는다.
@@ -309,16 +335,16 @@ async def retrieve_candidates(
 
     # 게이트 신호만 챙겨 반환 (판정은 apply_gate). 원본 쿼리의 top-1 거리다.
     top_dense_dist = dense_results[0][1] if dense_results else 999.0
-    return RetrievalCandidates(chunks=result, top_dense_distance=top_dense_dist,
-                               query_embedding=query_embedding)
+    return RetrievalCandidates(chunks=result, top_dense_distance=top_dense_dist, query_embedding=query_embedding)
 
 
 # ===== 근거 게이트 ==================================================
 
+
 def apply_gate(
     candidates: RetrievalCandidates,
-    max_dense_distance: float = 0.6,      # 근거 게이트 임계값 (cosine distance)
-                                          # 실측(2026-06): 정상 ~0.35, 무관 ~0.6 — 잠정값, Phase 1.5에서 튜닝
+    max_dense_distance: float = 0.6,  # 근거 게이트 임계값 (cosine distance)
+    # 실측(2026-06): 정상 ~0.35, 무관 ~0.6 — 잠정값, Phase 1.5에서 튜닝
 ) -> tuple[bool, str | None]:
     """근거 게이트 판정만. (no_evidence, reason) 반환.
 
@@ -342,20 +368,20 @@ def apply_gate(
 
 # ===== 조합 wrapper (운영 /kms/query 경로 — 동작 불변) ==============
 
+
 async def retrieve(
     session: AsyncSession,
     tenant_id: str,
     query: str,
-    top_k: int = 5,                       # 최종 반환 청크 수
+    top_k: int = 5,  # 최종 반환 청크 수
     candidates_per_branch: int = 30,
-    expanded_queries: list[str] | None = None,   # 쿼리 확장(#5) 변형 — retrieve_candidates로 전달만
-
+    expanded_queries: list[str] | None = None,  # 쿼리 확장(#5) 변형 — retrieve_candidates로 전달만
     max_dense_distance: float = GATE_DISABLED,  # 거리 게이트 비활성 (no_results만 유지)
-                                          # 대상이 상담원 어시스턴트라 잡담/무관 질의가 드물고,
-                                          # dense 거리 게이트는 rare_lexical 등 정상 질의를 오거부
-                                          # (1.5.E 평가: 0.6에서 무근거 5%만 거름, 0.5는 정상 14% 오거부).
-                                          # 무근거 환각 방어는 LLM 프롬프트(확인 불가)·groundedness가 담당.
-                                          # 외부 공개/잡담 환경이면 0.5~0.6으로 되돌릴 것.
+    # 대상이 상담원 어시스턴트라 잡담/무관 질의가 드물고,
+    # dense 거리 게이트는 rare_lexical 등 정상 질의를 오거부
+    # (1.5.E 평가: 0.6에서 무근거 5%만 거름, 0.5는 정상 14% 오거부).
+    # 무근거 환각 방어는 LLM 프롬프트(확인 불가)·groundedness가 담당.
+    # 외부 공개/잡담 환경이면 0.5~0.6으로 되돌릴 것.
 ) -> RetrievalResult:
     """retrieve_candidates(넓게) → apply_gate(임계값 판정) → top_k로 잘라 반환.
 
@@ -364,16 +390,17 @@ async def retrieve(
     """
     with otel.span('retrieve', 'RETRIEVER') as sp:
         candidates = await retrieve_candidates(
-            session, tenant_id, query,
+            session,
+            tenant_id,
+            query,
             candidates_per_branch=candidates_per_branch,
             expanded_queries=expanded_queries,
         )
-        otel.set_attrs(sp, {otel.INPUT_VALUE: query,
-                            'kms.expanded_queries': list(expanded_queries or [])})
+        otel.set_attrs(sp, {otel.INPUT_VALUE: query, 'kms.expanded_queries': list(expanded_queries or [])})
         otel.set_documents(sp, candidates.chunks)
     no_evidence, reason = apply_gate(candidates, max_dense_distance)
     return RetrievalResult(
-        chunks=prepare_evidence(candidates.chunks, top_k),   # 접기·자르기·시트 확장·예산(#222)
+        chunks=prepare_evidence(candidates.chunks, top_k),  # 접기·자르기·시트 확장·예산(#222)
         no_evidence=no_evidence,
         reason=reason,
         # 게이트 판정과 무관하게 항상 옮긴다 — no_evidence면 유일한 소비처(service의

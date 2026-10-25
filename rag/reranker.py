@@ -19,6 +19,7 @@ otel 계측은 호출부(retriever)가 맡는다: 이 모듈은 관측 의존이
 
 2026-07-17 비동기 전환 완료 — 공용 AsyncClient(rag.clients) 사용, 호출부는 await.
 """
+
 import asyncio
 import logging
 
@@ -56,13 +57,15 @@ async def rerank_scores(query: str, chunks: list) -> list[float] | None:
     if not chunks:
         return []
     try:
-        from rag.embeddings import MAX_CLIENT_BATCH   # 리랭커 TEI도 같은 상한 32 (실측 2026-08-04); 상용도 같은 분할(상한 안)
+        from rag.embeddings import (
+            MAX_CLIENT_BATCH,
+        )  # 리랭커 TEI도 같은 상한 32 (실측 2026-08-04); 상용도 같은 분할(상한 안)
 
         # 상한 초과 시 422. cross-encoder는 query-text 쌍마다 독립 채점이라 나눠 불러도
         # 점수가 같다 → 전체 점수를 모아 한 번에 정렬하면 결과가 동일하다.
         scores = [0.0] * len(chunks)
         for start in range(0, len(chunks), MAX_CLIENT_BATCH):
-            texts = [_rerank_text(c) for c in chunks[start:start + MAX_CLIENT_BATCH]]
+            texts = [_rerank_text(c) for c in chunks[start : start + MAX_CLIENT_BATCH]]
             # 두 경로 모두 [(배치 안 index, 점수)]로 받는다. index는 **이 배치 안**의 위치라
             # start를 더해 원본 인덱스로 환산한다 (빠뜨리면 엉뚱한 청크가 상위로 올라간다).
             for i, score in await _score_batch(query, texts):
@@ -77,18 +80,22 @@ async def _score_batch(query: str, texts: list[str]) -> list[tuple[int, float]]:
     """배치 하나 채점 — 공급자 분기는 여기뿐. 반환은 (배치 안 index, 점수)."""
     if settings.rerank_provider == "tei":
         from rag.clients import http_async
+
         resp = await http_async.post(
             f"{settings.rerank_base_url}/rerank",
             json={"query": query, "texts": texts},
             timeout=settings.rerank_timeout,
         )
         resp.raise_for_status()
-        return [(item["index"], item["score"]) for item in resp.json()]   # TEI /rerank → [{"index", "score"}]
+        return [(item["index"], item["score"]) for item in resp.json()]  # TEI /rerank → [{"index", "score"}]
     import litellm
+
     resp = await litellm.arerank(
         model=f"{_VENDORS[settings.rerank_provider]}/{settings.rerank_model}",
-        query=query, documents=texts, api_key=settings.rerank_api_key,
-        return_documents=False,                    # 본문은 우리가 들고 있다 — 응답 크기만 키운다
+        query=query,
+        documents=texts,
+        api_key=settings.rerank_api_key,
+        return_documents=False,  # 본문은 우리가 들고 있다 — 응답 크기만 키운다
         timeout=settings.rerank_timeout,
     )
     return [(r["index"], r["relevance_score"]) for r in resp.results]
@@ -113,9 +120,9 @@ async def rerank_maxpool(queries: list[str], chunks: list) -> tuple[list, list[f
     matrix = await asyncio.gather(*(rerank_scores(q, chunks) for q in queries))
     if not all(s is not None for s in matrix):
         return chunks, None, None
-    per_chunk = list(zip(*matrix))                                     # [청크][쿼리] 점수
+    per_chunk = list(zip(*matrix))  # [청크][쿼리] 점수
     best_qi = [max(range(len(col)), key=col.__getitem__) for col in per_chunk]
-    best = [col[qi] for col, qi in zip(per_chunk, best_qi)]            # == max(col) — 값 불변
+    best = [col[qi] for col, qi in zip(per_chunk, best_qi)]  # == max(col) — 값 불변
     order = sorted(range(len(chunks)), key=lambda i: -best[i])
     return [chunks[i] for i in order], [best[i] for i in order], [best_qi[i] for i in order]
 

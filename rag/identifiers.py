@@ -16,6 +16,7 @@ eval/retrieval_article.py(정답 정의).
 조문 전용이 아니다 — 번호 붙은 헤딩 일반을 겨냥하되, 패턴은 실문서에 있고 질문 사례가 있는 것만 켠다
 (결정 11·12 #238). '2.1절'·'별표 1' 같은 꼴은 질문 사례가 생기면 _RULES·_TOKEN에 한 줄씩 추가한다.
 """
+
 import re
 
 # 정규화 규칙 — 순서가 의미 있다(긴 꼴 먼저). 치환 결과는 아래 _TOKEN이 뽑는 꼴이어야 한다.
@@ -73,7 +74,7 @@ def split_heading_line(line: str) -> tuple[str, str] | None:
     """
     s = line.strip()
     m = _HEADING_HEAD.match(s)
-    if not m or s[m.end():].lstrip().startswith('이하'):
+    if not m or s[m.end() :].lstrip().startswith('이하'):
         return None
     depth = 1
     for i in range(m.end(), len(s)):
@@ -82,8 +83,8 @@ def split_heading_line(line: str) -> tuple[str, str] | None:
         elif s[i] in ')）':
             depth -= 1
             if depth == 0:
-                rest = s[i + 1:]
-                return (s[:i + 1], rest.strip()) if not rest or rest[0].isspace() else None
+                rest = s[i + 1 :]
+                return (s[: i + 1], rest.strip()) if not rest or rest[0].isspace() else None
     return s, ''
 
 

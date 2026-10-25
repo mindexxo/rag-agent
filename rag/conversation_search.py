@@ -12,6 +12,7 @@ LIKE 패턴 조립(이스케이프·와일드카드)은 이 모듈 안에서 끝
 매칭이라 필터를 건 척만 하게 된다. 빈 문자열을 None으로 접는 건 HTTP 파라미터 위생이라
 라우터 책임(limit·offset 클램프와 같은 자리).
 """
+
 from sqlalchemy import or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -70,14 +71,15 @@ def search_filter(tenant_id: str, q: str | None):
         Conversation.title.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
         select(Message.id)
         .where(Message.conversation_id == Conversation.id)
-        .where(Message.tenant_id == tenant_id)      # 격리 — 상관 서브쿼리에도 WHERE 명시
+        .where(Message.tenant_id == tenant_id)  # 격리 — 상관 서브쿼리에도 WHERE 명시
         .where(Message.content.ilike(pattern, escape=LIKE_ESCAPE_CHAR))
         .exists(),
     )
 
 
-async def snippets_for(session: AsyncSession, tenant_id: str, conversation_ids: list[int],
-                       q: str) -> dict[int, str | None]:
+async def snippets_for(
+    session: AsyncSession, tenant_id: str, conversation_ids: list[int], q: str
+) -> dict[int, str | None]:
     """페이지에 실린 대화들의 발췌를 한 번의 쿼리로 모아온다 (#28).
 
     대화당 '가장 최근 매칭 메시지'를 골라야 하는데, (conversation_id, 최신순) 정렬로 받아
@@ -89,13 +91,15 @@ async def snippets_for(session: AsyncSession, tenant_id: str, conversation_ids: 
     없는 구문이라 현 데이터 규모에서는 단순함을 택했다 — 느려지면 그때 교체할 것.
     """
     pattern = like_pattern(q)
-    rows = (await session.execute(
-        select(Message.conversation_id, Message.content)
-        .where(Message.conversation_id.in_(conversation_ids))
-        .where(Message.tenant_id == tenant_id)      # 격리 — 메시지에도 WHERE 명시
-        .where(Message.content.ilike(pattern, escape=LIKE_ESCAPE_CHAR))
-        .order_by(Message.conversation_id, Message.created_at.desc(), Message.id.desc())
-    )).all()
+    rows = (
+        await session.execute(
+            select(Message.conversation_id, Message.content)
+            .where(Message.conversation_id.in_(conversation_ids))
+            .where(Message.tenant_id == tenant_id)  # 격리 — 메시지에도 WHERE 명시
+            .where(Message.content.ilike(pattern, escape=LIKE_ESCAPE_CHAR))
+            .order_by(Message.conversation_id, Message.created_at.desc(), Message.id.desc())
+        )
+    ).all()
 
     latest: dict[int, str] = {}
     for conversation_id, content in rows:

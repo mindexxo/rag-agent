@@ -58,6 +58,7 @@
 (#139로 파싱이 워커로 옮겨간 뒤 한동안 웹 업로드도 **색인 시점 failed**였다 — 이 모듈
 docstring의 옛 "업로드 거절"은 그 기간 동안 사실이 아니었고, #194로 다시 사실이 됐다.)
 """
+
 import logging
 import math
 from contextlib import closing
@@ -65,12 +66,23 @@ from io import BytesIO
 
 import openpyxl
 
-from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN, estimate_tokens_conservative
-
 # 표 markdown 조립은 chunking.py가 단일 정의점 — PDF 표(#137 결함 5)도 같은 형태를
 # 내놓아야 프롬프트·리랭커·어휘 채널이 형식에 따라 다른 모양을 보지 않는다.
-from rag.chunking import (ChunkData, TABLE_BATCH_TOKENS, TABLE_MAX_TOKENS, batch_table_rows as _batch_rows, docling_block_text, docling_convert, docling_grid_rows,
-                          to_markdown_table as _to_markdown)
+from rag.chunking import (
+    TABLE_BATCH_TOKENS,
+    TABLE_MAX_TOKENS,
+    ChunkData,
+    docling_block_text,
+    docling_convert,
+    docling_grid_rows,
+)
+from rag.chunking import (
+    batch_table_rows as _batch_rows,
+)
+from rag.chunking import (
+    to_markdown_table as _to_markdown,
+)
+from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN, estimate_tokens_conservative
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +92,7 @@ logger = logging.getLogger(__name__)
 CHARS_PER_TOKEN = CONSERVATIVE_CHARS_PER_TOKEN
 # 행 묶음 하나의 크기. 측정 근거가 없다 — 보유 엑셀은 시트가 대부분 1천 토큰 미만이라 묶음 크기의 효과를 잴 표가 없었다
 # (#222 결정 11). 기획 메모의 "20~30행씩 + 헤더 반복"과 같은 규모(5열 표 ≈ 30행)로 잡았다. 큰 표가 실제로 들어오면 잴 것.
-XLSX_BATCH_TOKENS = TABLE_BATCH_TOKENS   # 정의점은 rag/chunking(#252 — PDF·DOCX 표도 같은 묶음 크기)
+XLSX_BATCH_TOKENS = TABLE_BATCH_TOKENS  # 정의점은 rag/chunking(#252 — PDF·DOCX 표도 같은 묶음 크기)
 
 
 class XlsxUploadRejected(Exception):
@@ -96,8 +108,10 @@ class XlsxTableTooLarge(XlsxUploadRejected):
 
     def __init__(self, sheet: str, percent: int, rows: int, cols: int):
         self.sheet, self.percent, self.rows, self.cols = sheet, percent, rows, cols
-        super().__init__(f"시트 '{sheet}'의 표가 허용 크기의 {percent}%입니다(현재 {rows}행 × {cols}열). "
-                         "상담에 필요 없는 열이나 긴 설명을 줄여 다시 올려 주세요.")
+        super().__init__(
+            f"시트 '{sheet}'의 표가 허용 크기의 {percent}%입니다(현재 {rows}행 × {cols}열). "
+            "상담에 필요 없는 열이나 긴 설명을 줄여 다시 올려 주세요."
+        )
 
 
 class XlsxDescriptionRequired(XlsxUploadRejected):
@@ -126,7 +140,7 @@ def _has_value(value) -> bool:
 
 
 def description_missing(description: str | None) -> bool:
-    """"표 설명이 비었는가"의 **정의점** — 업로드 사전검증과 PATCH 거절이 같은 판정을 쓴다 (#194).
+    """ "표 설명이 비었는가"의 **정의점** — 업로드 사전검증과 PATCH 거절이 같은 판정을 쓴다 (#194).
 
     None·빈 문자열·공백만을 전부 "없음"으로 본다. `chunk_xlsx`가 병합 여부를 `strip()`으로
     가르므로, 공백만 통과시키면 "필수인데 검색에 아무 기여 없는" 값이 들어온다.
@@ -164,7 +178,7 @@ def _iter_sheets(wb):
         rows = [
             [_cell(c.value) for c in row]
             for row in ws.iter_rows()
-            if any(_has_value(c.value) for c in row)   # 완전 빈 행 스킵 — 공백만 든 칸도 빈칸
+            if any(_has_value(c.value) for c in row)  # 완전 빈 행 스킵 — 공백만 든 칸도 빈칸
         ]
         if rows:
             yield ws.title, rows[0], rows[1:]
@@ -213,13 +227,23 @@ def _sheet_chunks(title: str, blocks: list[Block], description: str, start: int)
     if (est := estimate_tokens(sheet_text)) > TABLE_MAX_TOKENS:
         # 크기 판정은 openpyxl 렌더로 한다(업로드·색인이 같은 기준) — docling 완성본은 그림 캡션·세로 병합 반복·설명으로 더
         # 클 수 있다. 거절하면 "업로드 통과·색인 거절"이 생기므로 경고만 남긴다(#222 리뷰). 근거 예산이 안전장치다.
-        logger.warning("시트 '%s' 완성본이 상한을 넘는다(추정 %d > %d토큰) — 색인은 계속한다", title, est, TABLE_MAX_TOKENS)
+        logger.warning(
+            "시트 '%s' 완성본이 상한을 넘는다(추정 %d > %d토큰) — 색인은 계속한다", title, est, TABLE_MAX_TOKENS
+        )
     budget = int(XLSX_BATCH_TOKENS * CHARS_PER_TOKEN)
-    parts = [p for kind, value in blocks
-             for p in (_batch_rows(value[0], value[1:], budget) if kind == 'table' else [value])]
-    return [ChunkData(text=prefix + p, heading_path=[title], page=None, chunk_index=start + k,
-                      meta={'is_table': True, 'table_key': title, 'table_text': sheet_text})
-            for k, p in enumerate(parts)]
+    parts = [
+        p for kind, value in blocks for p in (_batch_rows(value[0], value[1:], budget) if kind == 'table' else [value])
+    ]
+    return [
+        ChunkData(
+            text=prefix + p,
+            heading_path=[title],
+            page=None,
+            chunk_index=start + k,
+            meta={'is_table': True, 'table_key': title, 'table_text': sheet_text},
+        )
+        for k, p in enumerate(parts)
+    ]
 
 
 def _plain_sheets(file_path, *, check_size: bool = True) -> list[tuple[str, list[list[str]]]]:
@@ -256,7 +280,8 @@ def _docling_sheet_blocks(doc) -> dict[str, list[Block]]:
     안내만 하고 강제하지 않는다, #222 결정 2) 표마다 자기 헤더로 묶음을 만든다. 숨긴 시트의 그룹은 INVISIBLE 층이라 기본
     순회가 비워 내고, 블록이 없는 시트는 넣지 않는다.
     """
-    from docling_core.types.doc import GroupLabel, TableItem   # 지연 import — docling은 톱레벨에 안 들인다
+    from docling_core.types.doc import GroupLabel, TableItem  # 지연 import — docling은 톱레벨에 안 들인다
+
     sheets: dict[str, list[Block]] = {}
     for group in doc.groups:
         if group.label != GroupLabel.SHEET:

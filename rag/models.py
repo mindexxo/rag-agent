@@ -26,17 +26,17 @@
 4. 누락 검출은 통합 테스트가 담당한다 — tests/test_tenant_isolation.py(ORM 읽기),
    tests/test_integration_isolation.py(검색 후보·대화·폴더). 표면이 늘면 여기에 케이스를 추가한다.
 """
+
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
+
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
     BigInteger,
     DateTime,
     ForeignKey,
-    String,
-    Text,
     UniqueConstraint,
     func,
 )
@@ -63,23 +63,23 @@ class Base(DeclarativeBase):
     예외는 두지 않는다 — 시각 컬럼 중 혼자 TIMESTAMP였던 search_index_outbox.created_at도
     이번에 TIMESTAMPTZ로 올렸다(#164). 기존 DB에는 ALTER가 필요하다(schema.sql 하단 주석).
     """
+
     type_annotation_map = {datetime: DateTime(timezone=True)}
 
 
 class Folder(Base):
     """1단 폴더 (F2) — 검색 참조 제어 전용 그룹. 트리 없음 (필요 시 parent_id 추가로 확장)."""
+
     __tablename__ = "folders"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     tenant_id: Mapped[str]
-    name: Mapped[str]                                                               # 테넌트 내 유일
-    description: Mapped[str | None]                                                 # "언제 이 폴더를 참조하나" 자연어 설명 (리랭커 입력·프롬프트에 사용)
+    name: Mapped[str]  # 테넌트 내 유일
+    description: Mapped[str | None]  # "언제 이 폴더를 참조하나" 자연어 설명 (리랭커 입력·프롬프트에 사용)
     is_searchable: Mapped[bool] = mapped_column(default=True, server_default="true")  # 폴더 단위 참조 on/off
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "name"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "name"),)
 
 
 # Document.status 6값 중 "살아 있는" 넷 — 처리 중이거나 서빙 중이라 색인·supersede·DROP 판정의 대상이 되는
@@ -90,66 +90,74 @@ ALIVE_DOCUMENT_STATUSES = ('pending', 'parsing', 'embedding', 'ready')
 
 class Document(Base):
     """업로드된 원본 문서. 같은 filename 재업로드 = 새 version (내용 무관, 2026-08-05)."""
+
     __tablename__ = "documents"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    tenant_id: Mapped[str]                                                            # 테넌트(고객사) 식별자, 격리 키
-    filename: Mapped[str]                                                             # 테넌트 내 논리적 문서명 (재업로드 식별 기준)
-    mime: Mapped[str]                                                                 # application/pdf | .../wordprocessingml.document
-    blob_path: Mapped[str]                                                            # 원본 파일 저장 경로 (웹 업로드는 UUID 이름, CLI는 원본 경로 그대로)
-    version: Mapped[int] = mapped_column(default=1, server_default="1")               # 같은 filename 내 일련번호
-    is_active: Mapped[bool] = mapped_column(default=False, server_default="false")    # 검색 대상 여부 (filename당 단 하나만 true)
-    status: Mapped[str] = mapped_column(default="pending", server_default="pending")  # pending|parsing|embedding|ready|failed|deleted — 살아 있는 넷은 ALIVE_DOCUMENT_STATUSES
-    status_reason: Mapped[str | None]                                                 # 실패/삭제 사유
-    page_count: Mapped[int | None]                                                    # PDF 페이지 수
-    char_count: Mapped[int | None]                                                    # 본문 글자 수
-    uploaded_by: Mapped[str | None]                                                   # 업로더 식별자
-    uploaded_at: Mapped[datetime] = mapped_column(server_default=func.now())          # 업로드 시각
-    indexed_at: Mapped[datetime | None]                                               # 인덱싱 완료 시각
-    description: Mapped[str | None]                                                    # F1a: 표 설명 (xlsx 검색 보강 — 청크에 병합)
-    folder_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("folders.id", ondelete="SET NULL"))  # 폴더 소속 (NULL=미분류)
-    is_searchable: Mapped[bool] = mapped_column(default=True, server_default="true")  # 문서 단위 참조 on/off (버전 정책 is_active와 별개)
+    tenant_id: Mapped[str]  # 테넌트(고객사) 식별자, 격리 키
+    filename: Mapped[str]  # 테넌트 내 논리적 문서명 (재업로드 식별 기준)
+    mime: Mapped[str]  # application/pdf | .../wordprocessingml.document
+    blob_path: Mapped[str]  # 원본 파일 저장 경로 (웹 업로드는 UUID 이름, CLI는 원본 경로 그대로)
+    version: Mapped[int] = mapped_column(default=1, server_default="1")  # 같은 filename 내 일련번호
+    is_active: Mapped[bool] = mapped_column(
+        default=False, server_default="false"
+    )  # 검색 대상 여부 (filename당 단 하나만 true)
+    status: Mapped[str] = mapped_column(
+        default="pending", server_default="pending"
+    )  # pending|parsing|embedding|ready|failed|deleted — 살아 있는 넷은 ALIVE_DOCUMENT_STATUSES
+    status_reason: Mapped[str | None]  # 실패/삭제 사유
+    page_count: Mapped[int | None]  # PDF 페이지 수
+    char_count: Mapped[int | None]  # 본문 글자 수
+    uploaded_by: Mapped[str | None]  # 업로더 식별자
+    uploaded_at: Mapped[datetime] = mapped_column(server_default=func.now())  # 업로드 시각
+    indexed_at: Mapped[datetime | None]  # 인덱싱 완료 시각
+    description: Mapped[str | None]  # F1a: 표 설명 (xlsx 검색 보강 — 청크에 병합)
+    folder_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("folders.id", ondelete="SET NULL")
+    )  # 폴더 소속 (NULL=미분류)
+    is_searchable: Mapped[bool] = mapped_column(
+        default=True, server_default="true"
+    )  # 문서 단위 참조 on/off (버전 정책 is_active와 별개)
 
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "filename", "version"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "filename", "version"),)
 
 
 class FaqCategory(Base):
     """FAQ 카테고리 (#278) — 폴더(Folder)와 같은 1단 관리 분류, 트리 없음. 폴더와 달리 검색에 영향이 없다
     (참조 토글·설명 없음 → 캐시 무효화·색인 fan-out 없음). 소속 FAQ가 있으면 삭제 불가(라우터 409, 폴더와 같은 규칙)."""
+
     __tablename__ = "faq_categories"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     tenant_id: Mapped[str]
-    name: Mapped[str]                                                               # 테넌트 내 유일. 길이 상한은 앱(FAQ_CATEGORY_NAME_MAX)
+    name: Mapped[str]  # 테넌트 내 유일. 길이 상한은 앱(FAQ_CATEGORY_NAME_MAX)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "name"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "name"),)
 
 
 class Faq(Base):
     """FAQ 항목 (F3 전용 저장). 검색 편입은 색인에 항목당 청크 1개로 (outbox INDEX_FAQ → os_index.index_faq_chunks)."""
+
     __tablename__ = "faqs"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "question"),   # 대표 질문 중복 금지(#276) — 라우터 409의 최후 방어. 유사 질문은 JSONB라 앱에서만
+        UniqueConstraint(
+            "tenant_id", "question"
+        ),  # 대표 질문 중복 금지(#276) — 라우터 409의 최후 방어. 유사 질문은 JSONB라 앱에서만
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     tenant_id: Mapped[str]
-    question: Mapped[str]                                                          # 대표 질문
-    variants: Mapped[Any] = mapped_column(JSONB, default=list)                     # 유사 질문(구어체 변형) 배열
+    question: Mapped[str]  # 대표 질문
+    variants: Mapped[Any] = mapped_column(JSONB, default=list)  # 유사 질문(구어체 변형) 배열
     answer: Mapped[str]
-    is_active: Mapped[bool] = mapped_column(default=True, server_default="true")   # 항목 단위 검색 on/off
+    is_active: Mapped[bool] = mapped_column(default=True, server_default="true")  # 항목 단위 검색 on/off
     # 관리 분류(#278). NULL = 미분류. FK에 cascade 없음 — 카테고리 삭제는 소속 FAQ가 0일 때만 라우터가 허용한다
     category_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("faq_categories.id"))
-    created_by: Mapped[str | None]                                                 # 등록자 X-User-Id (#278). 미전송·도입 전 행은 NULL
-    updated_by: Mapped[str | None]                                                 # 마지막 변경자 — updated_at과 같은 기준(모든 PATCH). 헤더 없으면 NULL로 덮는다
+    created_by: Mapped[str | None]  # 등록자 X-User-Id (#278). 미전송·도입 전 행은 NULL
+    updated_by: Mapped[str | None]  # 마지막 변경자 — updated_at과 같은 기준(모든 PATCH). 헤더 없으면 NULL로 덮는다
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
-
 
 
 class SearchIndexOutbox(Base):
@@ -166,53 +174,60 @@ class SearchIndexOutbox(Base):
     연산은 전부 멱등이다(색인=_id upsert, 삭제=없는 것 지워도 무해, 메타=덮어쓰기) — 재시도가
     겹쳐도 결과가 같다. at-least-once.
     """
+
     __tablename__ = "search_index_outbox"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     tenant_id: Mapped[str]
-    op: Mapped[str]                        # 어휘의 정의점은 rag/outbox.py (INDEX_DOCUMENT 등 상수)
-    payload: Mapped[Any] = mapped_column(JSONB, default=dict)   # id만 — 처리 시점에 PG 최신값을 읽는다
+    op: Mapped[str]  # 어휘의 정의점은 rag/outbox.py (INDEX_DOCUMENT 등 상수)
+    payload: Mapped[Any] = mapped_column(JSONB, default=dict)  # id만 — 처리 시점에 PG 최신값을 읽는다
     status: Mapped[str] = mapped_column(default='pending', server_default='pending')  # pending|done|failed
     attempts: Mapped[int] = mapped_column(default=0, server_default="0")
     last_error: Mapped[str | None]
-    next_attempt_at: Mapped[datetime | None]   # 일시 실패의 다음 시도 시각 — NULL이면 지금(#185)
+    next_attempt_at: Mapped[datetime | None]  # 일시 실패의 다음 시도 시각 — NULL이면 지금(#185)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
 class AnswerCache(Base):
     """LLM 응답 영속 캐시. semantic 임베딩 매칭 + 문서 단위 무효화."""
+
     __tablename__ = "answer_cache"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     tenant_id: Mapped[str]
-    cache_key: Mapped[str]                                                    # standalone query 정규화 해시 — 조회 키가 아니라 upsert 충돌 대상 (exact 계층 제거 #16)
-    query_text: Mapped[str]                                                   # 저장된 standalone query 원문
-    original_query: Mapped[str | None]                                        # 저장 당시 사용자가 친 원문(#153) — 재사용 판정기 입력 전용. 도입 전 행은 NULL(복원 불가), 판정기가 '(없음)'으로 받아 현행과 동일 판정
-    query_embedding: Mapped[Any] = mapped_column(Vector(1024))                # 의미 캐시(semantic match)용 임베딩 — 기준은 query_text다 (original_query는 임베딩·cache_key에 안 섞는다)
-    answer: Mapped[str]                                                       # 저장된 LLM 답변
-    sources: Mapped[Any] = mapped_column(JSONB)                               # 인용 청크 메타 [{doc_id, chunk_id, page, ...}]
-    source_doc_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger))      # 답변이 의존한 문서 ID들 (무효화 키)
-    model: Mapped[str]                                                        # 사용된 LLM 모델명
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())   # 생성 시각
+    cache_key: Mapped[str]  # standalone query 정규화 해시 — 조회 키가 아니라 upsert 충돌 대상 (exact 계층 제거 #16)
+    query_text: Mapped[str]  # 저장된 standalone query 원문
+    original_query: Mapped[
+        str | None
+    ]  # 저장 당시 사용자가 친 원문(#153) — 재사용 판정기 입력 전용. 도입 전 행은 NULL(복원 불가), 판정기가 '(없음)'으로 받아 현행과 동일 판정
+    query_embedding: Mapped[Any] = mapped_column(
+        Vector(1024)
+    )  # 의미 캐시(semantic match)용 임베딩 — 기준은 query_text다 (original_query는 임베딩·cache_key에 안 섞는다)
+    answer: Mapped[str]  # 저장된 LLM 답변
+    sources: Mapped[Any] = mapped_column(JSONB)  # 인용 청크 메타 [{doc_id, chunk_id, page, ...}]
+    source_doc_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger))  # 답변이 의존한 문서 ID들 (무효화 키)
+    model: Mapped[str]  # 사용된 LLM 모델명
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())  # 생성 시각
     last_hit_at: Mapped[datetime] = mapped_column(server_default=func.now())  # 마지막 히트 시각 (LRU/통계)
-    hit_count: Mapped[int] = mapped_column(default=0, server_default="0")     # 히트 누적 수
+    hit_count: Mapped[int] = mapped_column(default=0, server_default="0")  # 히트 누적 수
 
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "cache_key"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "cache_key"),)
 
 
 class Conversation(Base):
     """멀티턴 대화 세션 (한 상담사-한 통화 단위)."""
+
     __tablename__ = "conversations"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     tenant_id: Mapped[str]
-    title: Mapped[str | None]                                                  # 대화 제목 (옵셔널)
-    created_by: Mapped[str | None]                                             # 생성한 사용자 (#10부터 항상 저장 — 미전송 시 'test-user')
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())    # 생성 시각
+    title: Mapped[str | None]  # 대화 제목 (옵셔널)
+    created_by: Mapped[str | None]  # 생성한 사용자 (#10부터 항상 저장 — 미전송 시 'test-user')
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())  # 생성 시각
     last_used_at: Mapped[datetime] = mapped_column(server_default=func.now())  # 최근 사용 시각 (목록 정렬용)
-    deleted_at: Mapped[datetime | None]    # 소프트 삭제 시각 (#10) — NULL=활성. 감사 목적 이력 보존, 전 조회 경로가 IS NULL 필터
+    deleted_at: Mapped[
+        datetime | None
+    ]  # 소프트 삭제 시각 (#10) — NULL=활성. 감사 목적 이력 보존, 전 조회 경로가 IS NULL 필터
 
 
 class TurnStatus(StrEnum):
@@ -228,41 +243,62 @@ class TurnStatus(StrEnum):
     겨우 제한적 보호인 반면, 쓰기 지점의 명시 검증(turn_state.finalize_turn) 한 줄이
     같은 보호를 더 명확한 스택으로 준다.
     """
-    GENERATING = 'generating'   # assistant 자리표시 — 생성 진행 중 (유일한 비종결 상태)
-    DONE = 'done'               # 정상 종료. user 메시지는 항상 이 값
-    CANCELLED = 'cancelled'     # 사용자 취소 (#59)
-    FAILED = 'failed'           # 생성 실패 또는 고착 회수 (#72)
-    BLOCKED = 'blocked'         # 입력 가드 차단 (#22)
+
+    GENERATING = 'generating'  # assistant 자리표시 — 생성 진행 중 (유일한 비종결 상태)
+    DONE = 'done'  # 정상 종료. user 메시지는 항상 이 값
+    CANCELLED = 'cancelled'  # 사용자 취소 (#59)
+    FAILED = 'failed'  # 생성 실패 또는 고착 회수 (#72)
+    BLOCKED = 'blocked'  # 입력 가드 차단 (#22)
 
 
 class Message(Base):
     """대화 내 한 턴. role로 user/assistant 구분."""
+
     __tablename__ = "messages"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    conversation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("conversations.id"))  # 부모 대화 FK. CASCADE 해제(#10) — 삭제는 소프트(deleted_at), 실수 하드 DELETE에도 이력 보존
+    conversation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("conversations.id")
+    )  # 부모 대화 FK. CASCADE 해제(#10) — 삭제는 소프트(deleted_at), 실수 하드 DELETE에도 이력 보존
     tenant_id: Mapped[str]
-    role: Mapped[str]                                                        # 'user' | 'assistant'
-    content: Mapped[str]                                                     # user면 원 질문, assistant면 최종 답변
-    standalone_query: Mapped[str | None]                                     # user 메시지의 condense 결과 (assistant는 NULL)
-    sources: Mapped[Any | None] = mapped_column(JSONB)                       # assistant 메시지의 인용 메타 (user는 NULL)
-    attachments: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))  # 첨부한 턴의 user 메시지에 저장되는 추출 텍스트 [{filename, text}]. none_as_null: 파이썬 None을 JSON null이 아닌 SQL NULL로 (IS NOT NULL 필터가 정확히 동작하게)
-    status: Mapped[str] = mapped_column(default="done", server_default="done")  # 값 어휘는 TurnStatus (user는 항상 'done')
+    role: Mapped[str]  # 'user' | 'assistant'
+    content: Mapped[str]  # user면 원 질문, assistant면 최종 답변
+    standalone_query: Mapped[str | None]  # user 메시지의 condense 결과 (assistant는 NULL)
+    sources: Mapped[Any | None] = mapped_column(JSONB)  # assistant 메시지의 인용 메타 (user는 NULL)
+    attachments: Mapped[Any | None] = mapped_column(
+        JSONB(none_as_null=True)
+    )  # 첨부한 턴의 user 메시지에 저장되는 추출 텍스트 [{filename, text}]. none_as_null: 파이썬 None을 JSON null이 아닌 SQL NULL로 (IS NOT NULL 필터가 정확히 동작하게)
+    status: Mapped[str] = mapped_column(
+        default="done", server_default="done"
+    )  # 값 어휘는 TurnStatus (user는 항상 'done')
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())  # 생성 시각
     # ── 운영 지표 씨앗 (2026-07-18): 화면 반영 전이라도 기록은 지금부터 (지표는 소급 불가) ──
-    user_id: Mapped[str | None]          # user 메시지: 질문한 상담원 (X-User-Id — 인증 전엔 'test-user')
-    latency_ms: Mapped[int | None]       # assistant 메시지: 생성 소요(ms). 캐시/즉시 경로 포함
-    cache_kind: Mapped[str | None]       # assistant 메시지: 'semantic'=캐시 재생 답변, NULL=신규 생성
-    cited_docs: Mapped[Any | None] = mapped_column(JSONB)  # assistant: 실인용 **문서** 파일명 배열 — 저장 시 확정 (문서 지표는 이 컬럼만 집계). #278부터 FAQ는 안 들어간다(옛 행의 'FAQ' 원소는 그대로)
-    cited_faq_ids: Mapped[Any | None] = mapped_column(JSONB)  # assistant: 실인용 FAQ id 배열(#278) — FAQ 항목별 ref_count·근거없음 판정이 읽는다. 도입 전 행은 NULL
-    intent: Mapped[str | None]           # assistant: 라우팅 결과 'KNOWLEDGE'|'OTHER'|'ATTACHMENT'(#63 — 첨부만 근거, KB 지표에서 제외) — 답변률 분모는 KNOWLEDGE만 (NULL=차단 턴·도입 전 행)
+    user_id: Mapped[str | None]  # user 메시지: 질문한 상담원 (X-User-Id — 인증 전엔 'test-user')
+    latency_ms: Mapped[int | None]  # assistant 메시지: 생성 소요(ms). 캐시/즉시 경로 포함
+    cache_kind: Mapped[str | None]  # assistant 메시지: 'semantic'=캐시 재생 답변, NULL=신규 생성
+    cited_docs: Mapped[Any | None] = mapped_column(
+        JSONB
+    )  # assistant: 실인용 **문서** 파일명 배열 — 저장 시 확정 (문서 지표는 이 컬럼만 집계). #278부터 FAQ는 안 들어간다(옛 행의 'FAQ' 원소는 그대로)
+    cited_faq_ids: Mapped[Any | None] = mapped_column(
+        JSONB
+    )  # assistant: 실인용 FAQ id 배열(#278) — FAQ 항목별 ref_count·근거없음 판정이 읽는다. 도입 전 행은 NULL
+    intent: Mapped[
+        str | None
+    ]  # assistant: 라우팅 결과 'KNOWLEDGE'|'OTHER'|'ATTACHMENT'(#63 — 첨부만 근거, KB 지표에서 제외) — 답변률 분모는 KNOWLEDGE만 (NULL=차단 턴·도입 전 행)
     question_message_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("messages.id", ondelete="SET NULL"))  # assistant: 답한 user 메시지 (짝을 데이터로)
-    block_reason: Mapped[str | None]     # assistant(status='blocked'): 입력 가드(classify_and_guard) 차단 사유. 출력 가드는 제거됨(#26)
+        BigInteger, ForeignKey("messages.id", ondelete="SET NULL")
+    )  # assistant: 답한 user 메시지 (짝을 데이터로)
+    block_reason: Mapped[
+        str | None
+    ]  # assistant(status='blocked'): 입력 가드(classify_and_guard) 차단 사유. 출력 가드는 제거됨(#26)
     # ── 인간 피드백 1단계 (#8): 상담원의 답변 평가. 검증은 Pydantic Literal (태그 4종·별도 테이블은 과설계)
-    feedback: Mapped[bool | None]        # assistant: True=👍 False=👎 NULL=미선택/취소
-    feedback_tag: Mapped[str | None]     # assistant: 👎 사유 슬러그(wrong_info|wrong_source|outdated_doc|insufficient). 옵셔널 — 👎인데 스킵하면 NULL
-    feedback_text: Mapped[str | None]    # assistant: 👎 자유 서술 (옵셔널, 500자) — 태그가 못 잡는 사유 발굴용. 고객 정보 미기입 안내는 FE 몫
+    feedback: Mapped[bool | None]  # assistant: True=👍 False=👎 NULL=미선택/취소
+    feedback_tag: Mapped[
+        str | None
+    ]  # assistant: 👎 사유 슬러그(wrong_info|wrong_source|outdated_doc|insufficient). 옵셔널 — 👎인데 스킵하면 NULL
+    feedback_text: Mapped[
+        str | None
+    ]  # assistant: 👎 자유 서술 (옵셔널, 500자) — 태그가 못 잡는 사유 발굴용. 고객 정보 미기입 안내는 FE 몫
 
 
 class TenantQuota(Base):
@@ -273,9 +309,14 @@ class TenantQuota(Base):
     읽지 않아, 값을 넣어도 아무 일이 일어나지 않는 채로 "동작한다"고 읽히는 상태였다.
     빈도 제한이 필요해지면 그때 설계와 함께 다시 도입한다.
     """
+
     __tablename__ = "tenant_quotas"
 
-    tenant_id: Mapped[str] = mapped_column(primary_key=True)                                # 테넌트당 row 1개
-    concurrency_limit: Mapped[int] = mapped_column(default=5, server_default="5")           # 동시 in-flight (테넌트) — config 기본값과 동일하게 유지 (#101 하향)
-    user_concurrency: Mapped[int] = mapped_column(default=1, server_default="1")            # 동시 in-flight (사용자) — config 기본값과 동일하게 유지 (#101 하향)
-    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())                 # 갱신 시각
+    tenant_id: Mapped[str] = mapped_column(primary_key=True)  # 테넌트당 row 1개
+    concurrency_limit: Mapped[int] = mapped_column(
+        default=5, server_default="5"
+    )  # 동시 in-flight (테넌트) — config 기본값과 동일하게 유지 (#101 하향)
+    user_concurrency: Mapped[int] = mapped_column(
+        default=1, server_default="1"
+    )  # 동시 in-flight (사용자) — config 기본값과 동일하게 유지 (#101 하향)
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())  # 갱신 시각

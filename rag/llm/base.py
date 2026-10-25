@@ -18,6 +18,7 @@ Anthropic 구조화 출력 …)으로 바꾸는 것은 **각 구현의 일**이�
 0층(leaf)이다 — config 말고는 rag/ 모듈을 import하지 않는다. 그래서 꼬리 표식(rag/prompt_texts)도
 값으로 받는다(CitationTail.start/end). 지표·추적 기록은 호출부 몫이고, 여기서는 값만 올려보낸다.
 """
+
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Literal, Protocol
@@ -36,6 +37,7 @@ class CitationTail:
     count=0이면 빈 배열만 허용한다(후보 0개 — 운영은 즉시 경로라 도달하지 않고 eval에서 도달).
     후보 수를 세는 규칙(출처 다음 첨부)은 우리 도메인 규칙이라 호출부가 정한다(rag/prompts.build_citation_tail).
     """
+
     count: int
     start: str
     end: str
@@ -44,10 +46,11 @@ class CitationTail:
 @dataclass(frozen=True)
 class LlmUsage:
     """호출 하나의 토큰 사용량 — 비용 검증용(#288). cached_tokens가 0이면 프롬프트 캐싱이 안 먹은 것이다."""
+
     prompt_tokens: int
     completion_tokens: int
-    cached_tokens: int = 0        # 캐시에서 읽은 입력 토큰(입력 단가의 0.1배)
-    cache_write_tokens: int = 0   # 캐시에 새로 쓴 입력 토큰(Anthropic 1.25배)
+    cached_tokens: int = 0  # 캐시에서 읽은 입력 토큰(입력 단가의 0.1배)
+    cache_write_tokens: int = 0  # 캐시에 새로 쓴 입력 토큰(Anthropic 1.25배)
 
 
 class ConstraintUnsupported(Exception):
@@ -62,15 +65,25 @@ class LlmClient(Protocol):
         """요청에 실리는 모델 이름 — 스팬 llm.model_name 기록용(#297)."""
         ...
 
-    async def acomplete(self, messages: list[dict], *, schema: type[BaseModel] | None = None,
-                        citations: CitationTail | None = None,
-                        on_usage: Callable[[LlmUsage], None] | None = None) -> str:
+    async def acomplete(
+        self,
+        messages: list[dict],
+        *,
+        schema: type[BaseModel] | None = None,
+        citations: CitationTail | None = None,
+        on_usage: Callable[[LlmUsage], None] | None = None,
+    ) -> str:
         """비스트리밍 — 응답 전체를 문자열로. usage는 on_usage로 올린다(구현이 못 주면 안 부른다)."""
         ...
 
-    def astream(self, messages: list[dict], *, schema: type[BaseModel] | None = None,
-                citations: CitationTail | None = None,
-                on_finish_reason: Callable[[FinishReason], None] | None = None,
-                on_usage: Callable[[LlmUsage], None] | None = None) -> AsyncIterator[str]:
+    def astream(
+        self,
+        messages: list[dict],
+        *,
+        schema: type[BaseModel] | None = None,
+        citations: CitationTail | None = None,
+        on_finish_reason: Callable[[FinishReason], None] | None = None,
+        on_usage: Callable[[LlmUsage], None] | None = None,
+    ) -> AsyncIterator[str]:
         """스트리밍 — 텍스트 조각을 만드는 족족 내보낸다. 종료 사유·usage는 콜백으로 올린다(#129·#288 — 0층이라 기록은 호출부 몫)."""
         ...

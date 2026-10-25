@@ -26,5 +26,5 @@ def bigrams(text: str) -> list[str]:
         if len(w) < 2:
             out.append(w)
         else:
-            out.extend(w[i:i + 2] for i in range(len(w) - 1))
+            out.extend(w[i : i + 2] for i in range(len(w) - 1))
     return out or [text.lower()]

@@ -16,6 +16,7 @@
 - 검색가능·테넌트 필터는 **엔진에서** 건다(`tenant_filter`). 그 플래그의 정합은 쓰기 경로가
   책임진다 — 매핑·필드 정의는 `rag/os_client.py`.
 """
+
 from config import settings
 from rag.os_client import NORI_FIELD, client
 from rag.retrieval_types import RetrievedChunk
@@ -35,8 +36,7 @@ def score_to_cosine_distance(score: float) -> float:
 def tenant_filter(tenant_id: str) -> dict:
     """테넌트 격리 + 검색가능 필터. **둘 다 엔진에서 걸어야 한다** — 검색 후 걸러내면
     상위 k를 뽑은 뒤 빼는 post-filter가 되어 후보가 조용히 깎인다(매핑의 searchable 주석)."""
-    return {"bool": {"filter": [{"term": {"tenant_id": tenant_id}},
-                                {"term": {"searchable": True}}]}}
+    return {"bool": {"filter": [{"term": {"tenant_id": tenant_id}}, {"term": {"searchable": True}}]}}
 
 
 def knn_clause(tenant_id: str, vector: list[float], n: int) -> dict:
@@ -46,8 +46,7 @@ def knn_clause(tenant_id: str, vector: list[float], n: int) -> dict:
     (구 PG 경로는 HNSW LIMIT 뒤에 WHERE절을 거는 post-filter였다 — 구판·비활성 문서 비중이
     커질수록 리콜이 조용히 깎이는 함정. 엔진 필터는 그 함정이 없다.)
     """
-    return {"knn": {"dense": {"vector": list(vector), "k": n,
-                              "filter": tenant_filter(tenant_id)}}}
+    return {"knn": {"dense": {"vector": list(vector), "k": n, "filter": tenant_filter(tenant_id)}}}
 
 
 def lex_clause(field: str, query_text: str) -> dict:
@@ -74,8 +73,7 @@ def lex_clause(field: str, query_text: str) -> dict:
     운영 경로는 hybrid 쿼리를 쓰지 않아(융합은 우리가 한다) 이 결함에 노출되지 않지만,
     플래그는 그대로 둔다 — 질의 term 집합이 같아 무해하고, 실측 기록을 코드에 남긴다.
     """
-    return {"match": {field: {"query": query_text,
-                              "auto_generate_synonyms_phrase_query": False}}}
+    return {"match": {field: {"query": query_text, "auto_generate_synonyms_phrase_query": False}}}
 
 
 def _ids(resp) -> list[int]:
@@ -83,6 +81,7 @@ def _ids(resp) -> list[int]:
 
 
 # ===== 운영 경로 (rag/retriever.py가 호출) =================================
+
 
 async def search_dense_per_query(
     tenant_id: str,
@@ -101,15 +100,17 @@ async def search_dense_per_query(
     per_query_ids: list[list[int]] = []
     dense_results: list[tuple[int, float]] = []
     for i, q_emb in enumerate(q_embs):
-        resp = await os_client.search(index=settings.opensearch_index, body={
-            "size": candidates_per_branch,
-            "_source": ["chunk_id"],
-            "query": knn_clause(tenant_id, q_emb.dense, candidates_per_branch),
-        })
+        resp = await os_client.search(
+            index=settings.opensearch_index,
+            body={
+                "size": candidates_per_branch,
+                "_source": ["chunk_id"],
+                "query": knn_clause(tenant_id, q_emb.dense, candidates_per_branch),
+            },
+        )
         hits = resp["hits"]["hits"]
         if i == 0:
-            dense_results = [(int(h["_source"]["chunk_id"]),
-                              score_to_cosine_distance(h["_score"])) for h in hits]
+            dense_results = [(int(h["_source"]["chunk_id"]), score_to_cosine_distance(h["_score"])) for h in hits]
         per_query_ids.append([int(h["_source"]["chunk_id"]) for h in hits])
     return per_query_ids, dense_results
 
@@ -127,8 +128,7 @@ async def fetch_chunk_map(ids: list[int]) -> dict:
     """
     if not ids:
         return {}
-    resp = await client().mget(index=settings.opensearch_index,
-                               body={"ids": [str(i) for i in ids]})
+    resp = await client().mget(index=settings.opensearch_index, body={"ids": [str(i) for i in ids]})
     out = {}
     for d in resp["docs"]:
         if not d.get("found"):
@@ -162,14 +162,19 @@ async def search_identifiers(tenant_id: str, tokens: list[str], limit: int) -> l
     """
     if not tokens:
         return []
-    resp = await client().search(index=settings.opensearch_index, body={
-        "size": limit,
-        "_source": ["chunk_id"],
-        "query": {"bool": {
-            "filter": [tenant_filter(tenant_id)],
-            "must": [{"terms": {"identifiers": tokens}}],
-        }},
-    })
+    resp = await client().search(
+        index=settings.opensearch_index,
+        body={
+            "size": limit,
+            "_source": ["chunk_id"],
+            "query": {
+                "bool": {
+                    "filter": [tenant_filter(tenant_id)],
+                    "must": [{"terms": {"identifiers": tokens}}],
+                }
+            },
+        },
+    )
     return _ids(resp)
 
 
@@ -186,12 +191,17 @@ async def search_lexical(tenant_id: str, query: str, limit: int) -> list[int]:
     if not query.strip():
         return []
     os_client = client()
-    resp = await os_client.search(index=settings.opensearch_index, body={
-        "size": limit,
-        "_source": ["chunk_id"],
-        "query": {"bool": {
-            "filter": [tenant_filter(tenant_id)],
-            "must": [lex_clause(NORI_FIELD, query)],
-        }},
-    })
+    resp = await os_client.search(
+        index=settings.opensearch_index,
+        body={
+            "size": limit,
+            "_source": ["chunk_id"],
+            "query": {
+                "bool": {
+                    "filter": [tenant_filter(tenant_id)],
+                    "must": [lex_clause(NORI_FIELD, query)],
+                }
+            },
+        },
+    )
     return _ids(resp)

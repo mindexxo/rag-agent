@@ -8,6 +8,7 @@
 않는다 — 도메인 예외(FailedReuseConflict)나 None을 돌려주고, HTTP 변환은 라우터가 한다.
 같은 이유로 스레드 오프로딩은 stdlib `asyncio.to_thread`를 쓴다.
 """
+
 import asyncio
 import mimetypes
 import time
@@ -65,15 +66,22 @@ async def get_folder(session: AsyncSession, tenant_id: str, folder_id: int) -> F
     404 변환은 여기서 하지 않는다 — 이 모듈은 라우터도 워커도 import하므로 starlette를 들이지
     않는다(index_pending_document의 to_thread 주석과 같은 이유). 호출부가 HTTPException을 만든다.
     """
-    return (await session.execute(
-        select(Folder)
-        .where(Folder.tenant_id == tenant_id)      # 격리 — WHERE 절 명시
-        .where(Folder.id == folder_id)
-    )).scalars().first()
+    return (
+        (
+            await session.execute(
+                select(Folder)
+                .where(Folder.tenant_id == tenant_id)  # 격리 — WHERE 절 명시
+                .where(Folder.id == folder_id)
+            )
+        )
+        .scalars()
+        .first()
+    )
 
 
-async def _retire_documents(session: AsyncSession, tenant_id: str, document_ids: list[int],
-                            *, status_reason: str | None = None) -> None:
+async def _retire_documents(
+    session: AsyncSession, tenant_id: str, document_ids: list[int], *, status_reason: str | None = None
+) -> None:
     """문서들을 내린다 — 상태·캐시·DROP **세 동작이 한 묶음**이다 (#188 B-4).
 
     하나만 빠져도 조용히 어긋난다: 상태만 바꾸면 엔진에 남아 계속 인용되고, DROP만 넣으면
@@ -93,8 +101,7 @@ async def _retire_documents(session: AsyncSession, tenant_id: str, document_ids:
     values = {'is_active': False, 'status': 'deleted'}
     if status_reason is not None:
         values['status_reason'] = status_reason
-    await session.execute(
-        update(Document).where(Document.id.in_(document_ids)).values(**values))
+    await session.execute(update(Document).where(Document.id.in_(document_ids)).values(**values))
     for did in document_ids:
         await cache.invalidate_source(session, tenant_id, did)
     outbox.enqueue(session, tenant_id, outbox.DROP_DOCUMENTS, document_ids=list(document_ids))
@@ -126,12 +133,14 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
     """
     # ── ① 짧은 읽기 ──
     async with AsyncSessionLocal() as session:
-        row = (await session.execute(
-            select(Document, Folder.name, Folder.description, Folder.is_searchable)
-            .outerjoin(Folder, Document.folder_id == Folder.id)
-            .where(Document.id == document_id)
-        )).first()
-        if row is None or row[0].status != 'pending':      # 이미 처리됨·삭제됨 — 할 일 없음
+        row = (
+            await session.execute(
+                select(Document, Folder.name, Folder.description, Folder.is_searchable)
+                .outerjoin(Folder, Document.folder_id == Folder.id)
+                .where(Document.id == document_id)
+            )
+        ).first()
+        if row is None or row[0].status != 'pending':  # 이미 처리됨·삭제됨 — 할 일 없음
             if outbox_row_id is not None:
                 await outbox.mark_done(session, outbox_row_id)
                 await session.commit()
@@ -147,13 +156,19 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         # version 조건은 그 반대 방향의 안전판이다 — 어떤 경로로든 구버전이 나중에 돌아도 신버전을
         # supersede하지 못한다(그 경우 ③의 active 유니크 uq_docs_one_active_per_name에 걸려 결정적 실패 →
         # 구버전만 failed). 라우터의 expect_version 검사는 FE가 보낼 때만 도는 선택적 방어라 근거로 삼지 않는다.
-        old_ids = list((await session.execute(
-            select(Document.id)
-            .where(Document.tenant_id == tenant_id)
-            .where(Document.filename == filename)
-            .where(Document.version < version)
-            .where(Document.status.in_(ALIVE_DOCUMENT_STATUSES))
-        )).scalars().all())
+        old_ids = list(
+            (
+                await session.execute(
+                    select(Document.id)
+                    .where(Document.tenant_id == tenant_id)
+                    .where(Document.filename == filename)
+                    .where(Document.version < version)
+                    .where(Document.status.in_(ALIVE_DOCUMENT_STATUSES))
+                )
+            )
+            .scalars()
+            .all()
+        )
 
     # ── ② 무거운 계산 — DB 세션 없음 ──
     # 단계별 소요를 지표로 남긴다 (#151). 워커에는 이것 말고 "한 건이 얼마나 걸리나"를 볼 방법이
@@ -172,15 +187,15 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
     except asyncio.CancelledError:
         abort_conversion()
         raise
-    image_ratio = await asyncio.to_thread(pdf_image_area_ratio, blob_path)   # #137 결함 4 경고용
-    if not chunks:      # 빈 파일·텍스트레이어 없는 PDF → ready 승격 대신 실패 (유령 ready 방지)
+    image_ratio = await asyncio.to_thread(pdf_image_area_ratio, blob_path)  # #137 결함 4 경고용
+    if not chunks:  # 빈 파일·텍스트레이어 없는 PDF → ready 승격 대신 실패 (유령 ready 방지)
         raise ValueError('추출된 텍스트가 없습니다 (빈 파일이거나 파싱 결과가 비어 있음)')
     # 네 단계가 같은 분모(성공한 문서)를 갖도록 실패 분기 뒤에서 기록한다 — 단계별 p95를
     # 나란히 읽으려면 분모가 같아야 한다.
     INDEX_DURATION_SECONDS.labels(stage='parse', ext=_ext).observe(time.monotonic() - _t_start)
     # 캡션이 안 붙은 그림 수(#162) — 캡션 대상에서 빠진 작은 그림(면적 하한 미만)·XLSX(#249).
     # VLM 실패는 여기까지 오지 않는다 — 변환에서 CaptionFailedError로 문서 재시도가 된다(#223).
-    if (placeholders := count_picture_placeholders(chunks)):
+    if placeholders := count_picture_placeholders(chunks):
         INDEX_PICTURE_PLACEHOLDER_TOTAL.labels(ext=_ext).inc(placeholders)
     _t_parse_done = time.monotonic()
     # 임베딩 입력에만 '파일명 > 헤딩' 컨텍스트를 얹는다 (저장되는 chunk.text는 원문 유지).
@@ -194,12 +209,24 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
     # (ready·active)로 계산한다 — 켜진 채로 바로 넣어 "켜기" 단계를 없애기 위함이다.
     # 문서 검색토글·폴더 토글은 PG 값을 그대로 쓴다.
     indexed_searchable = os_index.effective_searchable(
-        is_faq=False, doc_is_active=True, doc_status='ready',
-        doc_is_searchable=doc_searchable, folder_is_searchable=folder_searchable)
+        is_faq=False,
+        doc_is_active=True,
+        doc_status='ready',
+        doc_is_searchable=doc_searchable,
+        folder_is_searchable=folder_searchable,
+    )
     await os_index.index_parsed_document(
-        document_id=document_id, tenant_id=tenant_id, filename=filename, version=version,
-        folder_id=folder_id, folder_name=folder_name, folder_description=folder_desc,
-        searchable=indexed_searchable, chunks=chunks, embeddings=embeddings)
+        document_id=document_id,
+        tenant_id=tenant_id,
+        filename=filename,
+        version=version,
+        folder_id=folder_id,
+        folder_name=folder_name,
+        folder_description=folder_desc,
+        searchable=indexed_searchable,
+        chunks=chunks,
+        embeddings=embeddings,
+    )
     # 구버전 청크는 여기서 지우지 않는다 — ③의 DROP 행이 다음 회차에 지운다(함수 docstring, #186).
     INDEX_DURATION_SECONDS.labels(stage='index', ext=_ext).observe(time.monotonic() - _t_embed_done)
 
@@ -245,26 +272,27 @@ async def index_pending_document(document_id: int, *, outbox_row_id: int | None 
         # 최신 PG 상태로 다시 계산해 어긋나면 META 행을 **이 커밋에** 얹어 다음 회차가 맞춘다.
         f_on = None
         if doc.folder_id is not None:
-            f_on = (await session.execute(
-                select(Folder.is_searchable).where(Folder.id == doc.folder_id))).scalar()
+            f_on = (await session.execute(select(Folder.is_searchable).where(Folder.id == doc.folder_id))).scalar()
         now_searchable = os_index.effective_searchable(
-            is_faq=False, doc_is_active=True, doc_status='ready',
-            doc_is_searchable=doc.is_searchable, folder_is_searchable=f_on)
+            is_faq=False,
+            doc_is_active=True,
+            doc_status='ready',
+            doc_is_searchable=doc.is_searchable,
+            folder_is_searchable=f_on,
+        )
         if now_searchable != indexed_searchable or doc.folder_id != folder_id:
             outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=[document_id])
 
         if outbox_row_id is not None:
-            await outbox.mark_done(session, outbox_row_id)   # ready와 같은 커밋 — 정의점 rag/outbox.py
+            await outbox.mark_done(session, outbox_row_id)  # ready와 같은 커밋 — 정의점 rag/outbox.py
         await session.commit()
     # total은 ③ 커밋까지 포함한다 — 사용자가 체감하는 "업로드 후 검색될 때까지"에 가장 가깝다
     # (여기에 cron 대기 최대 1분이 더 붙는다, rag/worker.py drain 주석).
     INDEX_DURATION_SECONDS.labels(stage='total', ext=_ext).observe(time.monotonic() - _t_start)
-    INDEX_TOTAL.labels(ext=_ext, result='ok').inc()   # 실패 쪽은 outbox.drain이 센다(재시도/확정 구분)
+    INDEX_TOTAL.labels(ext=_ext, result='ok').inc()  # 실패 쪽은 outbox.drain이 센다(재시도/확정 구분)
 
 
-async def soft_delete_documents(
-        session: AsyncSession, tenant_id: str, document_ids: list[int]
-) -> list[int]:
+async def soft_delete_documents(session: AsyncSession, tenant_id: str, document_ids: list[int]) -> list[int]:
     """문서 소프트 삭제 (F5) — 단건·일괄 삭제가 공유하는 하나의 경로 (#174).
 
     같은 filename의 **전 버전**을 함께 내린다. 한 버전만 내리면 그 이름의 옛 버전이 검색에
@@ -290,18 +318,24 @@ async def soft_delete_documents(
     # 요청에 같은 문서의 다른 버전이 섞여 있어도 filename으로 모이므로 한 번만 처리된다.
     filenames = (
         select(Document.filename)
-        .where(Document.tenant_id == tenant_id)      # 격리 — WHERE 절 명시
+        .where(Document.tenant_id == tenant_id)  # 격리 — WHERE 절 명시
         .where(Document.id.in_(document_ids))
     )
-    doc_ids = (await session.execute(
-        update(Document)
-        .where(Document.tenant_id == tenant_id)      # 격리 — UPDATE에도 유지(이중 방어).
-                                                     # 이게 빠지면 같은 파일명을 쓰는 남의 테넌트
-                                                     # 문서까지 지워진다 — 테스트로 고정해 둔다.
-        .where(Document.filename.in_(filenames))
-        .values(is_active=False, status='deleted', status_reason='user_deleted')
-        .returning(Document.id)
-    )).scalars().all()
+    doc_ids = (
+        (
+            await session.execute(
+                update(Document)
+                .where(Document.tenant_id == tenant_id)  # 격리 — UPDATE에도 유지(이중 방어).
+                # 이게 빠지면 같은 파일명을 쓰는 남의 테넌트
+                # 문서까지 지워진다 — 테스트로 고정해 둔다.
+                .where(Document.filename.in_(filenames))
+                .values(is_active=False, status='deleted', status_reason='user_deleted')
+                .returning(Document.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     if not doc_ids:
         return []
 
@@ -323,26 +357,28 @@ async def _reuse_failed_row(session: AsyncSession, target_id: int, **values) -> 
     테스트가 이 경합을 monkeypatch로 재현하기 위해서다(test_동시_삽입은_유니크_인덱스가_막고_409와
     같은 방식). 반환: 되살린 행 id, 0행이면 None.
     """
-    return (await session.execute(
-        update(Document)
-        .where(Document.id == target_id)
-        .where(Document.status == 'failed')
-        .values(**values)
-        .returning(Document.id)
-    )).scalar()
+    return (
+        await session.execute(
+            update(Document)
+            .where(Document.id == target_id)
+            .where(Document.status == 'failed')
+            .values(**values)
+            .returning(Document.id)
+        )
+    ).scalar()
 
 
 async def _reuse_failed_document(
-        session: AsyncSession,
-        tenant_id: str,
-        filename: str,
-        blob_path: Path,
-        failed: list[Document],
-        *,
-        description: str | None,
-        uploaded_by: str | None,
-        folder_id: int | None,
-        folder_given: bool,
+    session: AsyncSession,
+    tenant_id: str,
+    filename: str,
+    blob_path: Path,
+    failed: list[Document],
+    *,
+    description: str | None,
+    uploaded_by: str | None,
+    folder_id: int | None,
+    folder_given: bool,
 ) -> tuple[Document, str | None]:
     """failed만 있는 파일명의 재업로드 (#161) — 새 version 대신 그 행을 되살린다.
 
@@ -356,15 +392,22 @@ async def _reuse_failed_document(
     target = max(failed, key=lambda d: d.version)
     stale_blob = target.blob_path
     reused = await _reuse_failed_row(
-        session, target.id,
-        status='pending', is_active=False,
+        session,
+        target.id,
+        status='pending',
+        is_active=False,
         # 워커 ③단계는 status_reason을 이미지 경고일 때만 덮어쓴다 — 여기서 안 지우면
         # 옛 실패 사유가 ready 문서에 그대로 남는다. page_count·char_count·indexed_at도 같이 비운다.
-        status_reason=None, page_count=None, char_count=None, indexed_at=None,
-        blob_path=str(blob_path), mime=_detect_mime(blob_path),
+        status_reason=None,
+        page_count=None,
+        char_count=None,
+        indexed_at=None,
+        blob_path=str(blob_path),
+        mime=_detect_mime(blob_path),
         # server_default는 INSERT에만 적용된다 — UPDATE에서 갱신하지 않으면 목록(uploaded_at
         # 내림차순, #164)에서 재업로드한 문서가 위로 올라오지 않는다.
-        uploaded_at=func.now(), uploaded_by=uploaded_by,
+        uploaded_at=func.now(),
+        uploaded_by=uploaded_by,
         # 설정은 그 행의 값을 유지(= 계승과 같은 결과), 보냈으면 그 값 — #165 규칙 그대로.
         folder_id=(folder_id if folder_given else target.folder_id),
         description=resolve_description(description, target),
@@ -384,7 +427,7 @@ async def _reuse_failed_document(
     # DROP을 등재하므로(outbox.drain — "생길 때 지운다") 여기는 이중 안전판이다("내릴 때 지운다").
     others = [d.id for d in failed if d.id != target.id]
     await _retire_documents(session, tenant_id, others, status_reason='failed_superseded')
-    await session.refresh(target)      # UPDATE로 바뀐 값을 ORM 객체에 반영 (응답에 쓴다)
+    await session.refresh(target)  # UPDATE로 바뀐 값을 ORM 객체에 반영 (응답에 쓴다)
     outbox.enqueue(session, tenant_id, outbox.INDEX_DOCUMENT, document_id=target.id)
     return target, stale_blob
 
@@ -401,11 +444,15 @@ async def document_versions(session: AsyncSession, tenant_id: str, filename: str
     하기 때문이다(안 그러면 UNIQUE(tenant_id, filename, version) 위반). 계승 출처를 고르는
     것은 별개 질문이고 `latest_alive`가 답한다.
     """
-    return list((await session.execute(
-        select(Document)
-        .where(Document.tenant_id == tenant_id)
-        .where(Document.filename == filename)
-    )).scalars().all())
+    return list(
+        (
+            await session.execute(
+                select(Document).where(Document.tenant_id == tenant_id).where(Document.filename == filename)
+            )
+        )
+        .scalars()
+        .all()
+    )
 
 
 def latest_alive(docs: list[Document]) -> Document | None:
@@ -441,15 +488,15 @@ def resolve_description(description: str | None, source: Document | None) -> str
 
 
 async def handle_upload(
-        session: AsyncSession,
-        tenant_id: str,
-        filename: str,
-        blob_path: Path,
-        description: str | None = None,
-        uploaded_by: str | None = None,
-        folder_id: int | None = None,
-        folder_given: bool = False,
-        docs: list[Document] | None = None,
+    session: AsyncSession,
+    tenant_id: str,
+    filename: str,
+    blob_path: Path,
+    description: str | None = None,
+    uploaded_by: str | None = None,
+    folder_id: int | None = None,
+    folder_given: bool = False,
+    docs: list[Document] | None = None,
 ) -> tuple[Document, str | None]:
     """업로드 시점 처리: pending row + 색인 대기열 행을 **같은 트랜잭션**에 등록한다 (#139).
     반환은 (문서, 지워야 할 옛 blob 경로 또는 None) — 옛 blob은 **호출부가 커밋 뒤에** 지운다.
@@ -494,9 +541,16 @@ async def handle_upload(
     failed = [d for d in docs if d.status == 'failed']
     if prev is None and failed:
         return await _reuse_failed_document(
-            session, tenant_id, filename, blob_path, failed,
-            description=description, uploaded_by=uploaded_by,
-            folder_id=folder_id, folder_given=folder_given)
+            session,
+            tenant_id,
+            filename,
+            blob_path,
+            failed,
+            description=description,
+            uploaded_by=uploaded_by,
+            folder_id=folder_id,
+            folder_given=folder_given,
+        )
 
     # pending 버전 row만 insert. is_active=False(ready 전엔 검색 제외).
     # 폴더 소속·참조 on/off(F2)·표 설명은 **살아 있는** 직전 버전에서 계승 — 개정판 업로드로
@@ -528,5 +582,3 @@ async def handle_upload(
     # 이 한 줄로 사라진다. 사유·처리 규약은 rag/outbox.py.
     outbox.enqueue(session, tenant_id, outbox.INDEX_DOCUMENT, document_id=doc.id)
     return doc, None
-
-

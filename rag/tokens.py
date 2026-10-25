@@ -20,4 +20,4 @@ CONSERVATIVE_CHARS_PER_TOKEN = 1.1
 
 def estimate_tokens_conservative(text: str) -> int:
     """상한·예산 판정용 보수적 추정 — 글자 수 ÷ 1.1(올림). 실측상 어떤 표든 실제 토큰 이상이다."""
-    return -(-len(text) * 10 // 11)   # ceil(len / 1.1) — 부동소수 없이
+    return -(-len(text) * 10 // 11)  # ceil(len / 1.1) — 부동소수 없이

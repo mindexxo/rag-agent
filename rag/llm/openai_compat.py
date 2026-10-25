@@ -4,6 +4,7 @@
 **의도(schema·citations)를 요청 인자로 바꾸는 방법** 하나다 — 하위 클래스가 `_constraint_params`를 고친다.
 바탕은 제약을 모르므로, 하위 클래스가 고치지 않았는데 제약이 오면 ConstraintUnsupported다(base.py의 원칙).
 """
+
 from collections.abc import AsyncIterator, Callable
 
 import httpx
@@ -24,8 +25,14 @@ def normalize_finish_reason(raw: str) -> FinishReason:
 class OpenAiCompatClient:
     """OpenAI SDK 위의 공통 구현. 단독으로 쓰면 제약 없는 평범한 OpenAI 호환 호출이다."""
 
-    def __init__(self, *, base_url: str | None = None, model: str | None = None, api_key: str | None = None,
-                 reasoning_effort: str | None = ""):
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        model: str | None = None,
+        api_key: str | None = None,
+        reasoning_effort: str | None = "",
+    ):
         self._model = model or settings.llm_model
         # ""면 요청 시점의 settings.llm_reasoning_effort를 따른다(생성 클라이언트·기본). 보조 클라이언트(#297)만 값을 넘긴다
         self._reasoning_effort = reasoning_effort
@@ -49,8 +56,7 @@ class OpenAiCompatClient:
 
     # ── 하위 클래스가 고치는 곳 ─────────────────────────────
 
-    def _constraint_params(self, schema: type[BaseModel] | None,
-                           citations: CitationTail | None) -> dict:
+    def _constraint_params(self, schema: type[BaseModel] | None, citations: CitationTail | None) -> dict:
         """의도 → 요청 인자. 바탕은 어떤 제약도 강제할 줄 모른다."""
         if schema is not None or citations is not None:
             raise ConstraintUnsupported(f"{type(self).__name__}: schema·citations 제약을 강제할 수 없다")
@@ -62,26 +68,37 @@ class OpenAiCompatClient:
         """chat.completions.create 인자. temperature는 설정됐을 때만 보낸다(None = 서버 기본값)."""
         kwargs = {
             "model": self._model,
-            "max_tokens": settings.generation_reserve_tokens,   # 생성 몫 예약 + 폭주 방지 (F100)
+            "max_tokens": settings.generation_reserve_tokens,  # 생성 몫 예약 + 폭주 방지 (F100)
             **self._constraint_params(schema, citations),
         }
         if settings.llm_temperature is not None:
             kwargs["temperature"] = settings.llm_temperature
         return kwargs
 
-    async def acomplete(self, messages: list[dict], *, schema: type[BaseModel] | None = None,
-                        citations: CitationTail | None = None,
-                        on_usage: Callable[[LlmUsage], None] | None = None) -> str:
+    async def acomplete(
+        self,
+        messages: list[dict],
+        *,
+        schema: type[BaseModel] | None = None,
+        citations: CitationTail | None = None,
+        on_usage: Callable[[LlmUsage], None] | None = None,
+    ) -> str:
         # on_usage는 받되 부르지 않는다 — usage를 받으려면 요청 인자(stream_options)가 바뀌는데 vLLM 요청 바디는
         # #287이 고정했고 사내 서버는 비용 검증 대상이 아니다. 상용 구현(rag/llm/litellm.py)만 올린다.
         response = await self._client.chat.completions.create(
-            messages=messages, stream=False, **self._request_kwargs(schema, citations))
+            messages=messages, stream=False, **self._request_kwargs(schema, citations)
+        )
         return response.choices[0].message.content
 
-    async def astream(self, messages: list[dict], *, schema: type[BaseModel] | None = None,
-                      citations: CitationTail | None = None,
-                      on_finish_reason: Callable[[FinishReason], None] | None = None,
-                      on_usage: Callable[[LlmUsage], None] | None = None) -> AsyncIterator[str]:
+    async def astream(
+        self,
+        messages: list[dict],
+        *,
+        schema: type[BaseModel] | None = None,
+        citations: CitationTail | None = None,
+        on_finish_reason: Callable[[FinishReason], None] | None = None,
+        on_usage: Callable[[LlmUsage], None] | None = None,
+    ) -> AsyncIterator[str]:
         """스트리밍 호출. on_usage는 받되 부르지 않는다(acomplete와 같은 이유).
 
         on_finish_reason(#129): 마지막 청크는 delta 없이 finish_reason만 실려 와서 예전 `if delta:` 가드가
@@ -90,7 +107,8 @@ class OpenAiCompatClient:
         값이 섞이지 않는다(인스턴스 속성 방식을 피한 이유).
         """
         stream = await self._client.chat.completions.create(
-            messages=messages, stream=True, **self._request_kwargs(schema, citations))
+            messages=messages, stream=True, **self._request_kwargs(schema, citations)
+        )
         try:
             async for chunk in stream:
                 choice = chunk.choices[0]

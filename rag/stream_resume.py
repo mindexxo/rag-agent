@@ -34,6 +34,7 @@ XREAD는 **비파괴 읽기**다. 커서(last_id)를 연결마다 각자 들고 
                           폴링 강등보다 나쁘다 — 차라리 스트림을 없애 404로 보낸다.
   여기(읽기)      전파   — 재접속 엔드포인트가 Redis를 못 읽으면 그 요청은 존재 이유를 잃는다.
 """
+
 import asyncio
 import json
 import logging
@@ -67,6 +68,7 @@ def _redis():
     통째로 새 인스턴스로 교체하는데(tests/conftest.py), 붙잡은 참조는 그 교체를 못 받는다.
     """
     from rag import clients
+
     return clients.shared_redis
 
 
@@ -126,12 +128,11 @@ class StreamWriter:
             return
         batch, self._buf = self._buf, []
         if self._degraded:
-            return          # 이미 구멍 났다 — 더 써봐야 반쪽 스트림만 그럴듯해진다
+            return  # 이미 구멍 났다 — 더 써봐야 반쪽 스트림만 그럴듯해진다
         try:
             pipe = _redis().pipeline(transaction=False)
             for event, data in batch:
-                pipe.xadd(self.key, {'event': event,
-                                     'data': json.dumps(data, ensure_ascii=False)})
+                pipe.xadd(self.key, {'event': event, 'data': json.dumps(data, ensure_ascii=False)})
             # 매 flush마다 갱신 — 생성 중엔 계속 연장되고, 마지막 flush 뒤로는 갱신이 멈춰
             # TTL만큼 뒤에 자체 소멸한다(리미터의 EXPIRE 방식. arq cron 스윕은 턴 단위 짧은
             # 수명엔 과하다).
@@ -140,8 +141,7 @@ class StreamWriter:
             # 멈추면 여기서 무한 대기한다. 이 함수는 _run_generation의 finally(aclose 경유)에서도
             # 불리므로, 그 대기가 곧 리미터 반납·스팬 종료 지연이 된다 — 슬롯이 물린 채 다른
             # 상담원이 429를 받는다. 예외만 삼키고 hang은 방치하면 원칙이 반쪽이다.
-            await asyncio.wait_for(pipe.execute(),
-                                   timeout=settings.stream_resume_flush_timeout_seconds)
+            await asyncio.wait_for(pipe.execute(), timeout=settings.stream_resume_flush_timeout_seconds)
         except Exception:
             # 삼킨다 — 사유는 모듈 docstring. 이 턴은 재접속만 못 하고 폴링으로 강등된다.
             # TimeoutError도 여기 합류한다(OSError 계열).
@@ -170,8 +170,7 @@ class StreamWriter:
             # 아예 지워 404 → 폴링으로 보내는 게 가장 깨끗하다. Redis가 아직 죽어 있으면
             # 이것도 실패하는데, 그때는 마커 없는 스트림이 TTL만큼 남고 리더가 done 없이 닫힌다.
             try:
-                await asyncio.wait_for(_redis().delete(self.key),
-                                       timeout=settings.stream_resume_flush_timeout_seconds)
+                await asyncio.wait_for(_redis().delete(self.key), timeout=settings.stream_resume_flush_timeout_seconds)
             except Exception:
                 logger.warning('구멍 난 재접속 스트림 삭제 실패 — TTL로 소멸 (key=%s)', self.key)
 
@@ -186,7 +185,7 @@ async def reconnect_reader(tenant_id: str, message_id: int) -> AsyncIterator[str
     항상 '0'(처음)부터 읽는다 — 새로고침은 클라이언트 상태가 날아간 상황이라 부분 재생이
     의미가 없다. SSE 표준의 Last-Event-ID 기반 증분 재개는 FE가 id를 보관하게 된 뒤에 얹는다.
     """
-    from rag.streaming import EVENT_PING, sse_event   # 순환 import 방지 — 호출 시점 지연 로드
+    from rag.streaming import EVENT_PING, sse_event  # 순환 import 방지 — 호출 시점 지연 로드
 
     key = stream_key(tenant_id, message_id)
     last_id = '0'
@@ -211,7 +210,7 @@ async def reconnect_reader(tenant_id: str, message_id: int) -> AsyncIterator[str
                 last_id = entry_id
                 event = fields[b'event'].decode()
                 if event == EVENT_END:
-                    return          # 마커는 클라이언트로 안 나간다 — queue_reader의 None과 동격
+                    return  # 마커는 클라이언트로 안 나간다 — queue_reader의 None과 동격
                 yield sse_event(event, json.loads(fields[b'data']))
 
 
@@ -237,4 +236,4 @@ async def _turn_finished(tenant_id: str, message_id: int) -> bool:
             return msg is None or msg.tenant_id != tenant_id or msg.status != 'generating'
     except Exception:
         logger.exception('턴 종료 판정 실패 (message_id=%s)', message_id)
-        return False        # 판정 불가면 계속 기다린다 — 살아 있는 스트림을 끊지 않는 쪽으로
+        return False  # 판정 불가면 계속 기다린다 — 살아 있는 스트림을 끊지 않는 쪽으로

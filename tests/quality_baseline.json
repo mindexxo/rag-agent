@@ -387,7 +387,7 @@
   "tests/test_misinfo_judge.py": 1,
   "tests/test_ocr_llm.py": 9,
   "tests/test_ocr_vlm_engine.py": 5,
-  "tests/test_os_client_pure.py": 11,
+  "tests/test_os_client_pure.py": 8,
   "tests/test_os_index_pure.py": 3,
   "tests/test_os_search_pure.py": 5,
   "tests/test_otel.py": 2,

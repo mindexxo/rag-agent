@@ -35,7 +35,6 @@ CREATE TABLE IF NOT EXISTS documents (
     is_active      BOOLEAN     NOT NULL DEFAULT FALSE,
     status         TEXT        NOT NULL DEFAULT 'pending',
     status_reason  TEXT,
-    page_count     INTEGER,
     char_count     INTEGER,
     uploaded_by    TEXT,                       -- 등록자 (#164부터 저장 — X-User-Id 미전송 시 NULL. 이전 문서는 전부 NULL)
     uploaded_at    TIMESTAMPTZ NOT NULL DEFAULT now(),

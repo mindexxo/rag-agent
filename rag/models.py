@@ -76,7 +76,6 @@ class Document(Base):
         default="pending", server_default="pending"
     )  # 문서 처리 6값 — Message.status(TurnStatus)와 별개 어휘. 살아 있는 넷은 ALIVE_DOCUMENT_STATUSES
     status_reason: Mapped[str | None]  # 실패/삭제 사유
-    page_count: Mapped[int | None]
     char_count: Mapped[int | None]
     uploaded_by: Mapped[str | None]
     uploaded_at: Mapped[datetime] = mapped_column(server_default=func.now())

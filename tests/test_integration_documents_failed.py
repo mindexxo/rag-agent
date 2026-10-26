@@ -65,7 +65,7 @@ async def test_failed_재업로드는_같은_행을_되살린다(client, tenant_
     assert after.uploaded_at > before.uploaded_at        # 목록 최신순에서 위로 온다 (#164)
     # 처음 올린 것과 같은 출발점 — "색인됨" 흔적이 남으면 안 된다
     assert after.is_active is False
-    assert after.indexed_at is None and after.char_count is None and after.page_count is None
+    assert after.indexed_at is None and after.char_count is None
 
     # 같은 이름의 행은 여전히 하나 — 새 version이 생기지 않았다
     async with AsyncSessionLocal() as s:

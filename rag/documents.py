@@ -312,7 +312,6 @@ async def _reuse_failed_document(
         is_active=False,
         # 워커 ③은 status_reason을 이미지 경고일 때만 덮어쓰므로 옛 실패 사유를 여기서 비운다.
         status_reason=None,
-        page_count=None,
         char_count=None,
         indexed_at=None,
         blob_path=str(blob_path),

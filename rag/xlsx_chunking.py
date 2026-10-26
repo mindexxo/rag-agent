@@ -139,8 +139,8 @@ def _sheet_chunks(title: str, blocks: list[Block], description: str, start: int)
     블록들을 빈 줄로 이은 것) — 근거 준비 단계가 걸린 묶음을 '걸린 묶음 + 이것'으로 바꾼다.
     """
     prefix = f'[{description}]\n' if description.strip() else ''
-    sheet_text = prefix + '\n\n'.join(_render(b) for b in blocks)
-    if (est := estimate_tokens_conservative(sheet_text)) > TABLE_MAX_TOKENS:
+    full_table = prefix + '\n\n'.join(_render(b) for b in blocks)
+    if (est := estimate_tokens_conservative(full_table)) > TABLE_MAX_TOKENS:
         # 크기 판정 기준은 openpyxl 렌더다 — docling 완성본은 그림 캡션·병합 칸 반복·설명으로 더 클 수 있는데, 여기서
         # 거절하면 "업로드 통과·색인 거절"이 생기므로 경고만 남긴다. 근거 예산이 안전장치다.
         logger.warning(
@@ -158,7 +158,7 @@ def _sheet_chunks(title: str, blocks: list[Block], description: str, start: int)
             heading_path=[title],
             page=None,
             chunk_index=start + k,
-            meta={'is_table': True, 'table_key': title, 'table_text': sheet_text},
+            meta={'is_table': True, 'table_key': title, 'table_text': full_table},
         )
         for k, p in enumerate(parts)
     ]

@@ -73,8 +73,6 @@ MAPPING = {
             # 표 행 묶음 청크의 표 식별자와 표 전체 — 검색 대상 아님. prepare_evidence가 같은 표 묶음을 표 전체로 바꾼다.
             "table_key": {"type": "keyword", "index": False},
             "table_text": {"type": "text", "index": False},
-            # 쓰지 않는 옛 필드 — 매핑 필드는 재색인 없이 지울 수 없어 남겨 둔다.
-            "sheet_text": {"type": "text", "index": False},
             # 질의는 반드시 lex_clause()로 — 기본 match는 2.18 hybrid 쿼리를 500으로 죽인다.
             NORI_FIELD: {"type": "text", "analyzer": "nori_ko"},
             LEX_BIGRAM_FIELD: {
@@ -130,7 +128,7 @@ async def close_client() -> None:
 
 # 기존 인덱스에 재색인 없이 덧붙여도 안전한 필드 — 검색하지 않는 보관 필드와 새 keyword 정확 일치 필드뿐이다.
 # 기존 필드의 변경(분석기 등)은 여기로 못 한다(새 인덱스 + 전량 재색인). 값을 채우려면 문서를 재인제스트해야 한다.
-ADDITIVE_FIELDS = ("sheet_text", "identifiers", "headings", "table_key", "table_text")
+ADDITIVE_FIELDS = ("identifiers", "headings", "table_key", "table_text")
 
 
 async def _add_missing_fields(os_client) -> None:

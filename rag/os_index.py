@@ -6,6 +6,8 @@
 
 import json
 from collections import defaultdict
+from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import select
 
@@ -151,16 +153,19 @@ async def _update_meta(field: str, values: list, meta: dict) -> int:
     return int(resp.get("updated", 0))
 
 
-class _ParsedChunk:
-    """build_doc에 넘기는 청크 형태 — 파싱 결과·FAQ 행의 어댑터. id는 chunk_os_id 값이다."""
+@dataclass(slots=True, frozen=True, kw_only=True)
+class ParsedChunk:
+    """build_doc에 넘기는 청크 형태 — 파싱 결과·FAQ 행의 어댑터."""
 
-    __slots__ = ('id', 'tenant_id', 'document_id', 'faq_id', 'text', 'heading_path', 'page', 'meta', 'dense')
-
-    def __init__(self, *, cid, tenant_id, document_id, faq_id, text, heading_path, page, meta, dense):
-        self.id, self.tenant_id = cid, tenant_id
-        self.document_id, self.faq_id = document_id, faq_id
-        self.text, self.heading_path, self.page, self.meta = text, heading_path, page, meta
-        self.dense = dense
+    id: int  # chunk_os_id 값
+    tenant_id: str
+    document_id: int | None
+    faq_id: int | None
+    text: str
+    heading_path: list[str]
+    page: int | None
+    meta: dict[str, Any] | None
+    dense: list[float]
 
 
 async def index_parsed_document(
@@ -182,8 +187,8 @@ async def index_parsed_document(
     for c, e in zip(chunks, embeddings):
         docs.append(
             build_doc(
-                _ParsedChunk(
-                    cid=chunk_os_id(document_id=document_id, chunk_index=c.chunk_index),
+                ParsedChunk(
+                    id=chunk_os_id(document_id=document_id, chunk_index=c.chunk_index),
                     tenant_id=tenant_id,
                     document_id=document_id,
                     faq_id=None,
@@ -210,8 +215,8 @@ async def index_parsed_faq(
     """FAQ 청크 색인. 항목당 청크 1개라 chunk_index는 0 고정이다."""
     await _delete_by_terms('faq_id', [faq_id])
     doc = build_doc(
-        _ParsedChunk(
-            cid=chunk_os_id(faq_id=faq_id),
+        ParsedChunk(
+            id=chunk_os_id(faq_id=faq_id),
             tenant_id=tenant_id,
             document_id=None,
             faq_id=faq_id,
@@ -261,14 +266,14 @@ async def sync_meta_documents_now(session, document_ids) -> int:
     rows = (
         await session.execute(
             select(
-                Document.id,
-                Document.is_active,
-                Document.status,
-                Document.is_searchable,
-                Folder.id,
-                Folder.name,
-                Folder.description,
-                Folder.is_searchable,
+                Document.id.label('doc_id'),
+                Document.is_active.label('doc_active'),
+                Document.status.label('doc_status'),
+                Document.is_searchable.label('doc_searchable'),
+                Folder.id.label('folder_id'),
+                Folder.name.label('folder_name'),
+                Folder.description.label('folder_desc'),
+                Folder.is_searchable.label('folder_searchable'),
             )
             .outerjoin(Folder, Document.folder_id == Folder.id)
             .where(Document.id.in_(list(document_ids)))
@@ -276,20 +281,20 @@ async def sync_meta_documents_now(session, document_ids) -> int:
     ).all()
 
     groups = defaultdict(list)
-    for did, d_active, d_status, d_searchable, f_id, f_name, f_desc, f_searchable in rows:
+    for r in rows:
         key = (
             effective_searchable(
                 is_faq=False,
-                doc_is_active=d_active,
-                doc_status=d_status,
-                doc_is_searchable=d_searchable,
-                folder_is_searchable=f_searchable,
+                doc_is_active=r.doc_active,
+                doc_status=r.doc_status,
+                doc_is_searchable=r.doc_searchable,
+                folder_is_searchable=r.folder_searchable,
             ),
-            f_id,
-            f_name,
-            f_desc,
+            r.folder_id,
+            r.folder_name,
+            r.folder_desc,
         )
-        groups[key].append(did)
+        groups[key].append(r.doc_id)
 
     n = 0
     for (searchable, f_id, f_name, f_desc), dids in groups.items():

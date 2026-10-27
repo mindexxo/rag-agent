@@ -1,9 +1,10 @@
-"""검색 결과 자료형 — `RetrievedChunk`·`RetrievalResult`·`RetrievalCandidates`의 정의점.
+"""검색 결과 자료형 — `RetrievedChunk`·`RetrievalResult`·`RetrievalCandidates`·`DenseHits`·`GateVerdict`의 정의점.
 
 엔진 쪽(os_search)과 조합 쪽(retriever)이 서로를 import하지 않고 같은 자료형을 쓰도록 0층에 둔다. 로직은 두지 않는다.
 """
 
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 
 @dataclass
@@ -56,3 +57,18 @@ class RetrievalCandidates:
     chunks: list[RetrievedChunk]
     top_dense_distance: float
     query_embedding: list[float] | None = field(default=None, repr=False)
+
+
+class DenseHit(NamedTuple):
+    chunk_id: int
+    distance: float  # cosine distance
+
+
+class DenseHits(NamedTuple):
+    per_query_ids: list[list[int]]  # 쿼리별 kNN id(원본 먼저)
+    top: list[DenseHit]  # 원본 쿼리 결과만 — 변형 쿼리가 게이트를 흔들지 않게
+
+
+class GateVerdict(NamedTuple):
+    no_evidence: bool
+    reason: str | None  # 'no_results' | 'low_similarity' | None

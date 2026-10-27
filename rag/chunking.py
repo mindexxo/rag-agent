@@ -32,7 +32,7 @@ from docx.text.paragraph import Paragraph as DocxParagraph
 from llama_index.core.node_parser import SentenceSplitter
 
 from config import settings
-from rag.identifiers import is_heading_line, split_heading_line
+from rag.identifiers import HeadingSplit, is_heading_line, split_heading_line
 from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN, estimate_tokens_conservative
 
 logger = logging.getLogger(__name__)
@@ -1000,7 +1000,7 @@ def _join_split_article_titles(elements):
             and nxt is not None
             and _docling_norm(nxt[1] or '') in (')', '）')
             and (head := split_heading_line(t))
-            and head[0] == t
+            and head.head == t
             and not any(c in t for c in ')）')
         ):
             yield label, f'{t} {_docling_norm(nxt[1])}', page, table
@@ -1029,9 +1029,10 @@ def _sections_from_docling_elements(elements) -> list[_Section]:
     seen_chapter = False
     for label, text, page, table_markdown in _join_split_article_titles(elements):
         if label == 'text' and seen_title and (head := split_heading_line(_docling_norm(text))):
-            items.append((page, head[0], 3 if seen_chapter else 2))  # ① 조 제목 꼴 본문 요소 → 제목(+ 이어진 글은 본문)
-            if head[1]:
-                items.append((page, head[1], None))
+            # ① 조 제목 꼴 본문 요소 → 제목(+ 이어진 글은 본문)
+            items.append((page, head.head, 3 if seen_chapter else 2))
+            if head.rest:
+                items.append((page, head.rest, None))
             continue
         if label == 'section_header':
             text = _docling_norm(text)
@@ -1339,8 +1340,8 @@ def _split_heading_head(text: str) -> tuple[str, str]:
     섹션이 생기지 않아 색인에서 사라진다.
     """
     first, _, rest_lines = text.partition('\n')
-    head, rest = split_heading_line(first) or (first.strip(), '')  # 장('제 N 장 …')은 첫 줄 전체가 머리
-    return head, (rest + ('\n' + rest_lines if rest_lines else '')).strip()
+    split = split_heading_line(first) or HeadingSplit(first.strip(), '')  # 장('제 N 장 …')은 첫 줄 전체가 머리
+    return split.head, (split.rest + ('\n' + rest_lines if rest_lines else '')).strip()
 
 
 def _docx_fallback_headings(items: list[tuple[bool, int, str, bool]]) -> list[tuple[bool, int, str, bool]]:

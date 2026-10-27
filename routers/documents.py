@@ -263,7 +263,7 @@ async def upload_document(
 
     # 4. 파일 인덱싱 후 저장 (mime은 handle_upload가 blob_path에서 직접 구한다)
     try:
-        doc, stale_blob = await handle_upload(
+        result = await handle_upload(
             session, tenant_id, filename, blob_path, description=meta.description,
             uploaded_by=user_id, folder_id=meta.folder_id, folder_given=folder_given,
             docs=docs,     # xlsx 사전검증이 이미 읽었으면 재사용 (#194) — 아니면 None이라 안에서 읽는다
@@ -280,12 +280,12 @@ async def upload_document(
         return _version_conflict(filename, await _current_version(session, tenant_id, filename))
     # failed 행을 되살린 경우 옛 blob은 **커밋 뒤에** 지운다 (#161) — 커밋 전에 지우면 롤백 시
     # DB는 옛 경로를 가리키는데 파일은 없다. failed는 인용된 적이 없어 보존할 이유도 없다.
-    if stale_blob:
-        Path(stale_blob).unlink(missing_ok=True)
+    if result.stale_blob:
+        Path(result.stale_blob).unlink(missing_ok=True)
 
     # 색인 대기열 행은 handle_upload가 문서와 같은 트랜잭션에 등록했다 (#139 outbox) —
     # 워커 cron(1분)이 처리한다. 응답 시점의 status는 pending이고, 검색 반영은 최대 1~5분.
-    return _to_response(doc)
+    return _to_response(result.document)
 
 def _list_where(tenant_id: str, q: str | None, folder_id: int | None,
                 status: list[str] | None, is_searchable: bool | None):

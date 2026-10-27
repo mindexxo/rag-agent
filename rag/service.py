@@ -12,7 +12,7 @@ import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +20,7 @@ from sqlalchemy.orm import aliased
 
 from config import settings
 from rag import cache
-from rag.citation_labels import sources_from_chunks
+from rag.citation_labels import CitationCandidates, sources_from_chunks
 from rag.clients import shared_aux_llm, shared_llm
 from rag.conversation import (
     build_prior_turns,
@@ -31,7 +31,7 @@ from rag.conversation import (
     trim_messages_for_condense,
 )
 from rag.guardrail import classify_and_guard
-from rag.models import Conversation, Message, TurnStatus
+from rag.models import Attachment, Conversation, Message, TurnStatus
 from rag.prompt_texts import BLOCKED_INPUT_ANSWER, NO_EVIDENCE_ANSWER, SMALLTALK_ANSWER
 from rag.prompts import (
     build_chat_prompt,
@@ -46,6 +46,12 @@ from rag.turn_state import add_pending_turn, finalize_turn, last_unanswered_turn
 from schemas.kms import QueryAttachment, SourceCitation
 
 logger = logging.getLogger(__name__)
+
+
+class ResolvedConversation(NamedTuple):
+    conversation: Conversation
+    attachments: list[Attachment]  # 프롬프트 주입용 — 최신 max_attachments개
+    new_attachments: list[Attachment]  # 이번 턴에 저장할 신규분 — 주입용이 비어도 있을 수 있다
 
 
 @dataclass
@@ -63,7 +69,7 @@ class PreparedRag:
     cache_kind: Literal["semantic"] | None = None
     # knowledge=RAG, other=대화/메타/역할밖 제약 생성, blocked=입력 차단
     route: Literal["knowledge", "other", "blocked"] = "knowledge"
-    attachments: list[dict] = field(default_factory=list)  # 컨텍스트 주입용 — 히스토리 저장분 + 이번 턴 신규 합본
+    attachments: list[Attachment] = field(default_factory=list)  # 컨텍스트 주입용 — 히스토리 저장분 + 이번 턴 신규 합본
     domain_hint: str | None = None  # [임시] 테넌트 지식 범위 설명 — 생성 프롬프트 주입용, 저장 안 함
     assistant_message_id: int | None = (
         None  # 생성 경로: 자리표시 assistant 메시지 id (백그라운드 태스크가 UPDATE할 대상)
@@ -129,12 +135,12 @@ class PreparedRag:
         return {"knowledge": "KNOWLEDGE", "other": "OTHER"}.get(self.route)
 
     @property
-    def citation_candidates(self) -> tuple[list[SourceCitation], list[str]]:
+    def citation_candidates(self) -> CitationCandidates:
         """인용 후보 (검색 출처, 첨부 파일명) — 꼬리 제약과 파서가 공유하는 단일 파생점.
 
         둘이 어긋나면 에러 없이 다른 문서로 오귀속된다. 순서 계약은 rag/citation_labels.py가 정의점이다.
         """
-        return self.sources, [a['filename'] for a in (self.attachments or [])]
+        return CitationCandidates(self.sources, [a['filename'] for a in (self.attachments or [])])
 
     @property
     def no_evidence(self) -> bool:
@@ -189,9 +195,9 @@ class RagService:
         캐시 히트면 hit_count도 오르고, LLM을 최대 2회(분류·재작성) 부른다.
         자리표시는 status='generating'이라 load_recent_messages가 이력에서 자동으로 뺀다.
         """
-        conversation, attachment_dicts, new_attachment_dicts = await self._resolve_conversation(
-            conversation_id, attachments
-        )
+        resolved = await self._resolve_conversation(conversation_id, attachments)
+        conversation = resolved.conversation
+        attachment_dicts, new_attachment_dicts = resolved.attachments, resolved.new_attachments
         assistant_message_id = await self._open_turn(conversation.id, query, new_attachment_dicts)
 
         # RETRY가 질의를 치환하면 실패 마감이 치환된 질문을 남겨야 한다(_fail_turn 참조).
@@ -210,8 +216,8 @@ class RagService:
         conversation: Conversation,
         assistant_message_id: int,
         query: str,
-        attachment_dicts: list[dict],
-        new_attachment_dicts: list[dict],
+        attachment_dicts: list[Attachment],
+        new_attachment_dicts: list[Attachment],
         domain_hint: str | None,
     ) -> PreparedRag:
         messages = await load_recent_messages(self.session, self.tenant_id, conversation.id)
@@ -294,7 +300,7 @@ class RagService:
         assistant_message_id: int,
         query: str,
         messages: list[Message],
-        attachment_dicts: list[dict],
+        attachment_dicts: list[Attachment],
         domain_hint: str | None,
     ) -> PreparedRag:
         """ATTACHMENT 경로 — 검색·재작성을 생략하고 첨부만 근거로 생성한다.
@@ -315,7 +321,7 @@ class RagService:
             attachment_grounded=True,
         )
 
-    async def _open_turn(self, conversation_id: int, query: str, new_attachment_dicts: list[dict]) -> int:
+    async def _open_turn(self, conversation_id: int, query: str, new_attachment_dicts: list[Attachment]) -> int:
         """user 메시지 + assistant 자리표시를 커밋하고 자리표시 id를 반환한다.
 
         query는 사용자가 친 원문 그대로다(RETRY 치환은 이보다 뒤). standalone_query는 finalize_turn이 백필한다.
@@ -357,21 +363,21 @@ class RagService:
         self,
         conversation_id: int | None,
         attachments: list[QueryAttachment] | None,
-    ) -> tuple[Conversation, list[dict], list[dict]]:
-        """대화를 확보하고 (대화, 주입용 첨부, 이번 턴 신규 첨부)를 반환한다.
+    ) -> ResolvedConversation:
+        """대화를 확보하고 주입용 첨부와 이번 턴 신규 첨부를 모은다.
 
         커밋하지 않는다 — _open_turn의 commit이 대화와 첫 턴을 한 트랜잭션으로 확정한다.
         주입용과 신규분은 별개다: max_attachments가 주입만 제한하므로 주입용이 비어도 신규분은 있을 수 있다.
         """
         conversation = await ensure_conversation(self.session, self.tenant_id, conversation_id, user_id=self.user_id)
 
-        new_attachment_dicts = [{'filename': a.filename, 'text': a.text} for a in (attachments or [])]
+        new_attachment_dicts = [Attachment(filename=a.filename, text=a.text) for a in (attachments or [])]
         # 컨텍스트 예산 때문에 최신 max_attachments개만 주입한다 — 저장은 전부 유지된다.
         history = await self._load_history_attachments(conversation.id, settings.max_attachments)
         all_attachments = history + new_attachment_dicts
         # list[-0:]는 '전체'라 0을 그대로 슬라이스하면 정반대 동작이 된다.
         attachment_dicts = all_attachments[-settings.max_attachments :] if settings.max_attachments > 0 else []
-        return conversation, attachment_dicts, new_attachment_dicts
+        return ResolvedConversation(conversation, attachment_dicts, new_attachment_dicts)
 
     async def _prepare_knowledge(
         self,
@@ -379,8 +385,8 @@ class RagService:
         assistant_message_id: int,
         query: str,
         messages: list[Message],
-        attachment_dicts: list[dict],
-        new_attachment_dicts: list[dict],
+        attachment_dicts: list[Attachment],
+        new_attachment_dicts: list[Attachment],
         domain_hint: str | None,
         display_query: str | None = None,
         precomputed_standalone: str | None = None,
@@ -459,7 +465,7 @@ class RagService:
             display_query=display_query,
         )
 
-    async def _load_history_attachments(self, conversation_id: int, limit: int) -> list[dict]:
+    async def _load_history_attachments(self, conversation_id: int, limit: int) -> list[Attachment]:
         """대화에 저장된 첨부를 시간순으로 모은다 — 매 턴 <첨부 문서> 근거 블록으로 재주입하기 위해.
 
         주입은 최신 limit개만 쓰므로 조회도 최신 limit행으로 제한한다(행당 첨부 1개 이상).

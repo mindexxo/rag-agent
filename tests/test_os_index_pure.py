@@ -38,7 +38,7 @@ def test_searchable_판정이_조건표대로다():
 
 
 class _Chunk:
-    """색인 대상 청크의 최소 형태(_ParsedChunk 모양). dense 속성이 없는 상태도 만들 수 있다."""
+    """색인 대상 청크의 최소 형태(ParsedChunk 모양). dense 속성이 없는 상태도 만들 수 있다."""
 
     def __init__(self, cid=1, text='반품은 7일 이내', dense=None, has_dense=True):
         self.id, self.text = cid, text

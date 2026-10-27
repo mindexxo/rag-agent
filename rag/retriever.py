@@ -27,7 +27,7 @@ from config import settings
 from rag import metrics, os_search, otel
 from rag.embeddings import embed_texts
 from rag.identifiers import cut_identifier_span, normalize_identifiers
-from rag.retrieval_types import RetrievalCandidates, RetrievalResult, RetrievedChunk
+from rag.retrieval_types import DenseHits, GateVerdict, RetrievalCandidates, RetrievalResult, RetrievedChunk
 from rag.tokens import estimate_tokens_conservative
 
 logger = logging.getLogger(__name__)
@@ -56,8 +56,7 @@ def _rrf_fuse(
 # 아래 세 얇은 래퍼는 이름을 바꾸거나 없애지 말 것 — eval/hybrid_weights.py가 이 이름으로 monkeypatch한다.
 
 
-async def _dense_candidates(tenant_id: str, q_embs: list, candidates_per_branch: int):
-    """(쿼리별 id 리스트, 원본 쿼리의 [(id, distance)])."""
+async def _dense_candidates(tenant_id: str, q_embs: list, candidates_per_branch: int) -> DenseHits:
     return await os_search.search_dense_per_query(tenant_id, q_embs, candidates_per_branch)
 
 
@@ -176,15 +175,11 @@ async def retrieve_candidates(
     q_embs = await embed_texts(queries, kind="query")
     query_embedding = q_embs[0].dense  # 캐시가 재사용하는 원본 쿼리 벡터 — Embedding 래퍼는 여기서 벗긴다
 
-    per_query_ids, dense_results = await _dense_candidates(
-        tenant_id,
-        q_embs,
-        candidates_per_branch,
-    )
+    dense = await _dense_candidates(tenant_id, q_embs, candidates_per_branch)
 
     # 어느 쪽이든 자르지 않는다 — 슬라이스는 리랭크 뒤에서 한 번만.
-    multi = len(per_query_ids) > 1
-    top_ids = _rank_multi(per_query_ids) if multi else per_query_ids[0]
+    multi = len(dense.per_query_ids) > 1
+    top_ids = _rank_multi(dense.per_query_ids) if multi else dense.per_query_ids[0]
 
     # dense가 비면 어휘 주입도 안 한다 — 어휘 후보만으로 채우면 '근거 없음' 판정이 조용히 무력화된다.
     if not top_ids:
@@ -247,7 +242,7 @@ async def retrieve_candidates(
     result = result[:top_n]
 
     # 게이트 신호는 원본 쿼리의 top-1 dense 거리다.
-    top_dense_dist = dense_results[0][1] if dense_results else 999.0
+    top_dense_dist = dense.top[0].distance if dense.top else 999.0
     return RetrievalCandidates(chunks=result, top_dense_distance=top_dense_dist, query_embedding=query_embedding)
 
 
@@ -257,16 +252,16 @@ async def retrieve_candidates(
 def apply_gate(
     candidates: RetrievalCandidates,
     max_dense_distance: float = 0.6,  # cosine distance 임계값 — 운영 retrieve()는 값을 넘긴다
-) -> tuple[bool, str | None]:
-    """근거 게이트 판정 → (no_evidence, reason). reason: 'no_results' | 'low_similarity' | None.
+) -> GateVerdict:
+    """근거 게이트 판정.
 
     운영은 retrieve()가 GATE_DISABLED를 넘겨 'no_results'만 작동한다 — 유한 임계값은 eval sweep 전용.
     """
     if not candidates.chunks:
-        return True, 'no_results'
+        return GateVerdict(True, 'no_results')
     if candidates.top_dense_distance > max_dense_distance:
-        return True, 'low_similarity'
-    return False, None
+        return GateVerdict(True, 'low_similarity')
+    return GateVerdict(False, None)
 
 
 # ===== 조합 wrapper (운영 경로) =====================================
@@ -294,10 +289,10 @@ async def retrieve(
         )
         otel.set_attrs(sp, {otel.INPUT_VALUE: query, 'kms.expanded_queries': list(expanded_queries or [])})
         otel.set_documents(sp, candidates.chunks)
-    no_evidence, reason = apply_gate(candidates, max_dense_distance)
+    verdict = apply_gate(candidates, max_dense_distance)
     return RetrievalResult(
         chunks=prepare_evidence(candidates.chunks, top_k),
-        no_evidence=no_evidence,
-        reason=reason,
+        no_evidence=verdict.no_evidence,
+        reason=verdict.reason,
         query_embedding=candidates.query_embedding,
     )

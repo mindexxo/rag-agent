@@ -10,6 +10,8 @@
 """
 
 from contextlib import contextmanager
+from contextvars import Token
+from typing import NamedTuple
 
 from opentelemetry import context as otel_context
 from opentelemetry import trace
@@ -58,17 +60,21 @@ def span(name: str, kind: str):
         yield sp
 
 
-def start_turn(name: str = 'kms.query'):
+class TurnSpan(NamedTuple):
+    span: trace.Span
+    token: Token  # 핸들러 finally에서 항상 detach_turn으로 해제한다
+
+
+def start_turn(name: str = 'kms.query') -> TurnSpan:
     """턴 루트 스팬 시작 — SSE처럼 핸들러 반환 뒤 백그라운드 태스크가 턴을 끝내는 자리용.
 
-    반환 (span, token): token은 핸들러 finally에서 항상 detach_turn으로 해제하고,
     span.end()는 턴이 실제로 끝나는 쪽(핸들러 or 백그라운드 태스크)이 1회 호출한다.
     """
     sp = _tracer.start_span(name)
     if sp.is_recording():
         sp.set_attribute(SPAN_KIND, 'CHAIN')
     token = otel_context.attach(trace.set_span_in_context(sp))
-    return sp, token
+    return TurnSpan(sp, token)
 
 
 def detach_turn(token) -> None:

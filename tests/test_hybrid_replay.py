@@ -12,7 +12,7 @@ from config import settings
 from eval import hybrid_replay as hr
 from rag.embeddings import Embedding
 from rag.identifiers import normalize_identifiers
-from rag.retrieval_types import RetrievedChunk
+from rag.retrieval_types import DenseHit, DenseHits, RetrievedChunk
 
 
 def _chunk(cid, *, table_sheet=None, identifiers=(), text="본문"):
@@ -61,7 +61,7 @@ def production(monkeypatch):
     async def _dense(tenant, q_embs, n):
         assert n == 30
         rec = state["rec"]
-        return [[c for c, _ in rec["dense30"]]], [tuple(x) for x in rec["dense30"]]
+        return DenseHits([[c for c, _ in rec["dense30"]]], [DenseHit(*x) for x in rec["dense30"]])
 
     async def _lexical(tenant, query, limit):
         assert limit == 30

@@ -42,7 +42,7 @@ from rag import os_search
 from rag.embeddings import Embedding, embed_texts
 from rag.identifiers import normalize_identifiers
 from rag.os_client import NORI_FIELD, client, close_client
-from rag.retrieval_types import RetrievedChunk
+from rag.retrieval_types import DenseHit, DenseHits, RetrievedChunk
 
 RESULT_DIR = Path("eval/results")
 CONCURRENCY = 6       # TEI 공유 장비 — retrieval_article과 같은 안전선
@@ -118,8 +118,8 @@ async def _bm25_scored(tenant: str, query: str, n: int) -> list[list]:
 
 async def capture_one(it: dict, vec: list[float]) -> tuple[dict, dict[int, RetrievedChunk]]:
     tenant, query, emb = it["tenant"], it["query"], [Embedding(dense=vec)]
-    _, dense30 = await os_search.search_dense_per_query(tenant, emb, 30)          # 운영 크기 — 운영 함수 그대로
-    _, dense100 = await os_search.search_dense_per_query(tenant, emb, DEPTH)
+    dense30 = (await os_search.search_dense_per_query(tenant, emb, 30)).top          # 운영 크기 — 운영 함수 그대로
+    dense100 = (await os_search.search_dense_per_query(tenant, emb, DEPTH)).top
     bm25_30 = await os_search.search_lexical(tenant, query, 30)
     bm25_100 = await _bm25_scored(tenant, query, DEPTH)
     tokens = normalize_identifiers(query) if settings.ident_channel_enabled else []
@@ -213,7 +213,7 @@ def _patched():
     async def _dense(tenant, q_embs, n):
         rec = _CURRENT.get()[0]
         assert n == 30, n
-        return [[c for c, _ in rec["dense30"]]], [tuple(x) for x in rec["dense30"]]
+        return DenseHits([[c for c, _ in rec["dense30"]]], [DenseHit(*x) for x in rec["dense30"]])
 
     async def _lexical(tenant, query, limit):
         assert limit == 30, limit
@@ -276,7 +276,7 @@ async def verify(path: Path, live_n: int) -> bool:
     async def _live_one(r):
         async with sem:
             emb = [Embedding(dense=vecs[r["qid"]])]
-            _, d30 = await os_search.search_dense_per_query(r["tenant"], emb, 30)
+            d30 = (await os_search.search_dense_per_query(r["tenant"], emb, 30)).top
             b30 = await os_search.search_lexical(r["tenant"], r["query"], 30)
             drift = [c for c, _ in d30] != [c for c, _ in r["dense30"]] or b30 != r["bm25_30"]
             return r, await _production_ids(r), drift

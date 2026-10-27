@@ -9,6 +9,7 @@ import mimetypes
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -287,6 +288,11 @@ async def _reuse_failed_row(session: AsyncSession, target_id: int, **values) -> 
     ).scalar()
 
 
+class UploadResult(NamedTuple):
+    document: Document
+    stale_blob: str | None  # 되살린 failed 행의 옛 blob — 호출부가 커밋 뒤에 지운다
+
+
 async def _reuse_failed_document(
     session: AsyncSession,
     tenant_id: str,
@@ -298,7 +304,7 @@ async def _reuse_failed_document(
     uploaded_by: str | None,
     folder_id: int | None,
     folder_given: bool,
-) -> tuple[Document, str | None]:
+) -> UploadResult:
     """failed만 있는 파일명의 재업로드 — 최신 failed를 되살리고 나머지는 내린다(이유는 handle_upload).
 
     반환은 handle_upload와 같은 (문서, 지워야 할 옛 blob) — 옛 blob은 호출부가 **커밋 뒤에** 지운다.
@@ -333,7 +339,7 @@ async def _reuse_failed_document(
     await _retire_documents(session, tenant_id, others, status_reason='failed_superseded')
     await session.refresh(target)  # UPDATE로 바뀐 값을 ORM 객체에 반영(응답에 쓴다)
     outbox.enqueue(session, tenant_id, outbox.INDEX_DOCUMENT, document_id=target.id)
-    return target, stale_blob
+    return UploadResult(target, stale_blob)
 
 
 async def document_versions(session: AsyncSession, tenant_id: str, filename: str) -> list[Document]:
@@ -381,7 +387,7 @@ async def handle_upload(
     folder_id: int | None = None,
     folder_given: bool = False,
     docs: list[Document] | None = None,
-) -> tuple[Document, str | None]:
+) -> UploadResult:
     """업로드 시점 처리: pending 행 + INDEX_DOCUMENT 대기열 행을 **같은 트랜잭션**에 등록한다(커밋은 호출부).
 
     반환은 (문서, 지워야 할 옛 blob 또는 None) — 옛 blob은 **호출부가 커밋 뒤에** 지운다(롤백 시 파일 소실 방지).
@@ -429,4 +435,4 @@ async def handle_upload(
     session.add(doc)
     await session.flush()  # doc.id 확보(대기열 payload에 필요)
     outbox.enqueue(session, tenant_id, outbox.INDEX_DOCUMENT, document_id=doc.id)
-    return doc, None
+    return UploadResult(doc, None)

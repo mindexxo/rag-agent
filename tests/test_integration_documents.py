@@ -456,9 +456,9 @@ async def test_동시_삽입은_유니크_인덱스가_막고_409(client, tenant
     # 인자는 그대로 흘려보낸다 — handle_upload에 파라미터가 하나 늘 때마다 이 대역이 깨져
     # 무관한 테스트가 실패하던 것을 끊는다(#164·#165에서 연달아 겪었다).
     async def _collide(session, t, filename, blob_path, **kw):
-        doc, stale = await real(session, t, filename, blob_path, **kw)
-        doc.version = 1          # 남이 방금 v1을 넣은 것과 같은 결과
-        return doc, stale
+        result = await real(session, t, filename, blob_path, **kw)
+        result.document.version = 1          # 남이 방금 v1을 넣은 것과 같은 결과
+        return result
 
     monkeypatch.setattr(rd, 'handle_upload', _collide)
 

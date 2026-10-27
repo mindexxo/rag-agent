@@ -35,7 +35,7 @@ async def main():
         for g in gold:
             cands = await retrieve_candidates(session, TENANT, g["query"], top_n=20)
             # threshold별 게이트 판정: True=거절(no_evidence)
-            rejects = {th: apply_gate(cands, th)[0] for th in SWEEP}
+            rejects = {th: apply_gate(cands, th).no_evidence for th in SWEEP}
             rows.append({"type": g["type"], "rejects": rejects})
 
     n_pass = sum(1 for r in rows if r["type"] in SHOULD_PASS)

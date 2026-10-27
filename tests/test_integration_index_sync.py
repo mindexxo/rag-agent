@@ -141,7 +141,7 @@ async def test_reconcile은_사라진_ready_문서를_재등재하고_유령_청
     assert await indexed_chunk_texts(doc_id) == []
     # 잉여 재현: PG에 없는 document_id의 청크를 이 테넌트로 넣는다.
     ghost = os_index.build_doc(
-        os_index._ParsedChunk(cid=os_index.chunk_os_id(document_id=999_999_001, chunk_index=0),
+        os_index.ParsedChunk(id=os_index.chunk_os_id(document_id=999_999_001, chunk_index=0),
                                 tenant_id=tenant_id, document_id=999_999_001, faq_id=None,
                                 text='유령', heading_path=[], page=None, meta={}, dense=[0.01] * 1024),
         '유령.md', 1, searchable=True)
@@ -168,7 +168,7 @@ async def test_reconcile_faqs는_사라진_FAQ를_재등재하고_유령을_지�
     assert await faq_doc(faq_id)
     await os_index._delete_by_terms('faq_id', [faq_id])
     ghost = os_index.build_doc(
-        os_index._ParsedChunk(cid=os_index.chunk_os_id(faq_id=999_999_002), tenant_id=tenant_id,
+        os_index.ParsedChunk(id=os_index.chunk_os_id(faq_id=999_999_002), tenant_id=tenant_id,
                                 document_id=None, faq_id=999_999_002, text='Q: 유령 A: 유령',
                                 heading_path=['유령'], page=None, meta={}, dense=[0.01] * 1024),
         None, None, searchable=True)

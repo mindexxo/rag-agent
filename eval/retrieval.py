@@ -158,8 +158,7 @@ def gate_sweep(cands) -> dict[float, str]:
     """
     out = {}
     for th in SWEEP:
-        no_ev, _ = apply_gate(cands, max_dense_distance=th)
-        out[th] = "reject" if no_ev else "pass"
+        out[th] = "reject" if apply_gate(cands, max_dense_distance=th).no_evidence else "pass"
     return out
 
 

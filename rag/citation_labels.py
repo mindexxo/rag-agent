@@ -8,9 +8,18 @@
 된다 — 후보 목록 파생은 PreparedRag.citation_candidates(rag/service.py) 한 곳에서 한다.
 """
 
+from typing import NamedTuple
+
 # 꼬리 마커의 정의점은 rag/prompt_texts.py다.
 from rag.prompt_texts import TAIL_END, TAIL_START
 from schemas.kms import SourceCitation
+
+
+class CitationCandidates(NamedTuple):
+    """인용 후보 — 검색 출처 다음 첨부 순서. `*`로 펼쳐 꼬리 제약과 파서에 같은 순서를 넘긴다."""
+
+    sources: list[SourceCitation]
+    attachment_filenames: list[str]
 
 
 def citation_tail(numbers) -> str:

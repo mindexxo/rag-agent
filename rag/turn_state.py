@@ -13,7 +13,7 @@ from datetime import timedelta
 from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from rag.models import Conversation, Message, TurnStatus
+from rag.models import Attachment, Conversation, Message, TurnStatus
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ def last_unanswered_turn(messages: list[Message]) -> tuple[Message, Message] | N
 
 
 def _new_user_message(
-    tenant_id: str, conversation_id: int, user_query: str, attachments: list[dict] | None, user_id: str | None
+    tenant_id: str, conversation_id: int, user_query: str, attachments: list[Attachment] | None, user_id: str | None
 ) -> Message:
     """user Message 생성. standalone_query는 턴 시작 시점엔 아직 모르므로 finalize_turn이 백필한다."""
     return Message(
@@ -105,7 +105,7 @@ async def add_pending_turn(
     tenant_id: str,
     conversation_id: int,
     user_query: str,
-    attachments: list[dict] | None = None,
+    attachments: list[Attachment] | None = None,
     user_id: str | None = None,
 ) -> Message:
     """user 메시지 + generating 상태의 assistant 자리표시를 세션에 등록하고 자리표시를 반환한다.

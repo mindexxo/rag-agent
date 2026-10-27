@@ -13,7 +13,7 @@
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, TypedDict
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
@@ -204,6 +204,13 @@ class TurnStatus(StrEnum):
     BLOCKED = 'blocked'  # 입력 가드 차단
 
 
+class Attachment(TypedDict):
+    """채팅 첨부 한 건 — Message.attachments JSONB에 이 모양의 목록으로 저장된다."""
+
+    filename: str
+    text: str
+
+
 class Message(Base):
     """대화 내 한 턴. role로 user/assistant 구분."""
 
@@ -222,7 +229,7 @@ class Message(Base):
     )  # assistant: 실제 인용된 출처(done일 때만 — 그 외 빈 목록, user는 NULL)
     attachments: Mapped[Any | None] = mapped_column(
         JSONB(none_as_null=True)
-    )  # user: 첨부 추출 텍스트 [{filename, text}]. none_as_null — IS NOT NULL 필터가 맞게 SQL NULL로 저장
+    )  # user: 첨부 목록(list[Attachment]). none_as_null — IS NOT NULL 필터가 맞게 SQL NULL로 저장
     status: Mapped[str] = mapped_column(
         default="done", server_default="done"
     )  # 값 어휘는 TurnStatus (Document.status와 별개)

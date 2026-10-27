@@ -7,7 +7,7 @@
 
 from config import settings
 from rag.os_client import NORI_FIELD, client
-from rag.retrieval_types import RetrievedChunk
+from rag.retrieval_types import DenseHit, DenseHits, RetrievedChunk
 
 
 def score_to_cosine_distance(score: float) -> float:
@@ -45,14 +45,11 @@ async def search_dense_per_query(
     tenant_id: str,
     q_embs: list,
     candidates_per_branch: int,
-) -> tuple[list[list[int]], list[tuple[int, float]]]:
-    """쿼리별 kNN top-N. (쿼리별 id 리스트, 원본 쿼리의 (id, cosine_distance)) 반환.
-
-    두 번째 값은 게이트 신호 전용이라 원본 쿼리(index 0) 결과만 담는다 — 변형 쿼리가 게이트를 흔들지 않게.
-    """
+) -> DenseHits:
+    """쿼리별 kNN top-N. `top`은 게이트 신호 전용이라 원본 쿼리(index 0) 결과만 담는다."""
     os_client = client()
     per_query_ids: list[list[int]] = []
-    dense_results: list[tuple[int, float]] = []
+    top: list[DenseHit] = []
     for i, q_emb in enumerate(q_embs):
         resp = await os_client.search(
             index=settings.opensearch_index,
@@ -64,9 +61,9 @@ async def search_dense_per_query(
         )
         hits = resp["hits"]["hits"]
         if i == 0:
-            dense_results = [(int(h["_source"]["chunk_id"]), score_to_cosine_distance(h["_score"])) for h in hits]
+            top = [DenseHit(int(h["_source"]["chunk_id"]), score_to_cosine_distance(h["_score"])) for h in hits]
         per_query_ids.append([int(h["_source"]["chunk_id"]) for h in hits])
-    return per_query_ids, dense_results
+    return DenseHits(per_query_ids, top)
 
 
 async def fetch_chunk_map(ids: list[int]) -> dict:

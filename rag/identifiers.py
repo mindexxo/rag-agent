@@ -6,6 +6,7 @@
 """
 
 import re
+from typing import NamedTuple
 
 # 정규화 규칙 — 순서가 의미 있다(긴 꼴 먼저). 치환 결과는 아래 _TOKEN이 뽑는 꼴이어야 한다.
 _RULES = (
@@ -40,8 +41,13 @@ def normalize_identifiers(text: str) -> list[str]:
 _HEADING_HEAD = re.compile(r'^제?\s*\d+\s*조(?:\s*의?\s*\d+)*+\s*[(（]')
 
 
-def split_heading_line(line: str) -> tuple[str, str] | None:
-    """조 제목 줄이면 (제목 머리, 같은 줄에 이어진 본문), 아니면 None — 조 제목 판정의 정의점.
+class HeadingSplit(NamedTuple):
+    head: str  # 조 번호 + 괄호 제목
+    rest: str  # 같은 줄에 이어진 본문(없으면 빈 문자열)
+
+
+def split_heading_line(line: str) -> HeadingSplit | None:
+    """조 제목 줄이면 제목 머리와 같은 줄에 이어진 본문, 아니면 None — 조 제목 판정의 정의점.
 
     제목 = 줄 머리 조 번호 + 괄호 제목, 짝 맞는 닫는 괄호 뒤가 줄끝이거나 공백(공백 뒤는 같은 문단의 본문)이다.
     괄호는 짝을 세어 넘고(전각 포함), 줄 안에서 안 닫히면 제목이다(레이아웃 모델이 닫는 괄호를 다음 줄로 떨어뜨린 꼴).
@@ -60,8 +66,8 @@ def split_heading_line(line: str) -> tuple[str, str] | None:
             depth -= 1
             if depth == 0:
                 rest = s[i + 1 :]
-                return (s[: i + 1], rest.strip()) if not rest or rest[0].isspace() else None
-    return s, ''
+                return HeadingSplit(s[: i + 1], rest.strip()) if not rest or rest[0].isspace() else None
+    return HeadingSplit(s, '')
 
 
 def is_heading_line(line: str) -> bool:

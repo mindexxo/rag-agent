@@ -12,6 +12,7 @@ from rag.citation_labels import (
     sources_from_chunks,
 )
 from rag.llm import CitationTail
+from rag.models import Attachment
 from rag.prompt_texts import (
     _INTENT_GUARD_SYSTEM_PROMPT_TEMPLATE,
     _OTHER_SYSTEM_PROMPT_TEMPLATE,
@@ -69,7 +70,7 @@ def build_context_blocks(chunks: list[RetrievedChunk]) -> str:
     return '\n'.join(blocks)
 
 
-def build_attachment_blocks(attachments: list[dict], start: int = 1) -> str:
+def build_attachment_blocks(attachments: list[Attachment], start: int = 1) -> str:
     """<첨부 문서> 블록 조립(없으면 빈 문자열). [번호]는 검색 출처 번호에 이어 start부터 매긴다."""
     if not attachments:
         return ''
@@ -98,7 +99,7 @@ def build_user_message(
     query: str,
     chunks: list[RetrievedChunk],
     prior_turns: list[dict] | None = None,
-    attachments: list[dict] | None = None,
+    attachments: list[Attachment] | None = None,
     standalone_query: str | None = None,
 ) -> str:
     """KNOWLEDGE 유저 메시지 조립. query는 "질문:" 슬롯의 원 질문이다.
@@ -136,7 +137,7 @@ def build_knowledge_generation_prompt(
     *,
     standalone_query: str | None = None,
     prior_turns: list[dict] | None = None,
-    attachments: list[dict] | None = None,
+    attachments: list[Attachment] | None = None,
     domain_hint: str | None = None,
 ) -> list[dict]:
     """KNOWLEDGE 답변 생성 messages의 조립점 — 운영과 eval이 함께 쓴다.

@@ -83,7 +83,7 @@ async def query(
     # 반환한 뒤에야 답이 확정되므로, span.end()를 스트림 쪽에 핸드오프해 루트 duration이
     # 턴 전체를 반영하게 한다(#54). 핸들러 finally는 스트림이 시작되지 못한 경우
     # (prepare 단계 예외)만 직접 종료한다.
-    root_span, otel_token = otel.start_turn()
+    turn = otel.start_turn()
     root_handed_off = False
     try:
         try:
@@ -99,13 +99,13 @@ async def query(
             # 아니라 시스템 건강 신호다 — 폴백을 걷어내면서 새로 생긴 실패 계열이라, 여기서
             # 마킹하지 않으면 에러율 대시보드에 아예 안 잡힌다. 아래 `except HTTPException`이
             # 마킹 없이 통과시키므로 이 자리에서 직접 남겨야 한다.
-            otel.mark_error(root_span, exc)
+            otel.mark_error(turn.span, exc)
             raise HTTPException(status_code=503, detail='일시적으로 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.')
         except ValueError:
             # 존재하지 않거나 다른 테넌트 소유의 conversation_id — 500 아닌 404 (REVIEW findings ③)
             # 정상 클라이언트 오류 — 스팬을 ERROR로 남기지 않는다 (에러율 오염 방지, 리뷰 반영)
             raise HTTPException(status_code=404, detail='대화를 찾을 수 없습니다.')
-        otel.set_attrs(root_span, {          # 루트 스팬 속성 — prepare 결과 반영 (#7)
+        otel.set_attrs(turn.span, {          # 루트 스팬 속성 — prepare 결과 반영 (#7)
             otel.INPUT_VALUE: request.query,
             'kms.tenant_id': tenant_id,
             'kms.conversation_id': prepared.conversation_id,
@@ -117,7 +117,7 @@ async def query(
         # ── 즉시 경로 (비LLM: 입력차단/캐시히트/근거없음) ──
         if not prepared.needs_generation:
             response = StreamingResponse(
-                streaming.immediate_stream(service, prepared, session, t_request, root_span),
+                streaming.immediate_stream(service, prepared, session, t_request, turn.span),
                 media_type="text/event-stream", headers=_SSE_HEADERS,
             )
             # 스팬 종료는 immediate_stream의 finally가 담당(#54) — 플래그는 응답 객체 생성 '뒤'에
@@ -131,7 +131,7 @@ async def query(
         # 자리표시는 prepare()가 턴 시작에 이미 커밋했다(#72) — prepared.assistant_message_id가
         # 채워져 있으므로 여기서 따로 열 것이 없다. 태스크가 다른 세션에서 그 id로 UPDATE한다.
         queue: asyncio.Queue = asyncio.Queue()      # unbounded 필수 — 근거는 streaming.queue_reader docstring
-        streaming.spawn_generation(prepared, queue, lease, t_request, root_span)
+        streaming.spawn_generation(prepared, queue, lease, t_request, turn.span)
         # 소유권 이전 표시는 spawn '뒤'에 — spawn이 실패하면 플래그가 서지 않아 요청 쪽이
         # 정리한다(슬롯 유출·스팬 미종료 방지). create_task와 이 두 줄 사이엔 await가 없어
         # 태스크가 먼저 돌아 이중 반납할 여지도 없다.
@@ -144,9 +144,9 @@ async def query(
     except HTTPException:
         raise                                       # 정상 클라이언트 오류(404 등) — ERROR 마킹 없이
     except Exception as exc:
-        otel.mark_error(root_span, exc)             # 예상외 오류만 스팬 ERROR (에러율 신뢰 유지)
+        otel.mark_error(turn.span, exc)             # 예상외 오류만 스팬 ERROR (에러율 신뢰 유지)
         raise
     finally:
-        otel.detach_turn(otel_token)
+        otel.detach_turn(turn.token)
         if not root_handed_off:
-            root_span.end()
+            turn.span.end()

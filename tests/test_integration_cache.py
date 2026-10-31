@@ -8,7 +8,8 @@ from sqlalchemy import select
 
 from database import AsyncSessionLocal
 from rag import cache
-from rag.models import AnswerCache as AnswerCacheRow, Conversation
+from rag.models import AnswerCache as AnswerCacheRow
+from rag.models import Conversation
 from rag.prepared import PreparedRag
 from rag.prompt_texts import NO_EVIDENCE_ANSWER
 from rag.retrieval_types import RetrievalResult
@@ -62,11 +63,11 @@ async def test_테넌트_간_캐시_격리(tenant_id, fake_embed):
     async with AsyncSessionLocal() as session:
         await cache.save_answer(session, tenant_id, '배송비 얼마예요', 'A사 3천원', [], [5])
         await session.commit()
-        try:
-            # 같은 질의·같은 doc id라도 타 테넌트에선 절대 hit 금지 (캐시판 격리)
-            assert await cache.get_semantic(session, other, '배송비 얼마예요', [5]) is None
-        finally:
-            pass  # other 테넌트엔 아무것도 안 만듦 — 정리 불필요
+        # 판정기를 넘겨야 격리를 본다 — 판정기 없이는 테넌트와 무관하게 항상 miss다.
+        # 같은 질의·같은 doc id·판정 승인이라 테넌트 조건 하나만 hit를 막는다.
+        assert await cache.get_semantic(session, other, '배송비 얼마예요', [5], llm=FakeLlm()) is None
+        hit = await cache.get_semantic(session, tenant_id, '배송비 얼마예요', [5], llm=FakeLlm())
+        assert hit is not None and hit.answer == 'A사 3천원'  # 양성 대조 — 같은 조건에서 자기 테넌트는 hit
 
 
 async def _prepared_with_conversation(session, tenant_id: str) -> PreparedRag:
@@ -299,7 +300,8 @@ async def test_턴당_임베딩_왕복은_1회(client, tenant_id, fake_llm, pass
 @pytest.mark.asyncio
 async def test_보존기간_지난_미히트_캐시만_청소(tenant_id, fake_embed):
     """sweep_stale(#16): last_hit_at이 cache_retention_days를 넘긴 row만 삭제."""
-    from sqlalchemy import func, update as sa_update
+    from sqlalchemy import func
+    from sqlalchemy import update as sa_update
     async with AsyncSessionLocal() as session:
         await cache.save_answer(session, tenant_id, '오래된 질문', '옛 답', [], [5])
         await cache.save_answer(session, tenant_id, '최근 질문', '새 답', [], [7])

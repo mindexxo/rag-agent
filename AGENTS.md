@@ -88,7 +88,7 @@ TEI→인덱싱·검색·캐시(`EMBED_PROVIDER`·`RERANK_PROVIDER`가 tei가 �
 
 이 목록은 실제로 혼동이 났던 것만 모았다. "왜 다른가"는 각 정의점 파일에 있다.
 
-- `Document.status`(6값: pending|parsing|embedding|ready|failed|deleted)
+- `Document.status`(4값: pending|ready|failed|deleted — 전이는 pending→ready/failed/deleted뿐)
   ≠ `Message.status`(TurnStatus 5값) — 둘 다 `rag/models.py`.
 - SSE 이벤트명 `EVENT_DONE`(`'done'`) ≠ `TurnStatus.DONE`. 어휘는 같지만 다른 축이다.
 - `PreparedRag.route`의 `'blocked'`(소문자 문자열) ≠ `TurnStatus.BLOCKED`.

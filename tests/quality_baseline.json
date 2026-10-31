@@ -211,7 +211,7 @@
   "text_norm.py": 1
  },
  "history": {
-  "config.py": 133,
+  "config.py": 132,
   "database.py": 1,
   "eval/_gold_history.py": 7,
   "eval/_golden_chunks.py": 3,

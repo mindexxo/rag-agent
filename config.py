@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     # 공급자(#289, 정의점 rag/embeddings.py): tei(사내, 기본) | openai | gemini | voyage — 상용은 LiteLLM 경유, 모델명은 접두 없이
     # (예: text-embedding-3-large, gemini-embedding-001, voyage-3.5), 차원은 항상 1024로 요청하고 응답을 검사한다.
     embed_provider: Literal["tei", "openai", "gemini", "voyage"] = "tei"
-    embed_model: str = ""                    # 상용일 때 필수(_require_vendor_model). TEI는 컨테이너당 모델 고정이라 안 본다
+    embed_model: str = ""                    # 상용일 때 모델·키 필수(_require_vendor_model_and_key). TEI는 컨테이너당 모델 고정이라 안 본다
     embed_api_key: str = ""                  # 상용 키 — .env에만 (LLM과 별개 키: 벤더가 다를 수 있다)
     embed_base_url: str = "http://localhost:38889"    # TEI 임베딩 서버 (BGE-M3, /embed) — 실주소는 .env. 상용이면 무시
     embed_timeout: float = 30.0
@@ -154,7 +154,7 @@ class Settings(BaseSettings):
     # 모델명은 접두 없이(예: rerank-v5.0-pro, rerank-3, jina-reranker-v2-base-multilingual — Cohere 목록은 /v2/models?endpoint=rerank, 10/24 기준 v5.0이 최신). 점수 눈금이 벤더마다 달라
     # ident_boost는 벤더 전환 측정 때 다시 본다.
     rerank_provider: Literal["tei", "cohere", "voyage", "jina"] = "tei"
-    rerank_model: str = ""                   # 상용일 때 필수(_require_vendor_model)
+    rerank_model: str = ""                   # 상용일 때 모델·키 필수(_require_vendor_model_and_key)
     rerank_api_key: str = ""                 # 상용 키 — .env에만
     rerank_base_url: str = "http://localhost:38890"   # TEI 리랭커 서버 (bge-reranker-v2-m3, /rerank) — 실주소는 .env. 상용이면 무시
     rerank_timeout: float = 30.0
@@ -365,15 +365,23 @@ class Settings(BaseSettings):
                                               # 올리려면 vLLM의 배치 불변(batch-invariant) 모드 같은 서버 쪽 결정성부터 확인할 것.
 
     @model_validator(mode="after")
-    def _require_vendor_model(self):
-        """상용 임베딩·리랭크 공급자를 고르면 모델명이 있어야 한다(#289).
+    def _require_vendor_model_and_key(self):
+        """상용 공급자를 고르면 모델명과 API 키가 있어야 한다 — 기동 시점에 거부한다.
 
-        빈 모델명은 LiteLLM이 "openai/"처럼 접두만 남은 이름으로 첫 호출 때 실패시키는데, 그 시점은 색인·검색 중이라
-        원인(설정 누락)이 묻힌다. 키는 검사하지 않는다 — 빈 키는 벤더가 401로 바로 알려 준다.
+        빈 모델명은 LiteLLM이 "openai/"처럼 접두만 남은 이름으로 첫 호출 때 실패시키고, 빈 키는 벤더가 첫 호출에 401을
+        주는데, 그 시점은 색인·검색·답변 중이라 원인(설정 누락)이 사용자에게 먼저 보인다. 형식만 본다 — 벤더에 실제로
+        붙어 보지는 않는다(기동이 외부 가용성에 묶이지 않게). 캡션 VLM은 벤더 선택이 없어 주소로 상용 여부를 가른다.
         """
         for name in ("embed", "rerank"):
-            if getattr(self, f"{name}_provider") != "tei" and not getattr(self, f"{name}_model"):
-                raise ValueError(f"{name.upper()}_PROVIDER={getattr(self, f'{name}_provider')}이면 {name.upper()}_MODEL이 필요합니다")
+            provider = getattr(self, f"{name}_provider")
+            if provider != "tei" and not getattr(self, f"{name}_model"):
+                raise ValueError(f"{name.upper()}_PROVIDER={provider}이면 {name.upper()}_MODEL이 필요합니다")
+            if provider != "tei" and not getattr(self, f"{name}_api_key"):
+                raise ValueError(f"{name.upper()}_PROVIDER={provider}이면 {name.upper()}_API_KEY가 필요합니다")
+        if self.llm_provider != "vllm" and self.llm_api_key in ("", "EMPTY"):
+            raise ValueError(f"LLM_PROVIDER={self.llm_provider}이면 LLM_API_KEY가 필요합니다")
+        if any(host in self.vlm_caption_url for host in _COMMERCIAL_VLM_HOSTS) and not self.vlm_caption_api_key:
+            raise ValueError("VLM_CAPTION_URL이 상용 주소면 VLM_CAPTION_API_KEY가 필요합니다")
         return self
 
     @model_validator(mode="after")
@@ -393,6 +401,9 @@ class Settings(BaseSettings):
             raise ValueError(f"이름이 바뀐 설정이 남아 있습니다 — 새 이름으로 바꾸세요: {hints}")
         return self
 
+
+# 캡션 VLM은 "주소가 곧 벤더"라 상용 여부를 주소로 판정한다(vlm_caption_url 주석).
+_COMMERCIAL_VLM_HOSTS = ("api.openai.com", "generativelanguage.googleapis.com", "api.anthropic.com")
 
 # 옛 환경변수 이름 → 새 이름 (#287). 기동 시 Settings._reject_renamed_env가 본다.
 _RENAMED_ENV = {"VLLM_BASE_URL": "LLM_BASE_URL", "VLLM_MODEL": "LLM_MODEL",

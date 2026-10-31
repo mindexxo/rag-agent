@@ -444,7 +444,7 @@ async def get_document(
     doc = (await session.execute(
         select(Document)
         .where(Document.tenant_id == tenant_id)
-        .where(Document.id == document_id)
+        .where(Document.id == document_id, Document.status != 'deleted')   # 삭제된 문서는 없는 문서 — 목록·수정·삭제와 같은 기준
     )).scalars().first()
     if doc is None:
         raise HTTPException(status_code=404, detail="document not found")

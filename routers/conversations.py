@@ -97,7 +97,7 @@ async def list_conversations(
     rows = (await session.execute(
         select(Conversation)
         .where(where)
-        .order_by(Conversation.last_used_at.desc())
+        .order_by(Conversation.last_used_at.desc(), Conversation.id.desc())   # 동점 2차 키 — 페이지 간 중복·누락 방지
         .offset(offset)
         .limit(limit)
     )).scalars().all()

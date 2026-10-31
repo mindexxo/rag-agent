@@ -140,7 +140,7 @@ class DocumentUploadMetadata(BaseModel):
     """
     model_config = ConfigDict(extra='forbid')
 
-    folder_id: int | None = None
+    folder_id: int | None = Field(None, gt=0)   # null=미분류, 0은 거절(목록 필터의 0=미분류와 다르다)
     # F1a: 표 설명 (xlsx 검색 보강). xlsx는 **필수**다(#194) — 다만 "이번 요청에 보냈는가"가
     # 아니라 "계승까지 따진 최종값이 비는가"로 판정하므로 여기서 required로 만들지 않는다.
     # 그 판정은 `routers/documents.py`의 `upload_document`가 `rag/documents.py`의 `latest_alive`로 끝낸다.
@@ -158,7 +158,7 @@ DOC_LIST_DEFAULT_LIMIT = 50
 DOC_LIST_MAX_LIMIT = BULK_MAX_ITEMS
 
 # 목록 상태 필터로 받을 수 있는 값 (rag/models.py Document.status의 어휘와 같아야 한다).
-DOC_STATUSES = frozenset({'pending', 'parsing', 'embedding', 'ready', 'failed'})
+DOC_STATUSES = frozenset({'pending', 'ready', 'failed'})   # 목록 필터 허용값 — deleted는 목록에 없다
 
 
 class DocumentListResponse(BaseModel):
@@ -183,7 +183,7 @@ class DocumentExistsResponse(BaseModel):
 
 class DocumentUpdateRequest(BaseModel):
     """문서 속성 변경 (F2). 보낸 필드만 반영 — folder_id는 null 전송 시 미분류로 이동."""
-    folder_id: int | None = None
+    folder_id: int | None = Field(None, gt=0)   # null=미분류, 0은 거절(목록 필터의 0=미분류와 다르다)
     is_searchable: bool | None = None
     # 표 설명 수정 (#194). 전까지는 파일을 다시 올려야만 고칠 수 있었다(= 새 버전 + 재파싱).
     # folder_id와 달리 model_fields_set 3단 구분을 쓰지 않는다 — description은 None이 "미분류"
@@ -201,7 +201,7 @@ class DocumentBulkUpdateRequest(BaseModel):
     대상이 하나라도 어긋나면 아무것도 바꾸지 않는다 — 판정은 routers/documents.py.
     """
     document_ids: list[int] = Field(default=[], max_length=BULK_MAX_ITEMS)
-    folder_id: int | None = None
+    folder_id: int | None = Field(None, gt=0)   # null=미분류, 0은 거절(목록 필터의 0=미분류와 다르다)
     is_searchable: bool | None = None
 
 
@@ -232,7 +232,7 @@ class FaqCreateRequest(BaseModel):
     question: str = Field(max_length=FAQ_QUESTION_MAX)
     variants: list[Annotated[str, Field(max_length=FAQ_VARIANT_MAX)]] = Field(default=[], max_length=FAQ_VARIANTS_MAX)
     answer: str = Field(max_length=FAQ_ANSWER_MAX)
-    category_id: int | None = None       # 미전송·null = 미분류
+    category_id: int | None = Field(None, gt=0)   # null=미분류, 0은 거절(목록 필터의 0=미분류와 다르다)
 
     _strip = field_validator('question', 'answer', mode='before')(strip_text)
     _strip_v = field_validator('variants', mode='before')(_strip_variants)
@@ -243,7 +243,7 @@ class FaqUpdateRequest(BaseModel):
     variants: list[Annotated[str, Field(max_length=FAQ_VARIANT_MAX)]] | None = Field(None, max_length=FAQ_VARIANTS_MAX)
     answer: str | None = Field(None, max_length=FAQ_ANSWER_MAX)
     is_active: bool | None = None
-    category_id: int | None = None
+    category_id: int | None = Field(None, gt=0)   # null=미분류, 0은 거절(목록 필터의 0=미분류와 다르다)
 
     _strip = field_validator('question', 'answer', mode='before')(strip_text)
     _strip_v = field_validator('variants', mode='before')(_strip_variants)

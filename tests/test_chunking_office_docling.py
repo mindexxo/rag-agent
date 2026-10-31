@@ -11,8 +11,7 @@ import openpyxl
 import pytest
 
 from config import settings
-from rag.chunking import (CaptionFailedError, PictureLimitError, _docx_sections, chunk_file,
-                          count_picture_placeholders, docling_grid_markdown)
+from rag.chunking import CaptionFailedError, PictureLimitError, _docx_sections, chunk_file, count_picture_placeholders, docling_grid_markdown
 from tests.conftest import FAKE_CAPTION
 
 pytest.importorskip('docling')

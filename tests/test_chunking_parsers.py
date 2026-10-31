@@ -1,4 +1,4 @@
-"""청킹 파서 단위 테스트 — 첨부 추출(_pdf_pages / _docx_text)과 형식 분기(chunk_file)의 계약.
+"""청킹 파서 단위 테스트 — 첨부 추출(pdf_pages / _docx_text)과 형식 분기(chunk_file)의 계약.
 
 chunk_file 케이스는 전부 docling 변환 프로세스를 탄다(_needs_docling 표시) — PDF·DOCX·XLSX·MD 색인 경로가 docling 하나뿐이라서
 (#143·#220·#267, 비상 스위치는 #272에서 없앴다). 첨부 추출과 순수 함수는 docling 없이 돈다. docling 경로의 세부(제목 층·표·캡션)는
@@ -12,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from rag.chunking import _docx_text, _md_sections, _pdf_pages, chunk_file
+from rag.chunking import _docx_text, _md_sections, chunk_file
+from rag.chunking.plain import pdf_pages
 
 CORPUS = Path(__file__).resolve().parent.parent / 'sample_docs' / 'corpus_v2'
 
@@ -24,7 +25,7 @@ _needs_docling = pytest.mark.skipif(importlib.util.find_spec('docling') is None,
 
 class TestPdfPages:
     def test_페이지_번호_1부터_텍스트_보존(self):
-        pages = _pdf_pages(PDF)
+        pages = pdf_pages(PDF)
         assert pages[0][0] == 1
         assert [n for n, _ in pages] == list(range(1, len(pages) + 1))
         assert '환불' in pages[0][1]
@@ -40,7 +41,7 @@ class TestPdfPages:
         c.showPage()
         c.showPage()          # 내용 없는 2페이지
         c.save()
-        pages = _pdf_pages(p)
+        pages = pdf_pages(p)
         assert pages[1] == (2, '')
         chunks = chunk_file(p)                       # 빈 페이지가 있어도 크래시 없이
         assert all(c.page == 1 for c in chunks)      # 빈 페이지는 청크를 만들지 않음
@@ -148,7 +149,7 @@ class TestMdSections:
         assert '#' not in section.body
 
     def test_문단은_줄로_나뉜다(self, tmp_path):
-        # md는 빈 줄이 문단 구분 — 걷어내면 문단이 붙어버린다. docling은 문단을 요소 하나씩 주고 조립(_build_sections)이 줄바꿈
+        # md는 빈 줄이 문단 구분 — 걷어내면 문단이 붙어버린다. docling은 문단을 요소 하나씩 주고 조립(build_sections)이 줄바꿈
         # 하나로 잇는다 — PDF·DOCX와 같은 모양(#267 전 정규식 파서는 빈 줄까지 그대로 뒀다)
         p = self._write(tmp_path, '# 제목\n\n첫 문단.\n\n둘째 문단.\n')
         assert _md_sections(p)[0].body == '첫 문단.\n둘째 문단.'

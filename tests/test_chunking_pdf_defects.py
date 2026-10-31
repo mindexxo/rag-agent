@@ -17,7 +17,8 @@ import pytest
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
-from rag.chunking import _restore_leading_marker, _strip_orphan_marker, pdf_image_area_ratio
+from rag.chunking import pdf_image_area_ratio
+from rag.chunking.sections import restore_leading_marker, strip_orphan_marker
 
 W, H = A4
 
@@ -26,23 +27,23 @@ class TestOrphanMarker:
     """결함 3 — SentenceSplitter가 '3. 항목'을 '3.' / '항목'으로 끊어 번호만 남았다."""
 
     def test_꼬리_번호는_떼어낸다(self):
-        assert _strip_orphan_marker('앞 내용이 이어지다가\n3.') == '앞 내용이 이어지다가'
-        assert _strip_orphan_marker('본문\n(2)') == '본문'
+        assert strip_orphan_marker('앞 내용이 이어지다가\n3.') == '앞 내용이 이어지다가'
+        assert strip_orphan_marker('본문\n(2)') == '본문'
 
     def test_문장_끝_마침표는_건드리지_않는다(self):
-        assert _strip_orphan_marker('정상적인 문장이다.') == '정상적인 문장이다.'
+        assert strip_orphan_marker('정상적인 문장이다.') == '정상적인 문장이다.'
 
     def test_번호_바로_뒤에서_시작하면_되살린다(self):
         # 실문서는 번호와 항목이 같은 줄이다 — 스플리터가 그 사이를 끊는다
         body = '앞 내용\n3. 숙박료의 실비정산 기준'
         offset = body.index('숙박료의')
-        assert _restore_leading_marker(body, offset, '숙박료의 실비정산 기준') \
+        assert restore_leading_marker(body, offset, '숙박료의 실비정산 기준') \
             == '3. 숙박료의 실비정산 기준'
 
     def test_번호가_독립_줄이어도_되살린다(self):
         body = '앞 내용\n3.\n숙박료의 실비정산 기준'
         offset = body.index('숙박료의')
-        assert _restore_leading_marker(body, offset, '숙박료의 실비정산 기준') \
+        assert restore_leading_marker(body, offset, '숙박료의 실비정산 기준') \
             == '3. 숙박료의 실비정산 기준'
 
     def test_overlap으로_이미_갖고_있으면_주입하지_않는다(self):
@@ -51,12 +52,12 @@ class TestOrphanMarker:
         body = '앞 내용\n[상황 2] 배송 지연 항의\n\n1. "배송이 늦어져 죄송합니다."'
         offset = body.index('[상황 2]')
         chunk = body[offset:]
-        assert _restore_leading_marker(body, offset, chunk) == chunk   # 그대로
+        assert restore_leading_marker(body, offset, chunk) == chunk   # 그대로
 
     def test_번호가_아닌_것_뒤에서는_주입하지_않는다(self):
         body = '문장이 끝났다.\n다음 문장'
         offset = body.index('다음')
-        assert _restore_leading_marker(body, offset, '다음 문장') == '다음 문장'
+        assert restore_leading_marker(body, offset, '다음 문장') == '다음 문장'
 
 
 class TestImageRatio:

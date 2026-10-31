@@ -17,7 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from rag.chunking import _build_sections, _md_sections, chunk_file
+from rag.chunking import _md_sections, chunk_file
+from rag.chunking.sections import build_sections
 from rag.identifiers import chunk_identifiers, cut_identifier_span, effective_headings, normalize_identifiers
 from eval.chunk_invariants import chunks_lost, norm, sections_lost
 
@@ -39,7 +40,7 @@ class TestBuildSections:
         # 예전: '제2조(삭제)' 뒤에 제2장이 오면 이미 제1조 경로로 나간 '제1장'까지 고아로 잡아 제2장 첫 본문에 다시 붙였다
         items = [_h('규정', 1), _h('제1장 총칙', 2), _h('제1조(목적)', 3), _b('목적 본문'),
                  _h('제2조(삭제)', 3), _h('제2장 복무', 2), _h('제3조(근무)', 3), _b('근무 본문')]
-        secs = _build_sections(items)
+        secs = build_sections(items)
         assert [(s.heading_path, s.body) for s in secs] == [
             (['규정', '제1장 총칙', '제1조(목적)'], '목적 본문'),
             (['규정', '제2장 복무', '제3조(근무)'], '제2조(삭제)\n근무 본문'),
@@ -48,18 +49,18 @@ class TestBuildSections:
 
     def test_상위_번호_제목은_다음_본문_앞에(self):
         # 실제로 생기는 고아의 거의 전부가 이 꼴이다 — docling이 장 없는 PDF에서 '2.'와 '2.1'을 같은 레벨로 잡는다(실측은
-        # _build_sections docstring)
+        # build_sections docstring)
         items = [_h('정책', 1), _h('1. 목적', 2), _b('목적 본문'), _h('2. 반품 규정', 2), _h('2.1 신청 기한', 2), _b('7일 이내')]
-        assert [(s.heading_path, s.body) for s in _build_sections(items)][1] == (['정책', '2.1 신청 기한'], '2. 반품 규정\n7일 이내')
+        assert [(s.heading_path, s.body) for s in build_sections(items)][1] == (['정책', '2.1 신청 기한'], '2. 반품 규정\n7일 이내')
 
     def test_알려진_한계_삭제_조는_다음_조_경로_아래로(self):
         # #260·설계 9-재: 배치를 바꾸면 위 상위 제목 고아가 함께 흔들려 고치지 않았다 — 바뀌면 의도한 변경인지 확인할 것
         items = [_h('규정', 1), _h('제3조(삭제)', 2), _h('제4조(대피)', 2), _b('대피 본문')]
-        assert [(s.heading_path, s.body) for s in _build_sections(items)] == [(['규정', '제4조(대피)'], '제3조(삭제)\n대피 본문')]
+        assert [(s.heading_path, s.body) for s in build_sections(items)] == [(['규정', '제4조(대피)'], '제3조(삭제)\n대피 본문')]
 
     def test_문서_끝_헤딩은_본문으로_경로는_나간_앞부분(self):
         items = [_h('규정', 1), _h('제1장 총칙', 2), _h('제6조(목적)', 3), _b('본문'), _h('제7조(삭제)', 3)]
-        assert [(s.heading_path, s.body) for s in _build_sections(items)] == [
+        assert [(s.heading_path, s.body) for s in build_sections(items)] == [
             (['규정', '제1장 총칙', '제6조(목적)'], '본문'),
             (['규정', '제1장 총칙'], '제7조(삭제)'),          # 같은 글이 경로·본문에 두 번 들어가지 않는다
         ]
@@ -67,18 +68,18 @@ class TestBuildSections:
     def test_문서_끝에_고아와_끝_헤딩이_같이_남으면_문서_순서로(self):
         items = [_h('규정', 1), _h('제1조(목적)', 2), _b('본문'), _h('제2장 보칙', 2), _h('제8조(삭제)', 3),
                  _h('제9조(삭제)', 3)]
-        secs = _build_sections(items)
+        secs = build_sections(items)
         assert (secs[-1].heading_path, secs[-1].body) == (['규정'], '제2장 보칙\n제8조(삭제)\n제9조(삭제)')
         assert sections_lost(items, secs) == []
 
     def test_되살린_고아는_문서_순서로(self):
         # 빠진 순서로 붙이면 늦게 빠진 상위 'A'가 먼저 빠진 하위 'a1' 뒤에 왔다
         items = [_h('T', 1), _h('A', 2), _h('a1', 3), _h('a2', 3), _h('B', 2), _b('본문')]
-        assert [(s.heading_path, s.body) for s in _build_sections(items)] == [(['T', 'B'], 'A\na1\na2\n본문')]
+        assert [(s.heading_path, s.body) for s in build_sections(items)] == [(['T', 'B'], 'A\na1\na2\n본문')]
 
     def test_헤딩만_있는_문서는_섹션_0개(self):
         # 결정 3 — 빈 양식은 색인하지 않는다(rag/ingestion이 "추출된 텍스트 없음"으로 실패시킨다)
-        assert _build_sections([_h('규정', 1), _h('제1조(목적)', 2), _h('제2조(정의)', 2)]) == []
+        assert build_sections([_h('규정', 1), _h('제1조(목적)', 2), _h('제2조(정의)', 2)]) == []
 
     @pytest.mark.parametrize('items', [
         [_h('T', 1), _h('A', 2), _h('a1', 3), _h('a2', 3), _h('B', 2), _b('x'), _h('b1', 3), _h('C', 2)],
@@ -86,7 +87,7 @@ class TestBuildSections:
         [_b('머리말'), _h('A', 2), _h('B', 1), _h('C', 3), _b('x'), _h('D', 2)],
     ])
     def test_헤딩_배치가_어떻든_글은_남는다(self, items):
-        assert sections_lost(items, _build_sections(items)) == []
+        assert sections_lost(items, build_sections(items)) == []
 
 
 class TestMdSections:
@@ -123,9 +124,9 @@ SOURCE_LINES = {
 }
 GOLD = [g for g in map(json.loads, open(ROOT / 'eval' / 'gold_set_v2.jsonl', encoding='utf-8'))
         if re.fullmatch(r'[a-z]+_ct\d{3}', g['id'])]
-# 알려진 실패(#260): 본문 없는 삭제 조가 다음 조 본문 앞에 붙어(_build_sections 고아 배치, #137) 그 조 구간에 옆 조 내용이
+# 알려진 실패(#260): 본문 없는 삭제 조가 다음 조 본문 앞에 붙어(build_sections 고아 배치, #137) 그 조 구간에 옆 조 내용이
 # 섞인다 — 문서 aromanica는 묶음 안에서 '제8조(시행일) / 제7조(삭제) / 제8조 본문' 순서가 되어 제8조 줄도 끊긴다.
-# 배치를 바꾸면 상위 번호 제목 고아가 함께 흔들려 #233에서 고치지 않았다(설계 9-재, 실측은 _build_sections docstring).
+# 배치를 바꾸면 상위 번호 제목 고아가 함께 흔들려 #233에서 고치지 않았다(설계 9-재, 실측은 build_sections docstring).
 # strict — 고치는 순간 XPASS로 실패하니 이 목록에서 지울 것.
 KNOWN_FAIL = {'aromanica_ct003', 'summers_ct001', 'homeplus_ct001', 'goodpeople_ct001', 'goodpeople_ct002',
               'aromanica_16_시향관운영지침.docx'}

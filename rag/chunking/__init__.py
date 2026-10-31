@@ -1,7 +1,7 @@
-"""문서 파일 → 청크(ChunkData) 목록. 형식별 섹션 파서 → _pack_sections(묶기) → 크기 분할.
+"""문서 파일 → 청크(ChunkData) 목록. 형식별 섹션 파서 → sections.pack_sections(묶기) → 크기 분할.
 
 형식 분기는 chunk_file 한 곳뿐이다(호출부는 확장자를 보지 않는다).
-- PDF·DOCX·MD: docling 변환(상주 자식 프로세스) → 헤딩 스택으로 섹션 조립(_build_sections).
+- PDF·DOCX·MD: docling 변환(상주 자식 프로세스) → 헤딩 스택으로 섹션 조립(sections.build_sections).
   docling이 실패하면 색인도 실패한다 — 저품질 경로로 조용히 바꾸지 않는다.
 - TXT: 평문 하나가 섹션 하나(heading_path 없음).
 - XLSX: rag/xlsx_chunking에 위임(행 묶음 + 시트 완성본, 크기 초과면 업로드 거절).
@@ -31,7 +31,10 @@ from docx.text.paragraph import Paragraph as DocxParagraph
 from llama_index.core.node_parser import SentenceSplitter
 
 from config import settings
+from rag.chunking import plain, sections, split
 from rag.chunking.errors import CaptionFailedError, LlmReadFailedError, PictureLimitError, TableTooLargeError
+from rag.chunking.plain import pdf_image_area_ratio
+from rag.chunking.split import TABLE_NOTE
 from rag.chunking.tables import (
     TABLE_BATCH_CHARS,
     TABLE_BATCH_TOKENS,
@@ -41,7 +44,6 @@ from rag.chunking.tables import (
 )
 from rag.chunking.types import ChunkData, Item, Section, TableBlock, blocks_of, join_blocks
 from rag.identifiers import HeadingSplit, is_heading_line, split_heading_line
-from rag.tokens import estimate_tokens_conservative
 
 logger = logging.getLogger(__name__)
 
@@ -76,19 +78,9 @@ __all__ = [
 ]
 
 _DOCX_HEADING_RE = re.compile(r'^Heading (\d+)$')  # python-docx는 빌트인 헤딩을 영문명으로 준다
-# 섹션 묶음 예산(문자, 소프트). 실제로는 _pack_sections의 경계 규칙이 먼저 걸리고, 토큰 상한은 SentenceSplitter가 건다.
-_PACK_CHARS = 500
-
-# 청크 꼬리에 남은 목록 번호 — _strip_orphan_marker·_restore_leading_marker가 쓴다.
-# 번호 뒤 개행 하나까지 허용한다(번호가 항목과 같은 줄일 때와 독립 줄일 때가 둘 다 있다).
-_ORPHAN_MARKER_RE = re.compile(r'(?:^|\n)[ \t]*(\d{1,2}\.|\(\d{1,2}\))[ \t]*\n?$')
-
 # Triton OCR 상수 — 서버(serving/triton-ocr/model_repository/ocr/1/model.py)와 짝이라 설정으로 빼지 않는다.
 _OCR_LANG = 'korean'  # docling 기본은 ['chinese'] — 한글 표를 틀린 값으로 채운다
 _OCR_SCALE = 3.0  # 크롭 렌더 배수(72dpi 기준). KserveV2OcrOptions 기본은 2.0이라 인프로세스 RapidOCR(3.0)과 맞추려면 명시해야 한다
-
-# 한국 규정 문서의 장(章) 제목. docling은 장과 조를 같은 레벨로 내놓아 이 패턴으로 층을 복원한다.
-_CHAPTER_RE = re.compile(r'^제\s*\d+\s*장\b')
 
 # 캡션이 없는 그림의 자리표시 — 어떤 그림이 남는지는 count_picture_placeholders.
 _PICTURE_PLACEHOLDER = '<!-- image -->'
@@ -110,101 +102,6 @@ _PICTURE_CAPTION_PROMPT = (
 )
 # 머리말·맺음말 금지는 금지할 문구를 인용하지 않고 적는다 — 인용하면 오히려 그 문구를 유도한다.
 
-
-def _read_text(file_path) -> str:
-    """텍스트 파일 읽기 — utf-8 → cp949(국내 txt에 흔함) → utf-8 replace 순으로 시도한다."""
-    raw = Path(file_path).read_bytes()
-    for enc in ('utf-8', 'cp949'):
-        try:
-            return raw.decode(enc)
-        except UnicodeDecodeError:
-            continue
-    return raw.decode('utf-8', errors='replace')
-
-
-def _pdf_pages(file_path: str | Path) -> list[tuple[int, str]]:
-    """PDF → [(쪽 번호, 글자층 텍스트)] (pdfplumber, 표는 공백 구분 평문). 채팅 첨부(extract_text) 전용."""
-    with pdfplumber.open(str(file_path)) as pdf:
-        return [(i, page.extract_text() or '') for i, page in enumerate(pdf.pages, start=1)]
-
-
-# ── 섹션 조립 — PDF·DOCX·MD 공통 후단 ──────────────────────────────────────────────
-
-
-def _build_sections(items: list[Item]) -> list[Section]:
-    """(page, text, level) 흐름을 헤딩 스택으로 Section 목록에 접는다. PDF·DOCX·MD 공통 조립.
-
-    스택 규약(`del stack[level-1:]` + append) 위에 셋을 더한다:
-      - 줄별 쪽 번호(line_pages) — 여러 줄 text는 줄 수만큼 같은 쪽을 채워 body 줄과 1:1을 지킨다.
-      - 본문 없는 헤딩(고아) — 같은 레벨 헤딩에 밀려 지워질 헤딩은 다음 섹션 본문 앞에 문서 순서로 되살린다.
-        이미 섹션 경로로 나간 스택 앞부분(emitted)은 고아가 아니다. 한계: 본문 없는 '제3조(삭제)'는 다음 조 본문 앞에
-        붙어 경로가 제4조가 된다.
-      - 문서 끝 헤딩 — 문서가 본문 없는 헤딩으로 끝나면 그 헤딩을 본문으로 남긴다(경로는 이미 나간 앞부분).
-    본문이 하나도 없는 문서는 섹션 0개 — 호출부(rag/ingestion)가 "추출된 텍스트 없음"으로 실패시킨다.
-    """
-    sections: list[Section] = []
-    stack: list[str] = []
-    stack_pos: list[int] = []  # stack 원소마다 items 속 위치 — 고아를 되살릴 때 문서 순서로 놓으려고
-    orphans: list[tuple[int, str]] = []  # (items 속 위치, 헤딩)
-    emitted = 0  # stack 앞에서 몇 개가 이미 섹션 경로로 나갔나 — 그 헤딩들은 고아가 될 수 없다
-    buf: list[str] = []
-    buf_pages: list[int | None] = []
-    buf_blocks: list[str | TableBlock] = []
-    start_page: int | None = items[0][0] if items else None
-    last_page: int | None = start_page
-
-    def add(text: 'str | TableBlock', page: int | None) -> None:
-        if isinstance(text, TableBlock):
-            buf.append(text.render())
-            buf_pages.extend(text.line_pages(page))
-        else:
-            buf.append(text)
-            buf_pages.extend([page] * (text.count('\n') + 1))
-        buf_blocks.append(text)
-
-    def flush(path: list[str]) -> None:
-        """본문이 있으면 섹션을 만든다. 본문 없는 헤딩은 섹션이 되지 않는다."""
-        nonlocal emitted
-        if not buf:
-            return
-        sections.append(
-            Section(list(path), start_page, '\n'.join(buf), list(buf_pages), blocks=join_blocks(buf_blocks))
-        )
-        emitted = len(path)
-        buf.clear()
-        buf_pages.clear()
-        buf_blocks.clear()
-
-    for pos, (page, text, level) in enumerate(items):
-        if page is not None:
-            last_page = page
-        if level is not None:
-            flush(stack)
-            cut = max(emitted, level - 1)  # 걷어낼 헤딩 중 경로로 한 번도 안 나간 것
-            orphans.extend(zip(stack_pos[cut:], stack[cut:]))
-            emitted = min(emitted, level - 1)
-            del stack[level - 1 :], stack_pos[level - 1 :]
-            stack.append(text)
-            stack_pos.append(pos)
-        else:
-            # 섹션의 page는 첫 본문 줄의 쪽이다 — 헤딩이 쪽 끝에 걸려도 인용은 본문이 있는 쪽을 가리켜야 한다.
-            if not buf:
-                start_page = page
-                for _, orphan in sorted(orphans):  # 빠진 순서가 아니라 문서 순서 — 상위가 하위보다 늦게 빠질 수 있다
-                    add(orphan, page)
-                orphans.clear()
-            add(text, page)
-    if buf:
-        flush(stack)
-    elif sections:  # 문서가 본문 없는 헤딩으로 끝났다 — 버리지 않고 본문으로(경로는 이미 나간 앞부분)
-        start_page = last_page
-        for _, heading in sorted([*orphans, *zip(stack_pos[emitted:], stack[emitted:])]):
-            add(heading, last_page)
-        flush(stack[:emitted])
-    return sections
-
-
-# ── docling 변환기·실패 분류 ─────────────────────────────────────────────────────
 
 _DOCLING_LOCK = threading.Lock()
 _docling_converter = None
@@ -906,7 +803,7 @@ def _sections_from_docling_elements(elements) -> list[Section]:
 
     docling은 장·조를 구분하지 않으므로 여기서 층을 만든다:
       첫 헤딩 = 문서 제목(L1) / '제 N 장' = L2 / 그 외 헤딩 = L3 (장이 아직 없으면 L2).
-    그래야 _pack_sections가 같은 장 아래 조항끼리 묶는다. 그림은 캡션(없으면 자리표시), 나머지 텍스트 요소는 본문 줄.
+    그래야 sections.pack_sections가 같은 장 아래 조항끼리 묶는다. 그림은 캡션(없으면 자리표시), 나머지 텍스트 요소는 본문 줄.
 
     조 제목 보정 — docling 레이아웃 모델은 본문과 같은 글꼴의 조 제목을 들쭉날쭉 section_header/text로 판정한다. 두 꼴만 고친다:
       ① 문서 제목 뒤의 text 요소가 조 제목 꼴(rag/identifiers.split_heading_line)로 시작하면 제목으로 올리고, 같은 요소에
@@ -930,7 +827,7 @@ def _sections_from_docling_elements(elements) -> list[Section]:
                 continue
             if not seen_title:
                 level, seen_title = 1, True
-            elif _CHAPTER_RE.match(text):
+            elif sections.CHAPTER_RE.match(text):
                 level, seen_chapter = 2, True
             else:
                 level = 3 if seen_chapter else 2
@@ -960,7 +857,7 @@ def _sections_from_docling_elements(elements) -> list[Section]:
             text = _docling_norm(text)
             if text:
                 items.append((page, text, None))
-    return _build_sections(items)
+    return sections.build_sections(items)
 
 
 def _convert_local(file_path: str | Path, **kwargs):
@@ -1230,8 +1127,8 @@ def _split_heading_head(text: str) -> tuple[str, str]:
     섹션이 생기지 않아 색인에서 사라진다.
     """
     first, _, rest_lines = text.partition('\n')
-    split = split_heading_line(first) or HeadingSplit(first.strip(), '')  # 장('제 N 장 …')은 첫 줄 전체가 머리
-    return split.head, (split.rest + ('\n' + rest_lines if rest_lines else '')).strip()
+    head_split = split_heading_line(first) or HeadingSplit(first.strip(), '')  # 장('제 N 장 …')은 첫 줄 전체가 머리
+    return head_split.head, (head_split.rest + ('\n' + rest_lines if rest_lines else '')).strip()
 
 
 def _docx_fallback_headings(items: list[tuple[bool, int, str, bool]]) -> list[tuple[bool, int, str, bool]]:
@@ -1257,7 +1154,7 @@ def _docx_fallback_headings(items: list[tuple[bool, int, str, bool]]) -> list[tu
         if (
             i == 0
             and len(first_line) <= _DOCX_TITLE_MAX
-            and not _CHAPTER_RE.match(first_line)
+            and not sections.CHAPTER_RE.match(first_line)
             and not is_heading_line(first_line)
         ):
             has_title = True
@@ -1267,8 +1164,8 @@ def _docx_fallback_headings(items: list[tuple[bool, int, str, bool]]) -> list[tu
                 out.append((False, 0, rest, False))
             continue
         # 인용 문단("제98조 및 제99조에 따라")을 제목으로 올리면 뒤에 곧바로 다른 제목이 올 때 그 문장이 색인에서 사라진다.
-        if _CHAPTER_RE.match(text) or is_heading_line(first_line):
-            if _CHAPTER_RE.match(text):
+        if sections.CHAPTER_RE.match(text) or is_heading_line(first_line):
+            if sections.CHAPTER_RE.match(text):
                 seen_chapter = True
                 level = 2
             else:
@@ -1376,128 +1273,12 @@ def _docx_sections(file_path: str | Path) -> list[Section]:
     """DOCX → docling → 섹션. Heading 스타일이 경계이고, 스타일이 하나도 없으면 조문 패턴 폴백(_docx_fallback_headings).
 
     헤딩은 본문에 넣지 않는다 — heading_path가 들고 있고 rag/index_text가 색인 입력 앞에 붙인다. 조립은 PDF와 같은
-    _build_sections(본문 없는 헤딩 보존 포함). page는 없다(None).
+    sections.build_sections(본문 없는 헤딩 보존 포함). page는 없다(None).
     """
     items = list(_docx_docling_items(docling_convert(file_path)))
-    return _build_sections(
+    return sections.build_sections(
         [(None, text, level if is_heading else None) for is_heading, level, text, _ in _docx_fallback_headings(items)]
     )
-
-
-def _common_prefix(paths: list[list[str]]) -> list[str]:
-    """heading_path들의 공통 조상 경로."""
-    common = list(paths[0])
-    for path in paths[1:]:
-        while common != path[: len(common)]:
-            common.pop()
-    return common
-
-
-def _pack_sections(
-    sections: list[Section],
-    max_chars: int = _PACK_CHARS,
-) -> list[Section]:
-    """연속 섹션을 예산까지 묶는다 — 섹션 하나가 청크 하나면 너무 잘아지므로. 묶음의 page는 첫 섹션 것.
-
-    묶음의 heading_path는 참여 섹션들의 공통 조상이고, 그보다 깊은 헤딩은 본문 줄로 남긴다(headings에도 기록).
-      예: '2.1 신청 채널'과 '2.2 최소 후원 금액'을 묶으면 heading_path=[문서명, '2. 정기후원 신청'], 본문 앞에 소제목이 한 줄씩.
-    묶기를 실제로 막는 건 예산보다 경계다 — joinable이 공통 조상 깊이 2(문서명 아래 같은 대분류)를 요구한다.
-    무작정 묶으면 공통 조상이 문서명 하나로 떨어져 heading_path가 무의미해진다.
-    size는 body 길이만 세므로(덧붙는 헤딩 줄 제외) max_chars는 소프트 예산이다.
-    """
-    packed: list[Section] = []
-    buf: list[Section] = []
-    size = 0
-
-    def joinable(path: list[str]) -> bool:
-        """buf에 이 섹션을 더해도 공통 조상이 문서명 아래로 유지되는가."""
-        return len(_common_prefix([s.heading_path for s in buf] + [path])) >= 2
-
-    def flush() -> None:
-        nonlocal size
-        if not buf:
-            return
-        common = _common_prefix([s.heading_path for s in buf])
-        lines: list[str] = []
-        pages: list[int | None] = []
-        heads: list[str] = []
-        blocks: list[str | TableBlock] = []
-        for s in buf:
-            extra = s.heading_path[len(common) :]  # 공통 조상보다 깊은 헤딩은 본문에 보존
-            lines.extend(extra)
-            heads.extend(extra)
-            pages.extend([s.page] * len(extra))
-            blocks.extend(extra)
-            blocks.extend(blocks_of(s))
-            lines.append(s.body)
-            # 줄별 page를 이어붙인다(없으면 섹션 page) — 묶음 page 하나로 두면 뒤 섹션이 앞 쪽 번호를 물려받는다.
-            body_lines = s.body.split('\n')
-            if s.line_pages and len(s.line_pages) == len(body_lines):
-                pages.extend(s.line_pages)
-            else:
-                pages.extend([s.page] * len(body_lines))
-        packed.append(Section(common, buf[0].page, '\n'.join(lines), pages, headings=heads, blocks=join_blocks(blocks)))
-        buf.clear()
-        size = 0
-
-    for section in sections:
-        if buf and (size + len(section.body) > max_chars or not joinable(section.heading_path)):
-            flush()
-        buf.append(section)
-        size += len(section.body)
-    flush()
-    return packed
-
-
-def pdf_image_area_ratio(file_path: str | Path) -> float:
-    """PDF 쪽 면적 대비 삽입 이미지 면적 비율(%). PDF가 아니면 0.
-
-    이미지 속 내용은 캡션·OCR로 읽어도 틀릴 수 있고 텍스트 커버리지로는 드러나지 않는다 — 면적이 유일한 탐지 신호라
-    호출부(rag/ingestion.py)가 이 값으로 문서에 경고를 남긴다.
-    """
-    if not str(file_path).lower().endswith('.pdf'):
-        return 0.0
-    image_area = page_area = 0.0
-    with pdfplumber.open(str(file_path)) as pdf:
-        for page in pdf.pages:
-            page_area += (page.width or 0) * (page.height or 0)
-            for image in page.images:
-                image_area += abs(image['x1'] - image['x0']) * abs(image['bottom'] - image['top'])
-    return image_area / page_area * 100 if page_area else 0.0
-
-
-def _page_at(section: Section, offset: int) -> int | None:
-    """섹션 본문의 문자 오프셋이 실제로 몇 쪽에서 왔는지. line_pages가 없으면 섹션 page."""
-    if not section.line_pages:
-        return section.page
-    position = 0
-    for index, line in enumerate(section.body.split('\n')):
-        position += len(line) + 1  # '\n' 포함
-        if offset < position:
-            return section.line_pages[index] if index < len(section.line_pages) else section.page
-    return section.line_pages[-1]
-
-
-def _strip_orphan_marker(chunk: str) -> str:
-    """청크 꼬리에 목록 번호만 남았으면 떼어낸다(항목 쪽에 되붙이는 것은 _restore_leading_marker).
-
-    SentenceSplitter의 기본 secondary_chunking_regex가 마침표를 문장 끝으로 봐서 '3. 항목'을 '3.' / ' 항목'으로 끊는다.
-    """
-    match = _ORPHAN_MARKER_RE.search(chunk)
-    return chunk[: match.start()].rstrip() if match and match.end() == len(chunk) else chunk
-
-
-def _restore_leading_marker(body: str, offset: int, chunk: str) -> str:
-    """청크가 목록 번호 바로 뒤에서 시작하면 그 번호를 머리에 되살린다.
-
-    판정은 원문 오프셋으로만 한다 — 청크 앞에 붙어 있던 것이 번호뿐일 때만. overlap으로 번호를 이미 가진 청크는
-    offset이 번호보다 앞이라 걸리지 않는다. 청크 글자로 추측하면 엉뚱한 자리에 번호를 중복 주입한다.
-    """
-    prefix = body[:offset]
-    match = _ORPHAN_MARKER_RE.search(prefix)
-    if match and match.end() == len(prefix):
-        return f'{match.group(1)} {chunk.lstrip()}'
-    return chunk
 
 
 def extract_text(file_path: str | Path) -> str:
@@ -1507,7 +1288,7 @@ def extract_text(file_path: str | Path) -> str:
     """
     low = str(file_path).lower()
     if low.endswith('.pdf'):
-        return '\n'.join(t for _, t in _pdf_pages(file_path)).strip()
+        return '\n'.join(t for _, t in plain.pdf_pages(file_path)).strip()
     if low.endswith('.docx'):
         return _docx_text(file_path).strip()
     if low.endswith('.xlsx'):
@@ -1516,13 +1297,7 @@ def extract_text(file_path: str | Path) -> str:
         )  # 첨부는 openpyxl — docling 변환 프로세스를 색인과 나누지 않는다
 
         return xlsx_plain_text(str(file_path)).strip()  # 첨부는 행 묶음 없이 시트 전체
-    return _read_text(file_path).strip()  # txt/md/기타
-
-
-def _txt_sections(file_path: str | Path) -> list[Section]:
-    """평문 txt — 파일 전체가 섹션 하나. 빈 파일은 섹션 0개(split_text('')가 ['']를 내 빈 청크가 새지 않게)."""
-    text = _read_text(file_path)
-    return [Section([], None, text)] if text.strip() else []
+    return plain.read_text(file_path).strip()  # txt/md/기타
 
 
 # MD 표 칸에서 docling이 망가뜨리는 두 표기 — 변환 전에 유니코드 사용자 영역 문자로 숨겼다가 결과에서 되돌린다.
@@ -1563,7 +1338,7 @@ def _md_sections(file_path: str | Path) -> list[Section]:
         TitleItem,
     )
 
-    source = _MD_BR_RE.sub(_MD_BR_MARK, _read_text(file_path).replace('\\|', _MD_PIPE_MARK))
+    source = _MD_BR_RE.sub(_MD_BR_MARK, plain.read_text(file_path).replace('\\|', _MD_PIPE_MARK))
     with tempfile.NamedTemporaryFile('w', suffix='.md', encoding='utf-8', delete=False) as tmp:
         tmp.write(source)
     try:
@@ -1605,7 +1380,7 @@ def _md_sections(file_path: str | Path) -> list[Section]:
                 else:
                     items.append((None, text, None))
         group = inline
-    return _build_sections(items)
+    return sections.build_sections(items)
 
 
 # 형식 → 섹션 파서. xlsx만 빠져 있다 — 행 묶음 + 시트 완성본·크기 초과 거절이라 계약이 다르다.
@@ -1613,14 +1388,14 @@ _SECTION_PARSERS = {
     '.pdf': _docling_sections,
     '.docx': _docx_sections,
     '.md': _md_sections,
-    '.txt': _txt_sections,
+    '.txt': plain.txt_sections,
 }
 
 
 def chunk_file(file_path: str | Path, *, description: str = '') -> list[ChunkData]:
     """파일 한 개를 청크 리스트로. 형식 분기는 여기 한 곳뿐이다 — 호출부는 확장자를 보지 않는다.
 
-    xlsx는 chunk_xlsx로 위임한다(description은 xlsx 전용). 나머지는 섹션 추출 → _pack_sections → _split_section.
+    xlsx는 chunk_xlsx로 위임한다(description은 xlsx 전용). 나머지는 섹션 추출 → sections.pack_sections → split.split_section.
     """
     suffix = Path(file_path).suffix.lower()
     splitter = SentenceSplitter(chunk_size=512, chunk_overlap=50)
@@ -1638,8 +1413,8 @@ def chunk_file(file_path: str | Path, *, description: str = '') -> list[ChunkDat
 
     out: list[ChunkData] = []
     table_keys: dict[tuple[int, int], str] = {}  # (섹션 번호, 섹션 안 블록 번호) → 문서 안 표 순번
-    for si, section in enumerate(_pack_sections(parser(file_path))):
-        for text, offset, table in _split_section(section, splitter):
+    for si, section in enumerate(sections.pack_sections(parser(file_path))):
+        for text, offset, table in split.split_section(section, splitter):
             # 이 조각에 실린 헤딩만 — 색인이 식별자 사전으로, 근거 준비가 구간 경계로 쓴다.
             lines = {line.strip() for line in text.split('\n')}
             heads = [h for h in section.headings if h.strip() in lines]
@@ -1651,169 +1426,9 @@ def chunk_file(file_path: str | Path, *, description: str = '') -> list[ChunkDat
                 ChunkData(
                     text=text,
                     heading_path=list(section.heading_path),
-                    page=_page_at(section, offset),
+                    page=sections.page_at(section, offset),
                     chunk_index=len(out),
                     meta=meta or None,
                 )
             )
     return out
-
-
-_TABLE_LEAD_MAX = (
-    150  # 큰 표 묶음마다 붙이는 '표 바로 위 한 줄'의 최대 길이 — 이보다 길면 표 설명이 아니라 본문 문단으로 본다
-)
-
-# 표 전체(table_text)에 함께 싣는 표 앞뒤 글 — 묶음 청크 본문(검색 입력)은 그대로 두고 모델이 받는 표 전체에만 넣는다
-# (단위·설명이 다른 청크로 떨어지면 모델이 숫자만 보고 답한다). 원래 자리의 줄도 그대로 남는다.
-#   앞: 표 바로 위 글의 끝에서 최대 _TABLE_CONTEXT_LINES줄·_TABLE_CONTEXT_CHARS자, 제목 줄을 만나면 멈춘다.
-#       eval/chunk_boundary의 '표 앞 최대 3줄'과 같은 기준이어야 그 도구로 확인할 수 있다.
-#   뒤: 표 바로 아래 글의 첫 줄부터 TABLE_NOTE 표지 줄이 이어지는 동안, 최대 _TABLE_CONTEXT_LINES줄·_TABLE_NOTE_CHARS자 —
-#       상한이 없으면 긴 '※' 문단이 표 전체를 키워 크기 검사(TABLE_MAX_TOKENS)까지 바꾼다. 표지 없는 줄은 다음 조 본문이라 잡지 않는다.
-_TABLE_CONTEXT_LINES = 3
-_TABLE_CONTEXT_CHARS = 200
-_TABLE_NOTE_CHARS = 100
-# '* 항목' 글머리표 목록도 걸린다 — 띄어 쓴 별표 주석이 흔해 받아들였다(잘못 잡혀도 상한 안의 복사본뿐).
-TABLE_NOTE = re.compile(
-    r'^\s*(※|\*(?!\*)|주\s*[)）:：]|[(（]\s*단위|단위\s*[:：]|출처\s*[:：])'
-)  # 표 주석 표지 — eval/chunk_boundary가 import한다
-
-
-def _table_lead_lines(text: str, headings: set[str]) -> list[str]:
-    """표 바로 위 글 블록 → 표 설명 줄(문서 순). 끝에서부터 모으고 제목 줄·줄 수·글자 수 한도에서 멈춘다."""
-    out: list[str] = []
-    for line in reversed([l.strip() for l in text.split('\n') if l.strip()]):
-        if (
-            line in headings
-            or is_heading_line(line)
-            or len(out) >= _TABLE_CONTEXT_LINES
-            or sum(map(len, out)) + len(line) > _TABLE_CONTEXT_CHARS
-        ):
-            break
-        out.append(line)
-    return out[::-1]
-
-
-def _table_note_lines(text: str) -> list[str]:
-    """표 바로 아래 글 블록 → 주석 줄. 첫 줄부터 TABLE_NOTE 표지로 시작하는 줄이 이어지는 동안만."""
-    out: list[str] = []
-    for line in (l.strip() for l in text.split('\n') if l.strip()):
-        if (
-            not TABLE_NOTE.match(line)
-            or len(out) >= _TABLE_CONTEXT_LINES
-            or sum(map(len, out)) + len(line) > _TABLE_NOTE_CHARS
-        ):
-            break
-        out.append(line)
-    return out
-
-
-class _TableRef(NamedTuple):
-    """큰 표(묶음 둘 이상) 묶음이 어느 표의 것인가 — chunk_file이 문서 안 표 순번(table_key)으로 바꾼다."""
-
-    block: int  # 섹션 안 블록 번호
-    text: str  # 표 전체 — 앞 설명 줄 + 헤더 한 번 + 전체 행 + 아래 주석 줄. 근거 준비가 걸린 묶음을 이것으로 바꾼다
-
-
-class _Piece(NamedTuple):
-    text: str
-    offset: int  # section.body 안의 위치
-    table: _TableRef | None = None  # 큰 표의 묶음일 때만
-
-
-def _check_table_size(block: TableBlock, table_text: str, page: int | None) -> None:
-    """표 하나가 TABLE_MAX_TOKENS를 넘으면 TableTooLargeError — 크기는 모델이 볼 글(table_text)로 잰다."""
-    tokens = estimate_tokens_conservative(table_text)
-    if tokens > TABLE_MAX_TOKENS:
-        header = block.rows[0]
-        raise TableTooLargeError(page, header, -(-tokens * 100 // TABLE_MAX_TOKENS), len(block.rows) - 1, len(header))
-
-
-def _split_section(section: Section, splitter) -> list[_Piece]:
-    """섹션 → 조각(청크 글, 본문 오프셋, 큰 표면 표 정보). 표 블록은 행 묶음(batch_table_rows)으로, 글 블록만
-    SentenceSplitter로 나눈 뒤 블록 사이를 다시 잇는다 — 따로 자르기만 하면 표 위 소제목·단위 줄이 혼자 남는 작은 청크가 된다:
-      - 작은 표(묶음 하나): 이웃 조각과 합쳐 TABLE_BATCH_CHARS 안이면 한 청크로. 같은 글 블록의 조각끼리는 합치지 않는다
-        (분할기 겹침이 중복되므로).
-      - 큰 표(묶음 둘 이상): 표 바로 위 글의 마지막 줄(_TABLE_LEAD_MAX자 이하)을 모든 묶음 머리에 붙이고, 이웃과 합치지 않는다.
-        묶음마다 표 전체(_TableRef — 앞 설명·아래 주석 포함)를 함께 돌려준다.
-    오프셋은 section.body 안의 위치다(쪽 매핑·목록 번호 복원의 근거). 표 묶음은 첫 데이터 행 위치.
-    표 하나가 TABLE_MAX_TOKENS를 넘으면 TableTooLargeError.
-    """
-    pieces: list[
-        tuple[str, int, int, bool, _TableRef | None]
-    ] = []  # (글, 오프셋, 블록 번호, 이웃과 합칠 수 있나, 표 정보)
-    cursor = 0
-    last_text = ''
-    blocks = blocks_of(section)
-    heading_set = {h.strip() for h in section.headings}
-    for bi, block in enumerate(blocks):
-        rendered = block.render() if isinstance(block, TableBlock) else block
-        start = section.body.find(rendered, cursor)
-        start = start if start >= 0 else cursor
-        if isinstance(block, TableBlock):
-            batches = batch_table_rows(block.rows[0], block.rows[1:])
-            head_len = len(to_markdown_table(block.rows[0], [])) + 1
-            pos = start + head_len
-            lead = last_text.strip().split('\n')[-1].strip() if last_text.strip() else ''
-            lead = lead if len(batches) > 1 and len(lead) <= _TABLE_LEAD_MAX else ''
-            if lead and pieces and pieces[-1][0].strip() == lead:
-                pieces.pop()  # 그 줄만 든 조각은 묶음마다 머리로 들어가므로 혼자 남기지 않는다
-            after = blocks[bi + 1] if bi + 1 < len(blocks) and isinstance(blocks[bi + 1], str) else ''
-            table_text = '\n'.join([*_table_lead_lines(last_text, heading_set), rendered, *_table_note_lines(after)])
-            _check_table_size(block, table_text, block.row_pages[0] if block.row_pages else section.page)
-            ref = _TableRef(bi, table_text) if len(batches) > 1 else None
-            for batch in batches:
-                pieces.append((f'{lead}\n{batch}' if lead else batch, pos, bi, len(batches) == 1, ref))
-                pos += len(batch) - head_len + 1
-            last_text = ''
-        else:
-            inner = start
-            for chunk in splitter.split_text(rendered):
-                # 오프셋은 쪽 매핑과 목록 번호 복원의 근거라 청크를 손대기 전에 원문에서 구한다.
-                found = section.body.find(chunk, inner)
-                offset = found if found >= 0 else inner
-                inner = max(inner, offset)
-                text = _strip_orphan_marker(_restore_leading_marker(section.body, offset, chunk))
-                if text.strip():
-                    pieces.append((text, offset, bi, True, None))
-            last_text = rendered
-        cursor = start + len(rendered)
-    out: list[_Piece] = []
-    prev_block, prev_mergeable = None, False
-    for text, offset, bi, mergeable, ref in pieces:
-        if (
-            out
-            and mergeable
-            and prev_mergeable
-            and bi != prev_block
-            and len(out[-1].text) + 1 + len(text) <= TABLE_BATCH_CHARS
-        ):
-            out[-1] = out[-1]._replace(text=f'{out[-1].text}\n{text}')  # 합칠 수 있는 조각은 큰 표가 아니다(ref 없음)
-        else:
-            out.append(_Piece(text, offset, ref))
-        prev_block, prev_mergeable = bi, mergeable
-    return _carry_tail_headings(section, out)
-
-
-def _carry_tail_headings(section: Section, pieces: list[_Piece]) -> list[_Piece]:
-    """기록된 헤딩은 조각의 마지막 줄이 될 수 없다 — 꼬리 헤딩을 다음 조각 맨 앞으로 옮긴다.
-
-    분할기는 헤딩을 모르므로 경계가 헤딩 바로 뒤에 떨어지면 식별자로 그 조를 찾아도 본문이 없다. 다음 조각이 (겹침으로)
-    이미 그 줄을 가졌으면 앞에서만 뗀다. 옮긴 줄이 머리가 되면 그 조각의 오프셋도 헤딩 위치로 당긴다(쪽 매핑).
-    """
-    heads = {h.strip() for h in section.headings}
-    if not heads:
-        return pieces
-    out = list(pieces)
-    for i in range(len(out) - 1):
-        lines = out[i][0].split('\n')
-        while lines and not lines[-1].strip():
-            lines.pop()
-        if not lines or lines[-1].strip() not in heads:
-            continue
-        head = lines.pop()
-        out[i] = out[i]._replace(text='\n'.join(lines))
-        nxt, off = out[i + 1].text, out[i + 1].offset
-        if head.strip() not in {line.strip() for line in nxt.split('\n')}:
-            found = section.body.rfind(head, 0, off + 1)
-            out[i + 1] = out[i + 1]._replace(text=head + '\n' + nxt, offset=found if found >= 0 else off)
-    return [p for p in out if p.text.strip()]

@@ -23,11 +23,13 @@ import asyncio
 import logging
 import time
 from datetime import timedelta
+from typing import NamedTuple
 
 import httpx
 import openai
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database import AsyncSessionLocal
@@ -67,9 +69,13 @@ def enqueue(session, tenant_id: str, op: str, **payload):
     return row
 
 
+async def _set_row(session: AsyncSession, row_id: int, **values: object) -> None:
+    await session.execute(update(SearchIndexOutbox).where(SearchIndexOutbox.id == row_id).values(**values))
+
+
 async def mark_done(session, row_id: int) -> None:
     """행을 done으로 — INDEX_DOCUMENT 핸들러가 ready 승격과 **같은 커밋**에 넣기 위해 쓴다."""
-    await session.execute(update(SearchIndexOutbox).where(SearchIndexOutbox.id == row_id).values(status=DONE))
+    await _set_row(session, row_id, status=DONE)
 
 
 async def _apply(session, op: str, payload: dict, row_id: int) -> None:
@@ -168,83 +174,97 @@ def due_pending_stmt(limit: int = BATCH, *, row_ids: list[int] | None = None):
     ).limit(limit)
 
 
+class _Row(NamedTuple):
+    """due_pending_stmt가 고른 행 — 값으로 들고 간다(rollback이 ORM 객체를 만료시킨다)."""
+
+    id: int
+    tenant_id: str
+    op: str
+    payload: dict
+
+
 async def drain(session, limit: int = BATCH, *, row_ids: list[int] | None = None) -> dict:
     """pending 행을 id 순으로 행 단위 격리·행 단위 commit으로 처리한다. 반환의 failed는 재시도·확정을 합친 수.
 
     row_ids는 테스트·eval용(공유 DB에서 남의 행을 처리하지 않게) — 운영 cron은 넘기지 않는다.
     INDEX_DOCUMENT의 done은 핸들러가 ready 승격과 같은 커밋에 찍으므로 여기서 건드리지 않는다.
     """
-    rows = (await session.execute(due_pending_stmt(limit, row_ids=row_ids))).all()
+    result = await session.execute(due_pending_stmt(limit, row_ids=row_ids))
+    rows = [_Row(row_id, tenant_id, op, payload or {}) for row_id, tenant_id, op, payload in result.all()]
 
     done = failed = 0
     started = time.monotonic()
-    for row_id, tenant_id, op, payload in rows:  # 값으로 들고 간다 — rollback이 ORM 객체를 만료시킨다
+    for row in rows:
         if row_ids is None and not _fits_round(time.monotonic() - started):
             break  # 남은 행은 pending 그대로 — 다음 회차(최대 1분 뒤)가 잇는다
-        payload = payload or {}
         try:
-            await _apply(session, op, payload, row_id)
-            if op != INDEX_DOCUMENT:
-                await mark_done(session, row_id)
+            await _apply(session, row.op, row.payload, row.id)
+            if row.op != INDEX_DOCUMENT:
+                await mark_done(session, row.id)
             await session.commit()
-            SEARCH_INDEX_SYNC_TOTAL.labels(op=op, result='ok').inc()
+            SEARCH_INDEX_SYNC_TOTAL.labels(op=row.op, result='ok').inc()
             done += 1
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 — 행 단위로 격리한다
-            await session.rollback()  # 핸들러가 이 세션을 더럽혔을 수 있다
-            err = str(e)[:500]
-            attempts = (
-                await session.execute(
-                    update(SearchIndexOutbox)
-                    .where(SearchIndexOutbox.id == row_id)
-                    .values(attempts=SearchIndexOutbox.attempts + 1, last_error=err)
-                    .returning(SearchIndexOutbox.attempts)
-                )
-            ).scalar()
-            # 결정적 실패는 횟수를 안 본다 — 다시 돌려도 같은 결과라 기다리는 것이 사용자에게 손해다.
-            terminal = not is_transient(e) or attempts >= MAX_ATTEMPTS
-            if terminal:
-                await session.execute(
-                    update(SearchIndexOutbox).where(SearchIndexOutbox.id == row_id).values(status=FAILED)
-                )
-                if op == INDEX_DOCUMENT:
-                    # 문서도 failed — 사용자가 FE에서 실패를 보고 재업로드할 수 있게.
-                    # pending일 때만: 그새 삭제됐거나 다른 경로로 끝난 문서는 건드리지 않는다.
-                    await session.execute(
-                        update(Document)
-                        .where(Document.id == payload.get('document_id'))
-                        .where(Document.status == 'pending')
-                        .values(status='failed', status_reason=f'색인 {attempts}회 실패: {err}'[:500])
-                    )
-                    # 잔여 청크 DROP을 같은 커밋에 — 엔진 쓰기 뒤 커밋만 실패했으면 검색 가능한 청크가 남아 있다.
-                    enqueue(session, tenant_id, DROP_DOCUMENTS, document_ids=[payload.get('document_id')])
-            else:
-                await session.execute(
-                    update(SearchIndexOutbox)
-                    .where(SearchIndexOutbox.id == row_id)
-                    .values(next_attempt_at=func.now() + backoff_delay(attempts))
-                )
-            await session.commit()
-            SEARCH_INDEX_SYNC_TOTAL.labels(op=op, result='error').inc()
-            if terminal:
-                _on_failed(op, row_id, err)
-            if op == INDEX_DOCUMENT:
-                # 문서 단위 결과를 따로 센다 — 위 카운터는 재시도 단위라 실패율의 분모가 못 된다.
-                fname = (
-                    await session.execute(select(Document.filename).where(Document.id == payload.get('document_id')))
-                ).scalar()
-                INDEX_TOTAL.labels(ext=ext_label(fname or ''), result='failed' if terminal else 'retry').inc()
+            await _record_failure(session, row, e)
             failed += 1
-            logger.warning(
-                'outbox 반영 실패 (op=%s id=%s attempts=%d%s): %s',
-                op,
-                row_id,
-                attempts,
-                ' → failed 확정' if terminal else f' → {backoff_delay(attempts)} 뒤 재시도',
-                e,
-            )
     return {'done': done, 'failed': failed}
+
+
+async def _record_failure(session: AsyncSession, row: _Row, exc: Exception) -> None:
+    """실패를 행에 기록하고 재시도·확정을 갈라 한 커밋으로 끝낸다. 결정적 실패는 횟수를 안 본다 — 다시 돌려도 같다."""
+    await session.rollback()  # 핸들러가 이 세션을 더럽혔을 수 있다
+    err = str(exc)[:500]
+    attempts = (
+        await session.execute(
+            update(SearchIndexOutbox)
+            .where(SearchIndexOutbox.id == row.id)
+            .values(attempts=SearchIndexOutbox.attempts + 1, last_error=err)
+            .returning(SearchIndexOutbox.attempts)
+        )
+    ).scalar()
+    terminal = not is_transient(exc) or attempts >= MAX_ATTEMPTS
+    if terminal:
+        await _mark_terminal(session, row, attempts, err)
+    else:
+        await _set_row(session, row.id, next_attempt_at=func.now() + backoff_delay(attempts))
+    await session.commit()
+    SEARCH_INDEX_SYNC_TOTAL.labels(op=row.op, result='error').inc()
+    if terminal:
+        _on_failed(row.op, row.id, err)
+    if row.op == INDEX_DOCUMENT:
+        # 문서 단위 결과를 따로 센다 — 위 카운터는 재시도 단위라 실패율의 분모가 못 된다.
+        fname = (
+            await session.execute(select(Document.filename).where(Document.id == row.payload.get('document_id')))
+        ).scalar()
+        INDEX_TOTAL.labels(ext=ext_label(fname or ''), result='failed' if terminal else 'retry').inc()
+    logger.warning(
+        'outbox 반영 실패 (op=%s id=%s attempts=%d%s): %s',
+        row.op,
+        row.id,
+        attempts,
+        ' → failed 확정' if terminal else f' → {backoff_delay(attempts)} 뒤 재시도',
+        exc,
+    )
+
+
+async def _mark_terminal(session: AsyncSession, row: _Row, attempts: int, err: str) -> None:
+    """failed 확정 — commit하지 않는다(호출부의 커밋에 얹힌다). INDEX_DOCUMENT면 문서도 failed로 찍고 잔여 청크 DROP을 등재한다."""
+    await _set_row(session, row.id, status=FAILED)
+    if row.op != INDEX_DOCUMENT:
+        return
+    doc_id = row.payload.get('document_id')
+    # 문서도 failed — 사용자가 FE에서 실패를 보고 재업로드할 수 있게.
+    # pending일 때만: 그새 삭제됐거나 다른 경로로 끝난 문서는 건드리지 않는다.
+    await session.execute(
+        update(Document)
+        .where(Document.id == doc_id)
+        .where(Document.status == 'pending')
+        .values(status='failed', status_reason=f'색인 {attempts}회 실패: {err}'[:500])
+    )
+    # 잔여 청크 DROP을 같은 커밋에 — 엔진 쓰기 뒤 커밋만 실패했으면 검색 가능한 청크가 남아 있다.
+    enqueue(session, row.tenant_id, DROP_DOCUMENTS, document_ids=[doc_id])
 
 
 def _fits_round(elapsed: float) -> bool:

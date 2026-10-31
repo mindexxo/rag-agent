@@ -25,6 +25,7 @@ from rag.models import Message
 from rag.service import RagService
 from rag.streaming import _run_generation, spawn_generation
 from tests.conftest import register_faq
+from tests.polling import inflight_count, wait_inflight
 
 USER = {'X-User-Id': 'agent-x'}
 OTHER_USER = {'X-User-Id': 'agent-other'}
@@ -58,10 +59,6 @@ async def cancel_subscriber():
         await task
     await clients.shared_redis.aclose()
     clients.shared_redis = aioredis.from_url(settings.redis_url)   # lazy — 다음 사용자를 위해 성한 것으로
-
-
-async def _inflight_count(tenant_id: str) -> int:
-    return await limiter._redis().zcard(f'kms:inflight:t:{tenant_id}')
 
 
 async def _prepare_turn(tenant_id: str):
@@ -137,7 +134,7 @@ async def test_취소하면_부분답변이_cancelled로_남고_정리가_끝난
     assistant_id = prepared.assistant_message_id
 
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
-    assert await _inflight_count(tenant_id) == 1
+    assert await inflight_count(tenant_id) == 1
 
     queue: asyncio.Queue = asyncio.Queue()
     root_span, token = otel.start_turn()
@@ -157,7 +154,7 @@ async def test_취소하면_부분답변이_cancelled로_남고_정리가_끝난
         assert msg.content in fake_llm.answer + ' '   # 실제로 생성된 접두부다
         assert msg.sources == [] and msg.cited_docs == []   # done이 아니면 인용을 남기지 않는다
 
-    assert await _inflight_count(tenant_id) == 0      # 리미터 반납됨
+    assert await inflight_count(tenant_id) == 0      # 리미터 반납됨
     drained = []
     while not queue.empty():
         drained.append(queue.get_nowait())
@@ -256,7 +253,7 @@ async def test_첫_토큰_전에_취소하면_빈_답변으로_남는다(client,
     async with AsyncSessionLocal() as session:
         msg = await session.get(Message, prepared.assistant_message_id)
         assert msg.status == 'cancelled' and msg.content == ''
-    assert await _inflight_count(tenant_id) == 0
+    assert await inflight_count(tenant_id) == 0
 
 
 @pytest.mark.asyncio
@@ -277,7 +274,7 @@ async def test_정리_도중_취소요청은_대상을_못_찾는다(client, ten
     assert cancellation.cancel_local(prepared.assistant_message_id) is False
     async with AsyncSessionLocal() as session:
         assert (await session.get(Message, prepared.assistant_message_id)).status == 'done'
-    assert await _inflight_count(tenant_id) == 0       # 정리가 온전했다
+    assert await inflight_count(tenant_id) == 0       # 정리가 온전했다
 
 
 # ── 통합: HTTP 엔드포인트 ───────────────────────────────────
@@ -307,7 +304,7 @@ async def test_생성_중_취소요청은_204이고_cancelled로_귀결(client, 
     cancel = await client.post(f'/kms/messages/{assistant_id}/cancel', headers=USER)
     assert cancel.status_code == 204
     assert await _wait_status(assistant_id, 'cancelled') == 'cancelled'
-    assert await _inflight_count(tenant_id) == 0        # 취소 경로도 슬롯을 반납한다
+    assert await wait_inflight(tenant_id) == 0        # 취소 경로도 슬롯을 반납한다
 
     # 멱등 — 두 번째 클릭도 성공으로 (결과가 같다)
     again = await client.post(f'/kms/messages/{assistant_id}/cancel', headers=USER)

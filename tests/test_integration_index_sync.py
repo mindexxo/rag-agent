@@ -367,28 +367,27 @@ async def _drop_rows(doc_id):
                                 .order_by(SearchIndexOutbox.id))).scalars().all()
 
 
-def _break_commit_stage(monkeypatch):
+async def _boom_mark_done(session, row_id):
     """③ 커밋 단계만 죽인다 — ②는 끝나 엔진에 청크가 있고, mark_done(③이 ready 승격과 함께 부른다)이 폭발.
-    결정적 예외라 1회로 failed 확정(#185)."""
-    async def _boom(session, row_id):
-        raise RuntimeError('③ 커밋 직전 폭발')
-    monkeypatch.setattr(outbox, 'mark_done', _boom)
+    결정적 예외라 1회로 failed 확정(#185). 픽스처 monkeypatch가 아니라 자기 context로 건다 — 픽스처를 `undo()`하면
+    fake_embed까지 걷혀 실제 임베딩 서버로 나간다."""
+    raise RuntimeError('③ 커밋 직전 폭발')
 
 
 @pytest.mark.asyncio
 async def test_커밋_단계만_실패해_failed가_된_문서의_청크는_다음_회차에_지워진다(client, tenant_id, fake_queue,
                                                                         blob_tmp, fake_embed, monkeypatch):
     doc_id = (await _upload(client, '환불정책.md'))['document_id']
-    _break_commit_stage(monkeypatch)
-    assert await ingest(doc_id) == {'done': 0, 'failed': 1}
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(outbox, 'mark_done', _boom_mark_done)
+        assert await ingest(doc_id) == {'done': 0, 'failed': 1}
     doc = await _doc(doc_id)
     assert doc.status == 'failed' and '③ 커밋 직전 폭발' in doc.status_reason
     assert len(await indexed_chunk_texts(doc_id)) > 0             # 바로 그 불일치 — failed인데 청크가 있다
     (drop,) = await _drop_rows(doc_id)
     assert drop.status == 'pending' and drop.payload == {'document_ids': [doc_id]}
 
-    monkeypatch.undo()                                          # 엔진·mark_done 정상
-    assert await ingest(doc_id) == {'done': 1, 'failed': 0}     # DROP 행
+    assert await ingest(doc_id) == {'done': 1, 'failed': 0}     # DROP 행 — 엔진·mark_done 정상
     assert await indexed_chunk_texts(doc_id) == []              # failed = 청크 0, 이제 참
     assert (await _drop_rows(doc_id))[0].status == 'done'
 
@@ -398,9 +397,9 @@ async def test_DROP은_되살아난_문서를_건너뛴다(client, tenant_id, fa
     """failed 확정의 DROP이 미뤄진 사이 재업로드(#161 행 재사용)가 먼저 색인을 끝냈다 — 늦게 도는
     DROP이 새 청크를 지우면 ready인데 검색에 없는 문서가 된다. 살아 있는 문서는 건너뛰어야 한다."""
     doc_id = (await _upload(client, '환불정책.md'))['document_id']
-    _break_commit_stage(monkeypatch)
-    assert await ingest(doc_id) == {'done': 0, 'failed': 1}
-    monkeypatch.undo()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(outbox, 'mark_done', _boom_mark_done)
+        assert await ingest(doc_id) == {'done': 0, 'failed': 1}
     (drop,) = await _drop_rows(doc_id)
 
     again = await _upload(client, '환불정책.md')                 # failed 행 재사용 — 같은 id, pending
@@ -430,9 +429,9 @@ async def test_백오프로_미뤄진_v1보다_v2가_먼저_끝나도_신버전�
 
     async def _down(**kw):
         raise ConnectionError('Cannot connect')
-    monkeypatch.setattr(rd.os_index, 'index_parsed_document', _down)
-    assert await ingest(v1) == {'done': 0, 'failed': 1}         # v1 행: pending, 백오프
-    monkeypatch.undo()
+    with pytest.MonkeyPatch.context() as mp:                    # 이것만 걷는다 — fake_embed는 유지
+        mp.setattr(rd.os_index, 'index_parsed_document', _down)
+        assert await ingest(v1) == {'done': 0, 'failed': 1}     # v1 행: pending, 백오프
 
     v2 = (await _upload(client, '환불정책.md', MD.replace('14일'.encode(), '30일'.encode())))['document_id']
     assert v2 != v1
@@ -470,9 +469,9 @@ async def test_재업로드_커밋이_실패하면_구버전은_PG_엔진_모두
     assert v1_texts
 
     v2 = (await _upload(client, '환불정책.md', MD.replace('14일'.encode(), '30일'.encode())))['document_id']
-    _break_commit_stage(monkeypatch)
-    assert await ingest(v2) == {'done': 0, 'failed': 1}         # 결정적 → 1회로 v2 failed
-    monkeypatch.undo()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(outbox, 'mark_done', _boom_mark_done)
+        assert await ingest(v2) == {'done': 0, 'failed': 1}     # 결정적 → 1회로 v2 failed
 
     d1, d2 = await _doc(v1), await _doc(v2)
     assert (d1.status, d1.is_active) == ('ready', True)         # 구버전 무사

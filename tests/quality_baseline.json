@@ -1,7 +1,6 @@
 {
  "format": {
   "config.py": 1,
-  "conftest.py": 1,
   "database.py": 1,
   "eval/_gold_history.py": 1,
   "eval/_golden_chunks.py": 1,
@@ -848,8 +847,6 @@
   "tests/test_serving_metrics.py::F401": 1,
   "tests/test_serving_metrics.py::I001": 3,
   "tests/test_stale_sweep.py::I001": 2,
-  "tests/test_stream_disconnect.py::F401": 3,
-  "tests/test_stream_disconnect.py::I001": 1,
   "tests/test_table_parsing_eval.py::B007": 1,
   "tests/test_table_parsing_eval.py::E402": 2,
   "tests/test_table_parsing_eval.py::I001": 6,
@@ -893,12 +890,12 @@
   "routers/kms.py::query": 52,
   "routers/stats.py::stats_summary": 63,
   "tests/conftest.py::<module>": 305,
-  "tests/test_cancellation.py::<module>": 328,
+  "tests/test_cancellation.py::<module>": 327,
   "tests/test_chunking_docling.py::<module>": 708,
   "tests/test_chunking_office_docling.py::<module>": 356,
   "tests/test_integration_documents.py::<module>": 310,
   "tests/test_integration_documents_xlsx.py::<module>": 372,
-  "tests/test_integration_index_sync.py::<module>": 349,
+  "tests/test_integration_index_sync.py::<module>": 347,
   "tests/test_stream_resume.py::<module>": 338
  }
 }

@@ -82,6 +82,42 @@ def _check_table_size(block: TableBlock, table_text: str, page: int | None) -> N
         raise TableTooLargeError(page, header, -(-tokens * 100 // TABLE_MAX_TOKENS), len(block.rows) - 1, len(header))
 
 
+_RawPiece = tuple[str, int, int, bool, TableRef | None]  # (글, 오프셋, 블록 번호, 이웃과 합칠 수 있나, 표 정보)
+
+
+def _text_pieces(section: Section, splitter: 'SentenceSplitter', rendered: str, start: int, bi: int) -> list[_RawPiece]:
+    """글 블록 하나 → SentenceSplitter 조각들. 오프셋은 쪽 매핑과 목록 번호 복원의 근거라 청크를 손대기 전에 원문에서 구한다."""
+    out: list[_RawPiece] = []
+    inner = start
+    for chunk in splitter.split_text(rendered):
+        found = section.body.find(chunk, inner)
+        offset = found if found >= 0 else inner
+        inner = max(inner, offset)
+        text = strip_orphan_marker(restore_leading_marker(section.body, offset, chunk))
+        if text.strip():
+            out.append((text, offset, bi, True, None))
+    return out
+
+
+def _merge_pieces(pieces: list[_RawPiece]) -> list[Piece]:
+    """이웃 조각 합치기 — 서로 다른 블록의 합칠 수 있는 조각끼리 TABLE_BATCH_CHARS 안이면 한 청크로."""
+    out: list[Piece] = []
+    prev_block, prev_mergeable = None, False
+    for text, offset, bi, mergeable, ref in pieces:
+        if (
+            out
+            and mergeable
+            and prev_mergeable
+            and bi != prev_block
+            and len(out[-1].text) + 1 + len(text) <= TABLE_BATCH_CHARS
+        ):
+            out[-1] = out[-1]._replace(text=f'{out[-1].text}\n{text}')  # 합칠 수 있는 조각은 큰 표가 아니다(ref 없음)
+        else:
+            out.append(Piece(text, offset, ref))
+        prev_block, prev_mergeable = bi, mergeable
+    return out
+
+
 def split_section(section: Section, splitter: 'SentenceSplitter') -> list[Piece]:
     """섹션 → 조각(청크 글, 본문 오프셋, 큰 표면 표 정보). 표 블록은 행 묶음(batch_table_rows)으로, 글 블록만
     SentenceSplitter로 나눈 뒤 블록 사이를 다시 잇는다 — 따로 자르기만 하면 표 위 소제목·단위 줄이 혼자 남는 작은 청크가 된다:
@@ -92,9 +128,7 @@ def split_section(section: Section, splitter: 'SentenceSplitter') -> list[Piece]
     오프셋은 section.body 안의 위치다(쪽 매핑·목록 번호 복원의 근거). 표 묶음은 첫 데이터 행 위치.
     표 하나가 TABLE_MAX_TOKENS를 넘으면 TableTooLargeError.
     """
-    pieces: list[
-        tuple[str, int, int, bool, TableRef | None]
-    ] = []  # (글, 오프셋, 블록 번호, 이웃과 합칠 수 있나, 표 정보)
+    pieces: list[_RawPiece] = []
     cursor = 0
     last_text = ''
     blocks = blocks_of(section)
@@ -120,32 +154,10 @@ def split_section(section: Section, splitter: 'SentenceSplitter') -> list[Piece]
                 pos += len(batch) - head_len + 1
             last_text = ''
         else:
-            inner = start
-            for chunk in splitter.split_text(rendered):
-                # 오프셋은 쪽 매핑과 목록 번호 복원의 근거라 청크를 손대기 전에 원문에서 구한다.
-                found = section.body.find(chunk, inner)
-                offset = found if found >= 0 else inner
-                inner = max(inner, offset)
-                text = strip_orphan_marker(restore_leading_marker(section.body, offset, chunk))
-                if text.strip():
-                    pieces.append((text, offset, bi, True, None))
+            pieces.extend(_text_pieces(section, splitter, rendered, start, bi))
             last_text = rendered
         cursor = start + len(rendered)
-    out: list[Piece] = []
-    prev_block, prev_mergeable = None, False
-    for text, offset, bi, mergeable, ref in pieces:
-        if (
-            out
-            and mergeable
-            and prev_mergeable
-            and bi != prev_block
-            and len(out[-1].text) + 1 + len(text) <= TABLE_BATCH_CHARS
-        ):
-            out[-1] = out[-1]._replace(text=f'{out[-1].text}\n{text}')  # 합칠 수 있는 조각은 큰 표가 아니다(ref 없음)
-        else:
-            out.append(Piece(text, offset, ref))
-        prev_block, prev_mergeable = bi, mergeable
-    return _carry_tail_headings(section, out)
+    return _carry_tail_headings(section, _merge_pieces(pieces))
 
 
 def _carry_tail_headings(section: Section, pieces: list[Piece]) -> list[Piece]:

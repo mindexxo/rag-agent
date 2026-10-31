@@ -234,6 +234,35 @@ def _join_split_article_titles(elements: Iterable[Element]) -> Iterator[Element]
         i += 1
 
 
+def _heading_level(text: str, seen_title: bool, seen_chapter: bool) -> tuple[int, bool, bool]:
+    """PDF 헤딩의 층 — 첫 헤딩 = 문서 제목(1), '제 N 장' = 2, 그 외 = 3(장이 아직 없으면 2). 갱신된 플래그 둘을 함께 돌려준다."""
+    if not seen_title:
+        return 1, True, seen_chapter
+    if sections.CHAPTER_RE.match(text):
+        return 2, seen_title, True
+    return (3 if seen_chapter else 2), seen_title, seen_chapter
+
+
+def _append_table(items: list[Item], table: list[list[str]] | str, page: int | None) -> None:
+    """표를 항목에 싣는다. 쪽을 넘긴 표 잇기 — docling은 쪽마다 표를 따로 낸다. 바로 앞 항목이 표이고 헤더가 같을 때만
+    뒤 표의 헤더를 떼고 행을 잇는다. 행별 쪽 번호는 각자 것을 지킨다(row_pages)."""
+    if isinstance(table, str):  # markdown 문자열 — 튜플만 먹이는 단위 테스트 호환
+        items.append((page, table, None))
+        return
+    row_pages: list[int | None] = [page] * len(table)
+    block = TableBlock(table, row_pages)
+    prev_block = items[-1][1] if items else None
+    if isinstance(prev_block, TableBlock) and prev_block.rows[0] == block.rows[0]:
+        assert prev_block.row_pages is not None  # 이 함수가 만든 표 블록은 행별 쪽을 항상 채운다
+        items[-1] = (
+            items[-1][0],
+            TableBlock(prev_block.rows + block.rows[1:], prev_block.row_pages + row_pages[1:]),
+            None,
+        )
+        return
+    items.append((page, block, None))
+
+
 def sections_from_docling_elements(elements: Iterable[Element]) -> list[Section]:
     """(label, text, page, table) 흐름 → Section. PDF 헤딩 층 복원 규칙의 정의점. table은 행 목록(TableBlock으로
     운반)이거나 markdown 문자열(그대로 글 블록 — 튜플만 먹이는 테스트용).
@@ -259,36 +288,12 @@ def sections_from_docling_elements(elements: Iterable[Element]) -> list[Section]
                 items.append((page, head.rest, None))
             continue
         if label == 'section_header':
-            text = docling_norm(text)
-            if not text:
-                continue
-            if not seen_title:
-                level, seen_title = 1, True
-            elif sections.CHAPTER_RE.match(text):
-                level, seen_chapter = 2, True
-            else:
-                level = 3 if seen_chapter else 2
-            items.append((page, text, level))
+            if text := docling_norm(text):
+                level, seen_title, seen_chapter = _heading_level(text, seen_title, seen_chapter)
+                items.append((page, text, level))
         elif label == 'table':
-            if not table_markdown:
-                continue
-            if isinstance(table_markdown, str):  # markdown 문자열 — 튜플만 먹이는 단위 테스트 호환
-                items.append((page, table_markdown, None))
-                continue
-            row_pages: list[int | None] = [page] * len(table_markdown)
-            block = TableBlock(table_markdown, row_pages)
-            # 쪽을 넘긴 표 잇기 — docling은 쪽마다 표를 따로 낸다. 바로 앞 항목이 표이고 헤더가 같을 때만 뒤 표의 헤더를
-            # 떼고 행을 잇는다. 행별 쪽 번호는 각자 것을 지킨다(row_pages).
-            prev_block = items[-1][1] if items else None
-            if isinstance(prev_block, TableBlock) and prev_block.rows[0] == block.rows[0]:
-                assert prev_block.row_pages is not None  # 이 함수가 만든 표 블록은 행별 쪽을 항상 채운다
-                items[-1] = (
-                    items[-1][0],
-                    TableBlock(prev_block.rows + block.rows[1:], prev_block.row_pages + row_pages[1:]),
-                    None,
-                )
-                continue
-            items.append((page, block, None))
+            if table_markdown:
+                _append_table(items, table_markdown, page)
         elif label == 'picture':
             caption = docling_norm(text)
             items.append((page, caption or PICTURE_PLACEHOLDER, None))

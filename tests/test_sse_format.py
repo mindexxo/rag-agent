@@ -5,7 +5,7 @@ FE 파서가 이 봉투 형식(event/data/빈 줄)에 의존한다.
 import json
 
 from rag.prepared import PreparedRag
-from rag.retrieval_types import RetrievalResult
+from rag.search.retrieval_types import RetrievalResult
 from rag.streaming import _meta_event, sse_event
 
 

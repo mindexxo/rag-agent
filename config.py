@@ -109,14 +109,14 @@ class Settings(BaseSettings):
     #   are: 'minimal', 'low'…"). 맞지 않는 값은 조용히 빼지 않고 400으로 드러난다(위 llm_reasoning_effort와 같은 규칙).
 
     # embedding (F99: TEI 원격 서버, dense-only). 저장 벡터도 같은 공급자·모델 출력이어야 검색 정상 — 바꾸면 재인제스트 필수.
-    # 공급자(#289, 정의점 rag/embeddings.py): tei(사내, 기본) | openai | gemini | voyage — 상용은 LiteLLM 경유, 모델명은 접두 없이
+    # 공급자(#289, 정의점 rag/search/embeddings.py): tei(사내, 기본) | openai | gemini | voyage — 상용은 LiteLLM 경유, 모델명은 접두 없이
     # (예: text-embedding-3-large, gemini-embedding-001, voyage-3.5), 차원은 항상 1024로 요청하고 응답을 검사한다.
     embed_provider: Literal["tei", "openai", "gemini", "voyage"] = "tei"
     embed_model: str = ""                    # 상용일 때 모델·키 필수(_require_vendor_model_and_key). TEI는 컨테이너당 모델 고정이라 안 본다
     embed_api_key: str = ""                  # 상용 키 — .env에만 (LLM과 별개 키: 벤더가 다를 수 있다)
     embed_base_url: str = "http://localhost:38889"    # TEI 임베딩 서버 (BGE-M3, /embed) — 실주소는 .env. 상용이면 무시
     embed_timeout: float = 30.0
-    embed_dimensions: int | None = None      # TEI 전용 MRL 절단 — 상용은 rag/embeddings.EMBED_DIM(1024) 고정
+    embed_dimensions: int | None = None      # TEI 전용 MRL 절단 — 상용은 rag/search/embeddings.EMBED_DIM(1024) 고정
 
     # OTel 트레이싱 (#7). 미설정(빈 값)이면 완전 no-op — 계측 코드는 돌지만 스팬이 기록되지 않음.
     # 로컬 Phoenix: http://localhost:6006/v1/traces (docker-compose.local.yml). 개발계 전용 권장.
@@ -150,7 +150,7 @@ class Settings(BaseSettings):
     # 분포 대비 정식 채널로 켜둔다(사용자 결정). 끄면 dense-only.
     hybrid_lexical_enabled: bool = True
     hybrid_lexical_inject: int = 15                   # dense 미포함 BM25 상위 주입 수 (어블레이션 조립과 동일)
-    # 리랭크 공급자(#289, 정의점 rag/reranker.py): tei(사내, 기본) | cohere | voyage | jina — 상용은 LiteLLM arerank 경유,
+    # 리랭크 공급자(#289, 정의점 rag/search/reranker.py): tei(사내, 기본) | cohere | voyage | jina — 상용은 LiteLLM arerank 경유,
     # 모델명은 접두 없이(예: rerank-v5.0-pro, rerank-3, jina-reranker-v2-base-multilingual — Cohere 목록은 /v2/models?endpoint=rerank, 10/24 기준 v5.0이 최신). 점수 눈금이 벤더마다 달라
     # ident_boost는 벤더 전환 측정 때 다시 본다.
     rerank_provider: Literal["tei", "cohere", "voyage", "jina"] = "tei"
@@ -158,7 +158,7 @@ class Settings(BaseSettings):
     rerank_api_key: str = ""                 # 상용 키 — .env에만
     rerank_base_url: str = "http://localhost:38890"   # TEI 리랭커 서버 (bge-reranker-v2-m3, /rerank) — 실주소는 .env. 상용이면 무시
     rerank_timeout: float = 30.0
-    # 식별자 채널(#238, 정의점 rag/identifiers·rag/retriever). 질문에 사전 식별자('11조')가 있을 때만 발동:
+    # 식별자 채널(#238, 정의점 rag/identifiers·rag/search/retriever). 질문에 사전 식별자('11조')가 있을 때만 발동:
     # 정확 일치 조각을 리랭커 풀에 주입하고, 리랭크 **뒤** 점수에 ident_boost를 더해 재정렬한다.
     # 0.3 = 장·조 혼동 점수 차(0.20~0.25)보다 크고 리랭커 확신(0.3 이상 차이)은 뒤집지 않는 값 — 585문항 실패 11→1,
     # 실질문 23건 근거5안 15→23, 회귀 0(2026-10-17). 0.5는 묶음·파일명 문제까지 보정치로 덮는 값이라 기각.
@@ -168,7 +168,7 @@ class Settings(BaseSettings):
 
     # 검색 저장소 — OpenSearch 하나 (#139 도입 확정 2026-09-12, 사유=확장성). PG는 문서·FAQ·폴더·
     # 대화·캐시·outbox의 정본이고, 청크(본문·메타·벡터·어휘 필드)는 엔진에만 있다. 서빙은 엔진에서
-    # 끝난다(rag/os_client.py 상단). 기동 시 인덱스 존재를 보장한다(ensure_index_soft) — 엔진에 못 붙어도
+    # 끝난다(rag/search/os_client.py 상단). 기동 시 인덱스 존재를 보장한다(ensure_index_soft) — 엔진에 못 붙어도
     # 프로세스는 뜨고 ERROR 로그를 남긴다(로컬 개발 편의, 사용자 결정). 그 상태에서 검색·색인은 호출 시점에 실패한다.
     #
     # 받아들인 것: 색인 반영 지연. 모든 변경은 트랜잭셔널 outbox(rag/outbox.py)로 durable하게 기록되고

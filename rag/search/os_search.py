@@ -1,13 +1,13 @@
 """OpenSearch 질의 조립·후보 회수 — 검색 경로의 **정의점**.
 
-왕복은 dense kNN · BM25(Nori) 어휘 · 식별자 정확 일치 · 본문 mget이고, 그 위의 융합·리랭크는 `rag/retriever.py`가 한다.
-본문·메타는 엔진의 _source에서 읽는다 — 색인이 서빙의 정본이라 정합은 쓰기 경로(`rag/os_index.py`·`rag/outbox.py`)가 책임진다.
-`embed_texts`는 `rag/retriever.py`에 둔다 — 옮기면 `tests/conftest.py`의 monkeypatch가 안 먹는다.
+왕복은 dense kNN · BM25(Nori) 어휘 · 식별자 정확 일치 · 본문 mget이고, 그 위의 융합·리랭크는 `rag/search/retriever.py`가 한다.
+본문·메타는 엔진의 _source에서 읽는다 — 색인이 서빙의 정본이라 정합은 쓰기 경로(`rag/search/os_index.py`·`rag/outbox.py`)가 책임진다.
+`embed_texts`는 `rag/search/retriever.py`에 둔다 — 옮기면 `tests/conftest.py`의 monkeypatch가 안 먹는다.
 """
 
 from config import settings
-from rag.os_client import NORI_FIELD, client
-from rag.retrieval_types import DenseHit, DenseHits, RetrievedChunk
+from rag.search.os_client import NORI_FIELD, client
+from rag.search.retrieval_types import DenseHit, DenseHits, RetrievedChunk
 
 
 def score_to_cosine_distance(score: float) -> float:
@@ -38,7 +38,7 @@ def _ids(resp) -> list[int]:
     return [int(h["_source"]["chunk_id"]) for h in resp["hits"]["hits"]]
 
 
-# ===== 운영 경로 (rag/retriever.py가 호출) =================================
+# ===== 운영 경로 (rag/search/retriever.py가 호출) =================================
 
 
 async def search_dense_per_query(

@@ -6,7 +6,7 @@ from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN
 TABLE_BATCH_TOKENS = 1000
 TABLE_BATCH_CHARS = int(TABLE_BATCH_TOKENS * CONSERVATIVE_CHARS_PER_TOKEN)
 
-# 표 하나당 토큰 상한 — 전 형식 공통. 근거 준비(rag/retriever.prepare_evidence)는 표를 통째로 넣거나 빼므로 넘는 표는
+# 표 하나당 토큰 상한 — 전 형식 공통. 근거 준비(rag/search/retriever.prepare_evidence)는 표를 통째로 넣거나 빼므로 넘는 표는
 # 일부만 보여 줄 수밖에 없고, 그러면 모델이 나머지 행을 지어낸다. 그래서 받지 않는다(엑셀은 업로드 거절, PDF·DOCX·MD는 색인 실패).
 # 값은 답의 정확도로 정했다 — 근거 예산(EVIDENCE_BUDGET_TOKENS)보다 작아야 하고, 생성 모델을 바꾸면 다시 잰다.
 TABLE_MAX_TOKENS = 6000

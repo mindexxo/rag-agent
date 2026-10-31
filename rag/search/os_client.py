@@ -9,7 +9,7 @@ import logging
 
 from config import settings
 
-DIM = 1024  # 임베딩 모델 차원 (rag/embeddings.py)
+DIM = 1024  # 임베딩 모델 차원 (rag/search/embeddings.py)
 
 NORI_FIELD = "index_text_nori"
 LEX_BIGRAM_FIELD = "lex_bigram"
@@ -66,7 +66,7 @@ MAPPING = {
             "searchable": {"type": "boolean"},
             "folder_id": {"type": "long"},  # 폴더 단위 fan-out update의 필터 키
             "folder_name": {"type": "keyword"},
-            # 폴더 설명은 리랭커 입력에만 들어간다(rag/index_text.py) — 검색 대상이 아니다.
+            # 폴더 설명은 리랭커 입력에만 들어간다(rag/search/index_text.py) — 검색 대상이 아니다.
             "folder_description": {"type": "text", "index": False},
             # 검색 대상은 아래 어휘 필드라 색인하지 않는다(어휘 점수 이중 관여 방지). 본문은 _source로 돌려받는다.
             "text": {"type": "text", "index": False},
@@ -76,7 +76,7 @@ MAPPING = {
             # 질의는 반드시 lex_clause()로 — 기본 match는 2.18 hybrid 쿼리를 500으로 죽인다.
             NORI_FIELD: {"type": "text", "analyzer": "nori_ko"},
             LEX_BIGRAM_FIELD: {
-                # rag.lexical.bigrams() 출력을 공백으로 이은 문자열 — ngram 필터는 1글자 어절을 버려 재현이 안 된다.
+                # rag.search.lexical.bigrams() 출력을 공백으로 이은 문자열 — ngram 필터는 1글자 어절을 버려 재현이 안 된다.
                 # 운영 어휘 채널은 Nori 필드다 — 이 필드는 실험·대조군용.
                 "type": "text",
                 "analyzer": "pretokenized",

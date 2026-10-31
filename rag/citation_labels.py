@@ -60,8 +60,8 @@ def source_key(item) -> tuple:
 
 
 def faq_question(chunk) -> str:
-    """FAQ 청크의 질문 — 색인이 heading_path=[질문]으로 적는다(rag/os_index.index_parsed_faq).
-    없으면 본문 첫 줄 'Q: …'(rag/faq_indexing.build_faq_chunk_text 형식)에서 읽는다 — 방어용."""
+    """FAQ 청크의 질문 — 색인이 heading_path=[질문]으로 적는다(rag/search/os_index.index_parsed_faq).
+    없으면 본문 첫 줄 'Q: …'(rag/search/faq_indexing.build_faq_chunk_text 형식)에서 읽는다 — 방어용."""
     if chunk.heading_path:
         return chunk.heading_path[0]
     first = (chunk.text or '').split('\n', 1)[0]

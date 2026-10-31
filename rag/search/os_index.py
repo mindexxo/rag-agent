@@ -12,13 +12,13 @@ from typing import Any
 from sqlalchemy import select
 
 from config import settings
-from rag.embeddings import embed_texts
-from rag.faq_indexing import build_faq_chunk_text
 from rag.identifiers import chunk_identifiers, effective_headings
-from rag.index_text import build_index_text
-from rag.lexical import bigrams
 from rag.models import Document, Faq, Folder
-from rag.os_client import LEX_BIGRAM_FIELD, NORI_FIELD, client
+from rag.search.embeddings import embed_texts
+from rag.search.faq_indexing import build_faq_chunk_text
+from rag.search.index_text import build_index_text
+from rag.search.lexical import bigrams
+from rag.search.os_client import LEX_BIGRAM_FIELD, NORI_FIELD, client
 
 
 def lex_text(text: str, filename: str | None, heading_path) -> str:

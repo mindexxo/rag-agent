@@ -9,7 +9,7 @@ import asyncio
 import logging
 
 from config import settings
-from rag.index_text import build_index_text
+from rag.search.index_text import build_index_text
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ async def rerank_scores(query: str, chunks: list) -> list[float] | None:
     if not chunks:
         return []
     try:
-        from rag.embeddings import (
+        from rag.search.embeddings import (
             MAX_CLIENT_BATCH,
         )  # 리랭커 TEI도 같은 배치 상한 32(초과 시 422) — 쌍마다 독립 채점이라 나눠 불러도 점수가 같다
 

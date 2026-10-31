@@ -14,18 +14,19 @@
 (모든 모듈이 층에 있는지·0층 예외·진입점·지연 import 목록·순환).
 
 - **0층(leaf, 다른 `rag/` 모듈을 안 씀)**: `config.py`, `rag/models.py`, `rag/tokens.py`,
-  `rag/prompt_texts.py`, `rag/llm/`(공급자별 구현 — `base.py`·`openai_compat.py`·`vllm.py`·`litellm.py`, #287·#288), `rag/embeddings.py`, `rag/chunking/`(청킹 패키지 — `types`·`tables`·`errors`·`plain`·`sections`·`split`·`document_converter`·`ocr_llm`·`convert_process`·`docling_elements`·`docx`·`markdown`·`xlsx` 하위 모듈과 본체 `__init__`),
-  `rag/index_text.py`, `rag/lexical.py`, `rag/limiter.py`, `rag/otel.py`, `rag/metrics.py`,
-  `rag/faq_indexing.py`, `rag/retrieval_types.py`, `rag/identifiers.py`, `rag/os_client.py`(톱레벨은 `config`만 —
-  `opensearchpy`는 `client()` 안에서 지연 import한다: 매핑 상수만 보는 테스트가 그 패키지 없이도 import할 수 있게).
+  `rag/prompt_texts.py`, `rag/llm/`(공급자별 구현 — `base.py`·`openai_compat.py`·`vllm.py`·`litellm.py`, #287·#288), `rag/chunking/`(청킹 패키지 — `types`·`tables`·`errors`·`plain`·`sections`·`split`·`document_converter`·`ocr_llm`·`convert_process`·`docling_elements`·`docx`·`markdown`·`xlsx` 하위 모듈과 본체 `__init__`),
+  `rag/limiter.py`, `rag/otel.py`, `rag/metrics.py`, `rag/identifiers.py`.
   예외 하나: `rag/chunking/`는 0층 둘(`rag/tokens.py`·`rag/identifiers.py`)만 쓴다 — 조 제목 판정을 색인 이름표와
   같은 함수로 하려고(#233)
-- **중간층(조합)**: `rag/citation_labels.py`, `rag/clients.py`, `rag/llm_schemas.py`,
-  `rag/turn_state.py`, `rag/cache.py`, `rag/reranker.py`, `rag/retriever.py`,
+- **중간층(조합)**: `rag/search/`(검색 패키지 — `os_client`·`os_search`·`os_index`·`retriever`·`reranker`·`embeddings`·`index_text`·`lexical`·
+  `faq_indexing`·`retrieval_types`; 패키지 밖으로는 `models`·`tokens`·`identifiers`·`metrics`·`otel`만 톱레벨에서 쓴다. `os_client`의 톱레벨은 `config`만 —
+  `opensearchpy`는 `client()` 안에서 지연 import한다: 매핑 상수만 보는 테스트가 그 패키지 없이도 import할 수 있게),
+  `rag/citation_labels.py`, `rag/clients.py`, `rag/llm_schemas.py`,
+  `rag/turn_state.py`, `rag/cache.py`,
   `rag/stream_resume.py`, `rag/cancellation.py`, `rag/citation_tail.py`, `rag/documents.py`, `rag/ingestion.py`,
   `rag/prepared.py`,
   `rag/prompts.py`, `rag/conversation.py`, `rag/guardrail.py`, `rag/outbox.py`,
-  `rag/os_search.py`, `rag/os_index.py`, `rag/os_reconcile.py`, `rag/conversation_search.py`(`models`만 쓴다)
+  `rag/os_reconcile.py`(색인 정합 복구 CLI — `outbox`로 재등재하므로 `search/` 안에 두면 단위 순환이 된다), `rag/conversation_search.py`(`models`만 쓴다)
 - **조립점**: `rag/service.py` — 한 턴의 수명(prepare → generate → finalize)을 조율한다.
 - **진입점**(다른 모듈이 톱레벨에서 import하지 않는다 — 예외는 아래 지연 목록의 `stream_resume`→`streaming`): `rag/streaming.py`(SSE),
   `rag/worker.py`(arq 백그라운드), `routers/*.py`(HTTP), `main.py`(FastAPI 부트스트랩 전용).
@@ -35,12 +36,12 @@
 - `config.py`는 프로젝트 모듈을 import하지 않는다.
 
 **함수 안 지연 import은 순환 회피용이며 의도된 것이다 — 톱레벨로 끌어올리지 마라.**
-이걸 하는 모듈: `embeddings`·`limiter`(→clients),
-`reranker`(→clients, embeddings), `retriever`(→reranker), `stream_resume`(→clients, streaming),
+이걸 하는 모듈: `search`·`limiter`(→clients) — `search/` 안에서는 `embeddings`·`reranker`가 `clients`를, `retriever`가 `reranker`를, `reranker`가
+`embeddings`를 함수 안에서 들인다(패키지 안 간선은 계층 검사에서 한 단위라 목록엔 `search`→`clients`만 남는다), `stream_resume`(→clients, streaming),
 `outbox`(→ingestion).
 순환 회피가 아닌 지연 import은 둘이다. `opensearchpy` — `rag/` 어느 모듈도 톱레벨에 들이지 않고
-`os_client.client()`·`outbox.is_transient()`가 함수 안에서 import한다(매핑 상수만 보는 테스트가 그 패키지
-없이 `os_client`를 import할 수 있게 한 규율을 outbox도 따른다). `litellm` — `rag/llm/litellm.py`·`rag/embeddings.py`·`rag/reranker.py`의 상용 분기 함수 안에서만
+`search.os_client.client()`·`outbox.is_transient()`가 함수 안에서 import한다(매핑 상수만 보는 테스트가 그 패키지
+없이 `os_client`를 import할 수 있게 한 규율을 outbox도 따른다). `litellm` — `rag/llm/litellm.py`·`rag/search/embeddings.py`·`rag/search/reranker.py`의 상용 분기 함수 안에서만
 import한다(118MB 패키지라 사내 vLLM·TEI만 쓰는 프로세스가 비용을 안 내게, #288·#289).
 
 검색 저장소(`os_*` 4모듈)에는 **지연 import가 없다**(#146). 구 rag/opensearch.py는 19~21곳을

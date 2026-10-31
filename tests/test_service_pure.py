@@ -7,7 +7,7 @@ needs_generation은 SSE 백그라운드 생성 분기와 정확히 일치해야 
 import pytest
 
 from rag.prepared import PreparedRag
-from rag.retrieval_types import RetrievalResult, RetrievedChunk
+from rag.search.retrieval_types import RetrievalResult, RetrievedChunk
 from rag.service import _source_doc_ids
 
 

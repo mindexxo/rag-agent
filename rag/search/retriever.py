@@ -24,10 +24,11 @@ from dataclasses import replace
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from rag import metrics, os_search, otel
-from rag.embeddings import embed_texts
+from rag import metrics, otel
 from rag.identifiers import cut_identifier_span, normalize_identifiers
-from rag.retrieval_types import DenseHits, GateVerdict, RetrievalCandidates, RetrievalResult, RetrievedChunk
+from rag.search import os_search
+from rag.search.embeddings import embed_texts
+from rag.search.retrieval_types import DenseHits, GateVerdict, RetrievalCandidates, RetrievalResult, RetrievedChunk
 from rag.tokens import estimate_tokens_conservative
 
 logger = logging.getLogger(__name__)
@@ -171,7 +172,7 @@ async def retrieve_candidates(
     """
     queries = [query, *(expanded_queries or [])]
 
-    # 이 호출을 retriever.py 밖으로 옮기지 말 것 — tests/conftest.py가 `rag.retriever.embed_texts`를 패치한다.
+    # 이 호출을 retriever.py 밖으로 옮기지 말 것 — tests/conftest.py가 `rag.search.retriever.embed_texts`를 패치한다.
     q_embs = await embed_texts(queries, kind="query")
     query_embedding = q_embs[0].dense  # 캐시가 재사용하는 원본 쿼리 벡터 — Embedding 래퍼는 여기서 벗긴다
 
@@ -238,7 +239,7 @@ async def _rerank_pool(
             },
         )
         # 단일/멀티 공통 — 쿼리 1개의 max-pool은 단일 리랭크와 같다.
-        from rag.reranker import rerank_maxpool  # 지연 import (retriever ↔ reranker 순환 방지)
+        from rag.search.reranker import rerank_maxpool  # 지연 import (retriever ↔ reranker 순환 방지)
 
         result, best, best_qi = await rerank_maxpool(queries, result)
         if best is None:

@@ -148,7 +148,7 @@ def chunks():
 
 
 def _article_spans(chunks_, query):
-    """질문의 조 번호 이름표가 걸린 조각마다 그 조 구간 — 운영 오리기(rag/retriever prepare_evidence)와 같은 함수."""
+    """질문의 조 번호 이름표가 걸린 조각마다 그 조 구간 — 운영 오리기(rag/search/retriever prepare_evidence)와 같은 함수."""
     token = next(t for t in normalize_identifiers(query) if t.endswith('조'))
     out = []
     for c in chunks_:

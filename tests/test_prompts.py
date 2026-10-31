@@ -18,7 +18,7 @@ from rag.prompts import (
     build_system_prompt,
     build_user_message,
 )
-from rag.retrieval_types import RetrievedChunk
+from rag.search.retrieval_types import RetrievedChunk
 
 
 def _chunk(**kw) -> RetrievedChunk:

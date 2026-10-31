@@ -16,7 +16,7 @@
 |---|---|---|---|---|
 | INV-01 | 테넌트 격리는 쿼리 WHERE 절로만 보장한다(RLS 없음) — 모든 테넌트 테이블 조회에 tenant 조건 | `rag/models.py` | `tests/test_integration_isolation.py::test_검색_후보에_타_테넌트_청크가_없다` · `tests/test_integration_isolation.py::test_대화_목록과_메시지_격리` · `tests/test_integration_isolation.py::test_폴더_격리` · `tests/test_integration_isolation.py::test_FAQ_목록_격리` · `tests/test_integration_isolation.py::test_문서_일괄변경_격리` · `tests/test_integration_isolation.py::test_문서_일괄삭제_격리` · `tests/test_integration_isolation.py::test_문서_목록_필터_격리` · `tests/test_integration_documents.py::test_exists_는_테넌트_격리` · `tests/test_integration_documents.py::test_다운로드는_테넌트_격리` · `tests/test_integration_cache.py::test_테넌트_간_캐시_격리` · `tests/test_integration_cache.py::test_FAQ_스냅샷_검증도_테넌트_격리` (부분) | 표면별 테스트 — "모든 조회"를 덮는 정적 강제는 없다(#90 전용 린터 후보). 일괄변경 META는 호출부 사전 스코프에 기댄다(가장 위험한 표면) |
 | INV-02 | 없거나 타 테넌트 소유 conversation_id로 질의하면 404 — 404는 대화 없음(`ConversationNotFound`)에만 | `routers/kms.py` | `tests/test_integration_query_sse.py::test_없는_대화_id는_404` · `tests/test_integration_tenant_boundary.py::test_다른_테넌트_대화_id로_질의하면_404이고_어느_쪽에도_행이_생기지_않는다` · `tests/test_integration_query_contract.py::test_대화와_무관한_ValueError는_500이고_턴은_failed로_닫힌다` | |
-| INV-03 | 테넌트·검색가능 필터는 엔진에서 건다(post-filter 금지) | `rag/os_search.py` | `tests/test_os_search_pure.py::test_필터는_엔진에서_걸린다` (부분) | 필터 dict 모양만 본다 — 실제 kNN·BM25 질의가 이 필터를 쓰는지는 미검증 |
+| INV-03 | 테넌트·검색가능 필터는 엔진에서 건다(post-filter 금지) | `rag/search/os_search.py` | `tests/test_os_search_pure.py::test_필터는_엔진에서_걸린다` (부분) | 필터 dict 모양만 본다 — 실제 kNN·BM25 질의가 이 필터를 쓰는지는 미검증 |
 | INV-04 | 생성 실패 시 예외 원문을 클라이언트에 보내지 않는다 | `rag/streaming.py` | `tests/test_invariants_turn.py::test_INV04_생성_실패의_예외_원문은_SSE에도_재접속_스트림에도_실리지_않는다` |  |
 | INV-05 | 커밋된 설정·config 기본값에 평문 비밀값을 두지 않는다 | `AGENTS.md` | `tests/test_guardrails.py::test_커밋된_설정에_평문_비밀값이_없다` · `tests/test_guardrails.py::test_config의_비밀_필드_기본값은_비어_있다` |  |
 | INV-06 | 첨부가 있는 대화의 답변은 공용 캐시에 넣지 않는다 | `rag/service.py` | `tests/test_integration_cache.py::test_첨부_대화_답변은_공용_캐시_유출_금지` |  |
@@ -32,7 +32,7 @@
 | INV-12 | outbox 핸들러는 처리 순서를 가정하지 않고 처리 시점 PG 상태로 판단한다 | `rag/outbox.py` | `tests/test_integration_index_sync.py::test_DROP은_되살아난_문서를_건너뛴다` · `tests/test_integration_index_sync.py::test_백오프로_미뤄진_v1보다_v2가_먼저_끝나도_신버전이_이긴다` | |
 | INV-13 | outbox payload에는 id만 싣는다 | `rag/outbox.py` | `tests/test_integration_index_sync.py::test_재업로드_성공은_구버전_DROP_행을_같은_커밋에_남긴다` (부분) | DROP만 본다 — INDEX·META 행 미검증 |
 | INV-14 | 결정적 실패는 재시도하지 않는다 | `rag/outbox.py` | `tests/test_outbox_pure.py::test_결정적_실패로_분류` · `tests/test_integration_index_sync.py::test_결정적_실패는_META_행도_1회로_확정하고_카운터가_오른다` (부분) | 분류(is_transient)만 본다 — 재시도하지 않음 자체와 XlsxUploadRejected 계열은 미검증 |
-| INV-15 | 메타 갱신(META)은 재색인하지 않는다 | `rag/os_index.py` | `tests/test_integration_index_sync.py::test_문서_검색토글은_META_부분갱신으로_제외_복귀한다` | |
+| INV-15 | 메타 갱신(META)은 재색인하지 않는다 | `rag/search/os_index.py` | `tests/test_integration_index_sync.py::test_문서_검색토글은_META_부분갱신으로_제외_복귀한다` | |
 | INV-16 | reconcile은 엔진 스냅샷을 PG보다 먼저 읽는다(반대면 방금 색인된 청크를 지운다) | `rag/os_reconcile.py` | `tests/test_invariants_docs.py::test_INV16_reconcile은_두_스냅샷_사이에_ready가_된_문서의_청크를_지우지_않는다` (부분) | 문서 reconcile만 — 같은 계약의 reconcile_faqs·dry-run 대조(_diff)는 미검증 |
 | INV-17 | 옛 blob은 호출부가 커밋 뒤에 지운다 | `rag/documents.py` | `tests/test_invariants_docs.py::test_INV17_재업로드_커밋이_실패하면_옛_blob은_디스크에_남는다` · `tests/test_invariants_docs.py::test_INV17_재업로드_커밋이_성공하면_옛_blob을_지운다` | 성공 경로 대조 포함 |
 | INV-18 | 업로드 1건 = UUID 파일 1개 — 내용이 같아도 blob을 공유하지 않는다 | `routers/documents.py` | `tests/test_invariants_docs.py::test_INV18_같은_바이트를_여러_번_올려도_업로드마다_blob_파일이_따로_생긴다` |  |
@@ -81,9 +81,9 @@
 | INV-50 | 인용 번호는 검색 출처 순서 1부터, 이어서 첨부 순서 — 컨텍스트 블록·꼬리 제약·파서가 같은 순서 | `rag/citation_labels.py` | `tests/test_prompts.py::TestContextBlocks::test_다른_문서는_등장_순서대로_번호` · `tests/test_prompts.py::TestCitationTail::test_후보_수는_검색_출처_더하기_첨부` · `tests/test_citation_tail.py::TestResolveCitations::test_첨부_인용은_FAQ_선례의_가짜_인용_객체` · `tests/test_invariants_docs.py::test_INV50_컨텍스트_블록_꼬리_제약_파서가_같은_입력에_같은_번호_객체_매핑을_낸다` |  |
 | INV-51 | API `citations`와 SSE `done.citations`는 같은 이름·의미 | `schemas/conversations.py` | `tests/test_invariants_docs.py::test_INV51_일반_문서_인용은_SSE_done과_대화_API가_같은_키와_값이다` |  |
 | INV-52 | 문서 출처 id는 양수, FAQ는 음수 네임스페이스(캐시 무효화 키와 짝) | `rag/service.py` | `tests/test_service_pure.py::TestSourceDocIds::test_문서는_양수_FAQ는_음수` · `tests/test_service_pure.py::TestSourceDocIds::test_같은_번호의_문서와_FAQ는_구분` | |
-| INV-53 | 한 턴의 쿼리 벡터는 하나 — 같은 질의를 다시 임베딩하지 않는다 | `rag/retrieval_types.py` | `tests/test_integration_cache.py::test_턴당_임베딩_왕복은_1회` | |
-| INV-54 | 리랭커는 후보 순서만 바꾼다(집합 불변) | `rag/reranker.py` | `tests/test_retrieval_ranking.py::TestRerankMaxpool::test_한_쿼리라도_실패하면_점수가_None` (부분) | 성공 경로 집합 동일성 미검증 |
-| INV-55 | 식별자 가산은 리랭커 뒤에 하고 리랭커 입력은 바꾸지 않는다 | `rag/retriever.py` | `tests/test_identifier_channel.py::test_가산이_장조_혼동을_넘고_근거는_그_조만_오린다` (부분) | 리랭커 입력 불변 미검증 |
+| INV-53 | 한 턴의 쿼리 벡터는 하나 — 같은 질의를 다시 임베딩하지 않는다 | `rag/search/retrieval_types.py` | `tests/test_integration_cache.py::test_턴당_임베딩_왕복은_1회` | |
+| INV-54 | 리랭커는 후보 순서만 바꾼다(집합 불변) | `rag/search/reranker.py` | `tests/test_retrieval_ranking.py::TestRerankMaxpool::test_한_쿼리라도_실패하면_점수가_None` (부분) | 성공 경로 집합 동일성 미검증 |
+| INV-55 | 식별자 가산은 리랭커 뒤에 하고 리랭커 입력은 바꾸지 않는다 | `rag/search/retriever.py` | `tests/test_identifier_channel.py::test_가산이_장조_혼동을_넘고_근거는_그_조만_오린다` (부분) | 리랭커 입력 불변 미검증 |
 | INV-56 | LLM 구조화 출력은 부분·퍼지 복구를 하지 않는다 | `rag/llm_schemas.py` | `tests/test_llm_schemas.py::test_스키마_위반은_판단실패_부분복구_없음` · `tests/test_citation_tail.py::TestResolveCitations::test_숫자가_없으면_빈_목록` | |
 | INV-57 | 대화 검색은 한 대화에 여러 메시지가 걸려도 1건이고, 첨부 본문은 검색하지 않는다 | `rag/conversation_search.py` | `tests/test_conversation_search.py::test_한_대화에_여러_매칭이어도_total은_1` · `tests/test_conversation_search.py::test_첨부_본문은_검색되지_않는다` | |
 | INV-58 | 동시성 기본값은 config와 schema.sql DEFAULT가 같다 | `config.py` | `tests/test_docs_freshness.py::TestInternalNumberInvariants::test_동시성_기본값이_config와_schema에서_일치한다` | |
@@ -100,11 +100,11 @@
 | INV-74 | 문서 속 경로·심볼·숫자는 실존한다 | `AGENTS.md` | `tests/test_docs_freshness.py::TestPathReferences::test_문장_속_경로는_실존해야_한다` · `tests/test_docs_freshness.py::TestSymbolReferences::test_문장_속_심볼은_그_파일에_있어야_한다` (부분) | 경로·심볼만 — 숫자는 INV-58 등 개별 테스트에 흩어져 있다 |
 | INV-75 | 품질 기준선보다 나빠지지 않는다(형식·버그 패턴·복잡도·크기·`_이름` import·모듈 docstring) | `AGENTS.md` | `tests/test_code_quality.py::test_품질_기준선보다_나빠지지_않는다` |  |
 | INV-76 | 공유 deny가 전체 스테이징·강제 push·main 직접 push의 흔한 형태를 막고 평소 명령은 막지 않는다 | `AGENTS.md` | `tests/test_guardrails.py::test_deny가_있고_필수_명령을_막는다` · `tests/test_guardrails.py::test_deny는_평소_명령을_막지_않는다` |  |
-| INV-77 | OS 클라이언트는 커넥션 상한(maxsize)을 명시한다 | `rag/os_client.py` | `tests/test_os_client_pure.py::TestConnectionPool::test_maxsize를_명시한다` | |
-| INV-78 | BM25·HNSW 파라미터는 매핑에 명시하지 않는다(엔진 기본값) | `rag/os_client.py` | `tests/test_os_client_pure.py::test_bm25_hnsw_파라미터는_엔진_기본값을_쓴다` | |
+| INV-77 | OS 클라이언트는 커넥션 상한(maxsize)을 명시한다 | `rag/search/os_client.py` | `tests/test_os_client_pure.py::TestConnectionPool::test_maxsize를_명시한다` | |
+| INV-78 | BM25·HNSW 파라미터는 매핑에 명시하지 않는다(엔진 기본값) | `rag/search/os_client.py` | `tests/test_os_client_pure.py::test_bm25_hnsw_파라미터는_엔진_기본값을_쓴다` | |
 | INV-79 | llm_schemas의 구조 결정 필드(safe·intent·standalone)에 기본값을 주지 않는다 | `rag/llm_schemas.py` | `tests/test_llm_schemas.py::test_스키마_위반은_판단실패_부분복구_없음` (부분) | 필드별 required 일반 단언 없음 |
 | INV-80 | Prometheus 라벨에 고카디널리티 값(tenant_id·conversation_id·filename)을 쓰지 않는다 | `rag/metrics.py` | `tests/test_invariants_static.py::test_INV80_Prometheus_라벨에_고카디널리티_값을_쓰지_않는다` | 금지 토큰: 엔터티 id·사용자·자유 텍스트 계열 |
 | INV-81 | `schemas/query.py`의 죽은 레거시를 새 코드에서 쓰지 않는다 | `AGENTS.md` | `tests/test_invariants_static.py::test_INV81_죽은_레거시_schemas_query를_아무도_import하지_않는다` |  |
 | INV-82 | 측정 축은 정본 골드(`eval/gold_set_v2.jsonl`)만 읽는다 | `AGENTS.md` | `tests/test_invariants_static.py::test_INV82_분할본_gold_v2는_validate_gold_v2만_읽는다` · `tests/test_invariants_static.py::test_INV82_eval이_여는_골드_파일은_정본과_허용_목록뿐이다` | 분할본은 validate_gold_v2만, 옛 v1은 레거시 두 스크립트만(허용 목록 — 정리는 #306) |
-| INV-83 | 기존 인덱스에는 덧붙이는 필드만 추가하고 매핑 변경은 건드리지 않는다 | `rag/os_client.py` | `tests/test_invariants_static.py::test_INV83_기존_인덱스에는_빠진_추가_필드만_정의_그대로_덧붙인다` · `tests/test_invariants_static.py::test_INV83_추가_필드는_재색인_없이_붙여도_되는_모양뿐이다` |  |
-| INV-84 | BM25 질의는 lex_clause()로만 만든다(기본 match는 2.18 hybrid를 깬다) | `rag/os_client.py` | `tests/test_os_search_pure.py::test_nori_질의에_2_18_결함_회피가_붙어_있다` (부분) | 플래그 존재만 — 모든 호출부가 lex_clause를 쓰는지 미검증 |
+| INV-83 | 기존 인덱스에는 덧붙이는 필드만 추가하고 매핑 변경은 건드리지 않는다 | `rag/search/os_client.py` | `tests/test_invariants_static.py::test_INV83_기존_인덱스에는_빠진_추가_필드만_정의_그대로_덧붙인다` · `tests/test_invariants_static.py::test_INV83_추가_필드는_재색인_없이_붙여도_되는_모양뿐이다` |  |
+| INV-84 | BM25 질의는 lex_clause()로만 만든다(기본 match는 2.18 hybrid를 깬다) | `rag/search/os_client.py` | `tests/test_os_search_pure.py::test_nori_질의에_2_18_결함_회피가_붙어_있다` (부분) | 플래그 존재만 — 모든 호출부가 lex_clause를 쓰는지 미검증 |

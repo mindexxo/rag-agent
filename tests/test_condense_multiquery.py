@@ -11,7 +11,7 @@ import pytest
 
 from rag.conversation import condense_to_queries
 from rag.llm_schemas import LlmJudgmentFailed
-from rag.retriever import _rrf_fuse
+from rag.search.retriever import _rrf_fuse
 
 
 class _FakeLlm:

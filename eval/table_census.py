@@ -20,8 +20,8 @@ from types import SimpleNamespace
 from eval.axis_common import TABLE_SEP, commit, is_table_chunk
 from eval.generation import V2_TENANTS
 from config import settings
-from rag.os_client import client
-from rag.os_search import tenant_filter
+from rag.search.os_client import client
+from rag.search.os_search import tenant_filter
 
 _ROW = re.compile(r"^\|.*\|\s*$", re.M)
 
@@ -96,6 +96,6 @@ if __name__ == "__main__":
         try:
             await main()
         finally:
-            from rag import os_client
+            from rag.search import os_client
             await os_client.close_client()
     asyncio.run(_run())

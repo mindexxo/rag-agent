@@ -26,7 +26,7 @@ from eval.retrieval_v2 import METRICS
 from rag.conversation import (condense_query, condense_to_queries,
                               trim_messages_for_condense)
 from rag.llm import create_aux_llm
-from rag.retriever import retrieve_candidates
+from rag.search.retriever import retrieve_candidates
 
 
 TYPES = {'multi_turn', 'multi_turn_long'}
@@ -122,6 +122,6 @@ if __name__ == '__main__':
         try:
             await main()
         finally:
-            from rag import os_client
+            from rag.search import os_client
             await os_client.close_client()      # aiohttp 세션 미종료 경고 방지 — retrieval_v2와 같은 처리
     asyncio.run(_run())

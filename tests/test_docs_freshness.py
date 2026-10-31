@@ -28,7 +28,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 def _scan_files() -> list[Path]:
     """문서 문장이 들어있는 파일 — 코드의 docstring·주석과 루트 마크다운."""
     files: list[Path] = []
-    for pkg in ('rag', 'rag/llm', 'routers', 'schemas', 'eval', 'tests'):   # rag/llm: 공급자 패키지(#287)도 래칫 안에
+    for pkg in ('rag', 'rag/llm', 'rag/chunking', 'rag/search', 'routers', 'schemas', 'eval', 'tests'):  # rag/ 하위 패키지도 래칫 안에
         files += sorted((_ROOT / pkg).glob('*.py'))
     files += [_ROOT / n for n in ('config.py', 'main.py', 'database.py', 'schema.sql')]
     files += [_ROOT / n for n in ('AGENTS.md', 'CLAUDE.md', 'README.md', 'INVARIANTS.md')]

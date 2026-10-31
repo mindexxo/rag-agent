@@ -3,7 +3,7 @@
 **이 파일이 정의점인 것은 HTTP 경계의 규칙뿐이다.** 무엇이 일어나는지는 아래를 보라:
 업로드·supersede·failed 재사용은 rag/documents.py의 handle_upload, 삭제는 같은 파일의
 soft_delete_documents, 색인 반영 시점은 rag/outbox.py, 실효 참조의 색인용 판정은
-rag/os_index.py의 effective_searchable.
+rag/search/os_index.py의 effective_searchable.
 
 문서 식별·버전 정책 (2026-08-05 확정):
 - 식별 기준은 **filename 완전 일치** 하나뿐. 유사 파일명은 별개 문서로 본다.
@@ -22,7 +22,7 @@ rag/os_index.py의 effective_searchable.
   조회 후 확인창을 띄우는 흐름은 조회~업로드 사이 창이 원리적으로 남으므로(TOCTOU),
   화면에서 몇 번을 확인해도 서버 검사 없이는 남의 문서를 조용히 대체할 수 있다.
 - 파일명 자동 넘버링은 하지 않는다. 이름은 사용자가 확정한다 —
-  파일명이 임베딩 입력(rag/index_text.py)과 답변 인용 표기(rag/prompts.py)에 그대로 쓰여서,
+  파일명이 임베딩 입력(rag/search/index_text.py)과 답변 인용 표기(rag/prompts.py)에 그대로 쓰여서,
   '(1)' 같은 무의미한 이름을 서버가 싸게 만들어 주면 KB 품질이 조용히 나빠진다.
 """
 from typing import Annotated
@@ -469,7 +469,7 @@ def _effective_ref(doc_is_searchable: bool, folder_is_on: bool) -> bool:
     일괄은 대상 폴더를 미리 한 번에 모은 dict(bulk_update_documents). 판정식만 여기로 모았기
     때문에 쿼리 횟수는 전과 같다 (#188 B-1).
 
-    ⚠ rag/os_index.py의 `effective_searchable`과 **다른 판정**이다. 이름이 닮았지만 그쪽은
+    ⚠ rag/search/os_index.py의 `effective_searchable`과 **다른 판정**이다. 이름이 닮았지만 그쪽은
     색인용이라 is_faq·is_active·status=='ready'까지 본다. 여기는 사용자가 돌린 스위치 둘만 본다
     — 캐시 무효화 판정("근거가 검색에서 빠지는가")에 쓰이기 때문이다. 합치면 동작이 바뀐다.
     """
@@ -653,7 +653,7 @@ async def update_document(
     else:
         # 외부 색인의 비정규화 메타 갱신을 같은 트랜잭션에 적재 (#139) — 검색가능·폴더 값이
         # 청크 문서마다 복사돼 있어 fan-out이 필요하다. **재색인이 아니라 부분 갱신**이다
-        # (재색인은 벡터 없는 구성에서 재임베딩을 부른다 — rag/os_index.py의 _update_meta).
+        # (재색인은 벡터 없는 구성에서 재임베딩을 부른다 — rag/search/os_index.py의 _update_meta).
         outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=[doc.id])
     await session.commit()
     return _to_response(doc)

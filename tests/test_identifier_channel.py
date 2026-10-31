@@ -17,10 +17,10 @@ import pytest
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import os_index, os_search
 from rag.chunking import ChunkData as ParsedChunk
 from rag.models import Document
-from rag.retriever import prepare_evidence, retrieve_candidates
+from rag.search import os_index, os_search
+from rag.search.retriever import prepare_evidence, retrieve_candidates
 from tests.conftest import fake_vector
 
 
@@ -95,13 +95,13 @@ async def test_가산이_장조_혼동을_넘고_근거는_그_조만_오린다(
     """리랭커가 '제11장' 조각을 0.97, 묶음을 0.72로 채점하는 상황(실측 재현) — +0.3이면 묶음이 1위."""
     ids = await _seed(tenant_id)
     monkeypatch.setattr(settings, 'rerank_enabled', True)
-    import rag.reranker
+    import rag.search.reranker
     fake_scores = {ids['chapter']: 0.97, ids['packed']: 0.72, ids['filler']: 0.05}
 
     async def _fake_maxpool(queries, chunks):
         rows = sorted(((c, fake_scores[c.chunk_id], 0) for c in chunks), key=lambda r: -r[1])
         return [r[0] for r in rows], [r[1] for r in rows], [r[2] for r in rows]
-    monkeypatch.setattr(rag.reranker, 'rerank_maxpool', _fake_maxpool)
+    monkeypatch.setattr(rag.search.reranker, 'rerank_maxpool', _fake_maxpool)
 
     async with AsyncSessionLocal() as s:
         cands = await retrieve_candidates(s, tenant_id, QUERY, top_n=20, candidates_per_branch=3)

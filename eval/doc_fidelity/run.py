@@ -39,7 +39,7 @@ async def _documents(tenant: str) -> list:
 
 async def _chunks(document_id: int) -> list[dict]:
     from config import settings
-    from rag import os_client
+    from rag.search import os_client
     resp = await os_client.client().search(index=settings.opensearch_index, body={
         'size': 2000, '_source': ['text', 'heading_path', 'page'], 'query': {'term': {'document_id': document_id}},
         'sort': [{'chunk_id': 'asc'}]})

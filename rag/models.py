@@ -1,13 +1,13 @@
 """테넌트 테이블의 SQLAlchemy ORM 매핑. DDL·인덱스의 권위는 schema.sql이다.
 
-청크는 PG에 없다 — 본문·메타·벡터는 OpenSearch에만 있다(매핑은 rag/os_client.py).
+청크는 PG에 없다 — 본문·메타·벡터는 OpenSearch에만 있다(매핑은 rag/search/os_client.py).
 
 테넌트 격리: RLS를 쓰지 않는다. 격리의 유일한 방어선은 쿼리의 WHERE 절이다.
 1. 멀티테넌트 테이블을 읽는 모든 쿼리에 `.where(Model.tenant_id == tenant_id)`를 직접 쓴다
    (join·컬럼 지정·집계 쿼리가 많아 래퍼 유틸은 절반도 못 덮는다).
 2. UPDATE/DELETE는 대상 id를 tenant 스코프 조회로 먼저 확정한 뒤 그 id로 실행한다.
 3. `messages.tenant_id`는 비정규화 컬럼이라 DB가 부모와의 일치를 보장하지 않는다 — 삽입 시 부모 값을 넣는다.
-   검색 청크의 격리는 OpenSearch 질의마다 `tenant_filter()`가 건다(rag/os_search.py).
+   검색 청크의 격리는 OpenSearch 질의마다 `tenant_filter()`가 건다(rag/search/os_search.py).
 4. 누락 검출은 통합 테스트가 한다(tests/test_tenant_isolation.py·tests/test_integration_isolation.py).
 """
 

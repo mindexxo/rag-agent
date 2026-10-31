@@ -10,7 +10,7 @@ from typing import Literal
 from rag.citation_labels import CitationCandidates
 from rag.models import Attachment, TurnStatus
 from rag.prompt_texts import BLOCKED_INPUT_ANSWER, NO_EVIDENCE_ANSWER
-from rag.retrieval_types import RetrievalResult
+from rag.search.retrieval_types import RetrievalResult
 from schemas.kms import SourceCitation
 
 

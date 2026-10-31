@@ -33,16 +33,16 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
-import rag.reranker
-import rag.retriever
+import rag.search.reranker
+import rag.search.retriever
 from config import settings
 from eval import hybrid_replay as hr
 from eval.axis_common import commit, load_chunks
-from rag import os_search
-from rag.embeddings import Embedding, embed_texts
 from rag.identifiers import normalize_identifiers
-from rag.os_client import NORI_FIELD, client, close_client
-from rag.retrieval_types import DenseHit, DenseHits, RetrievedChunk
+from rag.search import os_search
+from rag.search.embeddings import Embedding, embed_texts
+from rag.search.os_client import NORI_FIELD, client, close_client
+from rag.search.retrieval_types import DenseHit, DenseHits, RetrievedChunk
 
 RESULT_DIR = Path("eval/results")
 CONCURRENCY = 6       # TEI 공유 장비 — retrieval_article과 같은 안전선
@@ -63,7 +63,9 @@ def settings_snapshot() -> dict:
 async def load_v2() -> list[dict]:
     """retrieval_v2와 같은 문항·정답(정답 = 스니펫 포함 조각 전부, #209). 복제한 루프의 정의점: eval/retrieval_v2.compute —
     그쪽은 채점까지 한 루프라 문항만 뽑을 수 없어 복제했다(기존 축 무변경). 둘이 어긋나지 않게 고칠 때는 함께 고친다."""
-    from database import AsyncSessionLocal   # DB 세션을 여는 건 v2 캡처뿐이다(모듈 import 자체는 hybrid_replay 경유로 이미 됨)
+    from database import (
+        AsyncSessionLocal,  # DB 세션을 여는 건 v2 캡처뿐이다(모듈 import 자체는 hybrid_replay 경유로 이미 됨)
+    )
     from eval.generation import load_gold, row_tenant
     from eval.retrieval import resolve_gold
     from eval.retrieval_v2 import TYPES
@@ -108,7 +110,7 @@ LOADERS = {"v2": load_v2, "keyword": load_keyword, "article": load_article}
 
 async def _bm25_scored(tenant: str, query: str, n: int) -> list[list]:
     """BM25 상위 n의 (id, 점수). 운영 search_lexical은 id만 돌려주므로 같은 절(lex_clause·tenant_filter·NORI_FIELD)로 한 번 더
-    묻는다 — 운영 질의 바디의 정의점: rag/os_search.search_lexical. 어긋나면 verify ①이 잡는다(BM25 30은 운영 함수로 받는다)."""
+    묻는다 — 운영 질의 바디의 정의점: rag/search/os_search.search_lexical. 어긋나면 verify ①이 잡는다(BM25 30은 운영 함수로 받는다)."""
     resp = await client().search(index=settings.opensearch_index, body={
         "size": n, "_source": ["chunk_id"],
         "query": {"bool": {"filter": [os_search.tenant_filter(tenant)], "must": [os_search.lex_clause(NORI_FIELD, query)]}},
@@ -130,7 +132,7 @@ async def capture_one(it: dict, vec: list[float]) -> tuple[dict, dict[int, Retri
     # 정답 조각도 함께 받아 둔다(점수는 안 매김) — 시트 접기 판정(hybrid_replay.evaluate)이 정답 조각의 시트를 봐야 해서(리뷰 지적)
     chunk_map = await os_search.fetch_chunk_map(list(dict.fromkeys(superset + list(it["gold_ids"]))))
     pool = [chunk_map[c] for c in superset if c in chunk_map]
-    scores = await rag.reranker.rerank_scores(query, pool) if pool else []
+    scores = await rag.search.reranker.rerank_scores(query, pool) if pool else []
     if scores is None:
         raise RuntimeError(f"{it['qid']}: 리랭커 실패 — 부분 성공은 쓰지 않는다(rerank_maxpool과 같은 규율)")
     rec["rerank"] = {str(c.chunk_id): float(s) for c, s in zip(pool, scores)}
@@ -203,8 +205,8 @@ def _patched():
     인덱스 전체라 남의 테넌트 문서에도 점수가 움직인다, 첫 실행 실측 5건) 흔들리지 않는다. 레코드별 값은 ContextVar라 gather에도
     섞이지 않는다 — 처음엔 질문 문장으로 합쳤다가 같은 문장이 두 셋에 있는 문항의 점수가 섞였다(첫 실행 실측 1건).
     재생이 요구하지 않은 후보를 운영이 요구하면 KeyError — 풀이 캡처 상위집합 밖이라는 뜻이다."""
-    names = {(rag.retriever, "embed_texts"), (rag.retriever, "_dense_candidates"), (rag.retriever, "_lexical_candidates"),
-             (rag.os_search, "search_identifiers"), (rag.retriever, "_chunk_map"), (rag.reranker, "rerank_scores")}
+    names = {(rag.search.retriever, "embed_texts"), (rag.search.retriever, "_dense_candidates"), (rag.search.retriever, "_lexical_candidates"),
+             (rag.search.os_search, "search_identifiers"), (rag.search.retriever, "_chunk_map"), (rag.search.reranker, "rerank_scores")}
     orig = {(m, n): getattr(m, n) for m, n in names}
 
     async def _embed(texts, kind="document"):
@@ -243,7 +245,7 @@ def _patched():
 
 
 async def _production_ids(rec: dict) -> list[int]:
-    cands = await rag.retriever.retrieve_candidates(None, rec["tenant"], rec["query"], top_n=hr.TOP_N)
+    cands = await rag.search.retriever.retrieve_candidates(None, rec["tenant"], rec["query"], top_n=hr.TOP_N)
     return [c.chunk_id for c in cands.chunks]
 
 

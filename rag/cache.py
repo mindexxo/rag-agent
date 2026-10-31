@@ -19,11 +19,11 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from rag.embeddings import embed_query
 from rag.llm_schemas import ReuseJudgment, acomplete_validated
 from rag.models import AnswerCache as AnswerCacheRow
 from rag.models import Faq
 from rag.prompts import build_cache_reuse_judge_messages
+from rag.search.embeddings import embed_query
 from schemas.kms import SourceCitation
 
 logger = logging.getLogger(__name__)

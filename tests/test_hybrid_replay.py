@@ -1,18 +1,18 @@
 """하이브리드 가중치 검증(#248) 재생 계산부 — 운영 조립과의 동치·진단·부트스트랩. DB·엔진 불필요(운영 단계 함수는 합성 값으로 대체).
 
-핵심은 동치 테스트다: 같은 합성 값을 운영 rag/retriever.retrieve_candidates에 끼워 **실제로 돌린 결과**와 eval/hybrid_replay.assemble이
+핵심은 동치 테스트다: 같은 합성 값을 운영 rag/search/retriever.retrieve_candidates에 끼워 **실제로 돌린 결과**와 eval/hybrid_replay.assemble이
 같아야 하고, 재생을 일부러 망가뜨리면 그 비교가 반드시 실패해야 한다(#128 1차 측정은 조립이 틀린 채 기준선과 같은 값이 나왔다).
 """
 import pytest
 
-import rag.os_search
-import rag.reranker
-import rag.retriever
+import rag.search.os_search
+import rag.search.reranker
+import rag.search.retriever
 from config import settings
 from eval import hybrid_replay as hr
-from rag.embeddings import Embedding
 from rag.identifiers import normalize_identifiers
-from rag.retrieval_types import DenseHit, DenseHits, RetrievedChunk
+from rag.search.embeddings import Embedding
+from rag.search.retrieval_types import DenseHit, DenseHits, RetrievedChunk
 
 
 def _chunk(cid, *, table_sheet=None, identifiers=(), text="본문"):
@@ -76,19 +76,19 @@ def production(monkeypatch):
     async def _scores(query, chunks):
         return [state["rec"]["rerank"][str(c.chunk_id)] for c in chunks]
 
-    monkeypatch.setattr(rag.retriever, "embed_texts", _embed)
-    monkeypatch.setattr(rag.retriever, "_dense_candidates", _dense)
-    monkeypatch.setattr(rag.retriever, "_lexical_candidates", _lexical)
-    monkeypatch.setattr(rag.os_search, "search_identifiers", _ident)
-    monkeypatch.setattr(rag.retriever, "_chunk_map", _chunk_map)
-    monkeypatch.setattr(rag.reranker, "rerank_scores", _scores)
+    monkeypatch.setattr(rag.search.retriever, "embed_texts", _embed)
+    monkeypatch.setattr(rag.search.retriever, "_dense_candidates", _dense)
+    monkeypatch.setattr(rag.search.retriever, "_lexical_candidates", _lexical)
+    monkeypatch.setattr(rag.search.os_search, "search_identifiers", _ident)
+    monkeypatch.setattr(rag.search.retriever, "_chunk_map", _chunk_map)
+    monkeypatch.setattr(rag.search.reranker, "rerank_scores", _scores)
     for k, v in {"rerank_enabled": True, "hybrid_lexical_enabled": True, "hybrid_lexical_inject": 15,
                  "ident_channel_enabled": True, "ident_inject": 10, "ident_boost": 0.3}.items():
         monkeypatch.setattr(settings, k, v)
 
     async def run(rec):
         state["rec"] = rec
-        cands = await rag.retriever.retrieve_candidates(None, rec["tenant"], rec["query"], top_n=hr.TOP_N)
+        cands = await rag.search.retriever.retrieve_candidates(None, rec["tenant"], rec["query"], top_n=hr.TOP_N)
         return [c.chunk_id for c in cands.chunks]
 
     return run

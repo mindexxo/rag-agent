@@ -12,7 +12,7 @@ from rag.models import AnswerCache as AnswerCacheRow
 from rag.models import Conversation
 from rag.prepared import PreparedRag
 from rag.prompt_texts import NO_EVIDENCE_ANSWER
-from rag.retrieval_types import RetrievalResult
+from rag.search.retrieval_types import RetrievalResult
 from rag.service import RagService
 from schemas.kms import SourceCitation
 from tests.conftest import FakeLlm, fake_vector, register_faq

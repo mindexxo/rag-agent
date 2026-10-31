@@ -8,7 +8,7 @@ from io import BytesIO
 import pytest
 from docx import Document as Docx
 
-from rag import os_search
+from rag.search import os_search
 from tests.conftest import ingest
 from tests.helpers_documents import get_doc
 
@@ -54,7 +54,7 @@ async def _indexed(doc_id: int):
 
 @pytest.mark.asyncio
 async def test_큰_표는_묶음마다_표_키와_표_전체가_색인되고_근거는_표_전체다(client, tenant_id, fake_queue, blob_tmp):
-    from rag.retriever import prepare_evidence
+    from rag.search.retriever import prepare_evidence
     doc_id = await _upload(client, '납품기준.docx', _docx(150))
     await ingest(doc_id)
     assert (await get_doc(doc_id)).status == 'ready'
@@ -70,7 +70,7 @@ async def test_큰_표는_묶음마다_표_키와_표_전체가_색인되고_근
     small = [c for c in chunks if '| 구분 | 납기 |' in c.text]
     assert small and not any(c.is_table for c in small)                  # 작은 표는 표 묶음이 아니다
     ev = prepare_evidence(batches[::-1] + small, top_k=5)                  # 아무 묶음이 걸려도
-    from rag.retriever import table_evidence_text
+    from rag.search.retriever import table_evidence_text
     assert [c.text for c in ev] == [table_evidence_text(batches[-1]), small[0].text]   # 한 칸으로 접혀 걸린 묶음 + 표 전체(#268)
     assert ev[0].text.endswith(f'[표 전체]\n{whole}')
 

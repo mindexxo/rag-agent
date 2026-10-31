@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from rag import os_client as C
+from rag.search import os_client as C
 
 ROOT = Path(__file__).resolve().parent.parent
 RAG = ROOT / 'rag'
@@ -383,7 +383,7 @@ class _FakeIndices:
 
 @pytest.mark.asyncio
 async def test_INV83_기존_인덱스에는_빠진_추가_필드만_정의_그대로_덧붙인다(monkeypatch):
-    """INV-83 기존 인덱스에는 덧붙이는 필드만 추가하고 매핑 변경은 건드리지 않는다 — rag/os_client.py ensure_index·
+    """INV-83 기존 인덱스에는 덧붙이는 필드만 추가하고 매핑 변경은 건드리지 않는다 — rag/search/os_client.py ensure_index·
     ADDITIVE_FIELDS(매핑 변경은 새 인덱스+전량 재색인 절차). 기존 매핑이 정의와 **다른 타입**이어도(검색 필드 text를
     keyword로, 추가 필드 하나는 이미 다른 모양으로) ensure_index가 보내는 것은 put_mapping 한 번이고, 그 properties는
     ① ADDITIVE_FIELDS 중 기존에 없는 것만 ② MAPPING 정의와 같은 값 ③ 기존 필드는 하나도 없음 — create·설정 변경·삭제는 없다."""
@@ -401,7 +401,7 @@ async def test_INV83_기존_인덱스에는_빠진_추가_필드만_정의_그�
 
 
 def test_INV83_추가_필드는_재색인_없이_붙여도_되는_모양뿐이다():
-    """INV-83(보조) ADDITIVE_FIELDS는 재색인 없이 붙여도 안전한 것만 — rag/os_client.py 주석: 검색하지 않는 보관 필드
+    """INV-83(보조) ADDITIVE_FIELDS는 재색인 없이 붙여도 안전한 것만 — rag/search/os_client.py 주석: 검색하지 않는 보관 필드
     (index: False)이거나 새 keyword 정확 일치 필드다. 분석되는 검색 필드(analyzer를 단 text·knn_vector)가 여기 들어오면
     옛 청크는 그 필드가 빈 채로 검색돼 조용히 리콜이 깎인다 — 그건 재색인 절차로 가야 한다."""
     props = C.MAPPING['mappings']['properties']

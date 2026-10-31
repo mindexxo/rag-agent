@@ -17,9 +17,10 @@ from sqlalchemy import select, update
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import os_client, os_index, outbox
+from rag import outbox
 from rag.models import Document, Faq
-from rag.os_client import client
+from rag.search import os_client, os_index
+from rag.search.os_client import client
 
 
 def _tenant_term(tenant_id):

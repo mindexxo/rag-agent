@@ -27,8 +27,8 @@ from rag.guardrail import classify_and_guard
 from rag.models import TurnStatus
 from rag.prepared import PreparedRag
 from rag.prompts import build_cache_reuse_judge_messages
-from rag.retrieval_types import RetrievalResult, RetrievedChunk
-from rag.retriever import prepare_evidence
+from rag.search.retrieval_types import RetrievalResult, RetrievedChunk
+from rag.search.retriever import prepare_evidence
 from rag.service import RagService
 
 SNAPSHOT = Path(__file__).with_name('prompt_bytes.json')

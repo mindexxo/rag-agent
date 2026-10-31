@@ -211,7 +211,7 @@ async def test_supersede는_타_테넌트_같은_파일명을_건드리지_않�
         from sqlalchemy import delete as sa_delete
 
         from rag.models import AnswerCache as ACRow
-        from rag import os_index
+        from rag.search import os_index
         await os_index._delete_by_terms('tenant_id', [other])
         async with AsyncSessionLocal() as session:
             await session.execute(sa_delete(ACRow).where(ACRow.tenant_id == other))

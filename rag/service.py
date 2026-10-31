@@ -39,8 +39,8 @@ from rag.prompts import (
     build_other_system_prompt,
     build_other_user_message,
 )
-from rag.retrieval_types import RetrievalResult, RetrievedChunk
-from rag.retriever import retrieve
+from rag.search.retrieval_types import RetrievalResult, RetrievedChunk
+from rag.search.retriever import retrieve
 from rag.turn_state import add_pending_turn, finalize_turn, last_unanswered_turn
 from schemas.kms import QueryAttachment, SourceCitation
 

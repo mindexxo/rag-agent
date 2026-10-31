@@ -8,7 +8,7 @@ import pytest
 import eval.generation as gen
 from eval.generation import _citation_match, citation_accuracy, expected_points_coverage
 from rag.citation_labels import TAIL_END, TAIL_START, citation_tail
-from rag.retrieval_types import RetrievedChunk
+from rag.search.retrieval_types import RetrievedChunk
 
 
 def _tail(*nums: int) -> str:
@@ -99,7 +99,7 @@ def fake_embed(monkeypatch):
     흉내내지는 않는다 — 그건 실측(생성물 900행 눈검증)이 맡는 몫이고, 여기서는
     **판정 구조**(어떤 조각과 대조하는가)만 본다.
     """
-    from rag.embeddings import Embedding
+    from rag.search.embeddings import Embedding
     monkeypatch.setattr(gen, '_contains_point', lambda *a: False)
     # 벡터 자리에 원문을 실어 보내고, 코사인 자리에서 포함 여부로 답한다.
     monkeypatch.setattr(gen, 'embed_texts_sync', lambda texts: [Embedding(dense=[t]) for t in texts])
@@ -189,7 +189,7 @@ class TestSplitSegments:
 @pytest.fixture
 def no_embed_fallback(monkeypatch):
     """임베딩 2단을 무력화 — 부분문자열 1단만 검증할 때."""
-    from rag.embeddings import Embedding
+    from rag.search.embeddings import Embedding
     monkeypatch.setattr(gen, 'embed_texts_sync',
                         lambda texts: [Embedding(dense=[0.0] * 8) for _ in texts])
 

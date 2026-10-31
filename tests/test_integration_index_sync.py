@@ -22,9 +22,10 @@ import pytest
 from sqlalchemy import func, select, update
 
 from database import AsyncSessionLocal
-from rag import os_index, os_reconcile, outbox
+from rag import os_reconcile, outbox
 from rag.models import Document, SearchIndexOutbox
-from rag.retriever import retrieve_candidates
+from rag.search import os_index
+from rag.search.retriever import retrieve_candidates
 from tests.conftest import faq_doc, indexed_chunk_texts, ingest, sync_faq
 
 MD = '# 환불 정책\n\n## 1. 기간\n\n단순변심 반품은 14일 이내 신청한다.\n'.encode()

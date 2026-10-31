@@ -18,7 +18,6 @@ import uuid
 import pytest
 import pytest_asyncio
 
-
 # ── SSE 파싱 (비스트리밍 JSON 경로 삭제 #26로 전 테스트가 SSE를 읽는다) ──
 
 def sse_events(res_or_text) -> list[tuple[str, object]]:
@@ -120,7 +119,7 @@ async def sync_faq(faq_id: int) -> dict:
 async def faq_doc(faq_id: int) -> dict | None:
     """FAQ 청크의 색인 문서(_source). 없으면 None — 청크는 OpenSearch에만 있다(#139)."""
     from config import settings
-    from rag import os_client, os_index
+    from rag.search import os_client, os_index
     resp = await os_client.client().get(index=settings.opensearch_index,
                                         id=str(os_index.chunk_os_id(faq_id=faq_id)),
                                         ignore=404)
@@ -130,7 +129,7 @@ async def faq_doc(faq_id: int) -> dict | None:
 async def indexed_chunk_texts(document_id: int) -> list[str]:
     """문서의 색인 청크 본문들(chunk_index 순). PG `chunks`는 더 쓰지 않는다(#139)."""
     from config import settings
-    from rag import os_client
+    from rag.search import os_client
     resp = await os_client.client().search(index=settings.opensearch_index, body={
         'size': 1000, '_source': ['chunk_id', 'text'],
         'query': {'term': {'document_id': document_id}},
@@ -164,8 +163,8 @@ def fake_vector(text: str) -> list[float]:
 def fake_embed(monkeypatch):
     """임베딩을 결정적 가짜로 — TEI 서버 없이 인덱싱·캐시 경로가 돈다.
 
-    호출부들이 `from rag.embeddings import ...`로 심볼을 바인딩해 가므로
-    각 모듈의 이름을 개별 패치한다 (rag.embeddings만 패치하면 안 먹음).
+    호출부들이 `from rag.search.embeddings import ...`로 심볼을 바인딩해 가므로
+    각 모듈의 이름을 개별 패치한다 (rag.search.embeddings만 패치하면 안 먹음).
     리랭커(외부 TEI)도 함께 끈다.
 
     반환값의 `.embed_calls`는 누적 TEI 왕복 횟수다 (#50 — 턴당 1회 검증용).
@@ -177,7 +176,7 @@ def fake_embed(monkeypatch):
     """
     from types import SimpleNamespace
 
-    from rag.embeddings import Embedding
+    from rag.search.embeddings import Embedding
 
     counting = SimpleNamespace(embed_calls=0)
 
@@ -190,18 +189,18 @@ def fake_embed(monkeypatch):
         return Embedding(dense=fake_vector(text))
 
     import rag.cache
-    import rag.embeddings
     import rag.ingestion
-    import rag.os_index
-    import rag.retriever
+    import rag.search.embeddings
+    import rag.search.os_index
+    import rag.search.retriever
     from config import settings
 
     # 톱레벨로 이름을 당겨온 모듈은 개별 패치가 필요하다 — 원본 모듈 속성만 바꾸면 그 바인딩은
     # 옛 함수를 계속 가리킨다(조용히 실제 TEI를 때린다). os_index는 index_faq_chunks가 쓴다(#146).
-    monkeypatch.setattr(rag.embeddings, 'embed_texts', _texts)
-    monkeypatch.setattr(rag.os_index, 'embed_texts', _texts)
+    monkeypatch.setattr(rag.search.embeddings, 'embed_texts', _texts)
+    monkeypatch.setattr(rag.search.os_index, 'embed_texts', _texts)
     monkeypatch.setattr(rag.ingestion, 'embed_texts', _texts)
-    monkeypatch.setattr(rag.retriever, 'embed_texts', _texts)   # 쿼리 확장(#5)으로 배치 임베딩 전환
+    monkeypatch.setattr(rag.search.retriever, 'embed_texts', _texts)   # 쿼리 확장(#5)으로 배치 임베딩 전환
     monkeypatch.setattr(rag.cache, 'embed_query', _query)
     monkeypatch.setattr(settings, 'rerank_enabled', False)
     return counting
@@ -211,7 +210,7 @@ def fake_embed(monkeypatch):
 def pass_gate(monkeypatch):
     """근거 게이트 무조건 통과 — 가짜 벡터로는 임계(0.6)를 못 넘어서.
     (4개 테스트 파일에 복붙되던 것을 공용 승격 — #10 리뷰)"""
-    import rag.retriever as rt
+    import rag.search.retriever as rt
     monkeypatch.setattr(rt, 'apply_gate', lambda cands, max_dense_distance=0.6: rt.GateVerdict(False, None))
 
 
@@ -368,7 +367,7 @@ async def _loop_hygiene():
     await clients.http_async.aclose()
     clients.http_async = httpx.AsyncClient()
     # OpenSearch 클라이언트(aiohttp)도 루프에 묶인다 — 닫고 비워 다음 테스트가 새로 만들게 (#139)
-    from rag import os_client
+    from rag.search import os_client
     await os_client.close_client()
 
 
@@ -381,12 +380,14 @@ async def purge_tenant(t: str) -> None:
     from sqlalchemy import delete
 
     from database import AsyncSessionLocal
-    from rag import os_client, os_index
+    from rag.search import os_client, os_index
 
     await os_client.ensure_index()
     await os_index._delete_by_terms('tenant_id', [t])
     from rag.models import (
         AnswerCache as AnswerCacheRow,
+    )
+    from rag.models import (
         Conversation,
         Document,
         Faq,
@@ -415,7 +416,7 @@ async def _ensure_search_index() -> None:
     """검색 인덱스는 테스트 스위트의 전제다(#139 — 청크는 OpenSearch에만 있다). 픽스처 **시작**에서
     보장한다 — 정리(purge_tenant)에서만 부르면 첫 테스트가 없는 인덱스에 색인하다 404로 죽는다(실측).
     엔진이 안 떠 있으면 여기서 바로 실패한다 — 조용히 PG만으로 도는 척하지 않는다."""
-    from rag import os_client
+    from rag.search import os_client
     await os_client.ensure_index()
 
 

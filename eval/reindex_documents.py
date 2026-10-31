@@ -1,6 +1,6 @@
 """활성 문서 재색인 CLI — 청킹·임베딩 방식이 바뀌었을 때 검색 색인(OpenSearch)을 새 방식으로 다시 만든다.
 
-배경(2026-08-03): 인덱스 입력에 '파일명 > 헤딩' 병합(rag/index_text)과 DOCX 섹션 청킹
+배경(2026-08-03): 인덱스 입력에 '파일명 > 헤딩' 병합(rag/search/index_text)과 DOCX 섹션 청킹
 (rag/chunking)이 들어갔다. 둘 다 **재색인해야** 반영된다 — 기존 dense 벡터는 옛 방식으로
 만들어졌고, DOCX는 청크 경계 자체가 달라졌다.
 
@@ -28,8 +28,9 @@ from sqlalchemy import select
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import cache, os_client, outbox
+from rag import cache, outbox
 from rag.models import Document
+from rag.search import os_client
 
 
 async def _targets(tenant_id: str | None) -> list[tuple[int, str, str, int]]:
@@ -61,7 +62,7 @@ async def reindex_one(document_id: int) -> None:
     """문서 하나를 재색인. pending 되돌림 + INDEX_DOCUMENT 등재 → 워커 로직 재사용.
 
     옛 청크를 먼저 지울 필요가 없다 — 인제스션 핸들러가 색인 전에 그 문서의 청크를 지우고
-    결정적 id로 다시 넣는다(rag/os_index.py의 index_parsed_document). 처리 중에도 옛 청크가
+    결정적 id로 다시 넣는다(rag/search/os_index.py의 index_parsed_document). 처리 중에도 옛 청크가
     검색에 남아 있다가 한 번에 교체된다(빈 창 없음).
     캐시도 함께 무효화한다 — 청크 경계가 바뀌면 그 문서를 근거로 만든 답이 낡은 것이 된다.
     """

@@ -57,9 +57,9 @@ async def main():
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    from rag import embeddings as emb_mod
-    from rag import retriever as rt
     from rag.models import Document
+    from rag.search import embeddings as emb_mod
+    from rag.search import retriever as rt
 
     # 임베딩을 결정적 가짜로 교체 (conftest와 동일 목적, TEI 불필요)
     async def _fake_embed_texts(texts, kind="document"):
@@ -69,8 +69,8 @@ async def main():
 
     # 리랭커도 결정적 가짜로 — TEI 없이 리랭크 경로(단일 rerank / 멀티 max-pool)까지 덮는다.
     # 리랭크를 꺼버리면 이번 리팩터링이 가장 많이 건드리는 분기가 골든에서 빠진다.
-    # rag.reranker의 이름을 패치하므로, max-pool이 reranker.py로 이관돼도 그대로 먹는다.
-    import rag.reranker as rr
+    # rag.search.reranker의 이름을 패치하므로, max-pool이 reranker.py로 이관돼도 그대로 먹는다.
+    import rag.search.reranker as rr
 
     async def _fake_scores(query: str, chunks: list):
         # query·청크쌍마다 결정적 점수. 순위가 dense 순서와 확실히 달라지게 섞는다.

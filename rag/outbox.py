@@ -33,9 +33,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import os_client, os_index
 from rag.metrics import INDEX_TOTAL, SEARCH_INDEX_FAILED_TOTAL, SEARCH_INDEX_SYNC_TOTAL, ext_label
 from rag.models import ALIVE_DOCUMENT_STATUSES, Document, SearchIndexOutbox
+from rag.search import os_client, os_index
 
 logger = logging.getLogger(__name__)
 

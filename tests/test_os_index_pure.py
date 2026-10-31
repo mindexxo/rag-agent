@@ -8,10 +8,10 @@
 """
 import pytest
 
-from rag import os_client as C
-from rag import os_index as I
-from rag import lexical
-from rag.index_text import build_index_text
+from rag.search import os_client as C
+from rag.search import os_index as I
+from rag.search import lexical
+from rag.search.index_text import build_index_text
 
 
 def test_어휘_입력_조립이_운영과_같다():
@@ -19,7 +19,7 @@ def test_어휘_입력_조립이_운영과_같다():
     text, fn, hp = "반품은 7일 이내", "환불반품정책.pdf", ["2. 반품", "2.1 기한"]
     assert I.lex_text(text, fn, hp) == build_index_text(text, fn, hp)
     assert I.lex_text(text, None, None) == text          # FAQ — 프리픽스 없음
-    # 폴더 설명은 들어가지 않는다 (리랭커 전용, rag/index_text.py docstring)
+    # 폴더 설명은 들어가지 않는다 (리랭커 전용, rag/search/index_text.py docstring)
     assert "폴더" not in I.lex_text(text, fn, hp)
 
 

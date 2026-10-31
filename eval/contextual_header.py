@@ -1,6 +1,6 @@
 """청크 머리말이 잘린 맥락을 메우는가 — 머리말 없음 / 현행 머리말 / Contextual Retrieval / 규칙 맥락 줄 비교(#234).
 
-머리말(rag/index_text.build_index_text — '파일명 > 헤딩')은 임베딩·어휘 필드(Nori·bigram)·리랭커 세 곳에 같은 모양으로 들어간다.
+머리말(rag/search/index_text.build_index_text — '파일명 > 헤딩')은 임베딩·어휘 필드(Nori·bigram)·리랭커 세 곳에 같은 모양으로 들어간다.
 조건마다 그 세 곳의 텍스트만 바꾼 **임시 인덱스**(kms_chunks_exp234_<조건>)를 만들고, 운영 검색(retrieve_candidates)을 인덱스 이름만
 바꿔 그대로 돌린다 — 측정용 재구현이 틀릴 위험(#128)을 없애려고(#234 결정 3). 리랭커 입력은 같은 변형 텍스트로 바꿔 끼운다.
 
@@ -38,8 +38,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import settings                                     # noqa: E402
 from eval.chunk_boundary import context_losses                  # noqa: E402
 from eval.generation import V2_TENANTS                          # noqa: E402
-from rag.index_text import build_index_text                     # noqa: E402
-from rag.os_client import LEX_BIGRAM_FIELD, MAPPING, NORI_FIELD, client   # noqa: E402
+from rag.search.index_text import build_index_text                     # noqa: E402
+from rag.search.os_client import LEX_BIGRAM_FIELD, MAPPING, NORI_FIELD, client   # noqa: E402
 
 CONDITIONS = ('none', 'header', 'cr', 'rule')
 OUT = Path(__file__).resolve().parent / 'results' / 'ctx234'
@@ -172,8 +172,8 @@ async def make_contexts() -> None:
 
 async def build() -> None:
     from opensearchpy.helpers import async_bulk
-    from rag.embeddings import embed_texts
-    from rag.lexical import bigrams
+    from rag.search.embeddings import embed_texts
+    from rag.search.lexical import bigrams
     cr = json.loads(CR_FILE.read_text(encoding='utf-8'))
     docs = await _all_docs(settings.opensearch_index)
     by_doc = _by_document(docs)
@@ -215,9 +215,9 @@ async def drop() -> None:
 @contextmanager
 def condition(cond: str, rerank_texts: dict[int, str]):
     """검색이 이 조건의 임시 인덱스를 보고, 리랭커가 이 조건의 텍스트를 보게 한다(운영 코드는 그대로)."""
-    import rag.reranker as rr
+    import rag.search.reranker as rr
     orig_index, orig_rerank = settings.opensearch_index, rr._rerank_text
-    target_docs = {cid >> 20 for cid in rerank_texts}      # 문서 조각 id = (문서 id << 20) | 순번(rag/os_index.chunk_os_id)
+    target_docs = {cid >> 20 for cid in rerank_texts}      # 문서 조각 id = (문서 id << 20) | 순번(rag/search/os_index.chunk_os_id)
 
     def rerank_text(chunk):
         v = rerank_texts.get(chunk.chunk_id)
@@ -245,7 +245,7 @@ async def _answers(cond: str, rows: list[dict], gold: dict, run: int) -> list[di
     from eval.generation import _epcov_scores, expected_points_hits, row_tenant
     from rag.llm import create_llm
     from rag.prompts import build_knowledge_generation_prompt
-    from rag.retriever import retrieve
+    from rag.search.retriever import retrieve
     llm, judge, sem, jsem = create_llm(), epcov_judge.judge_llm(), asyncio.Semaphore(8), asyncio.Semaphore(4)
     out = []
     async with AsyncSessionLocal() as session:
@@ -316,7 +316,7 @@ def main() -> None:
     ap.add_argument('cmd', choices=['contexts', 'build', 'measure', 'drop'])
     ap.add_argument('--runs', type=int, default=2)
     args = ap.parse_args()
-    from rag.os_client import close_client
+    from rag.search.os_client import close_client
 
     async def run():
         try:

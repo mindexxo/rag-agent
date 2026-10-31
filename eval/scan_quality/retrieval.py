@@ -73,7 +73,7 @@ def _check(res: dict, what: str) -> dict:
 async def measure(label: str) -> None:
     from database import AsyncSessionLocal
     from eval.generation import row_tenant
-    from rag.retriever import retrieve_candidates
+    from rag.search.retriever import retrieve_candidates
     out, by = [], defaultdict(list)
     async with AsyncSessionLocal() as db:
         for g in _gold():
@@ -96,6 +96,6 @@ if __name__ == '__main__':
         try:
             await (swap(arg) if cmd == 'swap' else measure(arg))
         finally:
-            from rag import os_client
+            from rag.search import os_client
             await os_client.close_client()
     asyncio.run(_run())

@@ -9,8 +9,8 @@ DB·TEI 없이 도는 순수 테스트. retrieve_candidates에서 분해해 나�
 """
 import pytest
 
-from rag.retriever import _rank_multi, _rrf_fuse
-from rag.retrieval_types import RetrievedChunk
+from rag.search.retrieval_types import RetrievedChunk
+from rag.search.retriever import _rank_multi, _rrf_fuse
 
 
 def _chunk(chunk_id: int) -> RetrievedChunk:
@@ -49,7 +49,7 @@ class TestRankMulti:
 
 
 class TestRerankMaxpool:
-    """멀티쿼리 채점 — 청크별 최고점(max-pool)으로 정렬. rag.reranker로 이관(#38)."""
+    """멀티쿼리 채점 — 청크별 최고점(max-pool)으로 정렬. rag.search.reranker로 이관(#38)."""
 
     @pytest.fixture
     def chunks(self):
@@ -57,7 +57,7 @@ class TestRerankMaxpool:
 
     async def _run(self, monkeypatch, matrix, queries, chunks):
         """rerank_scores를 고정 행렬로 대체 — TEI 없이 조합 로직만 검증."""
-        import rag.reranker as rr
+        import rag.search.reranker as rr
         calls = iter(matrix)
 
         async def _fake(query, chs):

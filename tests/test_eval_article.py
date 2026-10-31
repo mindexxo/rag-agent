@@ -9,7 +9,7 @@ import pytest
 
 from eval.retrieval_article import (_typo, article_keys, build_gold, build_items, classify_mix,
                                     clean_doc_name, make_query, pick_bare)
-from rag.retrieval_types import RetrievedChunk
+from rag.search.retrieval_types import RetrievedChunk
 
 
 @pytest.mark.parametrize("filename,expected", [

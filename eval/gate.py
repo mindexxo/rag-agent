@@ -16,7 +16,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from database import AsyncSessionLocal
-from rag.retriever import retrieve_candidates, apply_gate
+from rag.search.retriever import retrieve_candidates, apply_gate
 
 TENANT = "demo"
 GOLD = Path("eval/gold_set_v1.jsonl")

@@ -4,7 +4,7 @@
 문서(각 테넌트 11~13번)부터는 이 스크립트가 변환의 정본이다. 원본을 고치면 재실행으로
 산출물이 따라온다.
 
-파서 계약(rag/chunking.py·rag/xlsx_chunking.py)을 만족하도록 변환한다:
+파서 계약(rag/chunking/·rag/xlsx_chunking.py)을 만족하도록 변환한다:
 - PDF: 헤딩 판정이 **글자 크기**다(본문 최빈 크기보다 큰 줄) — # 레벨별로 본문(10pt)보다
   큰 16/13/11.5pt를 적용한다. 한글은 reportlab 내장 CID 폰트(HYGothic-Medium)로 —
   TTF 파일 의존이 없어 어느 환경에서든 같은 산출물이 나온다.

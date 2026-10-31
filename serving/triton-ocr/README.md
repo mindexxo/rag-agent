@@ -1,7 +1,7 @@
 # triton-ocr — docling 원격 OCR 서버 (#168)
 
 PDF 인제스션의 표 이미지(TableItem) 셀을 읽는 한국어 RapidOCR을 **워커 밖** Triton에 올린다.
-워커(`rag/chunking.py`)는 docling `KserveV2OcrOptions`로 이 서버를 부른다. 왜 밖으로 뺐는지·실측치는
+워커(`rag/chunking/`)는 docling `KserveV2OcrOptions`로 이 서버를 부른다. 왜 밖으로 뺐는지·실측치는
 이슈 #168과 `config.py`의 `docling_do_ocr`·`ocr_kserve_*` 주석에 있다.
 
 ## 구성
@@ -45,7 +45,7 @@ OCR_KSERVE_URL=http://localhost:18893 pytest tests/test_chunking_docling.py -k R
 
 ## 바꿀 때 지켜야 하는 것
 
-- **클라이언트 상수와 짝이다**: `rag/chunking.py`의 `_OCR_LANG`·`_OCR_SCALE`, 여기 `parameters.langs`·`text_score`.
+- **클라이언트 상수와 짝이다**: `rag/chunking/`의 `_OCR_LANG`·`_OCR_SCALE`, 여기 `parameters.langs`·`text_score`.
   한쪽만 바꾸면 결과가 조용히 달라진다. 동일성은 같은 PDF를 인프로세스/원격으로 변환해 markdown을 대조해 확인한다
   (2026-09-17: CPU Triton 바이트 동일. GPU는 표 이미지 바이트 동일, 26쪽 실문서는 글자 동일·줄 묶음 6곳 차이 — GPU conv
   수치 차이로 OCR 박스 좌표가 미세하게 달라 docling 줄 그룹핑이 바뀐다. `use_tf32=0`·`cudnn_conv_algo_search=DEFAULT`가

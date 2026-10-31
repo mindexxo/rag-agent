@@ -228,7 +228,7 @@ class Settings(BaseSettings):
     # 문서 파서 — docling (PDF #143, DOCX·XLSX #220). 인제스션(chunk_file) 경로만 대상이고 채팅 첨부
     # (extract_text)는 pdfplumber·python-docx·openpyxl 유지 — 첨부는 사용자 대기 경로라 콜드 스타트 4.4초가 그대로
     # 보이고, 변환 세마포어를 색인과 나누면 색인 작업 뒤에 줄을 선다(#220 결정 6).
-    # 아래 메모리·시간 값은 PDF 실측에서 왔다(2026-09-11 M3 → 리눅스 컨테이너 재측정). 소비처는 rag/chunking.py.
+    # 아래 메모리·시간 값은 PDF 실측에서 왔다(2026-09-11 M3 → 리눅스 컨테이너 재측정). 소비처는 rag/chunking/.
     # 인제스션 경로는 docling 하나다 — 끄는 스위치는 없다(#272). 저품질 색인을 조용히 만드느니 docling 실패는 failed로 끝낸다.
     docling_table_mode: str = "accurate"      # fast | accurate. accurate이 병합 셀을 한 셀로 잡는다(출장 지급표
                                               # '부회장/사장' 실측). RAM 차이 +110MB(687→796MB)라 정확도를 택한다
@@ -290,7 +290,7 @@ class Settings(BaseSettings):
     # 서버 상수다(serving/triton-ocr/model_repository/ocr/1/model.py).
     # OCR 엔진(#299 결정 6). triton = 사내(위 docling_do_ocr·아래 ocr_kserve_*, 지금 동작 그대로) | llm = 상용 — Triton을 안 부르고
     # (docling_do_ocr 무시) 사진 표·스캔 쪽을 캡션과 같은 LLM(vlm_caption_url·model·api_key·temperature)이 읽는다. 라우팅·근거는
-    # rag/chunking.py의 '상용 OCR' 절. 캡션과 연결을 공유하는 이유: #296에서 한 모델이 둘 다 Triton보다 잘 읽었고(표 숫자 오독 6 vs 26),
+    # rag/chunking/의 '상용 OCR' 절. 캡션과 연결을 공유하는 이유: #296에서 한 모델이 둘 다 Triton보다 잘 읽었고(표 숫자 오독 6 vs 26),
     # 같은 값을 두 벌 적으면 한쪽만 바꾸는 실수가 난다 — 다른 모델이 필요해지면 그때 나눈다.
     ocr_provider: Literal["triton", "llm"] = "triton"
     ocr_llm_max_tokens: int = 4000            # 쪽 하나·표 하나의 출력 상한. 캡션(1,500)보다 큰 이유: 표 한 쪽이 1,500을 넘는다(#296 측정 엔진 값)

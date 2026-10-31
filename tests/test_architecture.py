@@ -125,7 +125,9 @@ def test_rag의_모든_모듈이_계층_절에_있다():
 def test_0층은_문서화된_예외_말고_rag를_톱레벨에서_쓰지_않는다():
     section = _agents_section()
     leaf_block = _bullet(section, '0층')
-    exceptions = {m: _units_in(rest) for m, rest in re.findall(r'예외[^:]*: `rag/(\w+)\.py`는([^\n]*)', leaf_block)}
+    exceptions = {
+        m: _units_in(rest) for m, rest in re.findall(r'예외[^:]*: `rag/(\w+)(?:\.py|/)`는([^\n]*)', leaf_block)
+    }
     assert {'models', 'tokens', 'llm'} <= _units_in(leaf_block), '0층 불릿 파싱 실패 — 표기(백틱·rag/ 경로)를 확인하라'
     top, _, _ = _graph()
     bad = {

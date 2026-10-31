@@ -1,7 +1,7 @@
 """PDF·DOCX 큰 표 확장 통합 테스트(#257) — 업로드 → 색인(표 묶음 메타) → 조회 → 근거 준비(표 전체), 상한 초과 표의 색인 실패.
 
 엑셀 쪽(시트 묶음 → 시트 완성본)은 엑셀 통합 테스트(test_integration_documents_xlsx) G4 항목이 덮는다. 여기는 같은 계약을 PDF·DOCX 경로가
-지키는지 본다 — DOCX로 만든다(docling SimplePipeline이라 PDF보다 빠르고, 표 → _TableBlock 운반은 두 형식이 같은 길이다).
+지키는지 본다 — DOCX로 만든다(docling SimplePipeline이라 PDF보다 빠르고, 표 → TableBlock 운반은 두 형식이 같은 길이다).
 """
 from io import BytesIO
 

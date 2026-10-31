@@ -52,7 +52,7 @@ TABLE_SEP = re.compile(r"^\|(\s*-{3,}\s*\|)+\s*$", re.M)   # 마크다운 표 �
 
 def is_table_chunk(chunk) -> bool:
     """조각에 표가 있나 — 표 문항 축(#232)의 정의점. `is_table`만 보면 안 된다: 그 표식은 묶음 2개 이상인 큰 표(PDF·DOCX)와
-    엑셀에만 붙고(rag/chunking.py chunk_file), 산문 조각 안에 통째로 든 **작은 표**는 마크다운 구분선으로만 알 수 있다
+    엑셀에만 붙고(rag/chunking/ chunk_file), 산문 조각 안에 통째로 든 **작은 표**는 마크다운 구분선으로만 알 수 있다
     (실문서 PDF 표는 큰 표 3 vs 작은 표 38 — 2026-10-23 전수, eval/table_census)."""
     return bool(getattr(chunk, "is_table", False)) or bool(TABLE_SEP.search(getattr(chunk, "text", "") or ""))
 

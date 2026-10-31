@@ -23,7 +23,7 @@ from io import BytesIO
 
 import openpyxl
 
-# 표 markdown 조립은 chunking.py가 정의점 — 형식마다 표 모양이 다르면 프롬프트·리랭커·어휘 채널이 다른 모양을 본다.
+# 표 markdown 조립은 rag/chunking/tables.py가 정의점 — 형식마다 표 모양이 다르면 프롬프트·리랭커·어휘 채널이 다른 모양을 본다.
 from rag.chunking import (
     TABLE_BATCH_TOKENS,
     TABLE_MAX_TOKENS,

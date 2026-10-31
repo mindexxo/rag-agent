@@ -21,7 +21,6 @@ import socket
 import subprocess
 import sys
 import threading
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NamedTuple
 
@@ -32,10 +31,49 @@ from docx.text.paragraph import Paragraph as DocxParagraph
 from llama_index.core.node_parser import SentenceSplitter
 
 from config import settings
+from rag.chunking.errors import CaptionFailedError, LlmReadFailedError, PictureLimitError, TableTooLargeError
+from rag.chunking.tables import (
+    TABLE_BATCH_CHARS,
+    TABLE_BATCH_TOKENS,
+    TABLE_MAX_TOKENS,
+    batch_table_rows,
+    to_markdown_table,
+)
+from rag.chunking.types import ChunkData, Item, Section, TableBlock, blocks_of, join_blocks
 from rag.identifiers import HeadingSplit, is_heading_line, split_heading_line
-from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN, estimate_tokens_conservative
+from rag.tokens import estimate_tokens_conservative
 
 logger = logging.getLogger(__name__)
+
+# 밖(ingestion·routers·xlsx_chunking·eval)이 쓰는 공개 표면 — 하위 모듈로 옮겨도 여기서 이름을 유지한다.
+__all__ = [
+    'TABLE_BATCH_CHARS',
+    'TABLE_BATCH_TOKENS',
+    'TABLE_MAX_TOKENS',
+    'TABLE_NOTE',
+    'CaptionFailedError',
+    'ChunkData',
+    'Item',
+    'LlmReadFailedError',
+    'PictureLimitError',
+    'Section',
+    'TableBlock',
+    'TableTooLargeError',
+    'abort_conversion',
+    'batch_table_rows',
+    'blocks_of',
+    'chunk_file',
+    'count_picture_placeholders',
+    'docling_block_text',
+    'docling_convert',
+    'docling_grid_markdown',
+    'docling_grid_rows',
+    'docling_picture_text',
+    'extract_text',
+    'join_blocks',
+    'pdf_image_area_ratio',
+    'to_markdown_table',
+]
 
 _DOCX_HEADING_RE = re.compile(r'^Heading (\d+)$')  # python-docx는 빌트인 헤딩을 영문명으로 준다
 # 섹션 묶음 예산(문자, 소프트). 실제로는 _pack_sections의 경계 규칙이 먼저 걸리고, 토큰 상한은 SentenceSplitter가 건다.
@@ -73,117 +111,6 @@ _PICTURE_CAPTION_PROMPT = (
 # 머리말·맺음말 금지는 금지할 문구를 인용하지 않고 적는다 — 인용하면 오히려 그 문구를 유도한다.
 
 
-@dataclass
-class ChunkData:
-    """청킹 결과 한 조각(임베딩·적재 전)."""
-
-    text: str
-    heading_path: list[str]  # 예: ["3. 배송지연 보상", "3.2 지급 기준"]
-    page: int | None  # PDF만 채운다
-    chunk_index: int  # 문서 내 순서 (0부터)
-    meta: dict | None = (
-        None  # 큰 표 묶음은 {"is_table", "table_key", "table_text"}, 조각에 실린 하위 헤딩은 {"headings"}
-    )
-
-
-@dataclass
-class _Section:
-    """형식별 파서 → _pack_sections 사이의 내부 계약. 뒤 단계(묶기 → 크기 분할)를 형식과 무관하게 한 번만 쓰게 한다."""
-
-    heading_path: list[str]
-    page: int | None  # PDF만 채운다
-    body: str
-    # body를 '\n'으로 나눈 줄과 1:1인 쪽 번호(PDF만) — 여러 쪽에 걸친 섹션의 뒤쪽 청크가 앞 쪽 번호를 물려받지 않게.
-    line_pages: list[int | None] | None = None
-    # 묶음(_pack_sections)이 본문 줄로 내려보낸 하위 헤딩(원문 그대로). 색인이 식별자를 추정 없이 뽑고,
-    # 분할이 헤딩을 본문과 같은 조각에 두는 근거다. 묶지 않은 섹션은 비어 있다.
-    headings: list[str] = field(default_factory=list)
-    # 본문 블록 목록 — 글(str) 또는 표(_TableBlock). body·line_pages는 여기서 파생된 값이다. None이면 본문 전체가
-    # 글 블록 하나다. 크기 분할은 이 목록을 보고 표만 행 단위로 나눈다 — 표를 글줄에서 추측하지 않는다.
-    blocks: list['str | _TableBlock'] | None = None
-
-
-class _TableBlock(NamedTuple):
-    """표 하나 — 첫 행이 헤더인 행 목록. 파서가 글로 바꾸지 않고 이대로 크기 분할까지 운반한다.
-
-    글로 바꾸는 곳(섹션 body·행 묶음 청크)은 둘 다 to_markdown_table을 쓰므로 같은 표는 어디서든 같은 글이다.
-    row_pages — 행마다의 쪽 번호(헤더 포함, PDF만). 쪽을 넘겨 이은 표의 뒷 쪽 행이 앞 쪽 번호를 물려받지 않게 한다.
-    None이면 블록 전체가 한 쪽.
-    """
-
-    rows: list[list[str]]
-    row_pages: list[int | None] | None = None
-
-    def render(self) -> str:
-        return to_markdown_table(self.rows[0], self.rows[1:])
-
-    def line_pages(self, page: int | None) -> list[int | None]:
-        """렌더한 줄(헤더·구분선·행)마다의 쪽 번호 — 구분선은 헤더 쪽을 따른다."""
-        rp = self.row_pages or [page] * len(self.rows)
-        return [rp[0], rp[0]] + list(rp[1:])
-
-
-def _blocks_of(section: '_Section') -> list['str | _TableBlock']:
-    return section.blocks if section.blocks is not None else [section.body]
-
-
-def _join_blocks(blocks: list['str | _TableBlock']) -> list['str | _TableBlock']:
-    """이웃한 글 블록을 '\n'으로 합친다 — 글 블록 경계는 의미가 없고(분할기가 다시 나눈다) 표 블록 경계만 의미가 있다."""
-    out: list[str | _TableBlock] = []
-    for b in blocks:
-        if isinstance(b, str) and out and isinstance(out[-1], str):
-            out[-1] = f'{out[-1]}\n{b}'
-        else:
-            out.append(b)
-    return out
-
-
-# (page, text, level) — PDF·DOCX·MD 경로가 _build_sections에 흘리는 공통 단위.
-# level이 None이면 본문, 정수면 그 레벨의 헤딩. text는 여러 줄일 수 있고 표는 _TableBlock으로 온다.
-_Item = tuple[int | None, 'str | _TableBlock', int | None]
-
-
-# 표 행 묶음 하나의 크기 — 전 형식 공통. 글자 수 환산은 보수적 계수(rag/tokens).
-TABLE_BATCH_TOKENS = 1000
-TABLE_BATCH_CHARS = int(TABLE_BATCH_TOKENS * CONSERVATIVE_CHARS_PER_TOKEN)
-
-# 표 하나당 토큰 상한 — 전 형식 공통. 근거 준비(rag/retriever.prepare_evidence)는 표를 통째로 넣거나 빼므로 넘는 표는
-# 일부만 보여 줄 수밖에 없고, 그러면 모델이 나머지 행을 지어낸다. 그래서 받지 않는다(엑셀은 업로드 거절, PDF·DOCX·MD는 색인 실패).
-# 값은 답의 정확도로 정했다 — 근거 예산(EVIDENCE_BUDGET_TOKENS)보다 작아야 하고, 생성 모델을 바꾸면 다시 잰다.
-TABLE_MAX_TOKENS = 6000
-
-
-def batch_table_rows(header: list[str], body: list[list[str]], budget_chars: int = TABLE_BATCH_CHARS) -> list[str]:
-    """표 → 행 묶음 markdown들, 묶음마다 헤더 반복. 표 행 묶음의 형식 공통 정의점(rag/xlsx_chunking이 import한다).
-
-    글로 바꾸기 전에 행 목록에서 나누므로 경계는 항상 행 사이다(렌더한 글을 다시 나누면 칸 안 줄바꿈에서 깨진다).
-    크기는 렌더한 길이로 잰다. 예산보다 긴 행은 혼자 한 묶음(자르지 않는다), 데이터 행이 없으면 헤더만.
-    """
-    head_len = len(to_markdown_table(header, []))
-    batches, cur, size = [], [], head_len
-    for row in body:
-        row_len = len(to_markdown_table(header, [row])) - head_len  # '\n' + 그 행 한 줄(들)
-        if cur and size + row_len > budget_chars:
-            batches.append(to_markdown_table(header, cur))
-            cur, size = [], head_len
-        cur.append(row)
-        size += row_len
-    batches.append(to_markdown_table(header, cur))
-    return batches
-
-
-def to_markdown_table(header: list[str], body: list[list[str]]) -> str:
-    """헤더 + 데이터행 → markdown 표. 표 직렬화의 정의점(rag/xlsx_chunking이 import한다).
-
-    빈 셀은 자리를 지킨다 — 지우면 뒷 열이 앞으로 당겨져 값이 다른 열로 읽힌다. 행은 헤더 길이에 맞춰 채우거나 자른다.
-    """
-    lines = ['| ' + ' | '.join(header) + ' |', '| ' + ' | '.join('---' for _ in header) + ' |']
-    for row in body:
-        cells = (row + [''] * len(header))[: len(header)]
-        lines.append('| ' + ' | '.join(cells) + ' |')
-    return '\n'.join(lines)
-
-
 def _read_text(file_path) -> str:
     """텍스트 파일 읽기 — utf-8 → cp949(국내 txt에 흔함) → utf-8 replace 순으로 시도한다."""
     raw = Path(file_path).read_bytes()
@@ -204,8 +131,8 @@ def _pdf_pages(file_path: str | Path) -> list[tuple[int, str]]:
 # ── 섹션 조립 — PDF·DOCX·MD 공통 후단 ──────────────────────────────────────────────
 
 
-def _build_sections(items: list[_Item]) -> list[_Section]:
-    """(page, text, level) 흐름을 헤딩 스택으로 _Section 목록에 접는다. PDF·DOCX·MD 공통 조립.
+def _build_sections(items: list[Item]) -> list[Section]:
+    """(page, text, level) 흐름을 헤딩 스택으로 Section 목록에 접는다. PDF·DOCX·MD 공통 조립.
 
     스택 규약(`del stack[level-1:]` + append) 위에 셋을 더한다:
       - 줄별 쪽 번호(line_pages) — 여러 줄 text는 줄 수만큼 같은 쪽을 채워 body 줄과 1:1을 지킨다.
@@ -215,19 +142,19 @@ def _build_sections(items: list[_Item]) -> list[_Section]:
       - 문서 끝 헤딩 — 문서가 본문 없는 헤딩으로 끝나면 그 헤딩을 본문으로 남긴다(경로는 이미 나간 앞부분).
     본문이 하나도 없는 문서는 섹션 0개 — 호출부(rag/ingestion)가 "추출된 텍스트 없음"으로 실패시킨다.
     """
-    sections: list[_Section] = []
+    sections: list[Section] = []
     stack: list[str] = []
     stack_pos: list[int] = []  # stack 원소마다 items 속 위치 — 고아를 되살릴 때 문서 순서로 놓으려고
     orphans: list[tuple[int, str]] = []  # (items 속 위치, 헤딩)
     emitted = 0  # stack 앞에서 몇 개가 이미 섹션 경로로 나갔나 — 그 헤딩들은 고아가 될 수 없다
     buf: list[str] = []
     buf_pages: list[int | None] = []
-    buf_blocks: list[str | _TableBlock] = []
+    buf_blocks: list[str | TableBlock] = []
     start_page: int | None = items[0][0] if items else None
     last_page: int | None = start_page
 
-    def add(text: 'str | _TableBlock', page: int | None) -> None:
-        if isinstance(text, _TableBlock):
+    def add(text: 'str | TableBlock', page: int | None) -> None:
+        if isinstance(text, TableBlock):
             buf.append(text.render())
             buf_pages.extend(text.line_pages(page))
         else:
@@ -241,7 +168,7 @@ def _build_sections(items: list[_Item]) -> list[_Section]:
         if not buf:
             return
         sections.append(
-            _Section(list(path), start_page, '\n'.join(buf), list(buf_pages), blocks=_join_blocks(buf_blocks))
+            Section(list(path), start_page, '\n'.join(buf), list(buf_pages), blocks=join_blocks(buf_blocks))
         )
         emitted = len(path)
         buf.clear()
@@ -281,43 +208,6 @@ def _build_sections(items: list[_Item]) -> list[_Section]:
 
 _DOCLING_LOCK = threading.Lock()
 _docling_converter = None
-
-
-class TableTooLargeError(ValueError):
-    """PDF·DOCX·MD 표 하나가 TABLE_MAX_TOKENS를 넘는다 — 결정적 실패(ValueError → outbox.is_transient가 바로 failed).
-
-    메시지가 status_reason으로 화면에 나가므로 엑셀 거절과 같이 토큰 대신 허용 크기 대비 %와 행×열로 말한다.
-    엑셀처럼 업로드 순간 거절하지 못하는 것은 표 크기를 docling 변환 뒤에야 알 수 있어서다.
-    """
-
-    def __init__(self, page: int | None, header: list[str], percent: int, rows: int, cols: int):
-        self.page, self.percent, self.rows, self.cols = page, percent, rows, cols
-        name = ' | '.join(h for h in header if h.strip())[:30]
-        where = f"{page}쪽 표" if page else "표"
-        super().__init__(
-            f"{where}('{name}')가 허용 크기의 {percent}%입니다(현재 {rows}행 × {cols}열). "
-            "상담에 필요 없는 열이나 긴 설명을 줄여 다시 올려 주세요."
-        )
-
-
-class PictureLimitError(ValueError):
-    """캡션 대상 그림이 상한(settings.docling_max_pictures)을 넘는다 — 결정적 실패(다시 돌려도 그림 수는 같다)."""
-
-
-class CaptionFailedError(ConnectionError):
-    """그림 캡션 요청이 실패했다 — 일시 실패(ConnectionError → outbox가 백오프 재시도).
-
-    docling은 VLM 오류(타임아웃·5xx·연결 거부)를 로그만 남기고 빈 캡션을 돌려준다 — 그대로 두면 그림 내용이 빠진
-    문서가 조용히 ready가 된다. 알려진 오분류: 특정 그림에만 나는 결정적 4xx도 MAX_ATTEMPTS까지 재시도된다.
-    """
-
-
-class LlmReadFailedError(ConnectionError):
-    """상용 OCR(OCR_PROVIDER=llm)의 LLM 읽기가 빈 응답이다 — 일시 실패(CaptionFailedError와 같은 규칙).
-
-    docling의 api_image_request는 429·5xx·401을 로그만 남기고 상태 코드 없이 빈 글자로 돌려준다. 알려진 오분류:
-    401처럼 다시 해도 안 되는 실패도 MAX_ATTEMPTS까지 돌고, 정말 빈 스캔 쪽(백지)도 실패로 본다.
-    """
 
 
 class _PictureGuard:
@@ -1010,8 +900,8 @@ def _join_split_article_titles(elements):
         i += 1
 
 
-def _sections_from_docling_elements(elements) -> list[_Section]:
-    """(label, text, page, table) 흐름 → _Section. PDF 헤딩 층 복원 규칙의 정의점. table은 행 목록(_TableBlock으로
+def _sections_from_docling_elements(elements) -> list[Section]:
+    """(label, text, page, table) 흐름 → Section. PDF 헤딩 층 복원 규칙의 정의점. table은 행 목록(TableBlock으로
     운반)이거나 markdown 문자열(그대로 글 블록 — 튜플만 먹이는 테스트용).
 
     docling은 장·조를 구분하지 않으므로 여기서 층을 만든다:
@@ -1024,7 +914,7 @@ def _sections_from_docling_elements(elements) -> list[_Section]:
       ② 닫는 괄호가 다음 요소로 떨어진 조 제목은 하나로 잇는다(_join_split_article_titles) — 안 이으면 ')'가 경로에 들어간다.
     docling이 문서 제목까지 본문으로 낸 문서에서는 보정이 걸리지 않는다. 조문 체계 밖의 제목('1. 목적')은 글자로 가를 단서가 없어 보정하지 않는다.
     """
-    items: list[_Item] = []
+    items: list[Item] = []
     seen_title = False
     seen_chapter = False
     for label, text, page, table_markdown in _join_split_article_titles(elements):
@@ -1051,14 +941,14 @@ def _sections_from_docling_elements(elements) -> list[_Section]:
             if isinstance(table_markdown, str):  # markdown 문자열 — 튜플만 먹이는 단위 테스트 호환
                 items.append((page, table_markdown, None))
                 continue
-            block = _TableBlock(table_markdown, [page] * len(table_markdown))
+            block = TableBlock(table_markdown, [page] * len(table_markdown))
             # 쪽을 넘긴 표 잇기 — docling은 쪽마다 표를 따로 낸다. 바로 앞 항목이 표이고 헤더가 같을 때만 뒤 표의 헤더를
             # 떼고 행을 잇는다. 행별 쪽 번호는 각자 것을 지킨다(row_pages).
-            if items and isinstance(items[-1][1], _TableBlock) and items[-1][1].rows[0] == block.rows[0]:
+            if items and isinstance(items[-1][1], TableBlock) and items[-1][1].rows[0] == block.rows[0]:
                 prev_page, prev_block, _ = items[-1]
                 items[-1] = (
                     prev_page,
-                    _TableBlock(prev_block.rows + block.rows[1:], prev_block.row_pages + block.row_pages[1:]),
+                    TableBlock(prev_block.rows + block.rows[1:], prev_block.row_pages + block.row_pages[1:]),
                     None,
                 )
                 continue
@@ -1150,7 +1040,7 @@ def _convert_child_main(fd: int) -> None:
 
 
 _CHILD_START_TIMEOUT_SECONDS = 300  # 변환 프로세스 기동(모델 로딩) 상한 — 첫 실행의 모델 다운로드까지 품는 여유
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]  # rag/chunking/ 아래라 두 단계 위가 저장소 루트
 
 
 # 변환 프로세스가 쓰는 설정의 접두사 — 부모는 이 설정만 자식에 넘기고, 이것이 바뀌었을 때만 자식을 다시 띄운다
@@ -1287,8 +1177,8 @@ def docling_convert(file_path: str | Path, **kwargs):
     return _convert_process.convert(file_path, kwargs)
 
 
-def _docling_sections(file_path: str | Path) -> list[_Section]:
-    """PDF → docling(레이아웃 ML + TableFormer, 그림 캡션, 표 이미지 OCR) → _Section.
+def _docling_sections(file_path: str | Path) -> list[Section]:
+    """PDF → docling(레이아웃 ML + TableFormer, 그림 캡션, 표 이미지 OCR) → Section.
 
     인쇄 머리글·바닥글은 docling이 furniture로 분류해 iterate_items()에 나오지 않는다. 헤딩 층 복원은
     _sections_from_docling_elements가 한다. 실패는 그대로 올린다 — 저품질 폴백 없음.
@@ -1464,7 +1354,7 @@ def _docx_docling_items(doc):
     - 헤딩 레벨은 docling section_header.level 그대로(Heading 스타일 레벨과 같다). 'title' 라벨은 본문 줄이다.
     - 표 칸 안의 요소는 건너뛴다 — docling은 서식 있는 칸의 내용을 표와 별도 요소로 한 번 더 내놓는다. 칸 내용·칸 안 그림·
       중첩 표는 표 행(_docx_table_rows)에 이미 들어 있다.
-    표는 _TableBlock으로 내놓는다. 표와 그림은 from_table=True — 그림 캡션이 '제1장 …'로 시작해도 폴백 헤딩이 되지 않게.
+    표는 TableBlock으로 내놓는다. 표와 그림은 from_table=True — 그림 캡션이 '제1장 …'로 시작해도 폴백 헤딩이 되지 않게.
     """
     from docling_core.types.doc import PictureItem, SectionHeaderItem, TableItem  # 지연 import
 
@@ -1477,12 +1367,12 @@ def _docx_docling_items(doc):
                 yield _DocxItem(True, item.level, text, False)
         elif isinstance(item, TableItem):
             if rows := _docx_table_rows(item, doc):
-                yield _DocxItem(False, 0, _TableBlock(rows), True)
+                yield _DocxItem(False, 0, TableBlock(rows), True)
         elif text := docling_block_text(item, doc):
             yield _DocxItem(False, 0, text, isinstance(item, PictureItem))
 
 
-def _docx_sections(file_path: str | Path) -> list[_Section]:
+def _docx_sections(file_path: str | Path) -> list[Section]:
     """DOCX → docling → 섹션. Heading 스타일이 경계이고, 스타일이 하나도 없으면 조문 패턴 폴백(_docx_fallback_headings).
 
     헤딩은 본문에 넣지 않는다 — heading_path가 들고 있고 rag/index_text가 색인 입력 앞에 붙인다. 조립은 PDF와 같은
@@ -1504,9 +1394,9 @@ def _common_prefix(paths: list[list[str]]) -> list[str]:
 
 
 def _pack_sections(
-    sections: list[_Section],
+    sections: list[Section],
     max_chars: int = _PACK_CHARS,
-) -> list[_Section]:
+) -> list[Section]:
     """연속 섹션을 예산까지 묶는다 — 섹션 하나가 청크 하나면 너무 잘아지므로. 묶음의 page는 첫 섹션 것.
 
     묶음의 heading_path는 참여 섹션들의 공통 조상이고, 그보다 깊은 헤딩은 본문 줄로 남긴다(headings에도 기록).
@@ -1515,8 +1405,8 @@ def _pack_sections(
     무작정 묶으면 공통 조상이 문서명 하나로 떨어져 heading_path가 무의미해진다.
     size는 body 길이만 세므로(덧붙는 헤딩 줄 제외) max_chars는 소프트 예산이다.
     """
-    packed: list[_Section] = []
-    buf: list[_Section] = []
+    packed: list[Section] = []
+    buf: list[Section] = []
     size = 0
 
     def joinable(path: list[str]) -> bool:
@@ -1531,14 +1421,14 @@ def _pack_sections(
         lines: list[str] = []
         pages: list[int | None] = []
         heads: list[str] = []
-        blocks: list[str | _TableBlock] = []
+        blocks: list[str | TableBlock] = []
         for s in buf:
             extra = s.heading_path[len(common) :]  # 공통 조상보다 깊은 헤딩은 본문에 보존
             lines.extend(extra)
             heads.extend(extra)
             pages.extend([s.page] * len(extra))
             blocks.extend(extra)
-            blocks.extend(_blocks_of(s))
+            blocks.extend(blocks_of(s))
             lines.append(s.body)
             # 줄별 page를 이어붙인다(없으면 섹션 page) — 묶음 page 하나로 두면 뒤 섹션이 앞 쪽 번호를 물려받는다.
             body_lines = s.body.split('\n')
@@ -1546,9 +1436,7 @@ def _pack_sections(
                 pages.extend(s.line_pages)
             else:
                 pages.extend([s.page] * len(body_lines))
-        packed.append(
-            _Section(common, buf[0].page, '\n'.join(lines), pages, headings=heads, blocks=_join_blocks(blocks))
-        )
+        packed.append(Section(common, buf[0].page, '\n'.join(lines), pages, headings=heads, blocks=join_blocks(blocks)))
         buf.clear()
         size = 0
 
@@ -1578,7 +1466,7 @@ def pdf_image_area_ratio(file_path: str | Path) -> float:
     return image_area / page_area * 100 if page_area else 0.0
 
 
-def _page_at(section: _Section, offset: int) -> int | None:
+def _page_at(section: Section, offset: int) -> int | None:
     """섹션 본문의 문자 오프셋이 실제로 몇 쪽에서 왔는지. line_pages가 없으면 섹션 page."""
     if not section.line_pages:
         return section.page
@@ -1631,10 +1519,10 @@ def extract_text(file_path: str | Path) -> str:
     return _read_text(file_path).strip()  # txt/md/기타
 
 
-def _txt_sections(file_path: str | Path) -> list[_Section]:
+def _txt_sections(file_path: str | Path) -> list[Section]:
     """평문 txt — 파일 전체가 섹션 하나. 빈 파일은 섹션 0개(split_text('')가 ['']를 내 빈 청크가 새지 않게)."""
     text = _read_text(file_path)
-    return [_Section([], None, text)] if text.strip() else []
+    return [Section([], None, text)] if text.strip() else []
 
 
 # MD 표 칸에서 docling이 망가뜨리는 두 표기 — 변환 전에 유니코드 사용자 영역 문자로 숨겼다가 결과에서 되돌린다.
@@ -1647,8 +1535,8 @@ def _md_unmask(text: str) -> str:
     return text.replace(_MD_PIPE_MARK, '\\|').replace(_MD_BR_MARK, '<br>')
 
 
-def _md_sections(file_path: str | Path) -> list[_Section]:
-    """마크다운 → docling(MD 백엔드, 같은 변환 프로세스) → 섹션. 표는 _TableBlock으로, 헤딩은 문법대로(밑줄식 포함) 나온다.
+def _md_sections(file_path: str | Path) -> list[Section]:
+    """마크다운 → docling(MD 백엔드, 같은 변환 프로세스) → 섹션. 표는 TableBlock으로, 헤딩은 문법대로(밑줄식 포함) 나온다.
 
     docling 출력을 그대로 쓰면 지는 곳 셋을 보정한다:
       ① 표 칸 안 '\\|'·'<br>' — 위 _MD_PIPE_MARK 주석
@@ -1684,7 +1572,7 @@ def _md_sections(file_path: str | Path) -> list[_Section]:
         os.unlink(tmp.name)
 
     inside = _table_descendants(doc)
-    items: list[_Item] = []
+    items: list[Item] = []
     cursor = 0  # 원문에서 직전 글 조각이 끝난 자리 — ③ 띄어쓰기 판정
     group = None  # 직전 조각이 속한 InlineGroup
     for item, _ in doc.iterate_items():
@@ -1702,7 +1590,7 @@ def _md_sections(file_path: str | Path) -> list[_Section]:
                 items.append((None, text, 1 if isinstance(item, TitleItem) else item.level + 1))
         elif isinstance(item, TableItem):
             if rows := _docx_table_rows(item, doc):
-                items.append((None, _TableBlock([[_md_unmask(c) for c in row] for row in rows]), None))
+                items.append((None, TableBlock([[_md_unmask(c) for c in row] for row in rows]), None))
         elif isinstance(item, CodeItem):
             # 코드 블록은 들여쓰기가 구조다 — 공백을 접는 _docling_norm을 태우지 않는다
             if text := _md_unmask('\n'.join(line.rstrip() for line in item.text.strip('\n').split('\n'))):
@@ -1832,7 +1720,7 @@ class _Piece(NamedTuple):
     table: _TableRef | None = None  # 큰 표의 묶음일 때만
 
 
-def _check_table_size(block: _TableBlock, table_text: str, page: int | None) -> None:
+def _check_table_size(block: TableBlock, table_text: str, page: int | None) -> None:
     """표 하나가 TABLE_MAX_TOKENS를 넘으면 TableTooLargeError — 크기는 모델이 볼 글(table_text)로 잰다."""
     tokens = estimate_tokens_conservative(table_text)
     if tokens > TABLE_MAX_TOKENS:
@@ -1840,7 +1728,7 @@ def _check_table_size(block: _TableBlock, table_text: str, page: int | None) -> 
         raise TableTooLargeError(page, header, -(-tokens * 100 // TABLE_MAX_TOKENS), len(block.rows) - 1, len(header))
 
 
-def _split_section(section: _Section, splitter) -> list[_Piece]:
+def _split_section(section: Section, splitter) -> list[_Piece]:
     """섹션 → 조각(청크 글, 본문 오프셋, 큰 표면 표 정보). 표 블록은 행 묶음(batch_table_rows)으로, 글 블록만
     SentenceSplitter로 나눈 뒤 블록 사이를 다시 잇는다 — 따로 자르기만 하면 표 위 소제목·단위 줄이 혼자 남는 작은 청크가 된다:
       - 작은 표(묶음 하나): 이웃 조각과 합쳐 TABLE_BATCH_CHARS 안이면 한 청크로. 같은 글 블록의 조각끼리는 합치지 않는다
@@ -1855,13 +1743,13 @@ def _split_section(section: _Section, splitter) -> list[_Piece]:
     ] = []  # (글, 오프셋, 블록 번호, 이웃과 합칠 수 있나, 표 정보)
     cursor = 0
     last_text = ''
-    blocks = _blocks_of(section)
+    blocks = blocks_of(section)
     heading_set = {h.strip() for h in section.headings}
     for bi, block in enumerate(blocks):
-        rendered = block.render() if isinstance(block, _TableBlock) else block
+        rendered = block.render() if isinstance(block, TableBlock) else block
         start = section.body.find(rendered, cursor)
         start = start if start >= 0 else cursor
-        if isinstance(block, _TableBlock):
+        if isinstance(block, TableBlock):
             batches = batch_table_rows(block.rows[0], block.rows[1:])
             head_len = len(to_markdown_table(block.rows[0], [])) + 1
             pos = start + head_len
@@ -1906,7 +1794,7 @@ def _split_section(section: _Section, splitter) -> list[_Piece]:
     return _carry_tail_headings(section, out)
 
 
-def _carry_tail_headings(section: _Section, pieces: list[_Piece]) -> list[_Piece]:
+def _carry_tail_headings(section: Section, pieces: list[_Piece]) -> list[_Piece]:
     """기록된 헤딩은 조각의 마지막 줄이 될 수 없다 — 꼬리 헤딩을 다음 조각 맨 앞으로 옮긴다.
 
     분할기는 헤딩을 모르므로 경계가 헤딩 바로 뒤에 떨어지면 식별자로 그 조를 찾아도 본문이 없다. 다음 조각이 (겹침으로)

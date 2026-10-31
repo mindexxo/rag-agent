@@ -169,7 +169,7 @@ def test_식별자_없는_질문은_아무것도_안_바꾼다():
 # ----- 청킹: 묶음 헤딩 기록 + 고아 헤딩 ---------------------------------------------
 
 def _sec(path, body):
-    return chunking._Section(path, None, body)
+    return chunking.Section(path, None, body)
 
 
 def test_pack_sections_는_내려보낸_헤딩을_기록한다():
@@ -190,7 +190,7 @@ def test_split_section_은_기록된_헤딩을_조각_끝에_두지_않는다():
     class _Splitter:
         def split_text(self, body):          # 경계가 헤딩 바로 뒤에 떨어지는 분할기 흉내
             return ["본문9 첫 줄\n제 10 조(발령)", "본문10 긴 줄"]
-    sec = chunking._Section(["문서", "제 2 장"], None, "본문9 첫 줄\n제 10 조(발령)\n본문10 긴 줄",
+    sec = chunking.Section(["문서", "제 2 장"], None, "본문9 첫 줄\n제 10 조(발령)\n본문10 긴 줄",
                             headings=["제 10 조(발령)"])
     assert _texts(sec, _Splitter()) == ["본문9 첫 줄", "제 10 조(발령)\n본문10 긴 줄"]
     # 다음 조각이(겹침으로) 이미 그 줄을 갖고 있으면 앞에서만 뗀다
@@ -199,7 +199,7 @@ def test_split_section_은_기록된_헤딩을_조각_끝에_두지_않는다():
             return ["본문9 첫 줄\n제 10 조(발령)", "제 10 조(발령)\n본문10 긴 줄"]
     assert _texts(sec, _Overlap()) == ["본문9 첫 줄", "제 10 조(발령)\n본문10 긴 줄"]
     # 기록된 헤딩이 없으면 분할기 출력 그대로
-    plain = chunking._Section(["문서"], None, "a\nb")
+    plain = chunking.Section(["문서"], None, "a\nb")
     assert _texts(plain, _Splitter()) == ["본문9 첫 줄\n제 10 조(발령)", "본문10 긴 줄"]
 
 
@@ -220,7 +220,7 @@ def test_꼬리_헤딩을_옮기면_다음_조각_오프셋도_헤딩_위치로_
         def split_text(self, body):
             return ["본문9 첫 줄\n제 10 조(발령)", "본문10 긴 줄"]
     body = "본문9 첫 줄\n제 10 조(발령)\n본문10 긴 줄"
-    sec = chunking._Section(["문서"], 1, body, [1, 2, 2], headings=["제 10 조(발령)"])
+    sec = chunking.Section(["문서"], 1, body, [1, 2, 2], headings=["제 10 조(발령)"])
     pieces = chunking._split_section(sec, _Splitter())
     assert pieces[1][:2] == ("제 10 조(발령)\n본문10 긴 줄", body.index("제 10 조"))
 

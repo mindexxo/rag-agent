@@ -16,7 +16,7 @@ classify_and_guard가 입력을 올바른 경로로 보내는지 측정한다.
   의심표명) 격자라 한 어미가 점수를 좌우하지 못한다. neg 2건은 이력이 있어도 맞장구는 OTHER여야
   한다는 과잉 발동 감시.
 
-골드 규율: 문구가 분류 프롬프트의 예시(rag/prompt_texts.py)와 **겹치면 안 된다** — 겹치면 일반화가 아니라 암기를
+골드 규율: 문구가 분류 프롬프트의 예시(rag/turn/prompt_texts.py)와 **겹치면 안 된다** — 겹치면 일반화가 아니라 암기를
 잰다(#63). 2026-09-29에 겹치던 23행을 같은 경계·다른 문구로 바꿨다(tests/test_prompts.py가 반박 예시
 문구의 부재를 래칫으로 고정). 골드를 바꾸기 전엔 intent_set_v1_before_<변경>.jsonl.bak으로 스냅샷을
 뜬다(gitignore, 로컬 이력).
@@ -29,7 +29,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from rag.llm import create_aux_llm
-from rag.guardrail import classify_and_guard
+from rag.turn.guardrail import classify_and_guard
 
 GOLD = Path("eval/intent_set_v1.jsonl")
 CONCURRENCY = 4  # LLM 서버 동시 호출 제한

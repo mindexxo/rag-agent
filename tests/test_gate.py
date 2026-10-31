@@ -92,8 +92,8 @@ class TestPrepareEvidence:
 
     def test_인용_후보는_문서_단위라_바뀌지_않는다(self):
         # 묶음이 여럿 걸려도 한 시트 = 한 문서 = 인용 번호 하나(#222 교차 지점)
-        from rag.citation_labels import sources_from_chunks
         from rag.search.retriever import prepare_evidence
+        from rag.turn.citation_labels import sources_from_chunks
         chunks = [_t(1, table_text='전체'), _t(2, table_text='전체'), _chunk(chunk_id=3, document_id=9)]
         assert [s.document_id for s in sources_from_chunks(prepare_evidence(chunks, 5))] == [1, 9]
 

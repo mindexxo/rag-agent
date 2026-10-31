@@ -1,7 +1,7 @@
 """캐시 재사용 판정(#113) 배선 계약 — **판정 승인 없이는 서빙이 없다**.
 
 hit 조건(순서대로): 유사도 ≥ floor(후보 게이트) → doc집합 동일 → LLM 판정 승인.
-자동 서빙 임계와 규칙 기반 기계 가드는 제거됐다(판정기로 일원화 — 사유는 rag/cache.py
+자동 서빙 임계와 규칙 기반 기계 가드는 제거됐다(판정기로 일원화 — 사유는 rag/turn/cache.py
 모듈 docstring). 유사도는 명시 벡터로 제어하고(코사인이 손으로 계산되는 2-성분 조합),
 판정기(_verify_reuse)는 몽키패치로 고정한다 — LLM 판정 품질은 오프라인 검증
 (prompt_texts 주석의 40쌍 실측)이 담당하고, 여기서는 배선만 고정한다.
@@ -11,7 +11,7 @@ import math
 import pytest
 
 from database import AsyncSessionLocal
-from rag import cache
+from rag.turn import cache
 from schemas.kms import SourceCitation
 
 DIM = 1024
@@ -169,8 +169,8 @@ async def test_도입_전_행은_원문이_None으로_간다(tenant_id, fake_emb
 
 def test_원문이_없으면_템플릿에_없음이_박힌다():
     """프롬프트 계약 — 빈 문자열을 넣으면 판정기가 그것도 신호로 읽는다 (#153)."""
-    from rag.prompt_texts import CACHE_REUSE_JUDGE_NO_ORIGINAL
-    from rag.prompts import build_cache_reuse_judge_messages
+    from rag.turn.prompt_texts import CACHE_REUSE_JUDGE_NO_ORIGINAL
+    from rag.turn.prompts import build_cache_reuse_judge_messages
     user = build_cache_reuse_judge_messages('재작성A', '재작성B')[1]['content']
     assert user.count(CACHE_REUSE_JUDGE_NO_ORIGINAL) == 2
     assert '__CACHED_ORIGINAL__' not in user and '__NEW_ORIGINAL__' not in user

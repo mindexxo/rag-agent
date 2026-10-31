@@ -5,7 +5,7 @@
 가짜 LLM으로 태워 받은 인자를 잡는다 — 조립 순서가 호출부로 옮겨 가도 잡히게.
 
 프롬프트를 일부러 바꿨으면 `PROMPT_BYTES_UPDATE=1 pytest tests/test_prompt_bytes.py`로 갱신한다.
-문구 변경은 `rag/prompt_texts.py` diff에서 보이므로 여기는 해시만 둔다.
+문구 변경은 `rag/turn/prompt_texts.py` diff에서 보이므로 여기는 해시만 둔다.
 """
 
 import hashlib
@@ -19,17 +19,17 @@ from typing import Any
 
 import pytest
 
-from rag import prompt_texts
-from rag.cache import _verify_reuse
-from rag.citation_labels import sources_from_chunks
-from rag.conversation import build_prior_turns, condense_query, condense_to_queries, trim_messages_for_condense
-from rag.guardrail import classify_and_guard
 from rag.models import TurnStatus
-from rag.prepared import PreparedRag
-from rag.prompts import build_cache_reuse_judge_messages
 from rag.search.retrieval_types import RetrievalResult, RetrievedChunk
 from rag.search.retriever import prepare_evidence
-from rag.service import RagService
+from rag.turn import prompt_texts
+from rag.turn.cache import _verify_reuse
+from rag.turn.citation_labels import sources_from_chunks
+from rag.turn.conversation import build_prior_turns, condense_query, condense_to_queries, trim_messages_for_condense
+from rag.turn.guardrail import classify_and_guard
+from rag.turn.prepared import PreparedRag
+from rag.turn.prompts import build_cache_reuse_judge_messages
+from rag.turn.service import RagService
 
 SNAPSHOT = Path(__file__).with_name('prompt_bytes.json')
 HINT = '보험 약관·청구 절차'

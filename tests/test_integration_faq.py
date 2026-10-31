@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from database import AsyncSessionLocal
 from tests.conftest import FakeLlm, faq_doc, sync_faq
-from rag import cache
+from rag.turn import cache
 from rag.models import AnswerCache as AnswerCacheRow, Faq
 from rag.search.retriever import retrieve_candidates
 

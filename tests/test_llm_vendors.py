@@ -15,7 +15,7 @@ import pytest
 from config import settings
 from rag.llm import CitationTail, LlmUsage, create_llm
 from rag.llm.litellm import CACHE_MARK, LiteLlmClient, with_cache_mark
-from rag.llm_schemas import RouteDecision
+from rag.turn.llm_schemas import RouteDecision
 
 MSGS = [{'role': 'system', 'content': '규칙'}, {'role': 'user', 'content': '질문'}]
 

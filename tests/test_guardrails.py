@@ -53,9 +53,9 @@ MUST_BLOCK = [
     'git -c core.x=y push --force origin feat/x',
 ]
 MUST_PASS = [
-    'git add -- rag/cache.py tests/test_guardrails.py',
+    'git add -- rag/turn/cache.py tests/test_guardrails.py',
     'git add -- .claude/skills/rag-flow/SKILL.md',
-    'git commit -q -m "fix(#1): 캐시 키 정정" -- rag/cache.py',
+    'git commit -q -m "fix(#1): 캐시 키 정정" -- rag/turn/cache.py',
     'git commit -q -m "docs(#2): 정리" -- AGENTS.md 2>&1 | tail -1',
     'git push -q -u origin chore/issue-311-guardrails',
     'git push -q origin --delete chore/issue-311-guardrails',

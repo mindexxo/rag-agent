@@ -112,7 +112,7 @@ def test_지표_기록_히스토그램과_카운터():
 @pytest.mark.asyncio
 async def test_generate_완주시_finish_reason_보관():
     from test_service_pure import _prepared
-    from rag.service import RagService
+    from rag.turn.service import RagService
 
     class _Llm:
         async def astream(self, prompt, *, citations=None, on_finish_reason=None, **_):
@@ -130,7 +130,7 @@ async def test_generate_완주시_finish_reason_보관():
 @pytest.mark.asyncio
 async def test_스트림_중단시_finish_reason은_None():
     from test_service_pure import _prepared
-    from rag.service import RagService
+    from rag.turn.service import RagService
 
     class _Llm:
         async def astream(self, prompt, *, citations=None, on_finish_reason=None, **_):

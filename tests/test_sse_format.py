@@ -4,9 +4,9 @@ FE 파서가 이 봉투 형식(event/data/빈 줄)에 의존한다.
 """
 import json
 
-from rag.prepared import PreparedRag
 from rag.search.retrieval_types import RetrievalResult
-from rag.streaming import _meta_event, sse_event
+from rag.turn.prepared import PreparedRag
+from rag.turn.streaming import _meta_event, sse_event
 
 
 def test_봉투_형식():
@@ -20,7 +20,7 @@ def test_한글_이스케이프_안함():
 
 def test_done_페이로드_형식():
     """done은 빈 객체가 아니라 최종 상태를 싣는다 (#56) — 필드 셋이 FE 계약."""
-    from rag.streaming import TurnResult, _done_payload
+    from rag.turn.streaming import TurnResult, _done_payload
     from schemas.kms import SourceCitation
     result = TurnResult(answer='답', citations=[SourceCitation(document_id=5, filename='정책.pdf', version=2)],
                         finish_reason='done', latency_ms=123)

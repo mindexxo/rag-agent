@@ -29,14 +29,14 @@ from eval._gold_history import messages_from_conversation
 from eval.absence_judge import judge_llm
 from eval.misinfo_judge import confirm_violations
 from eval.retrieval import resolve_gold
-from rag.citation_labels import sources_from_chunks
-from rag.citation_tail import TailSplitter, resolve_citations
-from rag.conversation import build_prior_turns, condense_query, trim_messages_for_condense
 from rag.llm import LlmClient, aux_overridden, create_aux_llm, create_llm
-from rag.prompts import build_citation_tail, build_knowledge_generation_prompt
 from rag.search.embeddings import embed_texts_sync
 from rag.search.retrieval_types import RetrievedChunk
 from rag.search.retriever import prepare_evidence, retrieve_candidates
+from rag.turn.citation_labels import sources_from_chunks
+from rag.turn.citation_tail import TailSplitter, resolve_citations
+from rag.turn.conversation import build_prior_turns, condense_query, trim_messages_for_condense
+from rag.turn.prompts import build_citation_tail, build_knowledge_generation_prompt
 
 TENANT = "demo"                      # v1(단일 테넌트) 기본값 — v2 gold는 id 접두로 라우팅
 V2_TENANTS = {"summers", "homeplus", "adererror", "aromanica", "goodpeople", "harim", "inticube"}
@@ -122,7 +122,7 @@ async def generate(llm: LlmClient, original_query: str, chunks: list[RetrievedCh
                    prior_turns: list[dict] | None = None) -> str:
     """RAG 프롬프트로 답변 1건 생성 (LLM 서버 필요).
 
-    운영(rag/service.py)과 같은 조립점을 쓴다 — 인자를 한쪽에서만 빼먹는 종류의 어긋남을
+    운영(rag/turn/service.py)과 같은 조립점을 쓴다 — 인자를 한쪽에서만 빼먹는 종류의 어긋남을
     구조적으로 막기 위해서다(#48: 여기서 prior_turns가 빠져 있었고 아무 데도 안 걸렸다).
 
     출처 꼬리 제약도 운영과 같이 붙인다 (#61) — 이전엔 하네스만 제약 없이 생성했다.
@@ -151,7 +151,7 @@ _SENT_SPLIT = re.compile(r"\n+|(?<!\d)[.!?]+|[.!?]+(?!\d)")
 # 절 경계. 두 가지를 일부러 뺐다 — 숫자 사이 쉼표('3,000원')와 '·'(교육·보건·식수 같은 나열).
 _CLAUSE_SPLIT = re.compile(r"(?<!\d),(?!\d)|[;—]+")
 _MIN_CLAUSE = 6              # 이보다 짧은 조각은 의미를 못 실어 임베딩이 잡음이 된다
-# 목록 항목 머리. 생성 프롬프트(rag/prompt_texts.py 규칙 8)가 "항목이 2개 이상이면
+# 목록 항목 머리. 생성 프롬프트(rag/turn/prompt_texts.py 규칙 8)가 "항목이 2개 이상이면
 # '- ' 목록으로 나누라"고 **지시**하므로 이 형태는 예외가 아니라 정상 출력이다.
 _BULLET_HEAD = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
 _MAX_RUN_JOIN = 12           # 한 런에 이 개수를 넘으면 묶지 않는다 — 너무 길면 주제가 뭉개진다
@@ -542,7 +542,7 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, e
         async with sem:
             # 예산이 둘로 갈리는 것까지 운영과 같게 맞춘다 (#81) — condense는 600으로 자른
             # 이력을, 생성 맥락은 자르지 않은 원본을 받는다(build_prior_turns가 2000으로 자체
-            # 트리밍한다). rag/service.py가 같은 messages에서 두 경로를 독립으로 뽑는 구조다.
+            # 트리밍한다). rag/turn/service.py가 같은 messages에서 두 경로를 독립으로 뽑는 구조다.
             standalone = await condense_query(
                 condense_llm, g["query"],
                 trim_messages_for_condense(history, settings.condense_history_budget_tokens))

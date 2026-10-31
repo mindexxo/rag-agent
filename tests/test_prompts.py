@@ -4,8 +4,9 @@
 """
 import re
 
-from rag.prompt_texts import DEFAULT_DOMAIN_HINT, PRIOR_TURNS_LABEL, STANDALONE_QUERY_LABEL
-from rag.prompts import (
+from rag.search.retrieval_types import RetrievedChunk
+from rag.turn.prompt_texts import DEFAULT_DOMAIN_HINT, PRIOR_TURNS_LABEL, STANDALONE_QUERY_LABEL
+from rag.turn.prompts import (
     build_attachment_blocks,
     build_chat_prompt,
     build_classify_user_message,
@@ -18,7 +19,6 @@ from rag.prompts import (
     build_system_prompt,
     build_user_message,
 )
-from rag.search.retrieval_types import RetrievedChunk
 
 
 def _chunk(**kw) -> RetrievedChunk:
@@ -95,11 +95,11 @@ class TestCitationTail:
     tests/test_llm_providers.py가 고정한다. 실제 강제 여부는 라이브로 확인한다(반증 방법은 rag/llm/vllm.py `_citation_body` docstring)."""
 
     def _tail(self, sources_n: int, attachments: list[str]):
-        from rag.prompts import build_citation_tail
+        from rag.turn.prompts import build_citation_tail
         return build_citation_tail([object()] * sources_n, attachments)   # 개수만 쓴다 — 내용 무관
 
     def test_후보_수는_검색_출처_더하기_첨부(self):
-        from rag.prompt_texts import TAIL_END, TAIL_START
+        from rag.turn.prompt_texts import TAIL_END, TAIL_START
         tail = self._tail(2, ['첨부.pdf'])
         assert tail.count == 3                                   # 첨부를 빠뜨리면 #41의 함정
         assert tail.start == TAIL_START and tail.end == TAIL_END
@@ -185,7 +185,7 @@ class TestStandaloneQueryPairing:
 class TestKnowledgeGenerationPrompt:
     """운영·eval이 공유하는 단일 조립점 (#48).
 
-    이전엔 rag/service.py와 eval/generation.py가 각자 조립해 eval 쪽 prior_turns 누락이
+    이전엔 rag/turn/service.py와 eval/generation.py가 각자 조립해 eval 쪽 prior_turns 누락이
     아무 데도 걸리지 않았다 — 그 재발을 막는 가드.
     """
 
@@ -329,7 +329,7 @@ class TestDomainHint:
 class TestIntentPromptHistory:
     """분류 프롬프트가 이력을 받는 구조(#142)를 래칫으로 고정한다.
 
-    실측 근거는 rag/prompt_texts.py의 템플릿 주석. 여기 단언이 깨지면 그 실측이 무효가 된다.
+    실측 근거는 rag/turn/prompt_texts.py의 템플릿 주석. 여기 단언이 깨지면 그 실측이 무효가 된다.
     """
     def test_이력을_전제하는_예시는_이력_블록을_달고_있다(self):
         # 예시 형식이 런타임 메시지와 어긋나면 모델이 예시를 따라 이력을 무시한다 — 이게 #142의 실제 원인이었다

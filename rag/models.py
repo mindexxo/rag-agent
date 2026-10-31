@@ -193,7 +193,7 @@ class TurnStatus(StrEnum):
     """messages.status 값 어휘의 정의점 — Document.status 4값과 별개 어휘다.
 
     str 서브클래스라 문자열 비교·직렬화·DB 저장과 호환된다. 여기는 어휘만 두고,
-    파생 의미(이력 격리·미응답·종결 집합)는 rag/turn_state.py가 소유한다.
+    파생 의미(이력 격리·미응답·종결 집합)는 rag/turn/turn_state.py가 소유한다.
     밖의 값은 SQLAlchemy Enum이 아니라 쓰기 지점(turn_state.finalize_turn)이 거부한다.
     """
 

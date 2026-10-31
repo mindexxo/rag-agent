@@ -3,7 +3,7 @@
 벤더별로 갈리는 것은 `_VENDORS` 표 한 곳에 둔다.
 - schema=    JSON 모드만 요청한다(스키마 강제 아님 — 신뢰 근거는 호출부의 Pydantic 검증).
 - citations= 디코딩 강제를 하지 않는다(세 벤더에 꼬리만 제약하는 기능이 없다). 프롬프트로 유도하고
-             rag/citation_tail 파서가 범위 밖 번호를 버린다 — 조용한 무시가 아니라 파서 검증으로 충족한다.
+             rag/turn/citation_tail 파서가 범위 밖 번호를 버린다 — 조용한 무시가 아니라 파서 검증으로 충족한다.
 - 캐싱       표시는 Anthropic에만 붙인다(표시가 없으면 캐싱이 안 된다). OpenAI·Gemini는 자동이고, Gemini에 표시를
              보내면 LiteLLM이 과금되는 명시적 컨텍스트 캐싱으로 번역한다. 적중 여부는 on_usage의 cached_tokens로 본다.
 - temperature·reasoning_effort  설정값을 그대로 보낸다 — 벤더가 거부하는 조합은 400으로 드러나게 둔다.

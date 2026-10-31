@@ -10,7 +10,7 @@
 "근거를 못 댔는데 거절 문구도 없이 답한" 답변(부재를 단정하거나 근거 없이 확신하는 유형).
 그래서 이 축의 이름은 '거절'이지만 실제로 재는 것은 '근거를 못 댄 비율'이다 —
 SHOULD_REFUSE/SHOULD_ANSWER·_refused의 '거절'도 그 뜻으로 읽을 것.
-규약의 정의점은 rag/citation_tail.py 모듈 docstring.
+규약의 정의점은 rag/turn/citation_tail.py 모듈 docstring.
 
 대상 (gold_set_v2, 모두 단일턴):
 - no_evidence(58): 근거 없음 → **거절(=근거없음)해야** 정답. 답하면 미거부(환각 위험).
@@ -35,14 +35,14 @@ from pathlib import Path
 
 from database import AsyncSessionLocal
 from eval._turn_cleanup import discard_turn
-from rag.conversation import ensure_conversation
+from rag.turn.conversation import ensure_conversation
 from eval.generation import load_gold, must_not_contain_violations, row_tenant
 from eval.misinfo_judge import JUDGE_PROMPT_VERSION as MISINFO_JUDGE_VERSION, confirm_violations
 from eval.absence_judge import (JUDGE_PROMPT_VERSION, judge_absence, judge_llm,
                                 save_audit)
-from rag.citation_tail import TailSplitter, resolve_citations
-from rag.prepared import PreparedRag
-from rag.service import RagService
+from rag.turn.citation_tail import TailSplitter, resolve_citations
+from rag.turn.prepared import PreparedRag
+from rag.turn.service import RagService
 
 GOLD = Path(__file__).resolve().parent / "gold_set_v2.jsonl"
 CONCURRENCY = 4
@@ -54,11 +54,11 @@ def _citations(prepared: PreparedRag, answer: str) -> list:
     """답변의 실인용 — 운영 두 경로와 같은 방식으로 구한다 (#61).
 
     옛 판정은 `is_refusal(answer)`(거절 문구 부분일치) 한 줄이었다. 폐기 사유·실측은
-    rag/citation_tail.py 모듈 docstring(단일 정의점) — 여기서는 그 규약을 적용만 한다.
+    rag/turn/citation_tail.py 모듈 docstring(단일 정의점) — 여기서는 그 규약을 적용만 한다.
 
     경로가 둘인 이유는 운영과 같다. 즉시 경로(캐시 히트·근거없음·차단)와 OTHER는 출처
     꼬리 메커니즘 자체가 없어 prepared.sources가 그대로 답이다 —
-    rag/streaming.immediate_stream과 같은 근거다. knowledge 실생성만 꼬리를 걷어낸다.
+    rag/turn/streaming.immediate_stream과 같은 근거다. knowledge 실생성만 꼬리를 걷어낸다.
 
     완성된 문자열을 한 번에 feed하는 것은 eval/generation.citation_accuracy(v4)와 같은
     배관이다 — 여기서 직접 rsplit하면 운영의 오탐 복구를 잃는다.
@@ -82,7 +82,7 @@ async def _refused(tenant: str, query: str) -> tuple[bool, str, str]:
     route를 함께 돌려주는 이유: 부재단정 판정은 KNOWLEDGE 경로에만 유효하다. OTHER로
     라우팅된 문항은 시스템 프롬프트 규칙 3을 아예 안 타고 _OTHER_SYSTEM_PROMPT_TEMPLATE로
     생성되므로, 그 화법("역할 밖 요청이라 안내가 어렵다")을 규칙 3 기준으로 재면 오염이다.
-    게다가 OTHER는 prepared.sources가 항상 빈 목록(rag/service.py)이라 **무조건 근거없음으로
+    게다가 OTHER는 prepared.sources가 항상 빈 목록(rag/turn/service.py)이라 **무조건 근거없음으로
     집계**된다 — 판정 대상에서 빼지 않으면 분모가 라우팅 확률에 좌우된다.
     """
     async with AsyncSessionLocal() as session:

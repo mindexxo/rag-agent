@@ -16,9 +16,9 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
 
 from config import settings
-from rag import cancellation
 from rag.otel import init_tracing
 from rag.search import os_client
+from rag.turn import cancellation
 from routers.attachments import router as attachment_router
 from routers.conversations import router as conversation_router
 from routers.documents import router as document_router
@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
     """앱 수명 동안 도는 백그라운드 태스크 기동·정리 (#30).
 
     여기 두는 건 **이 웹 프로세스의 인메모리 상태를 다뤄야 하는 작업**뿐이다 —
-    취소 레지스트리(rag/cancellation.py)가 프로세스 로컬이라 그렇다. 주기 스윕(캐시 청소 등)은
+    취소 레지스트리(rag/turn/cancellation.py)가 프로세스 로컬이라 그렇다. 주기 스윕(캐시 청소 등)은
     rag/worker.py의 arq cron 몫이고 별 프로세스라 여기와 무관하다.
 
     주의: 테스트의 httpx ASGITransport는 lifespan을 호출하지 않는다(실측) — 그래서 본문은
@@ -70,7 +70,7 @@ app.add_middleware(
 
 # Prometheus 스크레이프 (#129) — 앱 지표(rag/metrics.py: 체감 TTFT·finish_reason)와
 # prometheus_client 기본 프로세스 지표를 노출. 인증 없음 — 사내망 개발계 전제, 외부 노출
-# 경로가 생기면 접근 제어 재검토. rag/metrics.py는 routers→rag.streaming 경유로 이미
+# 경로가 생기면 접근 제어 재검토. rag/metrics.py는 routers→rag.turn.streaming 경유로 이미
 # import되므로 여기서 따로 불러올 필요 없다.
 # mount(make_asgi_app()) 대신 직접 라우트인 이유: mount는 /metrics→/metrics/ 307을 낸다(실측).
 @app.get('/metrics', include_in_schema=False)

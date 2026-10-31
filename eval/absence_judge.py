@@ -6,10 +6,10 @@
 "문서에 언급이 없습니다", "명시된 바가 없습니다". 이 경계가 곧 시스템 프롬프트
 규칙 3의 원리이고("제공되지 않는다" ≠ "확인할 수 없다"), 그래서 판정 기준을 새로
 창작하지 않고 생성 프롬프트와 같은 개념을 쓴다 — 정상형 대조 예시로
-rag.prompt_texts.NO_EVIDENCE_ANSWER를 import해 박는다(문구가 바뀌면 예시가 따라간다).
+rag.turn.prompt_texts.NO_EVIDENCE_ANSWER를 import해 박는다(문구가 바뀌면 예시가 따라간다).
 
 **왜 필요한가.** #61이 거절 판정을 "실인용 0건"으로 바꿨다(정의점은
-rag/citation_tail.py). 그 규약은 본문을 안 보기 때문에 아래 둘을 구별하지 못한다:
+rag/turn/citation_tail.py). 그 규약은 본문을 안 보기 때문에 아래 둘을 구별하지 못한다:
 
     해당 내용은 제공된 문서에서 확인할 수 없습니다.   ««[]»»   ← 정상 거절
     정책 범위에 포함되지 않습니다.                    ««[]»»   ← 부재단정
@@ -25,7 +25,7 @@ eval/refusal.py의 몫이다. 이 2단 구조가 정규식으로는 원리적으
 안 했으면 부재단정인데, 표면 패턴은 둘이 똑같다. 인용 개수가 그걸 가른다.
 
 **정규식을 쓰지 않는 이유.** 이 프로젝트가 이미 실패했다(실측·사유는
-rag/citation_tail.py docstring). #62 측정 중 만든 정규식이 밟은 결함은 아래 FIXTURES가 전수다.
+rag/turn/citation_tail.py docstring). #62 측정 중 만든 정규식이 밟은 결함은 아래 FIXTURES가 전수다.
 
 **RAGAS faithfulness를 쓰지 않는 이유.** 답변을 사실 주장으로 분해한 뒤 각각의
 근거 여부를 재는데, 주장이 추출되지 않으면(statements == []) nan을 반환하고
@@ -56,7 +56,7 @@ eval/generation.py::citation_accuracy의 v2~v5 규약과 같다.
 **낡을 지점(코드가 막을 수 없다).** 규칙 3이 다시 개정되면 "부재단정"의 경계 자체가
 바뀔 수 있는데 이 프롬프트가 자동으로 따라가지 않는다. NO_EVIDENCE_ANSWER import는
 문구 변경만 흡수하고 기준 재편은 못 잡는다. 규칙 3을 건드리는 작업은 이 판정 정의를
-같이 재검토해야 한다 — rag/prompt_texts.py의 ⚠ 주석에 그 전제를 적어뒀다.
+같이 재검토해야 한다 — rag/turn/prompt_texts.py의 ⚠ 주석에 그 전제를 적어뒀다.
 
 실행: python -m eval.absence_judge        # FIXTURES 자체검증 (판정기를 고칠 때마다)
 """
@@ -70,8 +70,8 @@ from typing import Literal
 from pydantic import BaseModel
 
 from rag.llm import LlmClient, create_llm
-from rag.llm_schemas import acomplete_validated
-from rag.prompt_texts import NO_EVIDENCE_ANSWER
+from rag.turn.llm_schemas import acomplete_validated
+from rag.turn.prompt_texts import NO_EVIDENCE_ANSWER
 
 JUDGE_PROMPT_VERSION = "v1"
 RESULTS = Path(__file__).resolve().parent / "results"
@@ -80,7 +80,7 @@ SELFTEST_RUNS = 3          # 판정 흔들림 관측 — eval/other_eval.py·con
 
 class AbsenceJudgment(BaseModel):
     """label에 기본값을 주지 않는다 — 구조를 결정하는 필드에 기본값이 있으면 json 스키마에서
-    required가 빠져 모델이 생략해도 합법이 된다(사유는 rag/llm_schemas.py 모듈 docstring).
+    required가 빠져 모델이 생략해도 합법이 된다(사유는 rag/turn/llm_schemas.py 모듈 docstring).
     reason은 원래 없을 수 있는 값이라 옵셔널이 맞다."""
     label: Literal["absence_assertion", "refusal_ok"]
     reason: str | None = None
@@ -140,7 +140,7 @@ async def judge_absence(llm: LlmClient, query: str, answer: str) -> AbsenceJudgm
     """인용 0건 답변 하나를 판정. 실패는 LlmJudgmentFailed로 전파된다.
 
     호출부(eval/refusal.py)가 그 예외를 잡아 '판정 불가'로 집계한다 — 판정하지 못한 것을
-    refusal_ok로 추측하면 지표가 실패를 숨긴다(rag/llm_schemas.py의 2갈래 계약과 같은 이유).
+    refusal_ok로 추측하면 지표가 실패를 숨긴다(rag/turn/llm_schemas.py의 2갈래 계약과 같은 이유).
     """
     return await acomplete_validated(llm, _build_messages(query, answer), AbsenceJudgment)
 

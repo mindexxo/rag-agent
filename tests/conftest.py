@@ -188,11 +188,11 @@ def fake_embed(monkeypatch):
         counting.embed_calls += 1
         return Embedding(dense=fake_vector(text))
 
-    import rag.cache
     import rag.ingestion
     import rag.search.embeddings
     import rag.search.os_index
     import rag.search.retriever
+    import rag.turn.cache
     from config import settings
 
     # 톱레벨로 이름을 당겨온 모듈은 개별 패치가 필요하다 — 원본 모듈 속성만 바꾸면 그 바인딩은
@@ -201,7 +201,7 @@ def fake_embed(monkeypatch):
     monkeypatch.setattr(rag.search.os_index, 'embed_texts', _texts)
     monkeypatch.setattr(rag.ingestion, 'embed_texts', _texts)
     monkeypatch.setattr(rag.search.retriever, 'embed_texts', _texts)   # 쿼리 확장(#5)으로 배치 임베딩 전환
-    monkeypatch.setattr(rag.cache, 'embed_query', _query)
+    monkeypatch.setattr(rag.turn.cache, 'embed_query', _query)
     monkeypatch.setattr(settings, 'rerank_enabled', False)
     return counting
 
@@ -260,7 +260,7 @@ class FakeLlm:
         # 걸러내 citations=[]가 그대로 유지된다 — 그 경로의 기대값은 안 바뀐다.
         # 인용 검증 테스트는 여전히 answer를 직접 교체해서 쓴다.
         # 어절 3개 유지 주의: pause_after_tokens=2(셋째 토큰 정지)를 쓰는 취소 테스트들의 전제.
-        from rag.citation_labels import citation_tail
+        from rag.turn.citation_labels import citation_tail
         self.answer = answer if answer is not None else f'테스트 답변입니다. {citation_tail([1])}'
         self.intent_json = '{"safe": true, "intent": "KNOWLEDGE"}'
         self.reuse_judge_json = '{"same_answer": true, "reason": "테스트 고정 승인"}'   # 캐시 판정 (#113)
@@ -342,9 +342,9 @@ class FakeLlm:
 def fake_llm(monkeypatch):
     """RagService가 쓰는 공용 LLM(shared_llm)과 보조 LLM(shared_aux_llm, #297)을 같은 가짜로 치환."""
     fake = FakeLlm()
-    import rag.service
-    monkeypatch.setattr(rag.service, 'shared_llm', fake)
-    monkeypatch.setattr(rag.service, 'shared_aux_llm', fake)
+    import rag.turn.service
+    monkeypatch.setattr(rag.turn.service, 'shared_llm', fake)
+    monkeypatch.setattr(rag.turn.service, 'shared_aux_llm', fake)
     return fake
 
 

@@ -24,7 +24,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rag.llm_schemas import acomplete_validated
+from rag.turn.llm_schemas import acomplete_validated
 
 JUDGE_PROMPT_VERSION = "v1"
 DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5-20250929"   # 버전 고정 — 'sonnet' 별칭은 시점마다 모델이 바뀐다

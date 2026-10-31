@@ -19,8 +19,8 @@ from pathlib import Path
 
 from database import AsyncSessionLocal
 from eval._turn_cleanup import discard_turn
-from rag.conversation import ensure_conversation
-from rag.service import RagService
+from rag.turn.conversation import ensure_conversation
+from rag.turn.service import RagService
 
 GOLD = Path(__file__).resolve().parent / "other_set_v1.jsonl"
 TENANT = "summers"

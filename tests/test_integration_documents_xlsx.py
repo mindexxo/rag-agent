@@ -10,7 +10,8 @@ import pytest
 from sqlalchemy import delete as sql_delete, func, select
 
 from database import AsyncSessionLocal
-from rag import cache, outbox
+from rag import outbox
+from rag.turn import cache
 from rag.models import AnswerCache as AnswerCacheRow, Document, SearchIndexOutbox
 from schemas.kms import DOCUMENT_DESCRIPTION_MAX
 from tests.conftest import ingest

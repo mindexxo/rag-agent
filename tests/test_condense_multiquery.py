@@ -9,9 +9,9 @@ import json
 
 import pytest
 
-from rag.conversation import condense_to_queries
-from rag.llm_schemas import LlmJudgmentFailed
 from rag.search.retriever import _rrf_fuse
+from rag.turn.conversation import condense_to_queries
+from rag.turn.llm_schemas import LlmJudgmentFailed
 
 
 class _FakeLlm:
@@ -106,8 +106,8 @@ async def test_LLM_예외는_그대로_전파():
 async def test_단일_condense도_JSON_실값을_반환():
     """condense_query의 JSON 전환 실값 고정 — FakeLlm 잠복 버그(라벨 줄 반향)가
     '이 값을 검증하는 테스트가 없어' 살아남았던 전례의 재발 방지 (리뷰 지적)."""
-    from rag.conversation import condense_query
     from rag.models import Message
+    from rag.turn.conversation import condense_query
     llm = _FakeLlm(result=json.dumps({'standalone': '하자 교환 배송비는 누가 부담하나요?'},
                                      ensure_ascii=False))
     history = [Message(role='user', content='하자 교환 조건 알려줘'),
@@ -121,7 +121,7 @@ async def test_단일_condense_히스토리_없으면_LLM_미호출():
     class _Exploding:
         async def acomplete(self, *a, **kw):
             raise AssertionError('히스토리 게이트가 뚫렸다')
-    from rag.conversation import condense_query
+    from rag.turn.conversation import condense_query
     assert await condense_query(_Exploding(), '원본', []) == '원본'
 
 

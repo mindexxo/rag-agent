@@ -10,7 +10,7 @@ import pytest
 
 from config import settings
 from rag.llm import aux_overridden, create_aux_llm, create_llm
-from rag.llm_schemas import RouteDecision
+from rag.turn.llm_schemas import RouteDecision
 
 
 @pytest.fixture
@@ -76,7 +76,7 @@ class TestSpanModel:
     @pytest.mark.asyncio
     async def test_보조_호출_스팬에_모델_이름(self, monkeypatch):
         import types
-        import rag.llm_schemas as ls
+        import rag.turn.llm_schemas as ls
         recorded = {}
         monkeypatch.setattr(ls.otel, 'set_attrs', lambda sp, attrs: recorded.update(attrs))
 
@@ -93,11 +93,11 @@ class TestSpanModel:
 @pytest.mark.asyncio
 async def test_한_턴의_보조_호출은_보조_클라이언트로_생성은_생성_클라이언트로(client, tenant_id, pass_gate, fake_embed, monkeypatch):
     """분류·재작성·캐시 판정 세 곳 모두 보조 클라이언트를 타야 한다 — 한 곳만 빠져도 에러 없이 생성 모델로 돈다."""
-    import rag.service
+    import rag.turn.service
     from tests.conftest import FakeLlm, register_faq, sse_meta
     gen, aux = FakeLlm(), FakeLlm()
-    monkeypatch.setattr(rag.service, 'shared_llm', gen)
-    monkeypatch.setattr(rag.service, 'shared_aux_llm', aux)
+    monkeypatch.setattr(rag.turn.service, 'shared_llm', gen)
+    monkeypatch.setattr(rag.turn.service, 'shared_aux_llm', aux)
     await register_faq(client)
 
     first = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})        # 분류 + 생성

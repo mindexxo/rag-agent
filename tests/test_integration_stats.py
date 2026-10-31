@@ -9,7 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from rag.citation_labels import TAIL_END, TAIL_START, citation_tail
+from rag.turn.citation_labels import TAIL_END, TAIL_START, citation_tail
 from rag.models import Conversation, Message
 
 

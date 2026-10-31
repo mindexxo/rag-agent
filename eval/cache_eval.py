@@ -36,11 +36,11 @@ from pathlib import Path
 from sqlalchemy import delete
 
 from database import AsyncSessionLocal
-from rag import cache
+from rag.turn import cache
 from rag.search.embeddings import embed_query
 from rag.models import AnswerCache as AnswerCacheRow
 from rag.search.retriever import retrieve
-from rag.service import _source_doc_ids
+from rag.turn.service import _source_doc_ids
 from config import settings
 
 GOLD = Path(__file__).resolve().parent / "cache_set_v1.jsonl"

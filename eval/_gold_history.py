@@ -1,13 +1,13 @@
-"""eval 전용 — gold의 대화 이력(list[dict])을 rag.conversation이 소비하는 Message로 (#77).
+"""eval 전용 — gold의 대화 이력(list[dict])을 rag.turn.conversation이 소비하는 Message로 (#77).
 
-**계약.** rag/conversation.py의 이력 함수들이 이력 객체에서 읽는 것:
+**계약.** rag/turn/conversation.py의 이력 함수들이 이력 객체에서 읽는 것:
 
     속성       읽는 곳                                     없으면
     role      _history_content · build_prior_turns        user↔assistant 짝짓기 실패(턴 전부 소실)
     content   _history_content · estimate_tokens          TypeError
     status    _history_content (role=='assistant'일 때만)  ← #77이 여기서 터졌다
 
-이 표의 근거(ground truth)는 rag/conversation.py 코드 자체이고 옮길 수 없다. 여기는 그
+이 표의 근거(ground truth)는 rag/turn/conversation.py 코드 자체이고 옮길 수 없다. 여기는 그
 계약을 **eval 쪽에서 만족시키는 단일 지점**이다 — 소비처(condense·generation·retrieval_mt)는
 이 함수만 부르고 필드를 직접 조립하지 않는다.
 
@@ -33,7 +33,7 @@ gold가 값을 실었으면 그대로 통과시킨다 — 어댑터를 안 고�
 여분 키(오타·실험 필드)가 섞였을 때 TypeError로 죽는 것보다 무시하는 쪽이 낫다.
 대가: "gold에 새 키를 넣었는데 어댑터가 안 읽는다"는 여기서 못 잡는다.
 
-**이 설계가 못 막는 것.** rag/conversation.py에 새 컬럼이 생기고 _history_content가 그 값으로
+**이 설계가 못 막는 것.** rag/turn/conversation.py에 새 컬럼이 생기고 _history_content가 그 값으로
 분기하기 시작하면, 여기는 그 필드를 안 채우니 항상 None이다 — eval은 영원히 한쪽 분기만
 타면서 통과한다. 크래시가 없어 회귀 테스트도 신호를 안 준다. 막으려면 gold 스키마 쪽
 래칫이 필요하다(eval/validate_gold_v2.py의 REQUIRED_KEYS를 conversation 내부 키까지 확장).

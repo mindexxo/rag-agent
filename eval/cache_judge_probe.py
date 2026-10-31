@@ -40,8 +40,8 @@ import sys
 from pathlib import Path
 
 from rag.clients import shared_aux_llm
-from rag.llm_schemas import ReuseJudgment, acomplete_validated
-from rag.prompts import build_cache_reuse_judge_messages
+from rag.turn.llm_schemas import ReuseJudgment, acomplete_validated
+from rag.turn.prompts import build_cache_reuse_judge_messages
 
 GOLD = Path(__file__).resolve().parent / "cache_set_v1.jsonl"
 CONCURRENCY = 6          # vLLM 안전 운영선(동시 24, #101)보다 훨씬 아래 — 다른 작업과 겹쳐도 안전

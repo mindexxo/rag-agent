@@ -4,7 +4,7 @@ import json
 import pytest
 
 from eval.misinfo_judge import FIXTURES, confirm_violations
-from rag.llm_schemas import LlmJudgmentFailed
+from rag.turn.llm_schemas import LlmJudgmentFailed
 
 
 class _FakeLlm:

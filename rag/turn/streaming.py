@@ -30,12 +30,13 @@ from opentelemetry import trace
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import cancellation, limiter, metrics, otel, stream_resume
-from rag.citation_tail import TailSplitter, resolve_citations
+from rag import limiter, metrics, otel
 from rag.limiter import Lease
 from rag.models import TurnStatus
-from rag.prepared import PreparedRag
-from rag.service import RagService
+from rag.turn import cancellation, stream_resume
+from rag.turn.citation_tail import TailSplitter, resolve_citations
+from rag.turn.prepared import PreparedRag
+from rag.turn.service import RagService
 from schemas.kms import SourceCitation
 
 logger = logging.getLogger(__name__)

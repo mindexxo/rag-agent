@@ -1,9 +1,12 @@
-"""프롬프트 조립 — 텍스트 템플릿(rag/prompt_texts.py)에 런타임 값을 채워 LLM 메시지를 만든다.
+"""프롬프트 조립 — 텍스트 템플릿(rag/turn/prompt_texts.py)에 런타임 값을 채워 LLM 메시지를 만든다.
 
-출처 꼬리 제약의 의도(build_citation_tail)도 여기서 만든다. 인용 번호 순서는 rag/citation_labels.py.
+출처 꼬리 제약의 의도(build_citation_tail)도 여기서 만든다. 인용 번호 순서는 rag/turn/citation_labels.py.
 """
 
-from rag.citation_labels import (
+from rag.llm import CitationTail
+from rag.models import Attachment
+from rag.search.retrieval_types import RetrievedChunk
+from rag.turn.citation_labels import (
     TAIL_END,
     TAIL_START,
     attachment_display,
@@ -11,9 +14,7 @@ from rag.citation_labels import (
     source_key,
     sources_from_chunks,
 )
-from rag.llm import CitationTail
-from rag.models import Attachment
-from rag.prompt_texts import (
+from rag.turn.prompt_texts import (
     _INTENT_GUARD_SYSTEM_PROMPT_TEMPLATE,
     _OTHER_SYSTEM_PROMPT_TEMPLATE,
     _SYSTEM_PROMPT_TEMPLATE,
@@ -25,7 +26,6 @@ from rag.prompt_texts import (
     STANDALONE_QUERY_LABEL,
     USER_TEMPLATE,
 )
-from rag.search.retrieval_types import RetrievedChunk
 
 
 def _resolve_domain_hint(domain_hint: str | None) -> str:
@@ -89,7 +89,7 @@ def build_attachment_blocks(attachments: list[Attachment], start: int = 1) -> st
 def build_citation_tail(sources, attachment_filenames: list[str]) -> CitationTail:
     """출처 꼬리 제약의 의도 — "꼬리 표식 사이에는 1..N 정수 배열만".
 
-    N은 검색 출처 + 첨부 수다(첨부를 빠뜨리면 안 되는 이유는 rag/citation_labels.py). 서버 문법으로 바꾸는 건
+    N은 검색 출처 + 첨부 수다(첨부를 빠뜨리면 안 되는 이유는 rag/turn/citation_labels.py). 서버 문법으로 바꾸는 건
     공급자 구현(rag/llm)의 일이고, rag/llm은 0층이라 꼬리 표식을 값으로 넘긴다. 후보 0개면 빈 배열만 허용한다.
     """
     return CitationTail(count=len(sources) + len(attachment_filenames), start=TAIL_START, end=TAIL_END)

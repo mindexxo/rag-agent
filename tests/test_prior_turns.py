@@ -4,8 +4,8 @@ user→assistant 쌍만 턴으로 인정, 토큰 예산은 최신 턴 우선(최
 """
 from types import SimpleNamespace
 
-from rag.conversation import build_prior_turns
 from rag.tokens import estimate_tokens
+from rag.turn.conversation import build_prior_turns
 
 
 def _msg(role: str, content: str, status: str = 'done'):

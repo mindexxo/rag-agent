@@ -1,4 +1,4 @@
-r"""출처 꼬리 분리·해석 단위 테스트 (#56) — rag/citation_tail.
+r"""출처 꼬리 분리·해석 단위 테스트 (#56) — rag/turn/citation_tail.
 
 TailSplitter는 vLLM 토큰 경계가 임의라는 전제에서 동작해야 한다 — 마커가 청크 경계에서
 쪼개져 도착하는 경우를 1글자 단위 feed로 재현한다. 핵심 불변식: **feed·finish 반환값의
@@ -10,8 +10,8 @@ resolve_citations의 \d+ 추출이 대괄호·쉼표·여백을 무시해 두 �
 """
 import pytest
 
-from rag.citation_labels import TAIL_END, TAIL_START
-from rag.citation_tail import MAX_TAIL_CHARS, TailSplitter, resolve_citations
+from rag.turn.citation_labels import TAIL_END, TAIL_START
+from rag.turn.citation_tail import MAX_TAIL_CHARS, TailSplitter, resolve_citations
 from schemas.kms import SourceCitation
 
 SRC = [SourceCitation(document_id=5, filename='환불규정.docx', version=2),

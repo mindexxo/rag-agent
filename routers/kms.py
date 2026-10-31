@@ -6,7 +6,7 @@
 
 이 파일은 HTTP 경계만 담당한다 — 헤더 파싱, 동시 상한(429), prepare 단계 오류의 상태코드 매핑(_prepare_error),
 StreamingResponse 조립, 그리고 요청 스코프 자원(리미터 슬롯·OTel 루트 스팬)의 소유권 부기.
-이벤트 어휘와 두 경로의 수명 관리는 rag/streaming.py (FE 이벤트 계약도 그 모듈 docstring에).
+이벤트 어휘와 두 경로의 수명 관리는 rag/turn/streaming.py (FE 이벤트 계약도 그 모듈 docstring에).
 """
 import asyncio
 import time
@@ -18,18 +18,19 @@ from starlette.responses import StreamingResponse
 
 from config import settings
 from database import get_session
-from rag import limiter, otel, outbox, streaming
-from rag.conversation import ConversationNotFound
+from rag import limiter, otel, outbox
 from rag.limiter import Lease
-from rag.llm_schemas import LlmJudgmentFailed
 from rag.models import TenantQuota
-from rag.prepared import PreparedRag
-from rag.service import RagService
+from rag.turn import streaming
+from rag.turn.conversation import ConversationNotFound
+from rag.turn.llm_schemas import LlmJudgmentFailed
+from rag.turn.prepared import PreparedRag
+from rag.turn.service import RagService
 from schemas.kms import KmsQueryRequest
 
 router = APIRouter(prefix='/kms')
 
-_SSE_HEADERS = streaming.SSE_HEADERS   # 정의점은 rag/streaming.py (재접속 라우터와 공유)
+_SSE_HEADERS = streaming.SSE_HEADERS   # 정의점은 rag/turn/streaming.py (재접속 라우터와 공유)
 
 
 def _prepare_error(exc: Exception) -> HTTPException | None:

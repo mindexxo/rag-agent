@@ -8,7 +8,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
-from rag import cache, outbox
+from rag import outbox
+from rag.turn import cache
 from rag.documents import get_folder
 from rag.models import Document, Folder
 from routers.kms import get_tenant_id

@@ -123,8 +123,8 @@ class TestFolderCacheInvalidation:
     @staticmethod
     async def _setup(client, tenant_id, desc=None):
         from database import AsyncSessionLocal
-        from rag import cache
         from rag.models import Document
+        from rag.turn import cache
         from schemas.kms import SourceCitation
 
         body = {'name': f'캐시검증{desc or ""}'}
@@ -147,9 +147,10 @@ class TestFolderCacheInvalidation:
 
     @staticmethod
     async def _cache_rows(tenant_id) -> int:
+        from sqlalchemy import func, select
+
         from database import AsyncSessionLocal
         from rag.models import AnswerCache as Row
-        from sqlalchemy import func, select
         async with AsyncSessionLocal() as s:
             return (await s.execute(
                 select(func.count()).select_from(Row).where(Row.tenant_id == tenant_id))).scalar()

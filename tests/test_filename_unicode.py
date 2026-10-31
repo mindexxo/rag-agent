@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from rag.citation_labels import TAIL_END, TAIL_START, citation_tail
+from rag.turn.citation_labels import TAIL_END, TAIL_START, citation_tail
 from tests.conftest import ingest
 from rag.models import Document, Message
 from tests.conftest import sse_meta

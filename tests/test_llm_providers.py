@@ -2,7 +2,7 @@
 
 고정하는 것:
 1. 기본 공급자(vllm)가 서버로 보내는 요청 인자가 #287 전과 **같다**(동작 보존 — 리팩토링 원칙 2).
-   기대값은 #287 전 단일 모듈 클라이언트·rag/llm_schemas.py·rag/prompts.py가 만들던 딕셔너리를 그대로 적었다.
+   기대값은 #287 전 단일 모듈 클라이언트·rag/turn/llm_schemas.py·rag/turn/prompts.py가 만들던 딕셔너리를 그대로 적었다.
 2. 의도 → 문법 변환은 구현 몫: 바탕(OpenAI 호환)은 제약을 받으면 ConstraintUnsupported를 낸다(조용한 무시 금지).
 3. create_llm은 설정 이름으로 구현을 고르고, 모르는 이름은 즉시 실패한다.
 4. 종료 사유는 공통 어휘(stop|length|other)로 맞춘다.
@@ -15,8 +15,8 @@ from config import settings
 from rag.llm import CitationTail, ConstraintUnsupported, create_llm
 from rag.llm.openai_compat import OpenAiCompatClient, normalize_finish_reason
 from rag.llm.vllm import VllmClient
-from rag.llm_schemas import RouteDecision
-from rag.prompt_texts import TAIL_END, TAIL_START
+from rag.turn.llm_schemas import RouteDecision
+from rag.turn.prompt_texts import TAIL_END, TAIL_START
 
 
 def _vllm_kwargs(**intent) -> dict:

@@ -17,12 +17,12 @@ from sqlalchemy import event, func, select
 
 from database import AsyncSessionLocal, engine
 from rag import limiter, os_reconcile, otel, outbox
-from rag.citation_labels import citation_tail, sources_from_chunks
 from rag.models import Document, Message, TurnStatus
-from rag.prepared import PreparedRag
 from rag.search.retrieval_types import RetrievalResult, RetrievedChunk
-from rag.service import RagService
-from rag.streaming import _run_generation
+from rag.turn.citation_labels import citation_tail, sources_from_chunks
+from rag.turn.prepared import PreparedRag
+from rag.turn.service import RagService
+from rag.turn.streaming import _run_generation
 from tests.conftest import indexed_chunk_texts, ingest, sse_done, sse_meta
 from tests.helpers_documents import MD, get_doc, upload
 
@@ -302,7 +302,7 @@ def _mixed_prepared() -> PreparedRag:
         standalone_query='질문',
         prior_turns=[],
         retrieval=RetrievalResult(chunks=chunks, no_evidence=False, reason=None),
-        sources=sources_from_chunks(chunks),  # rag/service.py prepare()와 같은 파생
+        sources=sources_from_chunks(chunks),  # rag/turn/service.py prepare()와 같은 파생
         source_doc_ids=[],
         attachments=attachments,
     )
@@ -352,7 +352,7 @@ async def test_INV50_컨텍스트_블록_꼬리_제약_파서가_같은_입력�
 ):
     """INV-50 인용 번호는 검색 출처 순서 1부터, 이어서 첨부 순서 — 컨텍스트 블록·꼬리 제약·파서가 같은 순서.
 
-    운영 경로를 그대로 탄다: 생성 태스크(rag/streaming._run_generation)가 RagService.generate를 불러 프롬프트와
+    운영 경로를 그대로 탄다: 생성 태스크(rag/turn/streaming._run_generation)가 RagService.generate를 불러 프롬프트와
     꼬리 제약을 만들고(LLM 호출에서 둘 다 캡처), 스트림 끝에서 파서가 인용을 확정한다(finalize에서 캡처).
     가짜 LLM은 받은 제약의 후보 수만큼 1..N을 꼬리에 단다 — 제약이 틀리면 꼬리도 그만큼 틀린다.
     DB 행은 없다(합성 PreparedRag) — finalize·maybe_cache는 캡처만 하고 쓰지 않는다."""

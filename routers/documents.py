@@ -22,7 +22,7 @@ rag/search/os_index.py의 effective_searchable.
   조회 후 확인창을 띄우는 흐름은 조회~업로드 사이 창이 원리적으로 남으므로(TOCTOU),
   화면에서 몇 번을 확인해도 서버 검사 없이는 남의 문서를 조용히 대체할 수 있다.
 - 파일명 자동 넘버링은 하지 않는다. 이름은 사용자가 확정한다 —
-  파일명이 임베딩 입력(rag/search/index_text.py)과 답변 인용 표기(rag/prompts.py)에 그대로 쓰여서,
+  파일명이 임베딩 입력(rag/search/index_text.py)과 답변 인용 표기(rag/turn/prompts.py)에 그대로 쓰여서,
   '(1)' 같은 무의미한 이름을 서버가 싸게 만들어 주면 KB 품질이 조용히 나빠진다.
 """
 from typing import Annotated
@@ -40,7 +40,8 @@ from starlette.responses import FileResponse, JSONResponse
 
 from config import settings
 from database import get_session
-from rag import cache, outbox
+from rag import outbox
+from rag.turn import cache
 from rag.chunking.xlsx import XlsxUploadRejected, description_missing, validate_xlsx_upload
 from rag.documents import (FailedReuseConflict, document_versions, get_folder, handle_upload,
                            latest_alive, resolve_description, soft_delete_documents)

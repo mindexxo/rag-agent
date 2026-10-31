@@ -35,11 +35,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config import settings                                     # noqa: E402
-from eval.chunk_boundary import context_losses                  # noqa: E402
-from eval.generation import V2_TENANTS                          # noqa: E402
-from rag.search.index_text import build_index_text                     # noqa: E402
-from rag.search.os_client import LEX_BIGRAM_FIELD, MAPPING, NORI_FIELD, client   # noqa: E402
+from config import settings  # noqa: E402
+from eval.chunk_boundary import context_losses  # noqa: E402
+from eval.generation import V2_TENANTS  # noqa: E402
+from rag.search.index_text import build_index_text  # noqa: E402
+from rag.search.os_client import LEX_BIGRAM_FIELD, MAPPING, NORI_FIELD, client  # noqa: E402
 
 CONDITIONS = ('none', 'header', 'cr', 'rule')
 OUT = Path(__file__).resolve().parent / 'results' / 'ctx234'
@@ -172,6 +172,7 @@ async def make_contexts() -> None:
 
 async def build() -> None:
     from opensearchpy.helpers import async_bulk
+
     from rag.search.embeddings import embed_texts
     from rag.search.lexical import bigrams
     cr = json.loads(CR_FILE.read_text(encoding='utf-8'))
@@ -244,8 +245,8 @@ async def _answers(cond: str, rows: list[dict], gold: dict, run: int) -> list[di
     from eval import epcov_judge
     from eval.generation import _epcov_scores, expected_points_hits, row_tenant
     from rag.llm import create_llm
-    from rag.prompts import build_knowledge_generation_prompt
     from rag.search.retriever import retrieve
+    from rag.turn.prompts import build_knowledge_generation_prompt
     llm, judge, sem, jsem = create_llm(), epcov_judge.judge_llm(), asyncio.Semaphore(8), asyncio.Semaphore(4)
     out = []
     async with AsyncSessionLocal() as session:

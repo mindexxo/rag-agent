@@ -14,7 +14,7 @@ from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, Field
 
-from rag.llm_schemas import acomplete_validated
+from rag.turn.llm_schemas import acomplete_validated
 
 DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
 PROMPT_VERSION = "v2"   # v1은 JSON 키를 안 적어 Claude가 "verdict"로 답했다(22/22 검증 실패)

@@ -23,7 +23,7 @@ from eval._gold_history import messages_from_conversation
 from eval.generation import load_gold, row_tenant
 from eval.retrieval import resolve_gold, score_one
 from eval.retrieval_v2 import METRICS
-from rag.conversation import (condense_query, condense_to_queries,
+from rag.turn.conversation import (condense_query, condense_to_queries,
                               trim_messages_for_condense)
 from rag.llm import create_aux_llm
 from rag.search.retriever import retrieve_candidates

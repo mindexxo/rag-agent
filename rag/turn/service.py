@@ -17,10 +17,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from config import settings
-from rag import cache
-from rag.citation_labels import sources_from_chunks
 from rag.clients import shared_aux_llm, shared_llm
-from rag.conversation import (
+from rag.models import Attachment, Conversation, Message, TurnStatus
+from rag.search.retrieval_types import RetrievalResult, RetrievedChunk
+from rag.search.retriever import retrieve
+from rag.turn import cache
+from rag.turn.citation_labels import sources_from_chunks
+from rag.turn.conversation import (
     build_prior_turns,
     condense_query,
     condense_to_queries,
@@ -28,20 +31,17 @@ from rag.conversation import (
     load_recent_messages,
     trim_messages_for_condense,
 )
-from rag.guardrail import classify_and_guard
-from rag.models import Attachment, Conversation, Message, TurnStatus
-from rag.prepared import PreparedRag
-from rag.prompt_texts import SMALLTALK_ANSWER
-from rag.prompts import (
+from rag.turn.guardrail import classify_and_guard
+from rag.turn.prepared import PreparedRag
+from rag.turn.prompt_texts import SMALLTALK_ANSWER
+from rag.turn.prompts import (
     build_chat_prompt,
     build_citation_tail,
     build_knowledge_generation_prompt,
     build_other_system_prompt,
     build_other_user_message,
 )
-from rag.search.retrieval_types import RetrievalResult, RetrievedChunk
-from rag.search.retriever import retrieve
-from rag.turn_state import add_pending_turn, finalize_turn, last_unanswered_turn
+from rag.turn.turn_state import add_pending_turn, finalize_turn, last_unanswered_turn
 from schemas.kms import QueryAttachment, SourceCitation
 
 logger = logging.getLogger(__name__)

@@ -13,10 +13,10 @@ import pytest
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from rag import service as service_mod
-from rag.llm_schemas import LlmJudgmentFailed
 from rag.models import Conversation, Message
-from rag.service import RagService
+from rag.turn import service as service_mod
+from rag.turn.llm_schemas import LlmJudgmentFailed
+from rag.turn.service import RagService
 from tests.conftest import register_faq
 
 

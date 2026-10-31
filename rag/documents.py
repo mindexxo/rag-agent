@@ -11,8 +11,9 @@ from typing import NamedTuple
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from rag import cache, outbox
+from rag import outbox
 from rag.models import ALIVE_DOCUMENT_STATUSES, Document, Folder
+from rag.turn import cache
 
 _MIME_OVERRIDES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

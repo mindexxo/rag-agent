@@ -8,7 +8,7 @@ OpenAI 호환 API가 아니라 `claude -p`(헤드리스 CLI)를 서브프로세�
 LlmClient(rag/llm)와 acomplete 시그니처를 맞춰 eval/generation.py에 주입한다.
 다른 점 — 전부 결과 각주에 명시할 것:
 - 제약 의도(schema·citations, #287)를 **받되 무시한다**. CLI에 그 배관이 없다.
-  꼬리는 프롬프트 서술(rag/prompt_texts.py의 TAIL_EXAMPLE_MULTI 규칙)만으로 유도되고, 채점기는
+  꼬리는 프롬프트 서술(rag/turn/prompt_texts.py의 TAIL_EXAMPLE_MULTI 규칙)만으로 유도되고, 채점기는
   꼬리 부재를 인용 0으로 세므로 미준수는 수치에 정직하게 반영된다.
 - astream 없음 — eval generate()는 acomplete만 쓴다. 필요해지면 그때 추가.
 - temperature·max_tokens 통제 불가(CLI 미노출).
@@ -55,7 +55,7 @@ class ClaudeCliClient:
     async def acomplete(self, messages: list[dict], *, schema=None, citations=None) -> str:
         """비스트리밍 1콜. schema·citations는 시그니처 호환용 — 무시한다 (모듈 docstring; CLI에 강제 배관이 없다)."""
         system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
-        # 운영 생성 프롬프트는 system+user 구성(rag/prompts.py)이라 보통 user 1개가 남는다.
+        # 운영 생성 프롬프트는 system+user 구성(rag/turn/prompts.py)이라 보통 user 1개가 남는다.
         # assistant 턴이 섞인 형태가 오면 순서대로 이어붙인다 — 정보 소실보다 낫다.
         prompt = "\n\n".join(m["content"] for m in messages if m["role"] != "system")
 

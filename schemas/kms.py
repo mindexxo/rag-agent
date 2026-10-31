@@ -11,7 +11,7 @@ class SourceCitation(BaseModel):
     document_id는 원본 다운로드용 — 과거 저장분(메시지·캐시)엔 없으므로 옵셔널.
 
     FAQ 인용(#278): document_id=None·faq_id=항목 id, filename은 표시명 'FAQ: 질문'(질문 전체 —
-    줄여 보이는 건 FE 몫, rag/citation_labels.faq_display). #278 이전 저장분(메시지·캐시)은 FAQ 전체가
+    줄여 보이는 건 FE 몫, rag/turn/citation_labels.faq_display). #278 이전 저장분(메시지·캐시)은 FAQ 전체가
     {filename:'FAQ', faq_id 없음} 하나로 접혀 있다 — 그대로 재생되고 항목 집계에는 안 잡힌다."""
     document_id: int | None = None
     filename: str

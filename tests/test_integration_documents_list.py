@@ -1,7 +1,7 @@
 """문서 목록 — 페이징·검색·필터(#176)와 응답 시각 KST 오프셋(#181).
 
 목록은 문서 관리 화면의 첫 화면이라 total·has_more·ref_count가 어긋나면 바로 보인다.
-필터 조건은 count 쿼리와 페이지 쿼리가 **같은 것**을 써야 한다(routers/documents.py _list_where).
+필터 조건은 count 쿼리와 페이지 쿼리가 **같은 것**을 써야 한다(rag/document_admin.py _list_where).
 공용 헬퍼는 tests/helpers_documents.py.
 """
 

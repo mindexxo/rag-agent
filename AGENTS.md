@@ -23,7 +23,7 @@
   `opensearchpy`는 `client()` 안에서 지연 import한다: 매핑 상수만 보는 테스트가 그 패키지 없이도 import할 수 있게),
   `rag/turn/citation_labels.py`, `rag/clients.py`, `rag/turn/llm_schemas.py`,
   `rag/turn/turn_state.py`, `rag/turn/cache.py`,
-  `rag/turn/stream_resume.py`, `rag/turn/cancellation.py`, `rag/turn/citation_tail.py`, `rag/documents.py`, `rag/faq.py`(FAQ·카테고리 관리), `rag/ingestion.py`,
+  `rag/turn/stream_resume.py`, `rag/turn/cancellation.py`, `rag/turn/citation_tail.py`, `rag/documents.py`, `rag/document_admin.py`(문서 목록·속성 변경), `rag/folders.py`(폴더 관리), `rag/faq.py`(FAQ·카테고리 관리), `rag/ingestion.py`,
   `rag/turn/prepared.py`,
   `rag/turn/prompts.py`, `rag/turn/conversation.py`, `rag/turn/guardrail.py`, `rag/outbox.py`,
   `rag/os_reconcile.py`(색인 정합 복구 CLI — `outbox`로 재등재하므로 `search/` 안에 두면 단위 순환이 된다), `rag/turn/conversation_search.py`(`models`만 쓴다)

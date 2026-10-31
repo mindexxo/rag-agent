@@ -110,7 +110,7 @@ async def check_category(session: AsyncSession, tenant_id: str, category_id: int
 async def ref_counts(session: AsyncSession, tenant_id: str, faq_ids: list[int]) -> dict[int, int]:
     """FAQ id별 인용 횟수 — 저장 시 확정된 실인용 목록(messages.cited_faq_ids)의 집계.
 
-    문서의 ref_count(routers/documents.py _ref_counts, 파일명 키)와 같은 정의(실인용·목록 페이지로만 좁힘)다.
+    문서의 ref_count(rag/document_admin.py ref_counts, 파일명 키)와 같은 정의(실인용·목록 페이지로만 좁힘)다.
     항목별 인용 도입 전 메시지는 FAQ 인용이 cited_docs의 'FAQ' 한 원소로만 남아 어느 항목인지 알 수 없다 — 안 센다(복원 불가).
     """
     if not faq_ids:

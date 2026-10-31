@@ -16,7 +16,7 @@
 폴더 메타는 엔진 청크에 복사돼 있다(#139 — folder_id·folder_name·folder_description·searchable). 그래서
 PG만 바꾸면 검색은 옛 폴더로 동작한다. 배정·원복은 **같은 커밋에 META_DOCUMENTS 행을 얹고**(#187) 자기 행만
 바로 drain한다 — eval/reindex_documents.py와 같은 규약(공유 DB라 전체 drain은 남의 행을 건드린다).
-라우터의 폴더 변경(routers/folders.py update_folder)이 하는 것과 같은 fan-out이다.
+폴더 변경(rag/folders.py update_folder)이 하는 것과 같은 fan-out이다.
 
 실행:
     python -m eval.assign_folders                 # dry-run (기본)

@@ -32,8 +32,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import ValidationError
-from sqlalchemy import ColumnElement, func, select
-from sqlalchemy import text as sql_text
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
@@ -41,8 +40,8 @@ from starlette.responses import FileResponse, JSONResponse
 
 from config import settings
 from database import get_session
-from rag import outbox
-from rag.chunking.xlsx import XlsxUploadRejected, description_missing, validate_xlsx_upload
+from rag import document_admin as admin
+from rag.chunking.xlsx import XlsxUploadRejected, validate_xlsx_upload
 from rag.documents import (
     FailedReuseConflict,
     document_versions,
@@ -52,9 +51,9 @@ from rag.documents import (
     resolve_description,
     soft_delete_documents,
 )
-from rag.models import ALIVE_DOCUMENT_STATUSES, Document, Folder
-from rag.turn import cache
+from rag.models import ALIVE_DOCUMENT_STATUSES, Document
 from routers.deps import get_tenant_id, get_user_id
+from routers.errors import document_http_errors
 from routers.uploads import checked_filename, reject_if_oversized
 from schemas.kms import (
     BULK_MAX_ITEMS,
@@ -69,7 +68,6 @@ from schemas.kms import (
     DocumentUploadMetadata,
     DocumentUploadResponse,
 )
-from text_norm import LIKE_ESCAPE_CHAR, like_pattern, normalize_filename
 
 
 def _to_response(doc: Document, ref_count: int | None = None) -> DocumentUploadResponse:
@@ -300,57 +298,6 @@ async def upload_document(
     return _to_response(result.document)
 
 
-def _list_where(
-    tenant_id: str, q: str | None, folder_id: int | None, status: list[str] | None, is_searchable: bool | None
-) -> ColumnElement[bool]:
-    """목록 조회 조건. **count와 페이지 쿼리가 같은 것을 써야** has_more가 어긋나지 않는다.
-
-    supersede된 구버전(deleted)은 항상 빠진다 — 죽은 행에 폴더/참조 컨트롤이 노출되는 혼란 방지.
-    호출부가 위생 처리를 끝낸 값을 넘긴다(q는 빈 문자열이 아닌 str 또는 None).
-    """
-    where = (Document.tenant_id == tenant_id) & (Document.status != 'deleted')
-    if q is not None:
-        # 파일명은 경계에서 NFC로 저장된다. 검색어도 맞춰야 한다 — text_norm의 정책은
-        # "타이핑 입력은 IME가 NFC를 내므로 위험군이 아니다"지만, 파일명 검색은 사용자가
-        # **이름을 복사해 붙여넣는** 경로가 흔하고 macOS에서 복사한 이름은 NFD일 수 있다.
-        where &= Document.filename.ilike(like_pattern(normalize_filename(q)), escape=LIKE_ESCAPE_CHAR)
-    if folder_id is not None:
-        # 0은 '미분류' 약속 — 폴더 id는 1부터라 유효한 값과 겹치지 않는다. 쿼리 파라미터에는
-        # null이 없어서(multipart와 같은 제약) 값 하나로 표현했다.
-        where &= Document.folder_id.is_(None) if folder_id == 0 else Document.folder_id == folder_id
-    if status:
-        where &= Document.status.in_(status)
-    if is_searchable is not None:
-        where &= Document.is_searchable == is_searchable
-    return where
-
-
-async def _ref_counts(session: AsyncSession, tenant_id: str, filenames: list[str]) -> dict[str, int]:
-    """파일명별 인용 횟수 — 저장 시 확정된 실인용 목록(messages.cited_docs)의 집계.
-
-    sources(검색 후보 노출 수)가 아닌 **실인용**이다 — stats top_documents와 같은 정의다.
-    filename 키라 버전 교체 후에도 카운트가 이어진다.
-    **이번 페이지의 파일명으로만** 좁혀 부른다.
-    """
-    if not filenames:
-        return {}
-    rows = (
-        await session.execute(
-            sql_text("""
-        SELECT d AS filename, count(*) AS cnt
-        FROM messages, jsonb_array_elements_text(messages.cited_docs) AS d
-        WHERE messages.tenant_id = :tenant_id
-          AND messages.role = 'assistant'
-          AND jsonb_typeof(messages.cited_docs) = 'array'
-          AND d = ANY(:filenames)
-        GROUP BY 1
-    """),
-            {"tenant_id": tenant_id, "filenames": filenames},
-        )
-    ).all()
-    return {r.filename: r.cnt for r in rows}
-
-
 @router.get('/documents', response_model=DocumentListResponse)
 async def list_documents(
     limit: int = DOC_LIST_DEFAULT_LIMIT,
@@ -381,29 +328,14 @@ async def list_documents(
     if status and not set(status) <= DOC_STATUSES:
         raise HTTPException(status_code=422, detail=f'알 수 없는 status: {sorted(set(status) - DOC_STATUSES)}')
 
-    # 조건은 **한 번만** 만들어 count와 페이지 쿼리가 함께 쓴다 — 갈라지면 has_more가 어긋난다.
-    where = _list_where(tenant_id, q, folder_id, status, is_searchable)
-    total = (await session.execute(select(func.count(Document.id)).where(where))).scalar_one()
-    docs = (
-        (
-            await session.execute(
-                select(Document)
-                .where(where)
-                .order_by(Document.uploaded_at.desc(), Document.id.desc())
-                .offset(offset)
-                .limit(limit)
-            )
-        )
-        .scalars()
-        .all()
+    page = await admin.list_documents(
+        session, tenant_id, admin.DocumentFilter(q, folder_id, status, is_searchable), limit, offset
     )
-    ref_counts = await _ref_counts(session, tenant_id, list({d.filename for d in docs}))
-
     return DocumentListResponse(
-        items=[_to_response(d, ref_counts.get(d.filename, 0)) for d in docs],
-        total=total,
+        items=[_to_response(d, page.ref_counts.get(d.filename, 0)) for d in page.docs],
+        total=page.total,
         # len(docs)를 쓴다 — limit을 쓰면 마지막 부분 페이지에서 어긋난다(대화 목록과 같은 이유).
-        has_more=offset + len(docs) < total,
+        has_more=offset + len(page.docs) < page.total,
     )
 
 
@@ -423,24 +355,7 @@ async def document_exists(
     이 API는 안내용일 뿐 강제력이 없다. 업로드 API는 확인 없이도 통과하며(2026-08-05 결정),
     그 경우 기존 버전이 그대로 대체된다.
     """
-    # 업로드와 같은 경계 정규화 — 여기만 빠지면 위 "판정 기준이 정확히 같아야 한다"가
-    # 깨져, NFD 이름으로 물어본 클라이언트가 exists=false를 받고 중복 문서를 만든다.
-    filename = normalize_filename(filename)
-    doc = (
-        (
-            await session.execute(
-                select(Document)
-                .where(Document.tenant_id == tenant_id)  # 격리 — WHERE 절 명시
-                .where(Document.filename == filename)
-                .where(Document.status.in_(ALIVE_DOCUMENT_STATUSES))
-                .order_by(Document.version.desc())
-                .limit(1)
-            )
-        )
-        .scalars()
-        .first()
-    )
-
+    doc = await admin.find_alive(session, tenant_id, filename)
     if doc is None:
         return DocumentExistsResponse(exists=False)
     return DocumentExistsResponse(
@@ -456,72 +371,8 @@ async def document_exists(
 async def get_document(
     document_id: int, tenant_id: str = Depends(get_tenant_id), session: AsyncSession = Depends(get_session)
 ) -> DocumentUploadResponse:
-    doc = (
-        (
-            await session.execute(
-                select(Document)
-                .where(Document.tenant_id == tenant_id)
-                .where(
-                    Document.id == document_id, Document.status != 'deleted'
-                )  # 삭제된 문서는 없는 문서 — 목록·수정·삭제와 같은 기준
-            )
-        )
-        .scalars()
-        .first()
-    )
-    if doc is None:
-        raise HTTPException(status_code=404, detail="document not found")
-    return _to_response(doc)
-
-
-async def _folder_is_on(session: AsyncSession, tenant_id: str, folder_id: int | None) -> bool:
-    """폴더의 참조 여부. 미분류(None)는 항상 on — retriever 판정과 동일 규칙."""
-    if folder_id is None:
-        return True
-    return bool(
-        (
-            await session.execute(
-                select(Folder.is_searchable).where(Folder.tenant_id == tenant_id).where(Folder.id == folder_id)
-            )
-        ).scalar()
-    )
-
-
-def _effective_ref(doc_is_searchable: bool, folder_is_on: bool) -> bool:
-    """실효 참조 = 문서 스위치 on AND 폴더 on(미분류는 on으로 친다). **라우터 판정의 정의점**.
-
-    폴더 상태를 어떻게 얻는지는 호출부가 정한다 — 단건은 문서마다 조회(_effective_ref_now),
-    일괄은 대상 폴더를 미리 한 번에 모은 dict(bulk_update_documents). 판정식만 여기 둔다.
-
-    ⚠ rag/search/os_index.py의 `effective_searchable`과 **다른 판정**이다. 이름이 닮았지만 그쪽은
-    색인용이라 is_faq·is_active·status=='ready'까지 본다. 여기는 사용자가 돌린 스위치 둘만 본다
-    — 캐시 무효화 판정("근거가 검색에서 빠지는가")에 쓰이기 때문이다. 합치면 동작이 바뀐다.
-    """
-    return bool(doc_is_searchable) and bool(folder_is_on)
-
-
-async def _effective_ref_now(session: AsyncSession, tenant_id: str, doc: Document) -> bool:
-    """이 문서의 지금 실효 참조 — 폴더 상태를 문서마다 조회하는 단건 경로.
-
-    문서 스위치가 꺼져 있으면 폴더를 조회하지 않는다(단축 평가).
-    """
-    if not doc.is_searchable:
-        return False
-    return _effective_ref(doc.is_searchable, await _folder_is_on(session, tenant_id, doc.folder_id))
-
-
-def _require_all_found(requested: list[int], found: set[int]) -> None:
-    """요청한 문서 id가 전부 조회됐는지. 하나라도 빠지면 **아무것도 바꾸지 않고** 404.
-
-    일괄 변경·일괄 삭제가 공유하는 응답 규약이다 — 화면에서 체크한 목록과 결과가
-    어긋나면 무엇이 반영됐는지 되짚을 방법이 없어서, 부분 성공 대신 전부 거절한다.
-    남의 테넌트 id인지 없는 id인지 **구분해 알려주지 않는다** — 요청자가 보낸 값을 되돌려줄 뿐이다.
-
-    조회는 호출부가 한다. 조건이 서로 다르기 때문이다 — 일괄 변경은 deleted를 제외하고 Document
-    객체 전체가 필요하지만, 일괄 삭제는 이미 deleted인 문서도 통과시켜야 한다(멱등).
-    """
-    if missing := [i for i in requested if i not in found]:
-        raise HTTPException(status_code=404, detail=f'문서를 찾을 수 없습니다: {missing[:10]}')
+    with document_http_errors():
+        return _to_response(await admin.get_document(session, tenant_id, document_id))
 
 
 @router.patch('/documents', response_model=list[DocumentUploadResponse])
@@ -536,74 +387,8 @@ async def bulk_update_documents(
     대상이 하나라도 어긋나면(없는 id·다른 테넌트·삭제됨) **아무것도 바꾸지 않고 404**를 준다 —
     화면에서 체크한 목록과 결과가 어긋나면 무엇이 반영됐는지 되짚을 방법이 없다.
     """
-    changing_folder = 'folder_id' in request.model_fields_set  # null 전송(미분류)과 미전송 구분
-    changing_searchable = request.is_searchable is not None
-    if not request.document_ids or not (changing_folder or changing_searchable):
-        return []  # 바꿀 것이 없는 요청은 조회도 하지 않는다
-
-    # 1. 대상 확정. 테넌트 격리 규약 2항(UPDATE 전에 스코프 조회로 id를 확정한다)을 이 단계가
-    #    겸한다 — 아래 outbox가 부르는 os_index.sync_meta_documents_now는 document_ids에
-    #    tenant 필터를 걸지 않고 호출부의 사전 스코프를 전제하기 때문이다.
-    ids = list(dict.fromkeys(request.document_ids))  # 중복 제거(순서 유지) — 같은 id를 두 번 세지 않게
-    docs = (
-        (
-            await session.execute(
-                select(Document)
-                .where(Document.tenant_id == tenant_id)
-                .where(Document.status != 'deleted')
-                .where(Document.id.in_(ids))
-                .order_by(Document.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    _require_all_found(ids, {d.id for d in docs})
-
-    # 2. 폴더 검증은 1회면 된다(대상 전부가 같은 폴더로 간다).
-    folder_on: dict[int, bool] = {}
-    if changing_folder and request.folder_id is not None:
-        folder = await get_folder(session, tenant_id, request.folder_id)  # 남의 테넌트 폴더 차단
-        if folder is None:
-            raise HTTPException(status_code=404, detail="folder not found")
-        folder_on[folder.id] = folder.is_searchable
-
-    # 3. 변경 **전** 실효 참조를 따지려면 각 문서가 지금 속한 폴더의 상태가 필요하다.
-    #    문서마다 폴더가 다르므로 한 번에 모아 온다 — 단건처럼 문서 수만큼 조회하지 않는다.
-    current_folder_ids = {d.folder_id for d in docs if d.folder_id is not None} - folder_on.keys()
-    if current_folder_ids:
-        folder_on.update(
-            {
-                r.id: r.is_searchable
-                for r in (
-                    await session.execute(
-                        select(Folder.id, Folder.is_searchable)
-                        .where(Folder.tenant_id == tenant_id)
-                        .where(Folder.id.in_(current_folder_ids))
-                    )
-                ).all()
-            }
-        )
-
-    def _effective(doc: Document) -> bool:
-        """이 요청이 미리 모아둔 folder_on으로 본 실효 참조. 판정식은 _effective_ref가 정의점."""
-        return _effective_ref(doc.is_searchable, doc.folder_id is None or bool(folder_on.get(doc.folder_id)))
-
-    # 4. 캐시 무효화는 **문서별로** 판정한다. 문서마다 현재 폴더·스위치가 달라 on→off 전이도
-    #    제각각이다 — 일괄로 판정하면 off된 문서를 근거로 만든 답변이 캐시로 계속 나간다.
-    for doc in docs:
-        before = _effective(doc)
-        if changing_folder:
-            doc.folder_id = request.folder_id
-        if changing_searchable:
-            doc.is_searchable = request.is_searchable
-        if before and not _effective(doc):
-            await cache.invalidate_source(session, tenant_id, doc.id)
-
-    # 5. 색인의 비정규화 메타 갱신은 **한 행**에 담는다. 워커는 최종값이 같은 문서끼리
-    #    묶어 갱신하므로(os_index.sync_meta_documents_now) 200건이어도 보통 질의 1~2회다.
-    outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=[d.id for d in docs])
-    await session.commit()
+    with document_http_errors():
+        docs = await admin.bulk_update_documents(session, tenant_id, request)
     # ref_count는 비운다 — 목록 API 전용 집계다(_to_response 기본값).
     return [_to_response(d) for d in docs]
 
@@ -624,76 +409,9 @@ async def update_document(
     공존한다. 둘은 **배타적으로** 적재한다(재색인이 돌면 index_pending_document가 폴더·토글
     최신값을 스스로 다시 읽으므로 META 행은 중복이다).
     """
-    doc = (
-        (
-            await session.execute(
-                select(Document)
-                .where(Document.tenant_id == tenant_id)
-                # 삭제된 문서는 대상이 아니다 — 목록·단건 조회와 같은 필터.
-                .where(Document.status != 'deleted')
-                .where(Document.id == document_id)
-            )
-        )
-        .scalars()
-        .first()
-    )
-    if doc is None:
-        raise HTTPException(status_code=404, detail="document not found")
-
-    # ── 검증 전부 먼저, mutation은 그 뒤 — 거절로 빠질 때 doc이 반쯤 바뀐 채 남지 않게 ──
-    # 표 설명은 2-way: 미전송(None)이면 안 건드리고, 보낸 값은 strip 후 빈 문자열이면 지움으로 본다
-    # (routers/folders.py의 FolderUpdateRequest와 같은 방식 — 문서만 3-way로 가면 비일관).
-    new_description, reindex = doc.description, False
-    if request.description is not None:
-        new_description = request.description.strip() or None
-        is_xlsx = Path(doc.filename).suffix.lower() == '.xlsx'
-        if is_xlsx and description_missing(new_description):
-            # 업로드에서 필수로 받아놓고 여기서 비울 수 있으면 규칙이 샌다.
-            raise HTTPException(status_code=400, detail='xlsx 문서는 표 설명을 비울 수 없습니다.')
-        # 재색인은 **ready인 xlsx의 값이 실제로 바뀐** 경우만. pending이면 대기 중인 그 행이 처리될 때
-        # 최신값을 읽고, failed는 되살리지 않는다 — 되살리기는 재업로드 경로의 역할이다. 같은 값
-        # 재전송에 재임베딩을 돌릴 이유도 없고, 비-xlsx는 설명이 청크에 안 들어가 재색인해도 같다.
-        reindex = is_xlsx and new_description != doc.description and doc.status == 'ready'
-    if 'folder_id' in request.model_fields_set and request.folder_id is not None:
-        if await get_folder(session, tenant_id, request.folder_id) is None:  # 남의 테넌트 차단
-            raise HTTPException(status_code=404, detail="folder not found")
-
-    effective_before = await _effective_ref_now(session, tenant_id, doc)
-
-    # ── mutation ──
-    # folder_id는 "null 전송 = 미분류 이동"과 "미전송 = 변경 없음"을 구분해야 함
-    if 'folder_id' in request.model_fields_set:
-        doc.folder_id = request.folder_id
-    if request.is_searchable is not None:
-        doc.is_searchable = request.is_searchable
-    if request.description is not None:
-        doc.description = new_description
-
-    # 실효 참조가 on→off로 바뀌는 모든 경로(문서 off, off 폴더로 이동)에서 캐시 무효화 —
-    # off된 문서를 근거로 만든 답변이 exact 캐시로 계속 나가는 것 방지. off→on은 무효화할 캐시가 없음.
-    effective_after = await _effective_ref_now(session, tenant_id, doc)
-    if effective_before and not effective_after:
-        await cache.invalidate_source(session, tenant_id, doc.id)
-
-    if reindex:
-        # 설명이 청크 본문을 바꾸므로 전체 재색인 — pending으로 되돌리고 INDEX_DOCUMENT를
-        # 다시 태운다(rag/os_reconcile.py의 reconcile과 같은 전례). 재파싱·재임베딩·ready
-        # 승격은 index_pending_document 한 곳이 맡는다 — 두 벌을 두지 않는다.
-        # 버전은 올리지 않는다: 번호가 올라가는 사건은 **파일 재업로드**뿐이다.
-        # 수용한 대가 둘 — ① index_parsed_document가 같은 document_id의 청크를 지우고
-        # 다시 넣으므로 1초 미만 검색 공백이 생긴다. ② 재색인이 실패하면 outbox가 문서를 failed로 굳힌다 —
-        # 설명만 고치려던 사용자가 문서 전체를 잃는 모양이지만, 재업로드로 되살릴 수 있다.
-        doc.status = 'pending'
-        outbox.enqueue(session, tenant_id, outbox.INDEX_DOCUMENT, document_id=doc.id)
-        # 내용이 바뀌었으므로 visibility 전이와 **무관하게** 무효화한다 — 위 effective 조건은
-        # "검색에서 빠지는가"만 보기 때문에 설명 변경을 못 잡는다.
-        await cache.invalidate_source(session, tenant_id, doc.id)
-    else:
-        # 외부 색인의 비정규화 메타 갱신을 같은 트랜잭션에 적재 — 검색가능·폴더 값이
-        # 청크 문서마다 복사돼 있어 fan-out이 필요하다. **재색인이 아니라 부분 갱신**이다
-        # (재색인은 벡터 없는 구성에서 재임베딩을 부른다 — rag/search/os_index.py의 _update_meta).
-        outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=[doc.id])
-    await session.commit()
+    with document_http_errors():
+        doc = await admin.get_document(session, tenant_id, document_id)
+        doc = await admin.update_document(session, doc, request)
     return _to_response(doc)
 
 
@@ -714,22 +432,8 @@ async def bulk_delete_documents(
     """
     if not ids:
         return  # 지울 것이 없는 요청은 조회도 하지 않는다
-
-    # 대상 확정 — status 필터를 두지 않는 것이 위 멱등 규칙의 구현점이다.
-    # 테넌트 스코프 조회로 id를 먼저 확정한다(격리 규약 2항) — 아래 outbox가 부르는
-    # os_index.drop_documents_now는 document_ids에 tenant 필터를 걸지 않는다.
-    unique = list(dict.fromkeys(ids))
-    found = set(
-        (
-            await session.execute(
-                select(Document.id).where(Document.tenant_id == tenant_id).where(Document.id.in_(unique))
-            )
-        )
-        .scalars()
-        .all()
-    )
-    _require_all_found(unique, found)
-
+    with document_http_errors():
+        unique = await admin.bulk_delete_targets(session, tenant_id, ids)
     await soft_delete_documents(session, tenant_id, unique)
     await session.commit()
 
@@ -754,19 +458,9 @@ async def download_document(
     document_id: int, tenant_id: str = Depends(get_tenant_id), session: AsyncSession = Depends(get_session)
 ) -> FileResponse:
     """원본 blob 파일 다운로드. 답변 인용(sources)의 document_id에서 연결된다."""
-    doc = (
-        (
-            await session.execute(
-                select(Document)
-                .where(Document.tenant_id == tenant_id)  # 격리 — WHERE 절 명시
-                .where(Document.id == document_id)
-            )
-        )
-        .scalars()
-        .first()
-    )
-    if doc is None:
-        raise HTTPException(status_code=404, detail="document not found")
+    with document_http_errors():
+        # 삭제된 버전도 연다 — 답변 인용에 남은 옛 버전 원본을 받을 수 있어야 한다.
+        doc = await admin.get_document(session, tenant_id, document_id, include_deleted=True)
     blob = Path(doc.blob_path)
     if not blob.is_file():
         raise HTTPException(status_code=410, detail="blob file missing")

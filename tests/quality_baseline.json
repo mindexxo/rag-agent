@@ -878,7 +878,6 @@
   "rag/chunking.py::_md_sections": 51,
   "rag/chunking.py::_split_section": 54,
   "rag/documents.py::index_pending_document": 104,
-  "rag/outbox.py::drain": 66,
   "rag/prompt_texts.py::<module>": 402,
   "rag/retriever.py::retrieve_candidates": 61,
   "rag/service.py::<module>": 445,

@@ -1,3 +1,5 @@
+"""대화 API — 목록·메시지 이력·피드백·이름 변경·삭제, 생성 취소와 SSE 재접속."""
+
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -10,7 +12,7 @@ from rag import clients
 from rag.models import Conversation, Message, TurnStatus
 from rag.turn import cancellation, conversation_search, stream_resume, streaming
 from rag.turn.conversation import owned_filter
-from routers.kms import get_tenant_id, get_user_id
+from routers.deps import get_tenant_id, get_user_id
 from schemas.conversations import (
     CONVERSATION_SEARCH_MAX,
     ConversationListResponse,
@@ -25,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/kms')
 
-MAX_CONVERSATIONS = 50  # 페이지 크기 상한 (#10부터 offset 페이지네이션의 limit 상한 의미)
+MAX_CONVERSATIONS = 50  # offset 페이지네이션의 limit 상한
 
 
 async def _get_owned_conversation(
@@ -53,9 +55,8 @@ async def _get_owned_assistant_message(
     *,
     status: str | None = None,
 ) -> Message | None:
-    """소유 검증을 통과한 assistant 메시지 로드 — 피드백·취소 공용 (#46).
+    """소유 검증을 통과한 assistant 메시지 로드 — 피드백·취소 공용.
 
-    두 엔드포인트가 같은 5조건 쿼리를 반복하고 있었다(차이는 피드백의 status='done'뿐).
     owned_filter로 대화 소유를, tenant WHERE로 메시지 격리를 함께 건다.
     """
     stmt = (
@@ -79,7 +80,7 @@ async def list_conversations(
     tenant_id: str = Depends(get_tenant_id),
     user_id: str | None = Depends(get_user_id),
     session: AsyncSession = Depends(get_session),
-):
+) -> ConversationListResponse:
     """내 대화 목록 (최근 사용순, offset 페이지네이션 #10) + 제목·내용 검색 (#28).
 
     q를 주면 제목 또는 대화 내용에 부분일치하는 대화만 남기고, 내용에서 걸린 대화엔
@@ -90,7 +91,7 @@ async def list_conversations(
     공유해야 has_more가 어긋나지 않으므로 조건은 반드시 한 곳(where)에서 만들어 쓴다.
     알려진 한계: last_used_at 정렬이 가변이라 스크롤 중 페이지 밀림 가능 — 이 UI에선 감수.
     """
-    # 범위 밖(<=0 or 상한 초과)은 상한값으로 클램프 (거부 대신 sane 결과 — 음수 500·무상한 조회 방지, P2)
+    # 범위 밖(<=0 or 상한 초과)은 상한값으로 클램프 (거부 대신 sane 결과 — 음수 500·무상한 조회 방지)
     if not 1 <= limit <= MAX_CONVERSATIONS:
         limit = MAX_CONVERSATIONS
     if offset < 0:
@@ -128,7 +129,7 @@ async def list_conversations(
             )
             for c in rows
         ],
-        # limit+1 조회 트릭은 제거 — total이 있으면 다음 페이지 유무가 산술로 나온다.
+        # total이 있으면 다음 페이지 유무가 산술로 나온다.
         # len(rows)를 쓰는 게 limit보다 안전하다(마지막 부분 페이지에서도 정확).
         has_more=offset + len(rows) < total,
         total=total,
@@ -141,8 +142,8 @@ async def get_conversation_messages(
     tenant_id: str = Depends(get_tenant_id),
     user_id: str | None = Depends(get_user_id),
     session: AsyncSession = Depends(get_session),
-):
-    # 소유 검증 (#10) — 이전엔 메시지 tenant 필터뿐이라 같은 테넌트 남의 대화도 조회 가능했음
+) -> list[ConversationMessage]:
+    # 소유 검증 — 메시지 tenant 필터만으로는 같은 테넌트 남의 대화가 조회된다
     await _get_owned_conversation(session, conversation_id, tenant_id, user_id)
 
     msgs = (
@@ -163,9 +164,9 @@ async def get_conversation_messages(
             role=m.role,
             content=m.content,
             status=m.status,
-            # 실인용만 (#56) — sources(후보 스냅샷)를 cited_docs로 필터. 구 데이터는 sources가
+            # 실인용만 — sources(후보 스냅샷)를 cited_docs로 필터. 구 데이터는 sources가
             # 후보 전체라 필터가 실질이고, 신 데이터는 저장 자체가 인용만이라 no-op이다.
-            # FAQ 항목 인용(#278)은 cited_faq_ids에 있다 — 파일명 필터만 두면 FAQ 인용이 이력에서 사라진다.
+            # FAQ 항목 인용은 cited_faq_ids에 있다 — 파일명 필터만 두면 FAQ 인용이 이력에서 사라진다.
             citations=[
                 s
                 for s in (m.sources or [])
@@ -190,7 +191,7 @@ async def set_message_feedback(
     tenant_id: str = Depends(get_tenant_id),
     user_id: str | None = Depends(get_user_id),
     session: AsyncSession = Depends(get_session),
-):
+) -> MessageFeedbackState:
     """답변 피드백 👍/👎 + 사유 태그 저장 (#8) — 멱등 set, 토글/취소는 FE가 최종 상태를 보내는 방식.
 
     assistant 메시지 + 본인 소유 대화만 허용 — 아니면 전부 404 (존재 여부 비노출,
@@ -216,7 +217,7 @@ async def cancel_generation(
     tenant_id: str = Depends(get_tenant_id),
     user_id: str | None = Depends(get_user_id),
     session: AsyncSession = Depends(get_session),
-):
+) -> Response:
     """진행 중인 답변 생성을 중단한다 (#30) — 정지 버튼.
 
     연결 끊김(탭 닫기·순단)과는 다르게 취급한다. 끊김은 의사가 불명해서 생성을 완주시켜
@@ -255,12 +256,14 @@ async def cancel_generation(
     # 다른 인스턴스 소유로 추정 — 발행만 하고 도달은 보장하지 않는다.
     try:
         await cancellation.request_cancel(message_id)
-    except Exception:
+    except Exception as e:
         # Redis 순단. 202("접수했다")로 답하면 거짓이 되고 500은 원인을 감춘다 —
         # 재시도 가능한 상황임을 알린다. 구독측(subscribe_forever)은 재연결하지만
         # 발행측은 요청 단위라 재시도 주체가 클라이언트다.
         logger.exception('취소 신호 발행 실패 (message_id=%s)', message_id)
-        raise HTTPException(status_code=503, detail='취소 요청을 전달할 수 없습니다. 잠시 후 다시 시도해 주세요.')
+        raise HTTPException(
+            status_code=503, detail='취소 요청을 전달할 수 없습니다. 잠시 후 다시 시도해 주세요.'
+        ) from e
     return Response(status_code=202)
 
 
@@ -270,7 +273,7 @@ async def resume_events(
     tenant_id: str = Depends(get_tenant_id),
     user_id: str | None = Depends(get_user_id),
     session: AsyncSession = Depends(get_session),
-):
+) -> StreamingResponse:
     """진행 중인 생성에 재접속해 스트림을 이어받는다 (#75) — 새로고침 복구용.
 
     쌓인 이벤트를 처음부터 재생하고, 아직 끝나지 않았으면 실시간으로 이어 붙인다.
@@ -292,10 +295,10 @@ async def resume_events(
     key = stream_resume.stream_key(tenant_id, message_id)
     try:
         exists = await clients.shared_redis.exists(key)  # 호출 시점 속성 읽기 (테스트가 교체한다)
-    except Exception:
+    except Exception as e:
         # 쓰기와 달리 읽기 실패는 삼키지 않는다 — 여기가 실패하면 이 요청은 존재 이유를 잃는다.
         logger.exception('재접속 스트림 조회 실패 (message_id=%s)', message_id)
-        raise HTTPException(status_code=503, detail='일시적으로 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.')
+        raise HTTPException(status_code=503, detail='일시적으로 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.') from e
     if not exists:
         raise HTTPException(status_code=404, detail='재생할 스트림이 없습니다.')
 
@@ -313,7 +316,7 @@ async def rename_conversation(
     tenant_id: str = Depends(get_tenant_id),
     user_id: str | None = Depends(get_user_id),
     session: AsyncSession = Depends(get_session),
-):
+) -> ConversationSummary:
     """제목 변경 (#10). 자동 제목은 title IS NULL일 때만 세팅되므로 이후 턴이 덮어쓰지 않는다."""
     conv = await _get_owned_conversation(session, conversation_id, tenant_id, user_id)
     conv.title = body.title
@@ -327,7 +330,7 @@ async def delete_conversation(
     tenant_id: str = Depends(get_tenant_id),
     user_id: str | None = Depends(get_user_id),
     session: AsyncSession = Depends(get_session),
-):
+) -> Response:
     """소프트 삭제 (#10) — deleted_at 마킹. 이력(메시지·첨부)은 감사 목적 보존.
 
     generating 중 삭제돼도 row가 남아 백그라운드 finalize가 정상 동작 (엣지 검증 완료 — 이슈 참조).

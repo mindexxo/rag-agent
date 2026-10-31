@@ -1,4 +1,4 @@
-"""업로드 크기 코스 가드 단위 테스트 — documents.reject_if_oversized.
+"""업로드 크기 코스 가드 단위 테스트 — uploads.reject_if_oversized.
 
 Content-Length 기반 선제 차단 — 정확 경계는 read 후 len()이 담당하므로 여기선 여유분(8192) 포함 판정.
 """
@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from routers.documents import reject_if_oversized
+from routers.uploads import reject_if_oversized
 
 LIMIT = 10 * 1024 * 1024
 

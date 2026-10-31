@@ -22,9 +22,9 @@ class SourceCitation(BaseModel):
     faq_id: int | None = None
 
 
-# 첨부 상한 (#22) — 여기가 단일 정의점. routers/attachments.py의 extract_attachment도 이 값을 쓴다.
-# 이전엔 extract에만 상한이 있어, 클라이언트가 그 헬퍼를 건너뛰고 /kms/query에 직접
-# attachments를 실으면 크기·개수 모두 무제한이었다 (컨텍스트 초과·DB 팽창 경로).
+# 첨부 상한 — 여기가 단일 정의점. routers/attachments.py의 extract_attachment도 이 값을 쓴다.
+# 스키마에 두어야 클라이언트가 extract를 건너뛰고 /kms/query에 직접 attachments를 실어도
+# 크기·개수가 막힌다 (컨텍스트 초과·DB 팽창 경로).
 ATTACHMENT_MAX_TEXT_CHARS = 6000  # 개당 추출 텍스트 (~3-4페이지, ≈4K토큰)
 ATTACHMENT_MAX_ITEMS = 1  # 요청당 첨부 개수 = 프롬프트 주입 개수(settings.max_attachments)와 동일.
 # 주입되지 않을 첨부를 받아 저장만 하는 건 의미가 없다.
@@ -64,8 +64,8 @@ class QueryAttachment(BaseModel):
 
     @field_validator('filename', mode='before')
     @classmethod
-    def _nfc_filename(cls, v):
-        """파일명 경계 정규화 (#34). 스키마에 두는 이유 — 이 모델에 도달하는 경로가 둘이다:
+    def _nfc_filename(cls, v: object) -> object:
+        """파일명 경계 정규화. 스키마에 두는 이유 — 이 모델에 도달하는 경로가 둘이다:
         /kms/attachments/extract의 응답 생성과 /kms/query 바디 파싱. 라우터마다 넣으면
         하나를 빠뜨리고, 새 경로가 생기면 또 빠뜨린다. `[첨부: 파일명]` 라벨이 프롬프트에
         들어가므로 문서 파일명과 같은 위험을 갖는다.
@@ -73,7 +73,7 @@ class QueryAttachment(BaseModel):
 
         mode='before'인 이유: 기본값 'after'면 max_length가 **정규화 전** 길이로 검사된다.
         NFD 한글은 글자당 최대 3코드포인트라, NFC 기준 상한 이내인 정상 파일명이 분해형으로
-        오면 거부될 수 있다 — 검증 기준과 저장 기준이 어긋나는, 이 이슈와 같은 유형의 비대칭.
+        오면 거부될 수 있다 — 검증 기준과 저장 기준이 어긋나는 비대칭.
         """
         return normalize_filename(v) if isinstance(v, str) else v
 
@@ -91,14 +91,14 @@ class KmsQueryRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)  # 공백 제거 후 1자 이상
     conversation_id: int | None = Field(default=None, gt=0)
     attachments: list[QueryAttachment] = Field(default=[], max_length=ATTACHMENT_MAX_ITEMS)
-    # [임시] 테넌트 지식 범위 설명 — 인텐트 분류·생성 프롬프트에 역할 안내로 주입 (#1).
+    # [임시] 테넌트 지식 범위 설명 — 인텐트 분류·생성 프롬프트에 역할 안내로 주입.
     # ICCS 연동 시 이 필드를 제거하고 서버 측 테넌트 정보 조회로 대체한다.
     domain_hint: str | None = Field(default=None, max_length=DOMAIN_HINT_MAX)
 
     _strip = field_validator('query', mode='before')(strip_text)
 
 
-# 문서 설명(F1a 표 설명)의 길이 상한 (#194). FOLDER_DESC_MAX와 값이 같지만 근거가 다르다 —
+# 문서 설명(표 설명)의 길이 상한. FOLDER_DESC_MAX와 값이 같지만 근거가 다르다 —
 # 폴더 설명은 리랭커 입력에 후보마다 붙어 지연이 누적되는 쪽이고, 이 값은 xlsx 청크 **본문**에
 # 병합되어 임베딩·어휘 채널에 직접 들어간다. 같은 화면에서 두 설명을 쓰므로 값은 맞춰 둔다.
 DOCUMENT_DESCRIPTION_MAX = 200
@@ -112,21 +112,21 @@ class DocumentUploadResponse(BaseModel):
     version: int
     status: str
     # failed 사유(예: 엑셀 표 크기 초과)뿐 아니라 **ready인 문서의 경고**도 담는다 —
-    # 이미지로 그려진 표·흐름도가 있어 그 내용이 색인되지 않은 경우다 (#137 결함 4).
+    # 이미지로 그려진 표·흐름도가 있어 그 내용이 색인되지 않은 경우다.
     # FE가 failed일 때만 표시하면 그 경고가 사용자에게 도달하지 않는다.
     status_reason: str | None = None  # 화면 표시용
     is_active: bool
     folder_id: int | None = None
     is_searchable: bool = True
-    uploaded_at: KstDatetime  # 등록일시 — 목록 기본 정렬 키 (해당 **버전**의 업로드 시각). KST 오프셋(#181)
+    uploaded_at: KstDatetime  # 등록일시 — 목록 기본 정렬 키 (해당 **버전**의 업로드 시각)
     # 등록자. X-User-Id 미전송이면 null이고, 이 필드가 생기기 전에 올라온 문서도 전부 null이다
     # (소급해 채울 정보가 없다) — 화면은 빈 값 표시를 처리해야 한다.
     uploaded_by: str | None = None
     ref_count: int | None = None  # 답변 인용 누적 횟수 (목록 API에서만 집계 — filename 키)
-    # 표 설명 (#194). xlsx만 값이 있다 — 다른 형식은 입력해도 청킹이 무시한다(rag/chunking.chunk_file).
+    # 표 설명. xlsx만 값이 있다 — 다른 형식은 입력해도 청킹이 무시한다(rag/chunking.chunk_file).
     # 재업로드 화면이 기존 값을 미리 채우려면 돌려받아야 한다(계승 규칙이 있어서 더욱).
     description: str | None = None
-    # 색인 완료 시각 (#194). ready 전에는 null — 업로드 직후 폴링 없이 "언제 반영됐나"를 아는 유일한 값.
+    # 색인 완료 시각. ready 전에는 null — 업로드 직후 폴링 없이 "언제 반영됐나"를 아는 유일한 값.
     indexed_at: KstDatetime | None = None
 
 
@@ -151,18 +151,18 @@ class DocumentUploadMetadata(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     folder_id: int | None = Field(None, gt=0)  # null=미분류, 0은 거절(목록 필터의 0=미분류와 다르다)
-    # F1a: 표 설명 (xlsx 검색 보강). xlsx는 **필수**다(#194) — 다만 "이번 요청에 보냈는가"가
+    # 표 설명 (xlsx 검색 보강). xlsx는 **필수**다 — 다만 "이번 요청에 보냈는가"가
     # 아니라 "계승까지 따진 최종값이 비는가"로 판정하므로 여기서 required로 만들지 않는다.
     # 그 판정은 `routers/documents.py`의 `upload_document`가 `rag/documents.py`의 `latest_alive`로 끝낸다.
     description: str | None = Field(None, max_length=DOCUMENT_DESCRIPTION_MAX)
     expect_version: int | None = None  # 낙관적 잠금 — 의미는 upload_document 참조
 
 
-# 한 번에 다룰 수 있는 문서 수 — 일괄 변경(#166)·일괄 삭제(#174) 공통. 화면에서 한 페이지를
+# 한 번에 다룰 수 있는 문서 수 — 일괄 변경·일괄 삭제 공통. 화면에서 한 페이지를
 # 전체 선택해도 들어가는 크기면서, 사고로 수만 건이 한 요청에 실려 오는 것은 막는 선. 초과는 422.
 BULK_MAX_ITEMS = 200
 
-# 문서 목록 페이지 크기 (#176). 상한을 BULK_MAX_ITEMS에 맞춘 건 화면에서 **한 페이지를 전체
+# 문서 목록 페이지 크기. 상한을 BULK_MAX_ITEMS에 맞춘 건 화면에서 **한 페이지를 전체
 # 선택해 일괄 변경·삭제로 넘기는** 흐름 때문이다 — 페이지가 그 상한을 넘으면 전체선택이 422가 된다.
 DOC_LIST_DEFAULT_LIMIT = 50
 DOC_LIST_MAX_LIMIT = BULK_MAX_ITEMS
@@ -198,7 +198,8 @@ class DocumentUpdateRequest(BaseModel):
 
     folder_id: int | None = Field(None, gt=0)  # null=미분류, 0은 거절(목록 필터의 0=미분류와 다르다)
     is_searchable: bool | None = None
-    # 표 설명 수정 (#194). 전까지는 파일을 다시 올려야만 고칠 수 있었다(= 새 버전 + 재파싱).
+    # 표 설명 수정 — 파일을 새 버전으로 다시 올리지 않고 고친다.
+    # 값이 바뀌면 재색인이 따른다(routers/documents.py의 update_document).
     # folder_id와 달리 model_fields_set 3단 구분을 쓰지 않는다 — description은 None이 "미분류"
     # 같은 유효한 목표값이 아니라서 "미전송"과 "null 전송"이 똑같이 "안 바꿈"이면 충분하다.
     # 지우려면 빈 문자열을 보낸다(routers/folders.py의 FolderUpdateRequest와 같은 2-way).
@@ -218,7 +219,7 @@ class DocumentBulkUpdateRequest(BaseModel):
     is_searchable: bool | None = None
 
 
-# FAQ 입력 상한 (#276, 사용자 결정 10/22). 질문+유사 질문+답변이 **청크 하나**로 임베딩되므로
+# FAQ 입력 상한. 질문+유사 질문+답변이 **청크 하나**로 임베딩되므로
 # (rag/search/faq_indexing.py) 길어질수록 임베딩 입력이 잘리거나 검색 정확도가 떨어진다 — 상한의 이유.
 # DB 컬럼은 TEXT 그대로다(저장소 관례: 길이는 앱, DB는 TEXT). FE 입력칸이 같은 값을 건다.
 FAQ_QUESTION_MAX = 100
@@ -239,11 +240,9 @@ class FaqResponse(BaseModel):
     created_at: KstDatetime
     updated_at: KstDatetime  # 어떤 UPDATE든 DB가 올린다(is_active 토글 포함) — updated_by도 같은 기준
     created_by: str | None = None  # X-User-Id. 미전송이면 null(문서 uploaded_by와 같은 규칙)
-    updated_by: str | None = (
-        None  # 마지막으로 손댄 사람 — 헤더 없으면 null로 덮는다(사용자 결정 5, ICCS 연동은 헤더 필수)
-    )
+    updated_by: str | None = None  # 마지막으로 손댄 사람 — 헤더 없으면 null로 덮는다(ICCS 연동은 헤더 필수)
     ref_count: int | None = (
-        None  # 답변 인용 누적 횟수 — 목록 API에서만 집계(messages.cited_faq_ids). #278 이전 인용은 항목 기록이 없어 안 센다
+        None  # 답변 인용 누적 횟수 — 목록 API에서만 집계(messages.cited_faq_ids). 항목 기록이 없는 옛 인용은 안 센다
     )
 
 
@@ -278,8 +277,8 @@ class FaqListResponse(BaseModel):
     has_more: bool
 
 
-# FAQ 카테고리 (#278) — 폴더(F2)와 같은 1단 관리 분류. 다른 점: 검색에 영향 없음(캐시 무효화·fan-out 없음), 이름 상한 있음.
-# 폴더 이름에는 상한이 없지만 FAQ 쪽은 #276부터 입력 상한을 두는 쪽이라 맞췄다(사용자 결정 4). DB 컬럼은 TEXT.
+# FAQ 카테고리 — 폴더와 같은 1단 관리 분류. 다른 점: 검색에 영향 없음(캐시 무효화·fan-out 없음).
+# DB 컬럼은 TEXT.
 FAQ_CATEGORY_NAME_MAX = 50
 
 

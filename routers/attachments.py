@@ -1,7 +1,7 @@
 """채팅 첨부 추출 라우터 — 파일에서 텍스트만 뽑아 돌려준다. 저장하지 않는다.
 
 저장은 이후 질의(`/kms/query`의 attachments)가 대화에 묶어 한다. 형식·파일명 규칙은 문서 업로드와 같고
-(routers/documents.py의 checked_filename), 텍스트 상한은 schemas.kms의 QueryAttachment와 같은 값이어야 여기서
+(routers/uploads.py의 checked_filename), 텍스트 상한은 schemas.kms의 QueryAttachment와 같은 값이어야 여기서
 통과한 결과가 질의에서 거부되지 않는다.
 """
 
@@ -12,8 +12,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from starlette.concurrency import run_in_threadpool
 
 from rag.chunking import extract_text
-from routers.documents import checked_filename, reject_if_oversized
-from routers.kms import get_tenant_id
+from routers.deps import get_tenant_id
+from routers.uploads import checked_filename, reject_if_oversized
 from schemas.kms import ATTACHMENT_MAX_TEXT_CHARS, QueryAttachment
 
 router = APIRouter(prefix='/kms')
@@ -39,7 +39,7 @@ async def extract_attachment(request: Request, file: UploadFile = File(...)) -> 
         tmp_path = Path(tmp.name)
     try:
         try:
-            # 동기 CPU 작업(pdfplumber 등) — 이벤트 루프를 막지 않게 스레드풀에서
+            # 동기 CPU 작업 — 이벤트 루프를 막지 않게 스레드풀에서
             text = await run_in_threadpool(extract_text, tmp_path)
         except Exception as exc:
             raise HTTPException(status_code=422, detail=UNREADABLE) from exc

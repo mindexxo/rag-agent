@@ -24,7 +24,9 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from opentelemetry import trace
 
 from config import settings
 from database import AsyncSessionLocal
@@ -184,6 +186,90 @@ async def _finalize_out_of_band(
         )
 
 
+@dataclass
+class _Emitter:
+    """생성 경로 이벤트 방출의 단일 지점 — 큐와 재접속 스트림에 함께 써서 한쪽 누락을 막는다. 본문 조각도 여기 쌓인다."""
+
+    queue: asyncio.Queue
+    writer: stream_resume.StreamWriter
+    parts: list[str] = field(default_factory=list)
+
+    async def emit(self, event: str, data: dict) -> None:
+        await self.queue.put((event, data))
+        self.writer.add(event, data)
+
+    async def delta(self, text: str) -> None:
+        self.parts.append(text)
+        await self.emit(EVENT_DELTA, {"text": text})
+
+    @property
+    def answer(self) -> str:
+        return "".join(self.parts)
+
+
+async def _stream_answer(
+    svc: RagService, prepared: PreparedRag, out: _Emitter, splitter: TailSplitter | None, t_request: float
+) -> None:
+    """토큰을 delta로 흘린다. 출처 꼬리는 delta로 나가지 않고 본문만 out.parts에 쌓인다."""
+    first_token_at = None  # 체감 TTFT — 첫 청크 도착 시각
+    async for chunk in svc.generate(prepared):
+        if first_token_at is None:
+            first_token_at = time.monotonic()
+            # 요청 도착부터 — prepare 포함 체감값이라 서버측 TTFT와 다르다.
+            metrics.TTFT_SECONDS.labels(route=prepared.route).observe(first_token_at - t_request)
+        text = splitter.feed(chunk) if splitter else chunk
+        if text:
+            await out.delta(text)
+    if splitter and (tail_flush := splitter.finish()):
+        await out.delta(tail_flush)  # 마커 접두인 줄 알았던 본문 끝자락
+
+
+def _record_generation(
+    sp: trace.Span, svc: RagService, prepared: PreparedRag, splitter: TailSplitter | None, answer: str
+) -> None:
+    """LLM 종료 사유 카운터와 generate 스팬 속성(모델·출력·토큰·꼬리 원문)."""
+    if svc.last_finish_reason is not None:
+        metrics.FINISH_REASON_TOTAL.labels(route=prepared.route, reason=svc.last_finish_reason).inc()
+    if not sp.is_recording():  # 가드가 먼저 — no-op이면 clip 비용도 없게
+        return
+    otel.set_attrs(sp, {otel.LLM_MODEL: settings.llm_model, otel.OUTPUT_VALUE: otel.clip(answer)})
+    if svc.last_finish_reason is not None:
+        otel.set_attrs(sp, {'kms.llm_finish_reason': svc.last_finish_reason})
+    if svc.last_usage is not None:  # 상용 공급자만 — 캐시 적중 토큰이 0이면 캐싱 전제가 깨진 것
+        otel.set_attrs(
+            sp,
+            {
+                'kms.llm_prompt_tokens': svc.last_usage.prompt_tokens,
+                'kms.llm_completion_tokens': svc.last_usage.completion_tokens,
+                'kms.llm_cached_tokens': svc.last_usage.cached_tokens,
+                'kms.llm_cache_write_tokens': svc.last_usage.cache_write_tokens,
+            },
+        )
+    if splitter and splitter.tail_raw is not None:
+        # 꼬리 원문 — 인용 오류가 모델 번호 탓인지 매핑 버그인지 가르는 유일한 증거.
+        otel.set_attrs(sp, {'kms.citation_tail': otel.clip(splitter.tail_raw)})
+    if splitter and splitter.truncated:
+        # 꼬리가 max_tokens 등으로 잘린 "성공처럼 보이는 실패"
+        otel.set_attrs(sp, {'kms.tail_truncated': True})
+
+
+async def _abort_turn(
+    lease: Lease, prepared: PreparedRag, out: _Emitter, t_request: float, status: TurnStatus
+) -> TurnResult:
+    """취소·실패 — 부분 텍스트와 latency를 새 세션으로 기록한다(화면에 흐른 답변이 새로고침 후에도 남게)."""
+    answer, latency_ms = out.answer, _elapsed_ms(t_request)
+    await _finalize_out_of_band(lease, prepared, answer, status, latency_ms)
+    return TurnResult(answer=answer, citations=[], finish_reason=status, latency_ms=latency_ms)
+
+
+async def _close_turn(out: _Emitter, root_span: trace.Span, result: TurnResult, error: dict | None = None) -> None:
+    """성공·취소·실패 공통 마무리 — 루트 스팬 기록 뒤 (error →) done. done은 값이 전부 확정된 다음 내보낸다."""
+    _record_turn_result(root_span, result)
+    if error is not None:
+        await out.emit(EVENT_ERROR, error)
+    await out.emit(EVENT_DONE, _done_payload(result))  # 계약: error 뒤에도 done으로 닫는다
+
+
 async def _run_generation(
     prepared: PreparedRag, queue: asyncio.Queue, lease: Lease, t_request: float, root_span
 ) -> None:
@@ -191,73 +277,28 @@ async def _run_generation(
 
     요청 세션은 응답 종료 시 닫히므로 자기 세션을 쓴다.
     """
-    parts = []
-    # 출처 꼬리는 knowledge만 만든다. 꼬리는 delta로 나가지 않고 parts에는 본문만 쌓인다.
+    # 출처 꼬리는 knowledge만 만든다.
     splitter = TailSplitter() if prepared.route == "knowledge" else None
-
     # 재접속용 미러링 — 큐와 같은 이벤트를 Redis Stream에도 남긴다. 요청이 아니라 태스크가 소유한다.
     writer = stream_resume.StreamWriter(lease.tenant_id, prepared.assistant_message_id)
     # meta는 로컬 리더가 직접 합성하므로 큐를 거치지 않고 스트림에만 심는다.
     writer.add(EVENT_META, _meta_payload(prepared))
-
-    async def emit(event: str, data: dict) -> None:
-        """생성 경로 이벤트 방출의 단일 지점 — 큐와 재접속 스트림에 함께 써서 한쪽 누락을 막는다."""
-        await queue.put((event, data))
-        writer.add(event, data)
+    out = _Emitter(queue, writer)
 
     try:
         async with AsyncSessionLocal() as session:
             svc = RagService(tenant_id=lease.tenant_id, session=session)
             with otel.span('generate', 'LLM') as sp:  # 컨텍스트 복사로 kms.query의 자식
-                first_token_at = None  # 체감 TTFT — 첫 청크 도착 시각
-                async for chunk in svc.generate(prepared):
-                    if first_token_at is None:
-                        first_token_at = time.monotonic()
-                        # 요청 도착부터 — prepare 포함 체감값이라 서버측 TTFT와 다르다.
-                        metrics.TTFT_SECONDS.labels(route=prepared.route).observe(first_token_at - t_request)
-                    text = splitter.feed(chunk) if splitter else chunk
-                    if text:
-                        parts.append(text)
-                        await emit(EVENT_DELTA, {"text": text})
-                if splitter and (tail_flush := splitter.finish()):
-                    parts.append(tail_flush)  # 마커 접두인 줄 알았던 본문 끝자락
-                    await emit(EVENT_DELTA, {"text": tail_flush})
-                answer = "".join(parts)
-                # LLM 종료 사유(stop|length|other) — 집계용 카운터와 드릴다운용 스팬 속성을 같이 남긴다.
-                if svc.last_finish_reason is not None:
-                    metrics.FINISH_REASON_TOTAL.labels(route=prepared.route, reason=svc.last_finish_reason).inc()
-                if sp.is_recording():  # 가드가 먼저 — no-op이면 clip 비용도 없게
-                    otel.set_attrs(sp, {otel.LLM_MODEL: settings.llm_model, otel.OUTPUT_VALUE: otel.clip(answer)})
-                    if svc.last_finish_reason is not None:
-                        otel.set_attrs(sp, {'kms.llm_finish_reason': svc.last_finish_reason})
-                    if svc.last_usage is not None:  # 상용 공급자만 — 캐시 적중 토큰이 0이면 캐싱 전제가 깨진 것
-                        otel.set_attrs(
-                            sp,
-                            {
-                                'kms.llm_prompt_tokens': svc.last_usage.prompt_tokens,
-                                'kms.llm_completion_tokens': svc.last_usage.completion_tokens,
-                                'kms.llm_cached_tokens': svc.last_usage.cached_tokens,
-                                'kms.llm_cache_write_tokens': svc.last_usage.cache_write_tokens,
-                            },
-                        )
-                    if splitter and splitter.tail_raw is not None:
-                        # 꼬리 원문 — 인용 오류가 모델 번호 탓인지 매핑 버그인지 가르는 유일한 증거.
-                        otel.set_attrs(sp, {'kms.citation_tail': otel.clip(splitter.tail_raw)})
-                    if splitter and splitter.truncated:
-                        # 꼬리가 max_tokens 등으로 잘린 "성공처럼 보이는 실패"
-                        otel.set_attrs(sp, {'kms.tail_truncated': True})
+                await _stream_answer(svc, prepared, out, splitter, t_request)
+                _record_generation(sp, svc, prepared, splitter, out.answer)
 
+            answer = out.answer
             # citations가 곧 '근거 있음'의 정의다 — 답변 문구 판정으로 덮어쓰지 않는다.
             citations = [] if splitter is None else resolve_citations(splitter.tail_raw, *prepared.citation_candidates)
             latency_ms = _elapsed_ms(t_request)  # 저장·스팬·done이 같은 값을 쓰도록 한 번만 계산
             await svc.finalize(prepared, answer, citations, status=TurnStatus.DONE, latency_ms=latency_ms)
             await session.commit()
-            result = TurnResult(
-                answer=answer, citations=citations, finish_reason=TurnStatus.DONE, latency_ms=latency_ms
-            )
-            _record_turn_result(root_span, result)
-            # done은 finalize·commit 뒤에 — 값이 전부 확정된 다음 내보낸다.
-            await emit(EVENT_DONE, _done_payload(result))
+            await _close_turn(out, root_span, TurnResult(answer, citations, TurnStatus.DONE, latency_ms))
 
             # 캐시 적재는 done 뒤에 따로 — 각주 표시를 늦추지 않고, 적재 실패가 done 턴을 오염시키지 않게.
             # 먼저 취소 대상에서 빠진다 — 아래 await 중 늦은 취소가 done 턴을 cancelled로 덮어쓰지 않게.
@@ -270,25 +311,21 @@ async def _run_generation(
     except asyncio.CancelledError:
         # 명시적 취소. CancelledError는 except Exception에 안 잡힌다. 취소는 한 번만 전달되므로
         # 여기서 잡은 뒤의 await는 정상 완료된다.
-        answer, latency_ms = "".join(parts), _elapsed_ms(t_request)
-        await _finalize_out_of_band(lease, prepared, answer, TurnStatus.CANCELLED, latency_ms)
-        result = TurnResult(answer=answer, citations=[], finish_reason=TurnStatus.CANCELLED, latency_ms=latency_ms)
-        _record_turn_result(root_span, result)
-        await emit(EVENT_DONE, _done_payload(result))
+        await _close_turn(out, root_span, await _abort_turn(lease, prepared, out, t_request, TurnStatus.CANCELLED))
         raise  # 태스크가 '취소됨'으로 끝나도록 재전파
     except Exception:
         logger.exception("답변 생성 실패 (tenant=%s, conversation=%s)", lease.tenant_id, prepared.conversation_id)
-        # 부분 텍스트와 latency를 취소와 같게 저장한다 — 화면에 흐른 답변이 새로고침 후에도 남게.
-        answer, latency_ms = "".join(parts), _elapsed_ms(t_request)
-        await _finalize_out_of_band(lease, prepared, answer, TurnStatus.FAILED, latency_ms)
-        result = TurnResult(answer=answer, citations=[], finish_reason=TurnStatus.FAILED, latency_ms=latency_ms)
-        _record_turn_result(root_span, result)
+        result = await _abort_turn(lease, prepared, out, t_request, TurnStatus.FAILED)
         # 예외 원문은 서버 로그로만 — 내부 경로·설정이 섞일 수 있어 클라이언트에 노출 금지
-        await emit(
-            EVENT_ERROR,
-            {"code": "generation_failed", "message": "답변 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."},
+        await _close_turn(
+            out,
+            root_span,
+            result,
+            error={
+                "code": "generation_failed",
+                "message": "답변 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+            },
         )
-        await emit(EVENT_DONE, _done_payload(result))  # 계약: error 뒤에도 done으로 닫는다
     finally:
         # 취소 대상에서 먼저, 동기로 빠진다 — 아래 await 중 도착한 취소가 이 finally를 끊어
         # 리미터 반납·스팬 종료를 유실시키지 않게.

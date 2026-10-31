@@ -13,7 +13,7 @@ from rag.chunking import TABLE_MAX_TOKENS
 
 from rag.chunking import TABLE_BATCH_TOKENS, batch_table_rows, to_markdown_table
 from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN, estimate_tokens_conservative
-from rag.xlsx_chunking import (XlsxDescriptionRequired, XlsxTableTooLarge, XlsxUploadRejected, _cell, chunk_xlsx,
+from rag.chunking.xlsx import (XlsxDescriptionRequired, XlsxTableTooLarge, XlsxUploadRejected, _cell, chunk_xlsx,
                                description_missing, xlsx_plain_text, validate_xlsx_upload)
 
 CORPUS_XLSX = (Path(__file__).resolve().parent.parent

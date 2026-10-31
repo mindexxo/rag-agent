@@ -17,7 +17,7 @@ from contextlib import closing
 
 from rag.chunking import to_markdown_table
 from rag.tokens import estimate_tokens_conservative
-from rag.xlsx_chunking import _iter_sheets
+from rag.chunking.xlsx import _iter_sheets
 
 ROOT = Path(__file__).resolve().parent.parent
 BASE = settings.llm_base_url.rstrip('/').removesuffix('/v1')

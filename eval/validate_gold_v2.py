@@ -47,7 +47,7 @@ def tenant_source_text(tenant: str) -> str:
         if f.suffix in ('.md', '.txt'):
             parts.append(f.read_text())
         elif f.suffix == '.xlsx':
-            from rag.xlsx_chunking import chunk_xlsx
+            from rag.chunking.xlsx import chunk_xlsx
             parts.extend(c.text for c in chunk_xlsx(f))
     return _norm('\n'.join(parts))
 

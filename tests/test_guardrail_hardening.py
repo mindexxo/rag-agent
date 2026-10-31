@@ -224,10 +224,10 @@ async def test_차단_턴이_있어도_이력_창_크기_유지(tenant_id):
 
 
 @pytest.mark.asyncio
-async def test_긴_파일명_첨부_추출은_413(client, tenant_id):
-    """QueryAttachment 생성 시점의 ValidationError는 500이 된다 — 핸들러에서 명시 거절해야 한다."""
+async def test_긴_파일명_첨부_추출은_422(client, tenant_id):
+    """QueryAttachment 생성 시점의 ValidationError는 500이 된다 — 핸들러에서 명시 거절해야 한다(업로드와 같은 422)."""
     from schemas.kms import ATTACHMENT_FILENAME_MAX
     long_name = 'a' * (ATTACHMENT_FILENAME_MAX + 1) + '.txt'
     res = await client.post('/kms/attachments/extract',
                             files={'file': (long_name, b'hello', 'text/plain')})
-    assert res.status_code == 413
+    assert res.status_code == 422

@@ -18,7 +18,7 @@ class SourceCitation(BaseModel):
     version: int
     faq_id: int | None = None
 
-# 첨부 상한 (#22) — 여기가 단일 정의점. routers/documents.py의 extract 엔드포인트도 이 값을 쓴다.
+# 첨부 상한 (#22) — 여기가 단일 정의점. routers/attachments.py의 extract_attachment도 이 값을 쓴다.
 # 이전엔 extract에만 상한이 있어, 클라이언트가 그 헬퍼를 건너뛰고 /kms/query에 직접
 # attachments를 실으면 크기·개수 모두 무제한이었다 (컨텍스트 초과·DB 팽창 경로).
 ATTACHMENT_MAX_TEXT_CHARS = 6000   # 개당 추출 텍스트 (~3-4페이지, ≈4K토큰)
@@ -26,6 +26,30 @@ ATTACHMENT_MAX_ITEMS = 1           # 요청당 첨부 개수 = 프롬프트 주�
                                    # 주입되지 않을 첨부를 받아 저장만 하는 건 의미가 없다.
                                    # max_attachments를 바꾸면 이 값도 함께 고칠 것 (두 곳이 짝)
 ATTACHMENT_FILENAME_MAX = 255      # 프롬프트의 [첨부: 파일명] 라벨에 그대로 들어감
+
+
+def strip_text(v: object) -> object:
+    """길이를 **공백 제거 후** 잰다 — 라우터는 이 값을 그대로 저장하므로 검증 기준과 저장 기준이 같다(QueryAttachment와 같은 이유)."""
+    return v.strip() if isinstance(v, str) else v
+
+
+def _strip_variants(v: object) -> object:
+    """항목을 strip하고 빈 항목과 중복(순서 유지, 첫 것만)을 뺀다 — 개수 상한(FAQ_VARIANTS_MAX)이 실제 항목만 세게.
+
+    문자열이 아닌 항목은 손대지 않고 남겨 뒤의 타입 검증이 422를 내게 한다.
+    """
+    if not isinstance(v, list):
+        return v
+    out: list[object] = []
+    seen: set[str] = set()
+    for x in v:
+        if isinstance(x, str):
+            x = x.strip()
+            if not x or x in seen:
+                continue
+            seen.add(x)
+        out.append(x)
+    return out
 
 
 class QueryAttachment(BaseModel):
@@ -57,12 +81,14 @@ class KmsQueryRequest(BaseModel):
     있으면 해당 대화의 이전 메시지를 이용해 멀티턴 질의를 독립 질문으로 변환한다.
     attachments 가 있으면 캐시를 우회하고 첨부 텍스트를 생성 컨텍스트에 주입한다.
     """
-    query: str = Field(min_length=1, max_length=4000)   # 빈 질의 방지 + 상한 (P2 스키마 제약)
+    query: str = Field(min_length=1, max_length=4000)   # 공백 제거 후 1자 이상
     conversation_id: int | None = Field(default=None, gt=0)
     attachments: list[QueryAttachment] = Field(default=[], max_length=ATTACHMENT_MAX_ITEMS)
     # [임시] 테넌트 지식 범위 설명 — 인텐트 분류·생성 프롬프트에 역할 안내로 주입 (#1).
     # ICCS 연동 시 이 필드를 제거하고 서버 측 테넌트 정보 조회로 대체한다.
     domain_hint: str | None = Field(default=None, max_length=DOMAIN_HINT_MAX)
+
+    _strip = field_validator('query', mode='before')(strip_text)
 
 # 문서 설명(F1a 표 설명)의 길이 상한 (#194). FOLDER_DESC_MAX와 값이 같지만 근거가 다르다 —
 # 폴더 설명은 리랭커 입력에 후보마다 붙어 지연이 누적되는 쪽이고, 이 값은 xlsx 청크 **본문**에
@@ -188,18 +214,6 @@ FAQ_VARIANTS_MAX = 10     # FAQ 하나당 유사 질문 개수
 FAQ_ANSWER_MAX = 500
 
 
-def _strip_text(v):
-    """길이를 **공백 제거 후** 잰다 — 라우터는 이 값을 그대로 저장하므로 검증 기준과 저장 기준이 같다(QueryAttachment와 같은 이유)."""
-    return v.strip() if isinstance(v, str) else v
-
-
-def _strip_variants(v):
-    """항목을 strip하고 빈 항목은 뺀다 — 개수 상한(FAQ_VARIANTS_MAX)이 실제 항목만 세게."""
-    if isinstance(v, list):
-        return [x.strip() for x in v if not isinstance(x, str) or x.strip()]
-    return v
-
-
 class FaqResponse(BaseModel):
     """FAQ 항목 (F3 — 전용 저장, 항목 단위 CRUD). 관리 필드(#278)는 FE 요청 5번 그대로."""
     id: int
@@ -220,7 +234,7 @@ class FaqCreateRequest(BaseModel):
     answer: str = Field(max_length=FAQ_ANSWER_MAX)
     category_id: int | None = None       # 미전송·null = 미분류
 
-    _strip = field_validator('question', 'answer', mode='before')(_strip_text)
+    _strip = field_validator('question', 'answer', mode='before')(strip_text)
     _strip_v = field_validator('variants', mode='before')(_strip_variants)
 
 class FaqUpdateRequest(BaseModel):
@@ -231,7 +245,7 @@ class FaqUpdateRequest(BaseModel):
     is_active: bool | None = None
     category_id: int | None = None
 
-    _strip = field_validator('question', 'answer', mode='before')(_strip_text)
+    _strip = field_validator('question', 'answer', mode='before')(strip_text)
     _strip_v = field_validator('variants', mode='before')(_strip_variants)
 
 
@@ -254,14 +268,15 @@ class FaqCategoryInfo(BaseModel):
 
 class FaqCategoryCreateRequest(BaseModel):
     name: str = Field(max_length=FAQ_CATEGORY_NAME_MAX)
-    _strip = field_validator('name', mode='before')(_strip_text)
+    _strip = field_validator('name', mode='before')(strip_text)
 
 class FaqCategoryUpdateRequest(BaseModel):
     name: str = Field(max_length=FAQ_CATEGORY_NAME_MAX)
-    _strip = field_validator('name', mode='before')(_strip_text)
+    _strip = field_validator('name', mode='before')(strip_text)
 
 
 FOLDER_DESC_MAX = 200   # 리랭커 입력에 매 후보마다 붙으므로 길이를 제한 (top_n개 누적 → 지연)
+FOLDER_NAME_MAX = 50    # FAQ 카테고리 이름과 같은 상한
 
 
 class FolderInfo(BaseModel):
@@ -271,11 +286,13 @@ class FolderInfo(BaseModel):
     is_searchable: bool
 
 class FolderCreateRequest(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=FOLDER_NAME_MAX)   # 공백 제거 후
     description: str | None = Field(None, max_length=FOLDER_DESC_MAX)
+    _strip = field_validator('name', mode='before')(strip_text)
 
 class FolderUpdateRequest(BaseModel):
     """보낸 필드만 반영."""
-    name: str | None = None
+    name: str | None = Field(None, min_length=1, max_length=FOLDER_NAME_MAX)
     description: str | None = Field(None, max_length=FOLDER_DESC_MAX)
     is_searchable: bool | None = None
+    _strip = field_validator('name', mode='before')(strip_text)

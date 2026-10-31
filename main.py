@@ -18,6 +18,7 @@ from starlette.responses import Response
 from config import settings
 from rag import cancellation, os_client
 from rag.otel import init_tracing
+from routers.attachments import router as attachment_router
 from routers.conversations import router as conversation_router
 from routers.documents import router as document_router
 from routers.faq_categories import router as faq_category_router
@@ -78,6 +79,7 @@ async def metrics() -> Response:
 
 app.include_router(kms_router)
 app.include_router(document_router)
+app.include_router(attachment_router)
 app.include_router(conversation_router)
 app.include_router(folder_router)
 app.include_router(faq_router)

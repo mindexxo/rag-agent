@@ -1,5 +1,5 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from starlette.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio.session import AsyncSession
@@ -11,6 +11,7 @@ from rag.conversation import owned_filter
 from rag.models import Conversation, Message, TurnStatus
 from routers.kms import get_tenant_id, get_user_id
 from schemas.conversations import (
+    CONVERSATION_SEARCH_MAX,
     ConversationListResponse,
     ConversationMessage,
     ConversationSummary,
@@ -64,7 +65,7 @@ async def _get_owned_assistant_message(
 async def list_conversations(
     limit: int = MAX_CONVERSATIONS,
     offset: int = 0,
-    q: str | None = None,
+    q: str | None = Query(None, max_length=CONVERSATION_SEARCH_MAX),
     tenant_id: str = Depends(get_tenant_id),
     user_id: str | None = Depends(get_user_id),
     session: AsyncSession = Depends(get_session),

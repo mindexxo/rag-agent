@@ -1,4 +1,4 @@
-"""KMS 문서 관리 라우터 — 업로드·목록·변경·삭제·다운로드 + 채팅 첨부 추출.
+"""KMS 문서 관리 라우터 — 업로드·목록·변경·삭제·다운로드. 첨부 추출은 routers/attachments.py.
 
 **이 파일이 정의점인 것은 HTTP 경계의 규칙뿐이다.** 무엇이 일어나는지는 아래를 보라:
 업로드·supersede·failed 재사용은 rag/documents.py의 handle_upload, 삭제는 같은 파일의
@@ -25,7 +25,6 @@ rag/os_index.py의 effective_searchable.
   파일명이 임베딩 입력(rag/index_text.py)과 답변 인용 표기(rag/prompts.py)에 그대로 쓰여서,
   '(1)' 같은 무의미한 이름을 서버가 싸게 만들어 주면 KB 품질이 조용히 나빠진다.
 """
-import tempfile
 from typing import Annotated
 from uuid import uuid4
 from pathlib import Path
@@ -42,18 +41,16 @@ from starlette.responses import FileResponse, JSONResponse
 from config import settings
 from database import get_session
 from rag import cache, outbox
-from rag.chunking import extract_text
 from rag.documents import (FailedReuseConflict, document_versions, get_folder, handle_upload,
                            latest_alive, resolve_description, soft_delete_documents)
 from rag.models import ALIVE_DOCUMENT_STATUSES, Document, Folder
 from rag.xlsx_chunking import XlsxUploadRejected, description_missing, validate_xlsx_upload
 from routers.kms import get_tenant_id, get_user_id
-from schemas.kms import (ATTACHMENT_FILENAME_MAX, ATTACHMENT_MAX_TEXT_CHARS, BULK_MAX_ITEMS,
+from schemas.kms import (ATTACHMENT_FILENAME_MAX, BULK_MAX_ITEMS,
                          DOC_LIST_DEFAULT_LIMIT, DOC_LIST_MAX_LIMIT, DOC_STATUSES,
                          DOCUMENT_DESCRIPTION_MAX,
                          DocumentBulkUpdateRequest, DocumentExistsResponse, DocumentListResponse,
-                         DocumentUploadMetadata, DocumentUploadResponse, DocumentUpdateRequest,
-                         QueryAttachment)
+                         DocumentUploadMetadata, DocumentUploadResponse, DocumentUpdateRequest)
 from text_norm import LIKE_ESCAPE_CHAR, like_pattern, normalize_filename
 
 
@@ -83,13 +80,30 @@ SUPPORTED_SUFFIXES = {'.pdf', '.docx', '.xlsx', '.txt', '.md'}
 DOC_MAX_FILE_BYTES = 10 * 1024 * 1024   # 문서 업로드 크기 상한 (첨부와 별개)
 
 
-def _reject_if_oversized(request: Request, limit: int) -> None:
+def reject_if_oversized(request: Request, limit: int) -> None:
     """Content-Length로 명백한 초과 업로드를 body read 전에 차단 (C2-A, 코스 가드).
     조작·multipart 오버헤드로 부정확할 수 있어 정확 경계는 read 후 len() 검사가 담당 —
     여기선 여유(margin)를 두고 '거대 본문을 메모리에 올리기 전에 끊는' 용도. (실전 상한은 nginx도 병행)"""
     cl = request.headers.get('content-length')
     if cl and cl.isdigit() and int(cl) > limit + 8192:
         raise HTTPException(status_code=413, detail='파일이 너무 큽니다.')
+
+
+def checked_filename(file: UploadFile) -> str:
+    """업로드·첨부 공용 파일명 검사 — 누락·미지원 형식 400, 상한 초과 422. NFC 정규화 값을 돌려준다.
+
+    길이는 정규화 후 값으로 잰다 — NFD 한글은 글자당 최대 3코드포인트라 raw 길이로 재면 스키마(mode='before')와
+    기준이 어긋난다. 경로 문자는 정제하지 않는다(식별이 파일명 완전 일치, blob은 UUID 이름).
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail='파일명이 없습니다.')
+    filename = normalize_filename(file.filename)
+    suffix = Path(filename).suffix.lower()
+    if suffix not in SUPPORTED_SUFFIXES:
+        raise HTTPException(status_code=400, detail=f'지원하지 않는 형식입니다: {suffix or "확장자 없음"}. 지원: PDF/DOCX/XLSX/TXT/MD')
+    if len(filename) > ATTACHMENT_FILENAME_MAX:
+        raise HTTPException(status_code=422, detail=f'파일명이 너무 깁니다 ({ATTACHMENT_FILENAME_MAX}자 이내로 줄여 주세요).')
+    return filename
 
 
 async def _current_version(session: AsyncSession, tenant_id: str, filename: str) -> int:
@@ -197,15 +211,10 @@ async def upload_document(
         session: AsyncSession = Depends(get_session)
 ):
     # 0. 형식·크기 게이트 (인덱싱 전에 명시적으로 막음)
-    _reject_if_oversized(request, DOC_MAX_FILE_BYTES)   # 거대 본문은 read 전에 차단 (C2-A)
-    if not file.filename:   # multipart에 filename 누락 시 Path(None) TypeError→500 방지 (C2)
-        raise HTTPException(status_code=400, detail='파일명이 없습니다.')
-    # 경계 정규화 (#34) — 브라우저가 macOS 파일명을 NFD로 주면 DB에 분해형이 저장되고,
-    # LLM이 NFC로 인용해 매칭이 조용히 깨진다. 이하 전부 이 값을 쓴다 (원본 file.filename 금지).
-    filename = normalize_filename(file.filename)
+    reject_if_oversized(request, DOC_MAX_FILE_BYTES)   # 거대 본문은 read 전에 차단 (C2-A)
+    # 이하 전부 정규화된 값을 쓴다(원본 file.filename 금지) — 브라우저가 NFD로 주면 DB에 분해형이 저장되고 LLM이 NFC로 인용해 매칭이 깨진다.
+    filename = checked_filename(file)
     suffix = Path(filename).suffix.lower()
-    if suffix not in SUPPORTED_SUFFIXES:
-        raise HTTPException(status_code=400, detail=f'지원하지 않는 형식입니다: {suffix or "확장자 없음"}. 지원: PDF/DOCX/XLSX/TXT/MD')
 
     # 0-1. 업로드 데이터 확정 + 폴더 검증 (#165).
     #      **blob을 쓰기 전에** 한다 — 뒤에 두면 실패 경로마다 unlink를 챙겨야 한다(지금 2곳).
@@ -718,54 +727,3 @@ async def download_document(
     if not blob.is_file():
         raise HTTPException(status_code=410, detail="blob file missing")
     return FileResponse(blob, media_type=doc.mime, filename=doc.filename)
-
-
-# 채팅 첨부 크기 게이트 (KMS_UX_FEATURES_PLAN.md — 채팅 내 첨부파일)
-# 텍스트 상한은 schemas.kms가 단일 정의점 — /kms/query의 QueryAttachment 제약과 같은 값이어야
-# 여기서 통과한 결과가 질의에서 거부되지 않는다 (#22)
-ATTACHMENT_MAX_FILE_BYTES = 5 * 1024 * 1024   # 1차: 파일 크기 (문서 업로드 10MB와 별개 — 채팅 첨부는
-                                              # 매 턴 프롬프트에 재주입되므로 더 좁게, 10MB→5MB #22)
-
-
-@router.post('/attachments/extract', response_model=QueryAttachment)
-async def extract_attachment(request: Request, file: UploadFile = File(...)):
-    """채팅 첨부 파일의 텍스트를 추출해 반환한다. 저장하지 않는다 —
-    저장은 이후 질의(attachments 동봉) 시점에 대화에 묶여 이뤄진다.
-    크기 초과는 자르지 않고 명시 거절(413)한다.
-    """
-    _reject_if_oversized(request, ATTACHMENT_MAX_FILE_BYTES)   # 거대 본문은 read 전에 차단 (C2-A)
-    # 파일명 상한은 마지막 줄의 QueryAttachment 생성에서도 검증되는데, 그 지점의 ValidationError는
-    # 요청 파싱이 아니라 핸들러 내부라 422로 변환되지 않고 500이 된다 — 여기서 명시 거절 (#22)
-    # 길이는 정규화 후 값으로 재야 스키마 검증(mode='before')과 같은 기준이 된다 (#34) —
-    # NFD 한글은 글자당 최대 3코드포인트라 raw 길이로 재면 여기서만 거부되는 파일명이 생긴다.
-    filename = normalize_filename(file.filename or '')
-    if len(filename) > ATTACHMENT_FILENAME_MAX:
-        raise HTTPException(status_code=413,
-                            detail=f'파일명이 너무 깁니다 ({ATTACHMENT_FILENAME_MAX}자 이내로 줄여 주세요).')
-    content = await file.read()
-    if len(content) > ATTACHMENT_MAX_FILE_BYTES:
-        # 문구를 상수에서 파생 — 값만 바꾸고 안내가 그대로 남는 드리프트 방지
-        raise HTTPException(status_code=413,
-                            detail=f'파일이 {ATTACHMENT_MAX_FILE_BYTES // (1024 * 1024)}MB를 초과합니다.')
-
-    suffix = Path(filename).suffix.lower()
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        tmp.write(content)
-        tmp_path = Path(tmp.name)
-    try:
-        try:
-            # 텍스트 추출은 동기 CPU 작업(pdfplumber 등) — 이벤트 루프를 막지 않게 스레드풀에서 실행
-            text = await run_in_threadpool(extract_text, tmp_path)
-        except Exception:
-            raise HTTPException(status_code=422, detail='텍스트를 추출할 수 없는 파일입니다.')
-    finally:
-        tmp_path.unlink(missing_ok=True)
-
-    if len(text) > ATTACHMENT_MAX_TEXT_CHARS:
-        raise HTTPException(
-            status_code=413,
-            detail=f'문서가 너무 깁니다 (추출 텍스트 {len(text):,}자 > {ATTACHMENT_MAX_TEXT_CHARS:,}자). 필요한 부분만 잘라 첨부해 주세요.',
-        )
-    return QueryAttachment(filename=filename, text=text)
-
-

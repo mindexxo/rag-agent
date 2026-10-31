@@ -33,6 +33,11 @@ def _to_response(f: Faq, ref_count: int | None = None) -> FaqResponse:
                        created_by=f.created_by, updated_by=f.updated_by, ref_count=ref_count)
 
 
+def _without_question(question: str, variants: list[str]) -> list[str]:
+    """대표 질문과 같은 유사 질문은 뺀다 — 같은 문구가 두 자리에 있어도 검색엔 이득이 없다. 항목 간 중복은 스키마가 걷어냈다."""
+    return [v for v in variants if v != question]
+
+
 async def _reject_duplicate(session: AsyncSession, tenant_id: str, phrases: list[str],
                             exclude_id: int | None = None) -> None:
     """대표 질문·유사 질문이 같은 테넌트의 다른 FAQ(대표 질문 또는 유사 질문)와 **완전 일치**하면 409 (#276).
@@ -172,11 +177,12 @@ async def create_faq(
     if not request.question or not request.answer:
         raise HTTPException(status_code=422, detail='질문/답변이 비어 있습니다.')
     await _check_category(session, tenant_id, request.category_id)
-    await _reject_duplicate(session, tenant_id, [request.question, *request.variants])
+    variants = _without_question(request.question, request.variants)
+    await _reject_duplicate(session, tenant_id, [request.question, *variants])
     faq = Faq(
         tenant_id=tenant_id,
         question=request.question,
-        variants=list(request.variants),
+        variants=variants,
         answer=request.answer,
         category_id=request.category_id,
         created_by=user_id, updated_by=user_id,   # X-User-Id 미전송이면 둘 다 NULL(문서 uploaded_by와 같은 규칙)
@@ -221,7 +227,7 @@ async def update_faq(
     # 바뀐 뒤의 모습을 먼저 계산해 중복을 검사하고, 통과하면 그때 대입한다 — 대입을 먼저 하면 검사 SELECT 직전
     # autoflush가 UPDATE를 내보내 DB UNIQUE에서 터진다(409가 아니라 500, 리뷰 지적 1).
     question = request.question if request.question is not None else faq.question
-    variants = list(request.variants) if request.variants is not None else (faq.variants or [])
+    variants = _without_question(question, request.variants if request.variants is not None else (faq.variants or []))
     answer = request.answer if request.answer is not None else faq.answer
     content_changed = (question, variants, answer) != (faq.question, faq.variants or [], faq.answer)
     if content_changed:

@@ -37,9 +37,9 @@ from sqlalchemy import delete
 
 from database import AsyncSessionLocal
 from rag import cache
-from rag.embeddings import embed_query
+from rag.search.embeddings import embed_query
 from rag.models import AnswerCache as AnswerCacheRow
-from rag.retriever import retrieve
+from rag.search.retriever import retrieve
 from rag.service import _source_doc_ids
 from config import settings
 

@@ -19,7 +19,7 @@ FAQ 내용은 문서와 **다르게** 만들었다(사용자 결정 7) — 겹�
   python -m eval.faq_citation load              # 세트를 테넌트에 적재(기존 FAQ 삭제 후) + 색인(TEI 필요)
   python -m eval.faq_citation measure --label after   # 생성·채점 → eval/results/faq_citation_<label>.jsonl
 '전' 측정은 #278 전 커밋의 워크트리에 이 파일과 세트를 복사해 같은 명령으로 돌린다(load는 한 번이면 된다 —
-청크 텍스트 조립 규약 rag/faq_indexing.build_faq_chunk_text가 같다). 결과를 인용할 때는 커밋을 함께 적는다(AGENTS.md).
+청크 텍스트 조립 규약 rag/search/faq_indexing.build_faq_chunk_text가 같다). 결과를 인용할 때는 커밋을 함께 적는다(AGENTS.md).
 """
 import argparse
 import asyncio
@@ -32,11 +32,11 @@ from sqlalchemy import delete, select
 from database import AsyncSessionLocal
 from eval.axis_common import commit
 from eval.generation import CONCURRENCY, RESULT_DIR, generate, retrieved_context
-from rag import os_index
 from rag.citation_labels import sources_from_chunks
 from rag.citation_tail import TailSplitter, resolve_citations
 from rag.llm import LlmClient, create_llm
 from rag.models import Faq
+from rag.search import os_index
 
 FAQ_EVAL_TENANT = "faq_eval"          # 전용 테넌트 — 다른 축의 측정 테넌트에 FAQ를 섞지 않는다(eval/axis_common.load_chunks 전제)
 SET = Path("eval/faq_set.jsonl")

@@ -127,7 +127,7 @@ def test_문항은_토큰과_정답을_그대로_싣는다():
 
 def test_근거_판정은_조각_id가_아니라_넘기는_글로_본다():
     # 표 시트 접기: 정답 행이 든 형제 조각은 id로는 빠지지만, 1위 조각이 시트 완성본으로 바뀌어 그 행을 싣는다
-    from rag.retrieval_types import RetrievedChunk
+    from rag.search.retrieval_types import RetrievedChunk
     sheet = RetrievedChunk(chunk_id=1, document_id=1, text="| AR-2001 | 벤조인 |\n| AR-2021 | 만다린 |", heading_path=[],
                            page=None, filename="원료.xlsx", version=1, is_table=True)
     assert evidence_has([sheet], "ar-2021") == 1.0

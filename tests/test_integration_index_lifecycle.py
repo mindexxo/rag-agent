@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from database import AsyncSessionLocal
 from rag.models import SearchIndexOutbox
-from rag.retriever import retrieve_candidates
+from rag.search.retriever import retrieve_candidates
 from tests.conftest import indexed_chunk_texts, ingest
 from tests.helpers_documents import MD, get_doc, make_folder, upload
 
@@ -52,7 +52,7 @@ async def test_색인_도중_삭제되면_ready로_올리지_않고_들어간_�
     """OB-21·DOC-104 — 청크가 엔진에 들어간 뒤, ready 커밋 전에 삭제가 끼어든다."""
     doc_id = (await upload(client, '환불정책.md', MD))['document_id']
 
-    from rag import os_index
+    from rag.search import os_index
 
     real = os_index.index_parsed_document
 

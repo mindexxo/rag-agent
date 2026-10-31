@@ -211,7 +211,7 @@ def docx_docling_items(doc: 'DoclingDocument') -> Iterator[DocxItem]:
 def docx_sections(file_path: str | Path) -> list[Section]:
     """DOCX → docling → 섹션. Heading 스타일이 경계이고, 스타일이 하나도 없으면 조문 패턴 폴백(docx_fallback_headings).
 
-    헤딩은 본문에 넣지 않는다 — heading_path가 들고 있고 rag/index_text가 색인 입력 앞에 붙인다. 조립은 PDF와 같은
+    헤딩은 본문에 넣지 않는다 — heading_path가 들고 있고 rag/search/index_text가 색인 입력 앞에 붙인다. 조립은 PDF와 같은
     sections.build_sections(본문 없는 헤딩 보존 포함). page는 없다(None).
     """
     items = list(docx_docling_items(convert_process.docling_convert(file_path)))

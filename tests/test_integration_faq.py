@@ -10,7 +10,7 @@ from database import AsyncSessionLocal
 from tests.conftest import FakeLlm, faq_doc, sync_faq
 from rag import cache
 from rag.models import AnswerCache as AnswerCacheRow, Faq
-from rag.retriever import retrieve_candidates
+from rag.search.retriever import retrieve_candidates
 
 
 async def _create_faq(client, question='환불 기간은?', answer='7일 이내 처리됩니다.') -> int:

@@ -15,10 +15,10 @@ BM25 채점은 실제 OpenSearch(Nori)가 한다 — 청크는 PG가 아니라 �
 import pytest
 
 from database import AsyncSessionLocal
-from rag import os_index, os_search
 from rag.chunking import ChunkData as ParsedChunk
 from rag.models import Document
-from rag.retriever import retrieve_candidates
+from rag.search import os_index, os_search
+from rag.search.retriever import retrieve_candidates
 from tests.conftest import fake_vector
 
 

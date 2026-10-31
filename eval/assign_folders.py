@@ -1,6 +1,6 @@
 """코퍼스 문서를 폴더로 분류하고 '참조 설명'을 채운다 (2026-08-05).
 
-폴더 설명은 리랭커 입력에 붙어 **폴더 사이 순위**에 개입한다(rag/index_text 참조).
+폴더 설명은 리랭커 입력에 붙어 **폴더 사이 순위**에 개입한다(rag/search/index_text 참조).
 그래서 설명은 짧고 변별적이어야 한다 — 길면 후보 수만큼 누적돼 지연이 늘고,
 뭉뚱그리면 폴더를 나눈 의미가 없다.
 
@@ -138,7 +138,7 @@ async def main() -> None:
             if not docs:
                 continue
             # 첫 청크(chunk_index 0)의 헤딩·본문 — 청크는 색인에만 있다(#139). 없으면 None.
-            from rag import os_index, os_search
+            from rag.search import os_index, os_search
             first = await os_search.fetch_chunk_map(
                 [os_index.chunk_os_id(document_id=d.id, chunk_index=0) for d in docs])
             rows = []

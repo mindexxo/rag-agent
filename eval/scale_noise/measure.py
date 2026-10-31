@@ -1,6 +1,6 @@
 """#235 측정 — 조건(임시 인덱스)마다 ⓐ dense 풀의 근사 vs 정확 ⓑ 최종 검색 지표 ⓒ 회귀 문항 덤프.
 
-ⓐ 같은 질의 벡터로 운영 kNN 절(rag/os_search.knn_clause, 상위 30)과 정확 탐색(script_score + knn_score, 같은 필터)을 돌려
+ⓐ 같은 질의 벡터로 운영 kNN 절(rag/search/os_search.knn_clause, 상위 30)과 정확 탐색(script_score + knn_score, 같은 필터)을 돌려
    상위 30 겹침·상위 1 일치·정답 조각의 양쪽 순위·지연을 적는다. 정확 점수는 1+cos, 근사는 (1+cos)/2 — 순위만 비교한다.
    실측(운영 인덱스, 10/23): 현 규모(테넌트 444조각)에서 30/30 일치 — 노이즈가 커지면 여기가 먼저 갈린다.
 ⓑ eval/retrieval_v2.compute(tenants={측정 테넌트})를 임시 인덱스를 보게 한 채 돌린다(settings.opensearch_index만 바꿔 끼움 —
@@ -20,12 +20,12 @@ from eval.generation import load_gold, row_tenant
 from eval.retrieval import resolve_gold
 from eval.retrieval_v2 import TYPES, compute
 from eval.scale_noise import CONDITIONS, NOISE_DOC_ID_BASE, OUT, TENANT, index_name
-from rag.embeddings import embed_texts
-from rag.os_client import client
-from rag.os_search import knn_clause, tenant_filter
-from rag.retriever import retrieve_candidates
+from rag.search.embeddings import embed_texts
+from rag.search.os_client import client
+from rag.search.os_search import knn_clause, tenant_filter
+from rag.search.retriever import retrieve_candidates
 
-POOL = 30   # 운영 candidates_per_branch(rag/retriever.retrieve_candidates)
+POOL = 30   # 운영 candidates_per_branch(rag/search/retriever.retrieve_candidates)
 
 
 @contextmanager

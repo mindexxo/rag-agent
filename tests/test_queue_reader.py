@@ -10,7 +10,7 @@ import pytest
 
 from config import settings
 from rag.prepared import PreparedRag
-from rag.retrieval_types import RetrievalResult
+from rag.search.retrieval_types import RetrievalResult
 from rag.streaming import queue_reader
 from tests.conftest import sse_events
 

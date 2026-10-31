@@ -8,7 +8,8 @@ from prometheus_client import start_http_server
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import cache, os_client, outbox
+from rag import cache, outbox
+from rag.search import os_client
 
 # 도메인 스윕과 아래 cron 래퍼가 같은 이름이라 별칭 — cron_jobs엔 래퍼가 등록돼야 한다
 from rag.turn_state import sweep_stale_generating as _sweep_generating

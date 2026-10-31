@@ -36,8 +36,8 @@ from config import settings
 from eval.axis_common import chunk_head, commit, load_chunks   # 색인 읽기·지문 — 키워드 축(#248)과 공용
 from eval.retrieval import score_one
 from rag.identifiers import chunk_identifiers
-from rag.os_client import close_client
-from rag.retriever import prepare_evidence, retrieve_candidates
+from rag.search.os_client import close_client
+from rag.search.retriever import prepare_evidence, retrieve_candidates
 
 TENANTS = ("inticube", "article_test")
 RESULT_DIR = Path("eval/results")

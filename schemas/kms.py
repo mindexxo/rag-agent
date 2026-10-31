@@ -206,7 +206,7 @@ class DocumentBulkUpdateRequest(BaseModel):
 
 
 # FAQ 입력 상한 (#276, 사용자 결정 10/22). 질문+유사 질문+답변이 **청크 하나**로 임베딩되므로
-# (rag/faq_indexing.py) 길어질수록 임베딩 입력이 잘리거나 검색 정확도가 떨어진다 — 상한의 이유.
+# (rag/search/faq_indexing.py) 길어질수록 임베딩 입력이 잘리거나 검색 정확도가 떨어진다 — 상한의 이유.
 # DB 컬럼은 TEXT 그대로다(저장소 관례: 길이는 앱, DB는 TEXT). FE 입력칸이 같은 값을 건다.
 FAQ_QUESTION_MAX = 100
 FAQ_VARIANT_MAX = 100     # 유사 질문 항목당 — 질문과 같은 성격이라 같은 값

@@ -1,7 +1,7 @@
 """#235 임시 인덱스 — 운영 인덱스 복사 + 노이즈 조각(규모별) → forcemerge.
 
 복사는 #234와 같이 search(match_all)+bulk로 `_id`·`_source`(dense 포함)를 그대로 옮긴다(재임베딩 없음). 노이즈 조각은 운영 색인
-문서 조립 함수(rag/os_index.build_doc)에 ParsedChunk를 넘겨 만든다 — 필드 모양(헤딩·식별자·Nori·bigram)이 운영과 같다.
+문서 조립 함수(rag/search/os_index.build_doc)에 ParsedChunk를 넘겨 만든다 — 필드 모양(헤딩·식별자·Nori·bigram)이 운영과 같다.
 document_id는 NOISE_DOC_ID_BASE부터 문서마다 하나(PG 행 없음 — 검색 평가 경로는 노이즈에 PG를 안 쓴다, eval/retrieval.resolve_gold는
 정답 문서만 PG로 푼다). x0는 노이즈 0(복사+forcemerge만) — 세그먼트 구조를 맞춘 기준선. idf는 x30과 같은 노이즈를 NOISE_TENANT로.
 규모 n은 "측정 테넌트 조각 수 × 배수"를 문서 단위로 채운다(같은 시드로 섞어 x5 ⊂ x10 ⊂ x30).
@@ -15,8 +15,8 @@ from datetime import datetime
 from opensearchpy.helpers import async_bulk
 
 from config import settings
-from rag.os_client import MAPPING, client
-from rag.os_index import ParsedChunk, build_doc, chunk_os_id
+from rag.search.os_client import MAPPING, client
+from rag.search.os_index import ParsedChunk, build_doc, chunk_os_id
 from eval.scale_noise import CHUNKS, CONDITIONS, FILTER, NOISE_DOC_ID_BASE, NOISE_TENANT, OUT, SCALES, TENANT, index_name
 
 

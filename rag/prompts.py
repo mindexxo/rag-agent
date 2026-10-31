@@ -25,7 +25,7 @@ from rag.prompt_texts import (
     STANDALONE_QUERY_LABEL,
     USER_TEMPLATE,
 )
-from rag.retrieval_types import RetrievedChunk
+from rag.search.retrieval_types import RetrievedChunk
 
 
 def _resolve_domain_hint(domain_hint: str | None) -> str:

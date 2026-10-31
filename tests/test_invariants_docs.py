@@ -20,7 +20,7 @@ from rag import limiter, os_reconcile, otel, outbox
 from rag.citation_labels import citation_tail, sources_from_chunks
 from rag.models import Document, Message, TurnStatus
 from rag.prepared import PreparedRag
-from rag.retrieval_types import RetrievalResult, RetrievedChunk
+from rag.search.retrieval_types import RetrievalResult, RetrievedChunk
 from rag.service import RagService
 from rag.streaming import _run_generation
 from tests.conftest import indexed_chunk_texts, ingest, sse_done, sse_meta

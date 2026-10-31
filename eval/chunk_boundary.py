@@ -155,7 +155,7 @@ def _table_runs(chunks: list[dict]) -> list[list[int]]:
 
 
 def _table_losses(chunks: list[dict]) -> list[dict]:
-    """XLSX는 보지 않는다 — 시트 조각은 근거 조립에서 '걸린 묶음 + 시트 완성본'이 되어(rag.retriever.prepare_evidence, #268)
+    """XLSX는 보지 않는다 — 시트 조각은 근거 조립에서 '걸린 묶음 + 시트 완성본'이 되어(rag.search.retriever.prepare_evidence, #268)
     모델이 언제나 시트 전체를 받는다(묶음은 헤더·설명을 반복하는 독립 묶음이라 경계 결함이 없다). 호출부(census)가 확장자로 거른다."""
     out = []
     for run in _table_runs(chunks):
@@ -229,7 +229,7 @@ def gold_spans(docs: dict[str, list[dict]], gold: list[dict]) -> dict:
 async def _from_index() -> dict[str, list[dict]]:
     from eval.axis_common import load_chunks
     from eval.generation import V2_TENANTS
-    from rag.os_client import close_client
+    from rag.search.os_client import close_client
     docs = {}
     try:
         for t in sorted(V2_TENANTS):

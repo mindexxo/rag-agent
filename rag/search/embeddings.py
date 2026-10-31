@@ -16,7 +16,7 @@ from config import settings
 
 Kind = Literal["query", "document"]
 
-# 저장 벡터 차원 — rag/os_client.DIM·rag/models.AnswerCache.query_embedding과 같아야 한다.
+# 저장 벡터 차원 — rag/search/os_client.DIM·rag/models.AnswerCache.query_embedding과 같아야 한다.
 EMBED_DIM = 1024
 
 

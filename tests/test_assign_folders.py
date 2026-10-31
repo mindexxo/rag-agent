@@ -11,8 +11,9 @@ from sqlalchemy import select
 from config import settings
 from database import AsyncSessionLocal
 from eval.assign_folders import FOLDERS, classify, main
-from rag import os_client, os_index, outbox
+from rag import outbox
 from rag.models import Document, Folder, SearchIndexOutbox
+from rag.search import os_client, os_index
 from tests.conftest import ingest
 
 MD = '# 환불 정책\n\n## 1. 기간\n\n단순변심 반품은 14일 이내 신청한다.\n'.encode()

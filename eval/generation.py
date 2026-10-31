@@ -22,23 +22,21 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-
 from config import settings
 from database import AsyncSessionLocal
+from eval import epcov_judge
 from eval._gold_history import messages_from_conversation
-from rag.citation_labels import sources_from_chunks
-from rag.citation_tail import TailSplitter, resolve_citations
-from rag.conversation import (build_prior_turns, condense_query,
-                              trim_messages_for_condense)
-from rag.retriever import prepare_evidence, retrieve_candidates
-from rag.retrieval_types import RetrievedChunk
-from rag.embeddings import embed_texts_sync
-from rag.prompts import build_citation_tail, build_knowledge_generation_prompt
-from rag.llm import LlmClient, aux_overridden, create_aux_llm, create_llm
-from eval.retrieval import resolve_gold
 from eval.absence_judge import judge_llm
 from eval.misinfo_judge import confirm_violations
-from eval import epcov_judge
+from eval.retrieval import resolve_gold
+from rag.citation_labels import sources_from_chunks
+from rag.citation_tail import TailSplitter, resolve_citations
+from rag.conversation import build_prior_turns, condense_query, trim_messages_for_condense
+from rag.llm import LlmClient, aux_overridden, create_aux_llm, create_llm
+from rag.prompts import build_citation_tail, build_knowledge_generation_prompt
+from rag.search.embeddings import embed_texts_sync
+from rag.search.retrieval_types import RetrievedChunk
+from rag.search.retriever import prepare_evidence, retrieve_candidates
 
 TENANT = "demo"                      # v1(단일 테넌트) 기본값 — v2 gold는 id 접두로 라우팅
 V2_TENANTS = {"summers", "homeplus", "adererror", "aromanica", "goodpeople", "harim", "inticube"}
@@ -100,7 +98,7 @@ async def oracle_context(session, chunk_ids: list[int]) -> list[RetrievedChunk]:
     """
     if not chunk_ids:
         return []
-    from rag import os_search
+    from rag.search import os_search
     chunk_map = await os_search.fetch_chunk_map(chunk_ids)
     chunks = [chunk_map[cid] for cid in chunk_ids if cid in chunk_map]
     # 운영과 같은 근거 준비(#222) — 정답 묶음도 시트 완성본으로 바꿔 넣는다(같은 시트 묶음이 여럿이면 하나로 접힌다)
@@ -112,7 +110,7 @@ async def retrieved_context(session, tenant: str, query: str) -> list[RetrievedC
     cands = await retrieve_candidates(session, tenant, query, top_n=20)
     chunks = cands.chunks
     if USE_RERANK and chunks:
-        from rag.reranker import rerank
+        from rag.search.reranker import rerank
         chunks = await rerank(query, chunks)
     return prepare_evidence(chunks, TOP_K)
 

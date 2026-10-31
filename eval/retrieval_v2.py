@@ -21,8 +21,8 @@ from database import AsyncSessionLocal
 from eval.axis_common import table_kind
 from eval.generation import HARD_TYPES, load_gold, row_tenant
 from eval.retrieval import resolve_gold, score_one
-from rag.os_search import fetch_chunk_map
-from rag.retriever import retrieve_candidates
+from rag.search.os_search import fetch_chunk_map
+from rag.search.retriever import retrieve_candidates
 
 TYPES = {'single_fact', 'paraphrase', 'rare_lexical', 'multi_doc'} | HARD_TYPES
 METRICS = ['recall_at_5', 'recall_at_20', 'hit_at_1', 'mrr']
@@ -179,6 +179,6 @@ if __name__ == '__main__':
         try:
             await main()
         finally:
-            from rag import os_client
+            from rag.search import os_client
             await os_client.close_client()      # aiohttp 세션 미종료 경고 방지
     asyncio.run(_run())

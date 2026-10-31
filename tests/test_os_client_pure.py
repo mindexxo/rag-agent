@@ -6,14 +6,14 @@
 
   1. BM25·HNSW 파라미터를 매핑에 명시하지 않는다      (엔진 기본값 — 사용자 결정 2026-09-13)
   2. dense 차원·엔진·space_type이 고정돼 있다          (임베딩 1024·lucene·cosinesimil)
-  3. bigram 필드는 공백만 자른다                       (토큰은 rag/lexical.py가 만든다)
+  3. bigram 필드는 공백만 자른다                       (토큰은 rag/search/lexical.py가 만든다)
   4. 엔진이 돌려준 청크에 인용 메타가 다 실린다        (PG를 되묻지 않으므로)
   5. ensure_index는 못 붙으면 예외, 경합의 already_exists는 성공, soft는 예외 없이 False
 """
 import pytest
 
-from rag import os_client as C
-from rag import lexical
+from rag.search import os_client as C
+from rag.search import lexical
 
 
 def test_bm25_hnsw_파라미터는_엔진_기본값을_쓴다():
@@ -40,7 +40,7 @@ def test_dense_필드는_임베딩_차원과_lucene_cosinesimil로_고정된다(
 
 def test_bigram_필드는_공백만_자른다():
     """analyzer로 bigram을 재현하지 않는다는 설계가 매핑에 남아 있는지 — 이게 바뀌면
-    1글자 어절 보존이 깨져 bigram 대조군이 대조군이 아니게 된다(rag/lexical.py:24-38)."""
+    1글자 어절 보존이 깨져 bigram 대조군이 대조군이 아니게 된다(rag/search/lexical.py:24-38)."""
     props = C.MAPPING["mappings"]["properties"]
     analyzer = props[C.LEX_BIGRAM_FIELD]["analyzer"]
     assert C.MAPPING["settings"]["analysis"]["analyzer"][analyzer]["tokenizer"] == "whitespace"
@@ -123,7 +123,7 @@ async def test_ensure_index_soft는_못_붙어도_예외_없이_False(monkeypatc
 
     monkeypatch.setattr(C, 'client', lambda: _Client())
     import logging
-    with caplog.at_level(logging.ERROR, logger='rag.os_client'):
+    with caplog.at_level(logging.ERROR, logger='rag.search.os_client'):
         assert await C.ensure_index_soft() is False
     assert any('연결 실패' in r.getMessage() for r in caplog.records)
 
@@ -139,7 +139,7 @@ class TestConnectionPool:
     def test_maxsize를_명시한다(self):
         import inspect
 
-        import rag.os_client as oc
+        import rag.search.os_client as oc
         src = inspect.getsource(oc.client)
         assert 'maxsize=' in src, 'maxsize를 안 주면 기본 10으로 묶인다'
 

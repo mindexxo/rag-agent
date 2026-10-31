@@ -226,8 +226,12 @@ async def test_LLM_호출_실패는_503이고_턴은_failed로_닫힌다(
 @pytest.mark.parametrize(
     ('module', 'name', 'exc'),
     [
-        ('rag.os_search', 'search_dense_per_query', opensearchpy.ConnectionError('N/A', 'connection refused', None)),
-        ('rag.retriever', 'embed_texts', httpx.ConnectError('connection refused', request=_REQ)),
+        (
+            'rag.search.os_search',
+            'search_dense_per_query',
+            opensearchpy.ConnectionError('N/A', 'connection refused', None),
+        ),
+        ('rag.search.retriever', 'embed_texts', httpx.ConnectError('connection refused', request=_REQ)),
     ],
     ids=['opensearch', 'embedding'],
 )
@@ -262,9 +266,9 @@ async def test_대화와_무관한_ValueError는_500이고_턴은_failed로_닫�
     async def _broken_embed(texts: list[str], kind: str = 'document') -> list:
         raise exc
 
-    import rag.retriever
+    import rag.search.retriever
 
-    monkeypatch.setattr(rag.retriever, 'embed_texts', _broken_embed)  # fake_embed와 같은 지점
+    monkeypatch.setattr(rag.search.retriever, 'embed_texts', _broken_embed)  # fake_embed와 같은 지점
     async with _lenient_client(tenant_id) as lenient:
         res = await lenient.post('/kms/query', json={'query': '환불 기간 알려줘'})
 

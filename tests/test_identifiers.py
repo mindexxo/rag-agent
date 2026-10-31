@@ -10,8 +10,8 @@ from llama_index.core.node_parser import SentenceSplitter
 from rag import chunking
 from rag.identifiers import (chunk_identifiers, cut_identifier_span, effective_headings, is_heading_line, normalize_identifiers,
                              split_heading_line)
-from rag.retrieval_types import RetrievedChunk
-from rag.retriever import apply_identifier_boost, prepare_evidence
+from rag.search.retrieval_types import RetrievedChunk
+from rag.search.retriever import apply_identifier_boost, prepare_evidence
 
 
 # ----- 정규화: 색인(헤딩)과 질문에 같은 함수 ---------------------------------------

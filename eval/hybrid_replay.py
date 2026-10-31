@@ -5,7 +5,7 @@
 한 번 받아 두면 풀 구성을 바꾼 조건을 다시 검색하지 않고 계산할 수 있다. 조건끼리 같은 점수를 쓰니 TEI의 호출마다의
 흔들림(1.4e-4)이 조건 차이에 섞이지 않는다. 캡처·CLI는 eval/hybrid_weights.py.
 
-**재생이 운영과 같다는 보장**: `assemble(BASELINE)`은 운영 rag/retriever.retrieve_candidates의 단일 질의 경로를 그대로 따른다
+**재생이 운영과 같다는 보장**: `assemble(BASELINE)`은 운영 rag/search/retriever.retrieve_candidates의 단일 질의 경로를 그대로 따른다
 — 벡터 30 → BM25 30 중 벡터에 없는 것 15개 뒤에 → 식별자 일치 뒤에 → 리랭커 점수 안정 정렬 → 식별자 +가산 → 상위 20
 (#257로 '한 시트만' 필터는 없어졌다). 재구현은 풀 조립(build_pool)뿐이고 나머지는 운영 함수(apply_identifier_boost·prepare_evidence)를
 그대로 부른다. 그래도 재구현이 어긋날 수 있으므로 eval/hybrid_weights의 verify가 **캡처값을 운영 함수에 끼워 실제로 돌린
@@ -21,10 +21,10 @@ from dataclasses import dataclass
 
 from eval.retrieval import score_one
 from eval.axis_common import evidence_has
-from rag.retrieval_types import RetrievedChunk
-from rag.retriever import table_identity, apply_identifier_boost, prepare_evidence
+from rag.search.retrieval_types import RetrievedChunk
+from rag.search.retriever import table_identity, apply_identifier_boost, prepare_evidence
 
-TOP_N = 20      # 운영 retrieve_candidates 기본 — rag.retriever.DEFAULT_TOP_N
+TOP_N = 20      # 운영 retrieve_candidates 기본 — rag.search.retriever.DEFAULT_TOP_N
 TOP_K = 5       # 모델이 받는 근거 수 — eval.generation.TOP_K
 
 
@@ -102,7 +102,7 @@ def _bm25_ids(rec: dict, n: int) -> list[int]:
 
 
 def build_pool(rec: dict, cond: Condition = BASELINE) -> list[int]:
-    """리랭커 풀(순서 있음) — rag/retriever.retrieve_candidates의 '하이브리드 어휘 주입(#135)'·'식별자 채널 주입(#238)' 블록과
+    """리랭커 풀(순서 있음) — rag/search/retriever.retrieve_candidates의 '하이브리드 어휘 주입(#135)'·'식별자 채널 주입(#238)' 블록과
     같은 조립. 벡터가 비면 빈 풀(어휘 주입도 안 함)."""
     top = _dense_ids(rec, cond.dense_n)
     if not top:
@@ -124,7 +124,7 @@ def assemble(rec: dict, chunks: dict[int, RetrievedChunk], cond: Condition = BAS
     except KeyError as e:
         raise PoolCoverageError(f"{rec['qid']}: 리랭커 점수 없는 후보 {e}") from None
     scores = _blend(rec, pool, scores, cond)
-    order = sorted(range(len(pool)), key=lambda i: -scores[i])       # rag.reranker.rerank_maxpool과 같은 안정 정렬
+    order = sorted(range(len(pool)), key=lambda i: -scores[i])       # rag.search.reranker.rerank_maxpool과 같은 안정 정렬
     ranked, ranked_scores = [pool[i] for i in order], [scores[i] for i in order]
     if rec["ident_tokens"]:
         ranked, _, _ = apply_identifier_boost(ranked, ranked_scores, [0] * len(ranked), rec["ident_tokens"],

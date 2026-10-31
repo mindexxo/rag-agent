@@ -12,11 +12,11 @@ from types import SimpleNamespace
 
 import pytest
 
-import rag.embeddings as emb
-import rag.reranker as rr
+import rag.search.embeddings as emb
+import rag.search.reranker as rr
 from config import settings
-from rag.embeddings import EMBED_DIM, MAX_CLIENT_BATCH, Embedding, embed_query, embed_texts, embed_texts_sync
-from rag.reranker import rerank_scores
+from rag.search.embeddings import EMBED_DIM, MAX_CLIENT_BATCH, Embedding, embed_query, embed_texts, embed_texts_sync
+from rag.search.reranker import rerank_scores
 
 
 def _vec(i, n=EMBED_DIM):
@@ -73,7 +73,7 @@ def vendor(monkeypatch):
 
 def test_dim_matches_storage():
     """상용에 요청하는 차원 = OpenSearch 매핑 차원. 어긋나면 색인이 조용히 실패한다."""
-    from rag.os_client import DIM
+    from rag.search.os_client import DIM
     assert EMBED_DIM == DIM == 1024
 
 

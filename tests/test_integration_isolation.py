@@ -9,7 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from database import AsyncSessionLocal
-from rag.retriever import retrieve_candidates
+from rag.search.retriever import retrieve_candidates
 from tests.conftest import sse_meta, sync_faq
 
 

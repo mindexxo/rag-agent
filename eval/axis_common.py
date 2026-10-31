@@ -8,8 +8,8 @@ import re
 import subprocess
 
 from config import settings
-from rag.os_client import client
-from rag.os_search import tenant_filter
+from rag.search.os_client import client
+from rag.search.os_search import tenant_filter
 
 
 async def load_chunks(tenant: str) -> list[dict]:
@@ -68,7 +68,7 @@ def table_kind(chunks) -> str:
 
 def evidence_has(evidence, token: str) -> float:
     """모델이 실제로 받는 근거 **글**에 토큰이 있나(키워드 축 합격 기준, #248). 조각 id로 보면 안 된다: 표는 같은 시트 조각을
-    가장 위 하나로 접고 시트 완성본으로 바꿔 넘기므로(rag.retriever.prepare_evidence), 정답 행이 든 형제 조각이 id로는 빠져도
+    가장 위 하나로 접고 시트 완성본으로 바꿔 넘기므로(rag.search.retriever.prepare_evidence), 정답 행이 든 형제 조각이 id로는 빠져도
     모델은 그 행을 본다(첫 실행 실측: R@5=1인데 id 기준 근거 밖 4건이 전부 이 꼴, 2026-10-18)."""
     n = norm_text(token)
     return float(any(n in norm_text(c.text) for c in evidence))

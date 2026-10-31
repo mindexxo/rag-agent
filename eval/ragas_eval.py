@@ -42,7 +42,7 @@ from ragas.llms import LangchainLLMWrapper
 from ragas.embeddings import LangchainEmbeddingsWrapper
 from ragas.run_config import RunConfig
 
-from rag.embeddings import embed_texts_sync, embed_query_sync
+from rag.search.embeddings import embed_texts_sync, embed_query_sync
 from eval.ragas_adapter import build_samples
 from ragas import EvaluationDataset
 

@@ -9,8 +9,8 @@ import json
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-from rag.embeddings import embed_texts
-from rag.index_text import build_index_text
+from rag.search.embeddings import embed_texts
+from rag.search.index_text import build_index_text
 from eval.scale_noise import CHUNKS, DOCS, FILTER, MANIFEST
 
 WORKERS = 4

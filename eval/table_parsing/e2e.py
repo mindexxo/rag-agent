@@ -53,7 +53,7 @@ async def _ingest(document_id: int) -> dict:
 
 async def _chunks(document_id: int) -> list[dict]:
     from config import settings
-    from rag import os_client
+    from rag.search import os_client
     c = os_client.client()
     resp = await c.search(index=settings.opensearch_index, body={
         'size': 1000, '_source': ['chunk_id', 'text', 'heading_path', 'meta'],

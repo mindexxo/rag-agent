@@ -37,8 +37,8 @@ from config import settings
 from eval.axis_common import chunk_head, commit, evidence_has, load_chunks, norm_text
 from eval.generation import TOP_K, V2_TENANTS
 from eval.retrieval import score_one
-from rag.os_client import client, close_client
-from rag.retriever import prepare_evidence, retrieve_candidates
+from rag.search.os_client import client, close_client
+from rag.search.retriever import prepare_evidence, retrieve_candidates
 
 TENANTS = tuple(sorted(V2_TENANTS))   # 모의 6 + inticube — 문장형 골드(retrieval_v2)와 같은 테넌트
 RESULT_DIR = Path("eval/results")

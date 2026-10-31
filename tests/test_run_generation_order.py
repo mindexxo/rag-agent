@@ -14,7 +14,7 @@ from rag import cancellation, limiter, stream_resume, streaming
 from rag.citation_labels import TAIL_END, TAIL_START
 from rag.models import TurnStatus
 from rag.prepared import PreparedRag
-from rag.retrieval_types import RetrievalResult
+from rag.search.retrieval_types import RetrievalResult
 from schemas.kms import SourceCitation
 
 SOURCE = SourceCitation(document_id=1, filename='a.pdf', version=1)

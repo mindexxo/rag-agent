@@ -397,8 +397,8 @@ async def test_G2_병합_제목은_한_번만_색인된다(client, tenant_id, fa
 @pytest.mark.asyncio
 async def test_G4_큰_시트는_행_묶음으로_색인되고_근거는_시트_완성본이다(client, tenant_id, fake_queue, blob_tmp):
     """#222 — 색인(행 묶음·묶음마다 완성본) → 조회(fetch_chunk_map이 table_text를 돌려줌) → 근거 준비(완성본으로 확장)"""
-    from rag import os_search
-    from rag.retriever import prepare_evidence
+    from rag.search import os_search
+    from rag.search.retriever import prepare_evidence
 
     def build(wb):
         ws = wb.active

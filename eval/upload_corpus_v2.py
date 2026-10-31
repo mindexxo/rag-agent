@@ -69,11 +69,11 @@ async def upload_all() -> None:
 
 async def verify() -> bool:
     from database import AsyncSessionLocal
-    from rag.retriever import retrieve
+    from rag.search.retriever import retrieve
     from sqlalchemy import func, select
 
     from config import settings
-    from rag import os_client
+    from rag.search import os_client
     from rag.models import Document
 
     ok = True

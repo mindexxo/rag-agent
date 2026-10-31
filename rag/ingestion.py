@@ -12,13 +12,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import AsyncSessionLocal
-from rag import os_index, outbox
+from rag import outbox
 from rag.chunking import abort_conversion, chunk_file, count_picture_placeholders, pdf_image_area_ratio
 from rag.documents import retire_documents
-from rag.embeddings import embed_texts  # 이름으로 들일 것 — tests/conftest.py가 rag.ingestion.embed_texts를 패치
-from rag.index_text import build_index_text
 from rag.metrics import INDEX_DURATION_SECONDS, INDEX_PICTURE_PLACEHOLDER_TOTAL, INDEX_TOTAL, ext_label
 from rag.models import ALIVE_DOCUMENT_STATUSES, Document, Folder
+from rag.search import os_index
+from rag.search.embeddings import embed_texts  # 이름으로 들일 것 — tests/conftest.py가 rag.ingestion.embed_texts를 패치
+from rag.search.index_text import build_index_text
 
 # 이미지 면적(%)이 이 값 이상이면 문서에 경고를 남긴다 — 작은 도표 하나에도 핵심 내용이 들 수 있어 낮게 잡는다.
 IMAGE_WARN_PERCENT = 0.5

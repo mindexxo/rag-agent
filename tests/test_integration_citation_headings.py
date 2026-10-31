@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from rag import os_search
+from rag.search import os_search
 from tests.conftest import ingest
 from tests.helpers_documents import chunk_texts, get_doc, upload
 

@@ -9,9 +9,9 @@ import inspect
 
 import pytest
 
-from rag.index_text import build_index_text
-from rag.reranker import _rerank_text
-from rag.retrieval_types import RetrievedChunk
+from rag.search.index_text import build_index_text
+from rag.search.reranker import _rerank_text
+from rag.search.retrieval_types import RetrievedChunk
 from tests.helpers_documents import MD, doc_data, upload
 
 

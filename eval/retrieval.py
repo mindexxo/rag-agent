@@ -10,9 +10,9 @@ from sqlalchemy import select
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import os_client
+from rag.search import os_client
 from rag.models import Document
-from rag.retriever import apply_gate, retrieve_candidates
+from rag.search.retriever import apply_gate, retrieve_candidates
 
 # 게이트 임계값 sweep 후보 (max_dense_distance)
 SWEEP = [0.4, 0.5, 0.6, 0.7]
@@ -190,7 +190,7 @@ async def run_config(session, name, gold_rows, resolved, fingerprint):
         finally:
             settings.rerank_enabled = prev_rerank
         if rerank_model:                                    # 후보 순서만 재정렬 (R@20 불변)
-            from rag.reranker import rerank                  # 사용 시점에만 import (모듈은 직접 구현 예정)
+            from rag.search.reranker import rerank                  # 사용 시점에만 import (모듈은 직접 구현 예정)
             cands.chunks = await rerank(row["query"], cands.chunks)
         elapsed.append((time.perf_counter() - t0) * 1000)
         got = [c.chunk_id for c in cands.chunks]

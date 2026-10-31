@@ -78,7 +78,7 @@ CREATE INDEX IF NOT EXISTS idx_docs_filename_trgm
 --   ③ 적용
 --      UPDATE documents SET filename = normalize(filename, NFC)
 --       WHERE filename <> normalize(filename, NFC);
--- 청크 임베딩에도 파일명이 prefix로 들어가므로(rag/index_text.py) 정합을 완전히 맞추려면
+-- 청크 임베딩에도 파일명이 prefix로 들어가므로(rag/search/index_text.py) 정합을 완전히 맞추려면
 -- 해당 문서 재인제스트가 이상적이다. 검색 품질 영향은 작아 각주·지표 복구는 UPDATE만으로 충분.
 
 -- ---------- FAQ (F3: 전용 저장. 검색은 색인에 항목당 청크 1개 — 관문·원문반환 없음) ----------
@@ -114,7 +114,7 @@ CREATE INDEX IF NOT EXISTS idx_faqs_tenant ON faqs (tenant_id);
 --                  ALTER TABLE faqs ADD COLUMN IF NOT EXISTS updated_by TEXT;
 
 -- ---------- 청크: 이 DB에 없다 ----------
--- 본문·메타·벡터·어휘 필드는 OpenSearch 인덱스(rag/os_client.py MAPPING)에만 있다(#139).
+-- 본문·메타·벡터·어휘 필드는 OpenSearch 인덱스(rag/search/os_client.py MAPPING)에만 있다(#139).
 -- 예전 PG 검색 인덱스 `chunks`는 기존 DB에 테이블만 남아 있을 수 있다 — 제거 절차는 하단 "#139 마이그레이션".
 
 -- ---------- LLM 응답 캐시 ----------

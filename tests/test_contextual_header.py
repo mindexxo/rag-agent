@@ -38,7 +38,7 @@ def test_맥락_셋_판별():
 
 
 def test_조건_안에서만_임시_인덱스와_변형_리랭커_입력():
-    import rag.reranker as rr
+    import rag.search.reranker as rr
     before_index, before_fn = settings.opensearch_index, rr._rerank_text
     chunk = SimpleNamespace(chunk_id=7, folder_name='상담', folder_description=None, faq_id=None,
                             text='본문', filename='a.pdf', heading_path=[])
@@ -56,7 +56,7 @@ def test_조건_안에서만_임시_인덱스와_변형_리랭커_입력():
 def test_변형_텍스트가_없는_측정_조각은_조용히_운영_머리말로_돌아가지_않는다():
     # 스냅숏과 어긋나면 cr·rule의 리랭커 입력이 몰래 header가 된다(#234 리뷰 지적 1) — 터뜨린다
     import pytest
-    import rag.reranker as rr
+    import rag.search.reranker as rr
     doc_id = 5
     stray = SimpleNamespace(chunk_id=(doc_id << 20) | 3, document_id=doc_id, faq_id=None, folder_name=None,
                             folder_description=None, text='본문', filename='a.pdf', heading_path=[])

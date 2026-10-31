@@ -8,7 +8,7 @@
 채팅 첨부(extract_text)는 사용자 대기 경로라 docling을 안 태우고 pdfplumber·python-docx·openpyxl로 평문만 뽑는다.
 
 표는 행 단위로 나누고 묶음마다 헤더를 반복한다. 묶음 둘 이상인 표의 청크 meta에는
-{"is_table", "table_key", "table_text"(표 앞 설명 + 표 + 아래 주석)}를 싣는다 — 근거 준비(rag/retriever)가 걸린 묶음을
+{"is_table", "table_key", "table_text"(표 앞 설명 + 표 + 아래 주석)}를 싣는다 — 근거 준비(rag/search/retriever)가 걸린 묶음을
 표 전체로 바꾼다. 표 하나가 TABLE_MAX_TOKENS를 넘으면 문서를 색인하지 않는다(TableTooLargeError).
 LlamaIndex 의존은 이 모듈 안에 격리한다.
 """

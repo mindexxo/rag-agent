@@ -16,8 +16,9 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
 
 from config import settings
-from rag import cancellation, os_client
+from rag import cancellation
 from rag.otel import init_tracing
+from rag.search import os_client
 from routers.attachments import router as attachment_router
 from routers.conversations import router as conversation_router
 from routers.documents import router as document_router

@@ -1,4 +1,4 @@
-"""상용 OCR(OCR_PROVIDER=llm, #299) — 사진 표는 잘라서, 스캔 쪽은 쪽 통째로 LLM이 읽는다. 정의점은 rag/chunking.py '상용 OCR' 절.
+"""상용 OCR(OCR_PROVIDER=llm, #299) — 사진 표는 잘라서, 스캔 쪽은 쪽 통째로 LLM이 읽는다. 정의점은 rag/chunking/ '상용 OCR' 절.
 
 두 층:
   - 순수 함수(판정·묶음·자를 영역·답 해석·라우팅): docling 모델 없이 몇 초.

@@ -10,6 +10,7 @@ FE 코드도 그대로 맞다.
 그 값이 바뀌어도 응답은 흔들리지 않아야 한다. 통계의 날짜 경계(routers/stats.py)도 같은
 상수를 바인드해 쓴다 — "오늘"의 기준이 응답 시각과 어긋나지 않게.
 """
+
 from datetime import datetime, timezone
 from typing import Annotated
 from zoneinfo import ZoneInfo

@@ -1,16 +1,20 @@
 from pydantic import BaseModel
 
+
 class SummaryRequest(BaseModel):
     text: str
 
+
 class SummaryResponse(BaseModel):
     summary: list[str]
+
 
 class Segment(BaseModel):
     start: float
     end: float
     text: str
     speaker: str
+
 
 class SttResponse(BaseModel):
     segments: list[Segment]

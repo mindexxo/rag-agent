@@ -25,14 +25,15 @@ rag/search/os_index.py의 effective_searchable.
   파일명이 임베딩 입력(rag/search/index_text.py)과 답변 인용 표기(rag/turn/prompts.py)에 그대로 쓰여서,
   '(1)' 같은 무의미한 이름을 서버가 싸게 만들어 주면 KB 품질이 조용히 나빠진다.
 """
+
+from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
-from pathlib import Path
 
-from fastapi import APIRouter, File, Form, Query, Request, UploadFile, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy import text as sql_text
-from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
@@ -41,17 +42,33 @@ from starlette.responses import FileResponse, JSONResponse
 from config import settings
 from database import get_session
 from rag import outbox
-from rag.turn import cache
 from rag.chunking.xlsx import XlsxUploadRejected, description_missing, validate_xlsx_upload
-from rag.documents import (FailedReuseConflict, document_versions, get_folder, handle_upload,
-                           latest_alive, resolve_description, soft_delete_documents)
+from rag.documents import (
+    FailedReuseConflict,
+    document_versions,
+    get_folder,
+    handle_upload,
+    latest_alive,
+    resolve_description,
+    soft_delete_documents,
+)
 from rag.models import ALIVE_DOCUMENT_STATUSES, Document, Folder
+from rag.turn import cache
 from routers.kms import get_tenant_id, get_user_id
-from schemas.kms import (ATTACHMENT_FILENAME_MAX, BULK_MAX_ITEMS,
-                         DOC_LIST_DEFAULT_LIMIT, DOC_LIST_MAX_LIMIT, DOC_STATUSES,
-                         DOCUMENT_DESCRIPTION_MAX,
-                         DocumentBulkUpdateRequest, DocumentExistsResponse, DocumentListResponse,
-                         DocumentUploadMetadata, DocumentUploadResponse, DocumentUpdateRequest)
+from schemas.kms import (
+    ATTACHMENT_FILENAME_MAX,
+    BULK_MAX_ITEMS,
+    DOC_LIST_DEFAULT_LIMIT,
+    DOC_LIST_MAX_LIMIT,
+    DOC_STATUSES,
+    DOCUMENT_DESCRIPTION_MAX,
+    DocumentBulkUpdateRequest,
+    DocumentExistsResponse,
+    DocumentListResponse,
+    DocumentUpdateRequest,
+    DocumentUploadMetadata,
+    DocumentUploadResponse,
+)
 from text_norm import LIKE_ESCAPE_CHAR, like_pattern, normalize_filename
 
 
@@ -74,11 +91,12 @@ def _to_response(doc: Document, ref_count: int | None = None) -> DocumentUploadR
         indexed_at=doc.indexed_at,
     )
 
+
 router = APIRouter(prefix='/kms')
 
 # F1a: 지원 형식 화이트리스트 (확장자 기준). 그 외는 400.
 SUPPORTED_SUFFIXES = {'.pdf', '.docx', '.xlsx', '.txt', '.md'}
-DOC_MAX_FILE_BYTES = 10 * 1024 * 1024   # 문서 업로드 크기 상한 (첨부와 별개)
+DOC_MAX_FILE_BYTES = 10 * 1024 * 1024  # 문서 업로드 크기 상한 (첨부와 별개)
 
 
 def reject_if_oversized(request: Request, limit: int) -> None:
@@ -101,9 +119,13 @@ def checked_filename(file: UploadFile) -> str:
     filename = normalize_filename(file.filename)
     suffix = Path(filename).suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
-        raise HTTPException(status_code=400, detail=f'지원하지 않는 형식입니다: {suffix or "확장자 없음"}. 지원: PDF/DOCX/XLSX/TXT/MD')
+        raise HTTPException(
+            status_code=400, detail=f'지원하지 않는 형식입니다: {suffix or "확장자 없음"}. 지원: PDF/DOCX/XLSX/TXT/MD'
+        )
     if len(filename) > ATTACHMENT_FILENAME_MAX:
-        raise HTTPException(status_code=422, detail=f'파일명이 너무 깁니다 ({ATTACHMENT_FILENAME_MAX}자 이내로 줄여 주세요).')
+        raise HTTPException(
+            status_code=422, detail=f'파일명이 너무 깁니다 ({ATTACHMENT_FILENAME_MAX}자 이내로 줄여 주세요).'
+        )
     return filename
 
 
@@ -115,12 +137,14 @@ async def _current_version(session: AsyncSession, tenant_id: str, filename: str)
     기준이 어긋나면 "확인창에서 본 것과 다른 문서가 대체되는" 사고가 난다. failed를 빼는 이유는
     #161 — 그 문서는 검색에 없고 재업로드가 그 행을 되살리므로(version 유지) "없는 문서"다.
     """
-    return (await session.execute(
-        select(func.max(Document.version))
-        .where(Document.tenant_id == tenant_id)      # 격리 — WHERE 절 명시
-        .where(Document.filename == filename)
-        .where(Document.status.in_(ALIVE_DOCUMENT_STATUSES))
-    )).scalar() or 0
+    return (
+        await session.execute(
+            select(func.max(Document.version))
+            .where(Document.tenant_id == tenant_id)  # 격리 — WHERE 절 명시
+            .where(Document.filename == filename)
+            .where(Document.status.in_(ALIVE_DOCUMENT_STATUSES))
+        )
+    ).scalar() or 0
 
 
 def _version_conflict(filename: str, current_version: int) -> JSONResponse:
@@ -138,6 +162,7 @@ def _version_conflict(filename: str, current_version: int) -> JSONResponse:
         },
     )
 
+
 def _validation_detail(e: ValidationError, fallback: str = 'document-data') -> str:
     """pydantic 오류 하나를 "필드: 사유" 한 줄로 — 업로드 데이터의 두 수신 경로가 공유한다.
 
@@ -149,8 +174,9 @@ def _validation_detail(e: ValidationError, fallback: str = 'document-data') -> s
     return f'{where}: {first["msg"]}'
 
 
-async def _resolve_upload_data(document_data: UploadFile | str | None, description: str | None,
-                               expect_version: int | None) -> tuple[DocumentUploadMetadata, bool]:
+async def _resolve_upload_data(
+    document_data: UploadFile | str | None, description: str | None, expect_version: int | None
+) -> tuple[DocumentUploadMetadata, bool]:
     """업로드 데이터를 확정한다 (#165). 반환: (데이터, folder_id를 실제로 보냈는지).
 
     받는 방식이 둘이다 — 새 방식은 `document-data` 파트의 JSON 한 덩어리, 옛 방식은 평면 Form
@@ -166,53 +192,57 @@ async def _resolve_upload_data(document_data: UploadFile | str | None, descripti
         # ValidationError를 낼 수 있게 됐다. FastAPI는 **수동 생성**한 pydantic 예외를 422로
         # 바꿔주지 않으므로, 감싸지 않으면 201자를 평면 Form으로 보낼 때 500이 난다.
         try:
-            return DocumentUploadMetadata(description=description,
-                                          expect_version=expect_version), False
+            return DocumentUploadMetadata(description=description, expect_version=expect_version), False
         except ValidationError as e:
             raise HTTPException(
-                status_code=422,
-                detail=f'입력값이 올바르지 않습니다 ({_validation_detail(e, "description")}).')
+                status_code=422, detail=f'입력값이 올바르지 않습니다 ({_validation_detail(e, "description")}).'
+            )
     if description is not None or expect_version is not None:
         raise HTTPException(
             status_code=400,
-            detail='document-data 파트와 개별 필드(description·expect_version)를 함께 보낼 수 없습니다. 하나만 사용해 주세요.')
-    raw = (document_data if isinstance(document_data, str)
-           else (await document_data.read()).decode('utf-8', errors='replace'))
+            detail='document-data 파트와 개별 필드(description·expect_version)를 함께 보낼 수 없습니다. 하나만 사용해 주세요.',
+        )
+    raw = (
+        document_data
+        if isinstance(document_data, str)
+        else (await document_data.read()).decode('utf-8', errors='replace')
+    )
     try:
         meta = DocumentUploadMetadata.model_validate_json(raw)
     except ValidationError as e:
-        raise HTTPException(status_code=422,
-                            detail=f'document-data JSON이 올바르지 않습니다 ({_validation_detail(e)}).')
+        raise HTTPException(
+            status_code=422, detail=f'document-data JSON이 올바르지 않습니다 ({_validation_detail(e)}).'
+        )
     # null 전송과 미전송을 가르는 지점 — PATCH의 update_document와 같은 방식이다.
     return meta, 'folder_id' in meta.model_fields_set
 
 
 @router.post('/documents', response_model=DocumentUploadResponse)
 async def upload_document(
-        request: Request,
-        file: UploadFile = File(...),
-        # 업로드 데이터 JSON 파트 (#165) — folder_id·description·expect_version을 한 덩어리로.
-        # ICCS의 @RequestPart("sr-data") 관례와 같은 꼴이라 이름도 그 관례를 따른다.
-        # Content-Type: application/json을 실은 파트(브라우저 Blob → UploadFile로 들어온다)와
-        # 평범한 문자열 필드를 **둘 다** 받는다 — 둘 다 실측했다.
-        document_data: Annotated[UploadFile | str | None, Form(alias='document-data')] = None,
-        # ── 아래 둘은 옛 방식(평면 Form 필드). document-data 파트가 없을 때만 쓴다 ──
-        # F1a: 표 설명 (xlsx 검색 보강). xlsx는 필수 — 판정은 계승까지 따진 뒤 아래 1-1에서 한다 (#194).
-        description: str | None = Form(None, max_length=DOCUMENT_DESCRIPTION_MAX),
-        # 낙관적 잠금 (선택). exists 응답의 version을 그대로 보낸다 — 없는 이름이면 0.
-        #   미전송 → 검사 없음 (기존 호출부 호환)
-        #   0      → 아직 아무 버전도 없어야 함 (새 문서로 등록하려는 경우)
-        #   N      → 현재 버전이 N이어야 함 (대체하려는 경우)
-        expect_version: int | None = Form(None),
-        tenant_id: str = Depends(get_tenant_id),
-        # 등록자 (#164). 헤더 미전송이면 None → uploaded_by=NULL로 남긴다.
-        # conversation의 DEFAULT_USER('test-user') 폴백을 여기선 쓰지 않는다 —
-        # 대화 스코핑 키와 달리 이 값은 문서 관리 화면의 '등록자' 컬럼에 그대로 뜬다.
-        user_id: str | None = Depends(get_user_id),
-        session: AsyncSession = Depends(get_session)
+    request: Request,
+    file: UploadFile = File(...),
+    # 업로드 데이터 JSON 파트 (#165) — folder_id·description·expect_version을 한 덩어리로.
+    # ICCS의 @RequestPart("sr-data") 관례와 같은 꼴이라 이름도 그 관례를 따른다.
+    # Content-Type: application/json을 실은 파트(브라우저 Blob → UploadFile로 들어온다)와
+    # 평범한 문자열 필드를 **둘 다** 받는다 — 둘 다 실측했다.
+    document_data: Annotated[UploadFile | str | None, Form(alias='document-data')] = None,
+    # ── 아래 둘은 옛 방식(평면 Form 필드). document-data 파트가 없을 때만 쓴다 ──
+    # F1a: 표 설명 (xlsx 검색 보강). xlsx는 필수 — 판정은 계승까지 따진 뒤 아래 1-1에서 한다 (#194).
+    description: str | None = Form(None, max_length=DOCUMENT_DESCRIPTION_MAX),
+    # 낙관적 잠금 (선택). exists 응답의 version을 그대로 보낸다 — 없는 이름이면 0.
+    #   미전송 → 검사 없음 (기존 호출부 호환)
+    #   0      → 아직 아무 버전도 없어야 함 (새 문서로 등록하려는 경우)
+    #   N      → 현재 버전이 N이어야 함 (대체하려는 경우)
+    expect_version: int | None = Form(None),
+    tenant_id: str = Depends(get_tenant_id),
+    # 등록자 (#164). 헤더 미전송이면 None → uploaded_by=NULL로 남긴다.
+    # conversation의 DEFAULT_USER('test-user') 폴백을 여기선 쓰지 않는다 —
+    # 대화 스코핑 키와 달리 이 값은 문서 관리 화면의 '등록자' 컬럼에 그대로 뜬다.
+    user_id: str | None = Depends(get_user_id),
+    session: AsyncSession = Depends(get_session),
 ):
     # 0. 형식·크기 게이트 (인덱싱 전에 명시적으로 막음)
-    reject_if_oversized(request, DOC_MAX_FILE_BYTES)   # 거대 본문은 read 전에 차단 (C2-A)
+    reject_if_oversized(request, DOC_MAX_FILE_BYTES)  # 거대 본문은 read 전에 차단 (C2-A)
     # 이하 전부 정규화된 값을 쓴다(원본 file.filename 금지) — 브라우저가 NFD로 주면 DB에 분해형이 저장되고 LLM이 NFC로 인용해 매칭이 깨진다.
     filename = checked_filename(file)
     suffix = Path(filename).suffix.lower()
@@ -221,10 +251,10 @@ async def upload_document(
     #      **blob을 쓰기 전에** 한다 — 뒤에 두면 실패 경로마다 unlink를 챙겨야 한다(지금 2곳).
     meta, folder_given = await _resolve_upload_data(document_data, description, expect_version)
     if meta.folder_id is not None:
-        if await get_folder(session, tenant_id, meta.folder_id) is None:   # 남의 테넌트 폴더 차단
+        if await get_folder(session, tenant_id, meta.folder_id) is None:  # 남의 테넌트 폴더 차단
             raise HTTPException(status_code=404, detail="folder not found")
 
-    #1. 업로드 바이트 전체를 읽는다
+    # 1. 업로드 바이트 전체를 읽는다
     content = await file.read()
     if len(content) > DOC_MAX_FILE_BYTES:
         raise HTTPException(status_code=413, detail='파일이 10MB를 초과합니다.')
@@ -250,8 +280,9 @@ async def upload_document(
             # openpyxl이 못 여는 파일(손상·확장자 위장). 라우터가 처음으로 xlsx를 직접 열게 되면서
             # 워커가 받던 이 예외를 여기서 받는다 — 안 잡으면 500이 된다. openpyxl은 손상 종류마다
             # 다른 예외를 낸다(BadZipFile·KeyError·ParseError·IOError — 3.1.5 소스 확인). 나열하지 않고 넓게 잡는다.
-            raise HTTPException(status_code=400,
-                                detail='xlsx 파일을 열 수 없습니다 (손상되었거나 올바른 xlsx 형식이 아닙니다).')
+            raise HTTPException(
+                status_code=400, detail='xlsx 파일을 열 수 없습니다 (손상되었거나 올바른 xlsx 형식이 아닙니다).'
+            )
 
     # 2. blob 저장. 테넌트별 디렉터리 아래 UUID 파일명으로 저장한다 (2026-08-05).
     #    업로드 1건 = 파일 1개로 고정 — 내용이 같아도 경로를 공유하지 않는다.
@@ -268,18 +299,24 @@ async def upload_document(
     if meta.expect_version is not None:
         current = await _current_version(session, tenant_id, filename)
         if current != meta.expect_version:
-            blob_path.unlink(missing_ok=True)      # 참조되지 않는 blob 남기지 않기
+            blob_path.unlink(missing_ok=True)  # 참조되지 않는 blob 남기지 않기
             return _version_conflict(filename, current)
 
     # 4. 파일 인덱싱 후 저장 (mime은 handle_upload가 blob_path에서 직접 구한다)
     try:
         result = await handle_upload(
-            session, tenant_id, filename, blob_path, description=meta.description,
-            uploaded_by=user_id, folder_id=meta.folder_id, folder_given=folder_given,
-            docs=docs,     # xlsx 사전검증이 이미 읽었으면 재사용 (#194) — 아니면 None이라 안에서 읽는다
+            session,
+            tenant_id,
+            filename,
+            blob_path,
+            description=meta.description,
+            uploaded_by=user_id,
+            folder_id=meta.folder_id,
+            folder_given=folder_given,
+            docs=docs,  # xlsx 사전검증이 이미 읽었으면 재사용 (#194) — 아니면 None이라 안에서 읽는다
         )
         await session.commit()
-    except (IntegrityError, FailedReuseConflict):
+    except IntegrityError, FailedReuseConflict:
         # IntegrityError: 같은 이름·같은 version이 방금 먼저 들어왔다 — UNIQUE(tenant_id, filename,
         # version). 위 조회를 두 요청이 함께 통과했을 때의 최종 방어선.
         # (expect_version 미전송 호출도 여기서 409가 된다 — 이전엔 그대로 터져 500이었다)
@@ -297,8 +334,10 @@ async def upload_document(
     # 워커 cron(1분)이 처리한다. 응답 시점의 status는 pending이고, 검색 반영은 최대 1~5분.
     return _to_response(result.document)
 
-def _list_where(tenant_id: str, q: str | None, folder_id: int | None,
-                status: list[str] | None, is_searchable: bool | None):
+
+def _list_where(
+    tenant_id: str, q: str | None, folder_id: int | None, status: list[str] | None, is_searchable: bool | None
+):
     """목록 조회 조건 (#176). **count와 페이지 쿼리가 같은 것을 써야** has_more가 어긋나지 않는다.
 
     supersede된 구버전(deleted)은 항상 빠진다 — 죽은 행에 폴더/참조 컨트롤이 노출되는 혼란 방지.
@@ -309,8 +348,7 @@ def _list_where(tenant_id: str, q: str | None, folder_id: int | None,
         # 파일명은 경계에서 NFC로 저장된다(#34). 검색어도 맞춰야 한다 — text_norm의 정책은
         # "타이핑 입력은 IME가 NFC를 내므로 위험군이 아니다"지만, 파일명 검색은 사용자가
         # **이름을 복사해 붙여넣는** 경로가 흔하고 macOS에서 복사한 이름은 NFD일 수 있다.
-        where &= Document.filename.ilike(like_pattern(normalize_filename(q)),
-                                         escape=LIKE_ESCAPE_CHAR)
+        where &= Document.filename.ilike(like_pattern(normalize_filename(q)), escape=LIKE_ESCAPE_CHAR)
     if folder_id is not None:
         # 0은 '미분류' 약속 — 폴더 id는 1부터라 유효한 값과 겹치지 않는다. 쿼리 파라미터에는
         # null이 없어서(#165의 multipart와 같은 제약) 값 하나로 표현했다.
@@ -322,8 +360,7 @@ def _list_where(tenant_id: str, q: str | None, folder_id: int | None,
     return where
 
 
-async def _ref_counts(session: AsyncSession, tenant_id: str,
-                      filenames: list[str]) -> dict[str, int]:
+async def _ref_counts(session: AsyncSession, tenant_id: str, filenames: list[str]) -> dict[str, int]:
     """파일명별 인용 횟수 (F5) — 저장 시 확정된 실인용 목록(messages.cited_docs)의 집계.
 
     sources(검색 후보 노출 수)가 아닌 **실인용**이다 — stats top_documents와 정의를 통일했다.
@@ -332,7 +369,9 @@ async def _ref_counts(session: AsyncSession, tenant_id: str,
     """
     if not filenames:
         return {}
-    rows = (await session.execute(sql_text("""
+    rows = (
+        await session.execute(
+            sql_text("""
         SELECT d AS filename, count(*) AS cnt
         FROM messages, jsonb_array_elements_text(messages.cited_docs) AS d
         WHERE messages.tenant_id = :tenant_id
@@ -340,20 +379,23 @@ async def _ref_counts(session: AsyncSession, tenant_id: str,
           AND jsonb_typeof(messages.cited_docs) = 'array'
           AND d = ANY(:filenames)
         GROUP BY 1
-    """), {"tenant_id": tenant_id, "filenames": filenames})).all()
+    """),
+            {"tenant_id": tenant_id, "filenames": filenames},
+        )
+    ).all()
     return {r.filename: r.cnt for r in rows}
 
 
 @router.get('/documents', response_model=DocumentListResponse)
 async def list_documents(
-        limit: int = DOC_LIST_DEFAULT_LIMIT,
-        offset: int = 0,
-        q: str | None = None,                  # 파일명 부분 일치
-        folder_id: int | None = None,          # 0 = 미분류만, 그 외 = 그 폴더
-        status: Annotated[list[str] | None, Query()] = None,   # 복수 선택 가능
-        is_searchable: bool | None = None,     # 문서 스위치 값 기준 (아래 주석)
-        tenant_id: str = Depends(get_tenant_id),
-        session: AsyncSession = Depends(get_session)
+    limit: int = DOC_LIST_DEFAULT_LIMIT,
+    offset: int = 0,
+    q: str | None = None,  # 파일명 부분 일치
+    folder_id: int | None = None,  # 0 = 미분류만, 그 외 = 그 폴더
+    status: Annotated[list[str] | None, Query()] = None,  # 복수 선택 가능
+    is_searchable: bool | None = None,  # 문서 스위치 값 기준 (아래 주석)
+    tenant_id: str = Depends(get_tenant_id),
+    session: AsyncSession = Depends(get_session),
 ):
     """테넌트의 문서 목록 — 페이징·검색·필터 (#176). 최신 업로드가 위로 온다.
 
@@ -370,21 +412,26 @@ async def list_documents(
         limit = DOC_LIST_MAX_LIMIT
     if offset < 0:
         offset = 0
-    q = (q or '').strip() or None      # 빈 문자열을 필터로 쓰면 '%%'가 되어 전건 매칭이다
+    q = (q or '').strip() or None  # 빈 문자열을 필터로 쓰면 '%%'가 되어 전건 매칭이다
     if status and not set(status) <= DOC_STATUSES:
-        raise HTTPException(status_code=422,
-                            detail=f'알 수 없는 status: {sorted(set(status) - DOC_STATUSES)}')
+        raise HTTPException(status_code=422, detail=f'알 수 없는 status: {sorted(set(status) - DOC_STATUSES)}')
 
     # 조건은 **한 번만** 만들어 count와 페이지 쿼리가 함께 쓴다 — 갈라지면 has_more가 어긋난다.
     where = _list_where(tenant_id, q, folder_id, status, is_searchable)
     total = (await session.execute(select(func.count(Document.id)).where(where))).scalar_one()
-    docs = (await session.execute(
-        select(Document)
-        .where(where)
-        .order_by(Document.uploaded_at.desc(), Document.id.desc())
-        .offset(offset)
-        .limit(limit)
-    )).scalars().all()
+    docs = (
+        (
+            await session.execute(
+                select(Document)
+                .where(where)
+                .order_by(Document.uploaded_at.desc(), Document.id.desc())
+                .offset(offset)
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
     ref_counts = await _ref_counts(session, tenant_id, list({d.filename for d in docs}))
 
     return DocumentListResponse(
@@ -399,9 +446,7 @@ async def list_documents(
 #   FastAPI는 등록 순서대로 매칭하므로, 아래에 두면 'exists'가 document_id(int)로 파싱돼 422가 난다.
 @router.get('/documents/exists', response_model=DocumentExistsResponse)
 async def document_exists(
-        filename: str,
-        tenant_id: str = Depends(get_tenant_id),
-        session: AsyncSession = Depends(get_session)
+    filename: str, tenant_id: str = Depends(get_tenant_id), session: AsyncSession = Depends(get_session)
 ):
     """업로드 전 동일 파일명 확인 (FE가 대체 확인 창을 띄울지 판단).
 
@@ -416,14 +461,20 @@ async def document_exists(
     # 업로드와 같은 경계 정규화 (#34) — 여기만 빠지면 위 "판정 기준이 정확히 같아야 한다"가
     # 깨져, NFD 이름으로 물어본 클라이언트가 exists=false를 받고 중복 문서를 만든다.
     filename = normalize_filename(filename)
-    doc = (await session.execute(
-        select(Document)
-        .where(Document.tenant_id == tenant_id)      # 격리 — WHERE 절 명시
-        .where(Document.filename == filename)
-        .where(Document.status.in_(ALIVE_DOCUMENT_STATUSES))
-        .order_by(Document.version.desc())
-        .limit(1)
-    )).scalars().first()
+    doc = (
+        (
+            await session.execute(
+                select(Document)
+                .where(Document.tenant_id == tenant_id)  # 격리 — WHERE 절 명시
+                .where(Document.filename == filename)
+                .where(Document.status.in_(ALIVE_DOCUMENT_STATUSES))
+                .order_by(Document.version.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
 
     if doc is None:
         return DocumentExistsResponse(exists=False)
@@ -438,15 +489,21 @@ async def document_exists(
 
 @router.get('/documents/{document_id}', response_model=DocumentUploadResponse)
 async def get_document(
-        document_id: int,
-        tenant_id: str = Depends(get_tenant_id),
-        session: AsyncSession = Depends(get_session)
+    document_id: int, tenant_id: str = Depends(get_tenant_id), session: AsyncSession = Depends(get_session)
 ):
-    doc = (await session.execute(
-        select(Document)
-        .where(Document.tenant_id == tenant_id)
-        .where(Document.id == document_id, Document.status != 'deleted')   # 삭제된 문서는 없는 문서 — 목록·수정·삭제와 같은 기준
-    )).scalars().first()
+    doc = (
+        (
+            await session.execute(
+                select(Document)
+                .where(Document.tenant_id == tenant_id)
+                .where(
+                    Document.id == document_id, Document.status != 'deleted'
+                )  # 삭제된 문서는 없는 문서 — 목록·수정·삭제와 같은 기준
+            )
+        )
+        .scalars()
+        .first()
+    )
     if doc is None:
         raise HTTPException(status_code=404, detail="document not found")
     return _to_response(doc)
@@ -456,11 +513,13 @@ async def _folder_is_on(session: AsyncSession, tenant_id: str, folder_id: int | 
     """폴더의 참조 여부. 미분류(None)는 항상 on — retriever 판정과 동일 규칙."""
     if folder_id is None:
         return True
-    return bool((await session.execute(
-        select(Folder.is_searchable)
-        .where(Folder.tenant_id == tenant_id)
-        .where(Folder.id == folder_id)
-    )).scalar())
+    return bool(
+        (
+            await session.execute(
+                select(Folder.is_searchable).where(Folder.tenant_id == tenant_id).where(Folder.id == folder_id)
+            )
+        ).scalar()
+    )
 
 
 def _effective_ref(doc_is_searchable: bool, folder_is_on: bool) -> bool:
@@ -486,8 +545,7 @@ async def _effective_ref_now(session: AsyncSession, tenant_id: str, doc: Documen
     """
     if not doc.is_searchable:
         return False
-    return _effective_ref(doc.is_searchable,
-                          await _folder_is_on(session, tenant_id, doc.folder_id))
+    return _effective_ref(doc.is_searchable, await _folder_is_on(session, tenant_id, doc.folder_id))
 
 
 def _require_all_found(requested: list[int], found: set[int]) -> None:
@@ -506,9 +564,9 @@ def _require_all_found(requested: list[int], found: set[int]) -> None:
 
 @router.patch('/documents', response_model=list[DocumentUploadResponse])
 async def bulk_update_documents(
-        request: DocumentBulkUpdateRequest,
-        tenant_id: str = Depends(get_tenant_id),
-        session: AsyncSession = Depends(get_session)
+    request: DocumentBulkUpdateRequest,
+    tenant_id: str = Depends(get_tenant_id),
+    session: AsyncSession = Depends(get_session),
 ):
     """문서 여러 건의 폴더 소속·참조 on/off를 한 번에 바꾼다 (#166).
 
@@ -516,28 +574,34 @@ async def bulk_update_documents(
     대상이 하나라도 어긋나면(없는 id·다른 테넌트·삭제됨) **아무것도 바꾸지 않고 404**를 준다 —
     화면에서 체크한 목록과 결과가 어긋나면 무엇이 반영됐는지 되짚을 방법이 없다.
     """
-    changing_folder = 'folder_id' in request.model_fields_set   # null 전송(미분류)과 미전송 구분
+    changing_folder = 'folder_id' in request.model_fields_set  # null 전송(미분류)과 미전송 구분
     changing_searchable = request.is_searchable is not None
     if not request.document_ids or not (changing_folder or changing_searchable):
-        return []    # 바꿀 것이 없는 요청은 조회도 하지 않는다
+        return []  # 바꿀 것이 없는 요청은 조회도 하지 않는다
 
     # 1. 대상 확정. 테넌트 격리 규약 2항(UPDATE 전에 스코프 조회로 id를 확정한다)을 이 단계가
     #    겸한다 — 아래 outbox가 부르는 os_index.sync_meta_documents_now는 document_ids에
     #    tenant 필터를 걸지 않고 호출부의 사전 스코프를 전제하기 때문이다.
-    ids = list(dict.fromkeys(request.document_ids))    # 중복 제거(순서 유지) — 같은 id를 두 번 세지 않게
-    docs = (await session.execute(
-        select(Document)
-        .where(Document.tenant_id == tenant_id)
-        .where(Document.status != 'deleted')
-        .where(Document.id.in_(ids))
-        .order_by(Document.id)
-    )).scalars().all()
+    ids = list(dict.fromkeys(request.document_ids))  # 중복 제거(순서 유지) — 같은 id를 두 번 세지 않게
+    docs = (
+        (
+            await session.execute(
+                select(Document)
+                .where(Document.tenant_id == tenant_id)
+                .where(Document.status != 'deleted')
+                .where(Document.id.in_(ids))
+                .order_by(Document.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     _require_all_found(ids, {d.id for d in docs})
 
     # 2. 폴더 검증은 1회면 된다(대상 전부가 같은 폴더로 간다).
     folder_on: dict[int, bool] = {}
     if changing_folder and request.folder_id is not None:
-        folder = await get_folder(session, tenant_id, request.folder_id)   # 남의 테넌트 폴더 차단
+        folder = await get_folder(session, tenant_id, request.folder_id)  # 남의 테넌트 폴더 차단
         if folder is None:
             raise HTTPException(status_code=404, detail="folder not found")
         folder_on[folder.id] = folder.is_searchable
@@ -546,16 +610,22 @@ async def bulk_update_documents(
     #    문서마다 폴더가 다르므로 한 번에 모아 온다 — 단건처럼 문서 수만큼 조회하지 않는다.
     current_folder_ids = {d.folder_id for d in docs if d.folder_id is not None} - folder_on.keys()
     if current_folder_ids:
-        folder_on.update({r.id: r.is_searchable for r in (await session.execute(
-            select(Folder.id, Folder.is_searchable)
-            .where(Folder.tenant_id == tenant_id)
-            .where(Folder.id.in_(current_folder_ids))
-        )).all()})
+        folder_on.update(
+            {
+                r.id: r.is_searchable
+                for r in (
+                    await session.execute(
+                        select(Folder.id, Folder.is_searchable)
+                        .where(Folder.tenant_id == tenant_id)
+                        .where(Folder.id.in_(current_folder_ids))
+                    )
+                ).all()
+            }
+        )
 
     def _effective(doc: Document) -> bool:
         """이 요청이 미리 모아둔 folder_on으로 본 실효 참조. 판정식은 _effective_ref가 정의점."""
-        return _effective_ref(doc.is_searchable,
-                              doc.folder_id is None or bool(folder_on.get(doc.folder_id)))
+        return _effective_ref(doc.is_searchable, doc.folder_id is None or bool(folder_on.get(doc.folder_id)))
 
     # 4. 캐시 무효화는 **문서별로** 판정한다. 문서마다 현재 폴더·스위치가 달라 on→off 전이도
     #    제각각이다 — 일괄로 판정하면 off된 문서를 근거로 만든 답변이 캐시로 계속 나간다.
@@ -578,10 +648,10 @@ async def bulk_update_documents(
 
 @router.patch('/documents/{document_id}', response_model=DocumentUploadResponse)
 async def update_document(
-        document_id: int,
-        request: DocumentUpdateRequest,
-        tenant_id: str = Depends(get_tenant_id),
-        session: AsyncSession = Depends(get_session)
+    document_id: int,
+    request: DocumentUpdateRequest,
+    tenant_id: str = Depends(get_tenant_id),
+    session: AsyncSession = Depends(get_session),
 ):
     """문서 속성 변경 (F2): 폴더 소속·참조 on/off·표 설명. 보낸 필드만 반영.
 
@@ -592,14 +662,20 @@ async def update_document(
     공존한다. 둘은 **배타적으로** 적재한다(재색인이 돌면 index_pending_document가 폴더·토글
     최신값을 스스로 다시 읽으므로 META 행은 중복이다).
     """
-    doc = (await session.execute(
-        select(Document)
-        .where(Document.tenant_id == tenant_id)
-        # 삭제된 문서는 대상이 아니다 (#166). 목록·exists 조회는 전부 이 필터를 갖고 있는데
-        # 여기만 빠져 있어, 목록에 뜨지도 않는 죽은 행의 폴더·참조 컬럼이 200으로 바뀌었다.
-        .where(Document.status != 'deleted')
-        .where(Document.id == document_id)
-    )).scalars().first()
+    doc = (
+        (
+            await session.execute(
+                select(Document)
+                .where(Document.tenant_id == tenant_id)
+                # 삭제된 문서는 대상이 아니다 (#166). 목록·exists 조회는 전부 이 필터를 갖고 있는데
+                # 여기만 빠져 있어, 목록에 뜨지도 않는 죽은 행의 폴더·참조 컬럼이 200으로 바뀌었다.
+                .where(Document.status != 'deleted')
+                .where(Document.id == document_id)
+            )
+        )
+        .scalars()
+        .first()
+    )
     if doc is None:
         raise HTTPException(status_code=404, detail="document not found")
 
@@ -618,7 +694,7 @@ async def update_document(
         # 재전송에 재임베딩을 돌릴 이유도 없고, 비-xlsx는 설명이 청크에 안 들어가 재색인해도 같다.
         reindex = is_xlsx and new_description != doc.description and doc.status == 'ready'
     if 'folder_id' in request.model_fields_set and request.folder_id is not None:
-        if await get_folder(session, tenant_id, request.folder_id) is None:   # 남의 테넌트 차단
+        if await get_folder(session, tenant_id, request.folder_id) is None:  # 남의 테넌트 차단
             raise HTTPException(status_code=404, detail="folder not found")
 
     effective_before = await _effective_ref_now(session, tenant_id, doc)
@@ -662,9 +738,9 @@ async def update_document(
 
 @router.delete('/documents', status_code=204)
 async def bulk_delete_documents(
-        ids: Annotated[list[int] | None, Query(max_length=BULK_MAX_ITEMS)] = None,
-        tenant_id: str = Depends(get_tenant_id),
-        session: AsyncSession = Depends(get_session)
+    ids: Annotated[list[int] | None, Query(max_length=BULK_MAX_ITEMS)] = None,
+    tenant_id: str = Depends(get_tenant_id),
+    session: AsyncSession = Depends(get_session),
 ):
     """문서 여러 건 삭제 (#174). 실제 처리는 단건과 **같은 경로**(soft_delete_documents)다.
 
@@ -676,17 +752,21 @@ async def bulk_delete_documents(
     삭제는 "그 문서가 없는 상태"를 만드는 것이라 이미 그 상태면 실패로 볼 이유가 없다.
     """
     if not ids:
-        return                      # 지울 것이 없는 요청은 조회도 하지 않는다
+        return  # 지울 것이 없는 요청은 조회도 하지 않는다
 
     # 대상 확정 — status 필터를 두지 않는 것이 위 멱등 규칙의 구현점이다.
     # 테넌트 스코프 조회로 id를 먼저 확정한다(격리 규약 2항) — 아래 outbox가 부르는
     # os_index.drop_documents_now는 document_ids에 tenant 필터를 걸지 않는다.
     unique = list(dict.fromkeys(ids))
-    found = set((await session.execute(
-        select(Document.id)
-        .where(Document.tenant_id == tenant_id)
-        .where(Document.id.in_(unique))
-    )).scalars().all())
+    found = set(
+        (
+            await session.execute(
+                select(Document.id).where(Document.tenant_id == tenant_id).where(Document.id.in_(unique))
+            )
+        )
+        .scalars()
+        .all()
+    )
     _require_all_found(unique, found)
 
     await soft_delete_documents(session, tenant_id, unique)
@@ -695,9 +775,7 @@ async def bulk_delete_documents(
 
 @router.delete('/documents/{document_id}', status_code=204)
 async def delete_document(
-        document_id: int,
-        tenant_id: str = Depends(get_tenant_id),
-        session: AsyncSession = Depends(get_session)
+    document_id: int, tenant_id: str = Depends(get_tenant_id), session: AsyncSession = Depends(get_session)
 ):
     """문서 소프트 삭제 (F5). 같은 filename의 전 버전을 비활성 처리한다.
 
@@ -712,16 +790,20 @@ async def delete_document(
 
 @router.get('/documents/{document_id}/download')
 async def download_document(
-        document_id: int,
-        tenant_id: str = Depends(get_tenant_id),
-        session: AsyncSession = Depends(get_session)
+    document_id: int, tenant_id: str = Depends(get_tenant_id), session: AsyncSession = Depends(get_session)
 ):
     """원본 blob 파일 다운로드. 답변 인용(sources)의 document_id에서 연결된다."""
-    doc = (await session.execute(
-        select(Document)
-        .where(Document.tenant_id == tenant_id)   # 격리 — WHERE 절 명시
-        .where(Document.id == document_id)
-    )).scalars().first()
+    doc = (
+        (
+            await session.execute(
+                select(Document)
+                .where(Document.tenant_id == tenant_id)  # 격리 — WHERE 절 명시
+                .where(Document.id == document_id)
+            )
+        )
+        .scalars()
+        .first()
+    )
     if doc is None:
         raise HTTPException(status_code=404, detail="document not found")
     blob = Path(doc.blob_path)

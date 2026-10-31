@@ -2,25 +2,27 @@
 
 폴더 CRUD + 폴더 단위 참조 on/off. 문서의 폴더 소속 변경은 documents 라우터의 PATCH가 담당.
 """
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
 from rag import outbox
-from rag.turn import cache
 from rag.documents import get_folder
 from rag.models import Document, Folder
+from rag.turn import cache
 from routers.kms import get_tenant_id
-from schemas.kms import FolderInfo, FolderCreateRequest, FolderUpdateRequest
+from schemas.kms import FolderCreateRequest, FolderInfo, FolderUpdateRequest
 
 router = APIRouter(prefix='/kms')
 
 
 def _to_info(folder: Folder) -> FolderInfo:
-    return FolderInfo(id=folder.id, name=folder.name,
-                      description=folder.description, is_searchable=folder.is_searchable)
+    return FolderInfo(
+        id=folder.id, name=folder.name, description=folder.description, is_searchable=folder.is_searchable
+    )
 
 
 async def _invalidate_folder_docs(session: AsyncSession, tenant_id: str, folder_id: int) -> None:
@@ -29,11 +31,15 @@ async def _invalidate_folder_docs(session: AsyncSession, tenant_id: str, folder_
     폴더 설정(참조 on/off·설명)이 바뀌면 같은 질문의 검색 결과·순위가 달라지므로,
     옛 설정으로 만든 캐시 답변은 버려야 한다.
     """
-    doc_ids = (await session.execute(
-        select(Document.id)
-        .where(Document.tenant_id == tenant_id)
-        .where(Document.folder_id == folder_id)
-    )).scalars().all()
+    doc_ids = (
+        (
+            await session.execute(
+                select(Document.id).where(Document.tenant_id == tenant_id).where(Document.folder_id == folder_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     for doc_id in doc_ids:
         await cache.invalidate_source(session, tenant_id, doc_id)
 
@@ -48,26 +54,25 @@ async def _get_folder(session: AsyncSession, tenant_id: str, folder_id: int) -> 
 
 @router.get('/folders', response_model=list[FolderInfo])
 async def list_folders(
-        tenant_id: str = Depends(get_tenant_id),
-        session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(get_tenant_id),
+    session: AsyncSession = Depends(get_session),
 ):
-    folders = (await session.execute(
-        select(Folder)
-        .where(Folder.tenant_id == tenant_id)
-        .order_by(Folder.name)
-    )).scalars().all()
+    folders = (
+        (await session.execute(select(Folder).where(Folder.tenant_id == tenant_id).order_by(Folder.name)))
+        .scalars()
+        .all()
+    )
     return [_to_info(f) for f in folders]
 
 
 @router.post('/folders', response_model=FolderInfo)
 async def create_folder(
-        request: FolderCreateRequest,
-        tenant_id: str = Depends(get_tenant_id),
-        session: AsyncSession = Depends(get_session),
+    request: FolderCreateRequest,
+    tenant_id: str = Depends(get_tenant_id),
+    session: AsyncSession = Depends(get_session),
 ):
-    name = request.name   # 공백 제거·빈 값 거절은 스키마가 했다
-    folder = Folder(tenant_id=tenant_id, name=name,
-                    description=(request.description or '').strip() or None)
+    name = request.name  # 공백 제거·빈 값 거절은 스키마가 했다
+    folder = Folder(tenant_id=tenant_id, name=name, description=(request.description or '').strip() or None)
     session.add(folder)
     try:
         await session.commit()
@@ -79,10 +84,10 @@ async def create_folder(
 
 @router.patch('/folders/{folder_id}', response_model=FolderInfo)
 async def update_folder(
-        folder_id: int,
-        request: FolderUpdateRequest,
-        tenant_id: str = Depends(get_tenant_id),
-        session: AsyncSession = Depends(get_session),
+    folder_id: int,
+    request: FolderUpdateRequest,
+    tenant_id: str = Depends(get_tenant_id),
+    session: AsyncSession = Depends(get_session),
 ):
     folder = await _get_folder(session, tenant_id, folder_id)
     if request.name is not None:
@@ -102,11 +107,15 @@ async def update_folder(
     # 폴더 이름·설명·검색토글은 소속 문서의 **모든 청크 문서**에 복사돼 있다 (#139) —
     # 같은 트랜잭션에 fan-out 갱신을 적재한다. 폴더가 fan-out의 최대 단위이고, 부분 갱신이라
     # 청크 수와 무관하게 _update_by_query 1~2회로 끝난다.
-    doc_ids = (await session.execute(
-        select(Document.id)
-        .where(Document.tenant_id == tenant_id)
-        .where(Document.folder_id == folder.id)
-    )).scalars().all()
+    doc_ids = (
+        (
+            await session.execute(
+                select(Document.id).where(Document.tenant_id == tenant_id).where(Document.folder_id == folder.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     if doc_ids:
         outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=list(doc_ids))
     try:
@@ -119,19 +128,22 @@ async def update_folder(
 
 @router.delete('/folders/{folder_id}', status_code=204)
 async def delete_folder(
-        folder_id: int,
-        tenant_id: str = Depends(get_tenant_id),
-        session: AsyncSession = Depends(get_session),
+    folder_id: int,
+    tenant_id: str = Depends(get_tenant_id),
+    session: AsyncSession = Depends(get_session),
 ):
     """폴더 삭제. 내부에 문서가 있으면 삭제 불가(409) — 검색제외 폴더를 지웠을 때 문서가
     미분류로 풀려 조용히 검색에 복귀하는 사고 방지(P1-17). 문서를 옮기거나 삭제한 뒤 폴더를 지운다."""
     folder = await _get_folder(session, tenant_id, folder_id)
-    doc_count = (await session.execute(
-        select(func.count()).select_from(Document)
-        .where(Document.tenant_id == tenant_id)
-        .where(Document.folder_id == folder_id)
-        .where(Document.status != 'deleted')       # 소프트삭제된 문서는 카운트 제외
-    )).scalar()
+    doc_count = (
+        await session.execute(
+            select(func.count())
+            .select_from(Document)
+            .where(Document.tenant_id == tenant_id)
+            .where(Document.folder_id == folder_id)
+            .where(Document.status != 'deleted')  # 소프트삭제된 문서는 카운트 제외
+        )
+    ).scalar()
     if doc_count:
         raise HTTPException(
             status_code=409,

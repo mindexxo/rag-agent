@@ -879,7 +879,6 @@
   "rag/chunking.py::_split_section": 54,
   "rag/documents.py::index_pending_document": 104,
   "rag/prompt_texts.py::<module>": 402,
-  "rag/retriever.py::retrieve_candidates": 61,
   "rag/service.py::<module>": 445,
   "rag/service.py::RagService._prepare_knowledge": 68,
   "rag/service.py::RagService._route": 70,

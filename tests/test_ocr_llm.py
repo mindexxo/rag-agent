@@ -11,8 +11,7 @@ import pytest
 
 from config import settings
 import rag.chunking as ch
-from rag.chunking import (LlmReadFailedError, _PdfPage, _is_scan_page, _page_runs, _photo_box, _require_pages,
-                          _split_table_reply, chunk_file)
+from rag.chunking import LlmReadFailedError, _PdfPage, _is_scan_page, _page_runs, _photo_box, _require_pages, _split_table_reply, chunk_file
 
 
 # ── 순수 함수 ─────────────────────────────────────────────────────────────────────

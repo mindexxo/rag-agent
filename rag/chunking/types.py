@@ -21,14 +21,14 @@ class ChunkData:
 
 @dataclass
 class Section:
-    """형식별 파서 → _pack_sections 사이의 내부 계약. 뒤 단계(묶기 → 크기 분할)를 형식과 무관하게 한 번만 쓰게 한다."""
+    """형식별 파서 → pack_sections 사이의 내부 계약. 뒤 단계(묶기 → 크기 분할)를 형식과 무관하게 한 번만 쓰게 한다."""
 
     heading_path: list[str]
     page: int | None  # PDF만 채운다
     body: str
     # body를 '\n'으로 나눈 줄과 1:1인 쪽 번호(PDF만) — 여러 쪽에 걸친 섹션의 뒤쪽 청크가 앞 쪽 번호를 물려받지 않게.
     line_pages: list[int | None] | None = None
-    # 묶음(_pack_sections)이 본문 줄로 내려보낸 하위 헤딩(원문 그대로). 색인이 식별자를 추정 없이 뽑고,
+    # 묶음(pack_sections)이 본문 줄로 내려보낸 하위 헤딩(원문 그대로). 색인이 식별자를 추정 없이 뽑고,
     # 분할이 헤딩을 본문과 같은 조각에 두는 근거다. 묶지 않은 섹션은 비어 있다.
     headings: list[str] = field(default_factory=list)
     # 본문 블록 목록 — 글(str) 또는 표(TableBlock). body·line_pages는 여기서 파생된 값이다. None이면 본문 전체가
@@ -71,6 +71,6 @@ def join_blocks(blocks: list['str | TableBlock']) -> list['str | TableBlock']:
     return out
 
 
-# (page, text, level) — PDF·DOCX·MD 경로가 _build_sections에 흘리는 공통 단위.
+# (page, text, level) — PDF·DOCX·MD 경로가 build_sections에 흘리는 공통 단위.
 # level이 None이면 본문, 정수면 그 레벨의 헤딩. text는 여러 줄일 수 있고 표는 TableBlock으로 온다.
 Item = tuple[int | None, 'str | TableBlock', int | None]

@@ -174,16 +174,16 @@ def _sec(path, body):
 
 def test_pack_sections_는_내려보낸_헤딩을_기록한다():
     secs = [_sec(["문서", "제 2 장", "제 9 조(고용)"], "본문9"), _sec(["문서", "제 2 장", "제 10 조(발령)"], "본문10")]
-    packed = chunking._pack_sections(secs)
+    packed = chunking.sections.pack_sections(secs)
     assert len(packed) == 1
     assert packed[0].headings == ["제 9 조(고용)", "제 10 조(발령)"]
     assert packed[0].body == "제 9 조(고용)\n본문9\n제 10 조(발령)\n본문10"
-    assert chunking._pack_sections([secs[0]])[0].headings == []     # 안 묶이면 비어 있다
+    assert chunking.sections.pack_sections([secs[0]])[0].headings == []     # 안 묶이면 비어 있다
 
 
 def _texts(sec, splitter):
-    """_split_section은 (글, 오프셋, 표 정보)를 돌려준다(#252·#257) — 이 규칙은 글만 본다."""
-    return [p.text for p in chunking._split_section(sec, splitter)]
+    """split_section은 (글, 오프셋, 표 정보)를 돌려준다(#252·#257) — 이 규칙은 글만 본다."""
+    return [p.text for p in chunking.split.split_section(sec, splitter)]
 
 
 def test_split_section_은_기록된_헤딩을_조각_끝에_두지_않는다():
@@ -215,13 +215,13 @@ def test_chunk_file_은_조각마다_실린_헤딩을_meta에_싣는다(tmp_path
 
 
 def test_꼬리_헤딩을_옮기면_다음_조각_오프셋도_헤딩_위치로_당긴다():
-    # #252: _split_section이 오프셋을 직접 나른다 — 헤딩이 다음 조각 머리가 되면 쪽 매핑도 헤딩 줄을 따라야 한다
+    # #252: split_section이 오프셋을 직접 나른다 — 헤딩이 다음 조각 머리가 되면 쪽 매핑도 헤딩 줄을 따라야 한다
     class _Splitter:
         def split_text(self, body):
             return ["본문9 첫 줄\n제 10 조(발령)", "본문10 긴 줄"]
     body = "본문9 첫 줄\n제 10 조(발령)\n본문10 긴 줄"
     sec = chunking.Section(["문서"], 1, body, [1, 2, 2], headings=["제 10 조(발령)"])
-    pieces = chunking._split_section(sec, _Splitter())
+    pieces = chunking.split.split_section(sec, _Splitter())
     assert pieces[1][:2] == ("제 10 조(발령)\n본문10 긴 줄", body.index("제 10 조"))
 
 

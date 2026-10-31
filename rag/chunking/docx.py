@@ -124,18 +124,12 @@ class DocxItem(NamedTuple):
     from_table: bool  # 표·그림 — 폴백 헤딩 승격에서 제외하는 표지
 
 
-def docx_table_rows(table: 'TableItem', doc: 'DoclingDocument') -> list[list[str]]:
-    """DOCX·MD 표 → 행 목록(첫 행 헤더), 표 안의 표는 평탄화한다.
-
-    표 안 요소는 따로 건너뛰므로(table_descendants) 안쪽 표는 여기서 바깥 표에 실어야 사라지지 않는다. 모양은 PDF
-    TableFormer와 같다: 안쪽 표가 든 열은 안쪽 열 수만큼 넓어지고 그 행은 안쪽 행 수만큼 늘며, 같은 행의 다른 칸은 세로로,
-    다른 행의 그 열 칸은 넓어진 열마다 반복한다(병합 반복 규칙과 같다). 안쪽 표가 둘 이상인 칸은 위아래로 이어 붙인다.
-    """
+def _nested_tables(table: 'TableItem', doc: 'DoclingDocument') -> dict[tuple[int, int], list[list[str]]]:
+    """칸 (r, c) → 그 칸 안 표들의 행(평탄화). 칸에 안쪽 표와 함께 적힌 글자(라벨)는 첫 행으로 남긴다."""
     from docling_core.types.doc import RichTableCell, TableItem  # 지연 import
 
-    grid = table.data.grid
     nested: dict[tuple[int, int], list[list[str]]] = {}
-    for r, row in enumerate(grid):
+    for r, row in enumerate(table.data.grid):
         for c, cell in enumerate(row):
             if not (
                 isinstance(cell, RichTableCell) and cell.start_row_offset_idx == r and cell.start_col_offset_idx == c
@@ -146,32 +140,47 @@ def docx_table_rows(table: 'TableItem', doc: 'DoclingDocument') -> list[list[str
             inner = [it for it in inner if it.self_ref not in deeper]  # 3단 중첩은 재귀가 맡는다 — 중복 금지
             rows = [row2 for it in inner for row2 in docx_table_rows(it, doc)]
             if rows:
-                # 칸에 안쪽 표와 함께 적힌 글자(라벨)는 첫 행으로 남긴다
                 own = docling_elements.cell_text_norm(cell.text)
                 nested[(r, c)] = ([[own] + [''] * (len(rows[0]) - 1)] if own else []) + rows
-    base = [[docling_elements.grid_cell_text(cell, doc) for cell in row] for row in grid]
+    return nested
+
+
+def _expand_row(
+    r: int, base_row: list[str], nested: dict[tuple[int, int], list[list[str]]], width: dict[int, int]
+) -> list[list[str]]:
+    """바깥 표의 한 행 → 안쪽 표 행 수만큼 늘어난 행들. 넓어진 열은 안쪽 열 수(width)만큼 칸을 채운다."""
+    inner_rows = max((len(rows) for (rr, _), rows in nested.items() if rr == r), default=0)
+    out: list[list[str]] = []
+    for i in range(max(inner_rows, 1)):
+        line: list[str] = []
+        for c, text in enumerate(base_row):
+            if c not in width:
+                line.append(text)  # 안쪽 행마다 반복 — 세로 병합 반복 규칙(docling_grid_rows)과 같다
+            elif inner_rows_here := nested.get((r, c)):
+                inner_cells = inner_rows_here[i] if i < len(inner_rows_here) else []
+                line.extend((inner_cells + [''] * width[c])[: width[c]])
+            else:
+                line.extend([text] * width[c])  # 넓어진 열에 걸친 칸 = 가로 병합 — 칸마다 반복
+        out.append(line)
+    return out
+
+
+def docx_table_rows(table: 'TableItem', doc: 'DoclingDocument') -> list[list[str]]:
+    """DOCX·MD 표 → 행 목록(첫 행 헤더), 표 안의 표는 평탄화한다.
+
+    표 안 요소는 따로 건너뛰므로(table_descendants) 안쪽 표는 여기서 바깥 표에 실어야 사라지지 않는다. 모양은 PDF
+    TableFormer와 같다: 안쪽 표가 든 열은 안쪽 열 수만큼 넓어지고 그 행은 안쪽 행 수만큼 늘며, 같은 행의 다른 칸은 세로로,
+    다른 행의 그 열 칸은 넓어진 열마다 반복한다(병합 반복 규칙과 같다). 안쪽 표가 둘 이상인 칸은 위아래로 이어 붙인다.
+    """
+    nested = _nested_tables(table, doc)
+    base = [[docling_elements.grid_cell_text(cell, doc) for cell in row] for row in table.data.grid]
     if not nested:
         return [row for row in base if any(row)]
     width = {
         c: max(len(x) for (_, cc), rows in nested.items() if cc == c for x in rows)  # 열 c → 안쪽 열 수(최대)
         for c in {c for (_, c) in nested}
     }
-    out: list[list[str]] = []
-    for r, base_row in enumerate(base):
-        inner_rows = max((len(rows) for (rr, _), rows in nested.items() if rr == r), default=0)
-        for i in range(max(inner_rows, 1)):
-            line: list[str] = []
-            for c, text in enumerate(base_row):
-                if c in width:
-                    inner_rows_here = nested.get((r, c))
-                    if inner_rows_here:
-                        inner_cells = inner_rows_here[i] if i < len(inner_rows_here) else []
-                        line.extend((inner_cells + [''] * width[c])[: width[c]])
-                    else:
-                        line.extend([text] * width[c])  # 넓어진 열에 걸친 칸 = 가로 병합 — 칸마다 반복
-                else:
-                    line.append(text)  # 안쪽 행마다 반복 — 세로 병합 반복 규칙(docling_grid_rows)과 같다
-            out.append(line)
+    out = [line for r, base_row in enumerate(base) for line in _expand_row(r, base_row, nested, width)]
     return [row for row in out if any(row)]
 
 

@@ -19,6 +19,81 @@ CHAPTER_RE = re.compile(r'^제\s*\d+\s*장\b')
 # ── 섹션 조립 — PDF·DOCX·MD 공통 후단 ──────────────────────────────────────────────
 
 
+class _SectionBuilder:
+    """헤딩 스택으로 Section을 쌓는 상태 — 스택 규약(`del stack[level-1:]` + append)과 고아 헤딩·emitted 불변식을 한곳에 둔다.
+
+    stack과 stack_pos는 같이 늘고 준다. emitted = stack 앞에서 섹션 경로로 이미 나간 개수 — 그 헤딩들은 고아가 될 수 없다.
+    """
+
+    def __init__(self, first_page: int | None) -> None:
+        self.sections: list[Section] = []
+        self.stack: list[str] = []
+        self.stack_pos: list[int] = []  # stack 원소마다 items 속 위치 — 고아를 되살릴 때 문서 순서로 놓으려고
+        self.orphans: list[tuple[int, str]] = []  # (items 속 위치, 헤딩)
+        self.emitted = 0
+        self.buf: list[str] = []
+        self.buf_pages: list[int | None] = []
+        self.buf_blocks: list[str | TableBlock] = []
+        self.start_page = first_page
+        self.last_page = first_page
+
+    def _add(self, text: 'str | TableBlock', page: int | None) -> None:
+        if isinstance(text, TableBlock):
+            self.buf.append(text.render())
+            self.buf_pages.extend(text.line_pages(page))
+        else:
+            self.buf.append(text)
+            self.buf_pages.extend([page] * (text.count('\n') + 1))
+        self.buf_blocks.append(text)
+
+    def _flush(self, path: list[str]) -> None:
+        """본문이 있으면 섹션을 만든다. 본문 없는 헤딩은 섹션이 되지 않는다."""
+        if not self.buf:
+            return
+        self.sections.append(
+            Section(
+                list(path),
+                self.start_page,
+                '\n'.join(self.buf),
+                list(self.buf_pages),
+                blocks=join_blocks(self.buf_blocks),
+            )
+        )
+        self.emitted = len(path)
+        self.buf.clear()
+        self.buf_pages.clear()
+        self.buf_blocks.clear()
+
+    def heading(self, pos: int, text: str, level: int) -> None:
+        self._flush(self.stack)
+        cut = max(self.emitted, level - 1)  # 걷어낼 헤딩 중 경로로 한 번도 안 나간 것
+        self.orphans.extend(zip(self.stack_pos[cut:], self.stack[cut:], strict=True))
+        self.emitted = min(self.emitted, level - 1)
+        del self.stack[level - 1 :], self.stack_pos[level - 1 :]
+        self.stack.append(text)
+        self.stack_pos.append(pos)
+
+    def body(self, text: 'str | TableBlock', page: int | None) -> None:
+        # 섹션의 page는 첫 본문 줄의 쪽이다 — 헤딩이 쪽 끝에 걸려도 인용은 본문이 있는 쪽을 가리켜야 한다.
+        if not self.buf:
+            self.start_page = page
+            for _, orphan in sorted(self.orphans):  # 빠진 순서가 아니라 문서 순서 — 상위가 하위보다 늦게 빠질 수 있다
+                self._add(orphan, page)
+            self.orphans.clear()
+        self._add(text, page)
+
+    def finish(self) -> list[Section]:
+        if self.buf:
+            self._flush(self.stack)
+        elif self.sections:  # 문서가 본문 없는 헤딩으로 끝났다 — 버리지 않고 본문으로(경로는 이미 나간 앞부분)
+            self.start_page = self.last_page
+            tail = zip(self.stack_pos[self.emitted :], self.stack[self.emitted :], strict=True)
+            for _, heading in sorted([*self.orphans, *tail]):
+                self._add(heading, self.last_page)
+            self._flush(self.stack[: self.emitted])
+        return self.sections
+
+
 def build_sections(items: list[Item]) -> list[Section]:
     """(page, text, level) 흐름을 헤딩 스택으로 Section 목록에 접는다. PDF·DOCX·MD 공통 조립.
 
@@ -30,66 +105,15 @@ def build_sections(items: list[Item]) -> list[Section]:
       - 문서 끝 헤딩 — 문서가 본문 없는 헤딩으로 끝나면 그 헤딩을 본문으로 남긴다(경로는 이미 나간 앞부분).
     본문이 하나도 없는 문서는 섹션 0개 — 호출부(rag/ingestion)가 "추출된 텍스트 없음"으로 실패시킨다.
     """
-    sections: list[Section] = []
-    stack: list[str] = []
-    stack_pos: list[int] = []  # stack 원소마다 items 속 위치 — 고아를 되살릴 때 문서 순서로 놓으려고
-    orphans: list[tuple[int, str]] = []  # (items 속 위치, 헤딩)
-    emitted = 0  # stack 앞에서 몇 개가 이미 섹션 경로로 나갔나 — 그 헤딩들은 고아가 될 수 없다
-    buf: list[str] = []
-    buf_pages: list[int | None] = []
-    buf_blocks: list[str | TableBlock] = []
-    start_page: int | None = items[0][0] if items else None
-    last_page: int | None = start_page
-
-    def add(text: 'str | TableBlock', page: int | None) -> None:
-        if isinstance(text, TableBlock):
-            buf.append(text.render())
-            buf_pages.extend(text.line_pages(page))
-        else:
-            buf.append(text)
-            buf_pages.extend([page] * (text.count('\n') + 1))
-        buf_blocks.append(text)
-
-    def flush(path: list[str]) -> None:
-        """본문이 있으면 섹션을 만든다. 본문 없는 헤딩은 섹션이 되지 않는다."""
-        nonlocal emitted
-        if not buf:
-            return
-        sections.append(
-            Section(list(path), start_page, '\n'.join(buf), list(buf_pages), blocks=join_blocks(buf_blocks))
-        )
-        emitted = len(path)
-        buf.clear()
-        buf_pages.clear()
-        buf_blocks.clear()
-
+    builder = _SectionBuilder(items[0][0] if items else None)
     for pos, (page, text, level) in enumerate(items):
         if page is not None:
-            last_page = page
+            builder.last_page = page
         if level is not None:
-            flush(stack)
-            cut = max(emitted, level - 1)  # 걷어낼 헤딩 중 경로로 한 번도 안 나간 것
-            orphans.extend(zip(stack_pos[cut:], stack[cut:], strict=True))  # 둘은 같이 늘고 준다
-            emitted = min(emitted, level - 1)
-            del stack[level - 1 :], stack_pos[level - 1 :]
-            stack.append(cast(str, text))  # 헤딩은 글이다 — 표 블록은 level 없이 온다
-            stack_pos.append(pos)
+            builder.heading(pos, cast(str, text), level)  # 헤딩은 글이다 — 표 블록은 level 없이 온다
         else:
-            # 섹션의 page는 첫 본문 줄의 쪽이다 — 헤딩이 쪽 끝에 걸려도 인용은 본문이 있는 쪽을 가리켜야 한다.
-            if not buf:
-                start_page = page
-                for _, orphan in sorted(orphans):  # 빠진 순서가 아니라 문서 순서 — 상위가 하위보다 늦게 빠질 수 있다
-                    add(orphan, page)
-                orphans.clear()
-            add(text, page)
-    if buf:
-        flush(stack)
-    elif sections:  # 문서가 본문 없는 헤딩으로 끝났다 — 버리지 않고 본문으로(경로는 이미 나간 앞부분)
-        start_page = last_page
-        for _, heading in sorted([*orphans, *zip(stack_pos[emitted:], stack[emitted:], strict=True)]):
-            add(heading, last_page)
-        flush(stack[:emitted])
-    return sections
+            builder.body(text, page)
+    return builder.finish()
 
 
 # ── 섹션 묶기 ───────────────────────────────────────────────────────────────────

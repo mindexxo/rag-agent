@@ -15,7 +15,11 @@ from rag.chunking.errors import CaptionFailedError, PictureLimitError
 
 if TYPE_CHECKING:
     from docling.datamodel.base_models import ItemAndImageEnrichmentElement
-    from docling.datamodel.pipeline_options import PdfPipelineOptions, TableStructureOptions
+    from docling.datamodel.pipeline_options import (
+        PdfPipelineOptions,
+        PictureDescriptionApiOptions,
+        TableStructureOptions,
+    )
     from docling.document_converter import DocumentConverter
     from docling.models.base_model import BaseEnrichmentModel
     from docling.models.picture_description_base_model import PictureDescriptionBaseModel
@@ -114,7 +118,7 @@ def _captionable_count(doc: 'DoclingDocument', area_threshold: float) -> int:
     return n
 
 
-_XLSX_PICTURE_AREA_THRESHOLD = 0.0  # 엑셀 그림 캡션 면적 하한 — 근거는 docling_converter의 xlsx_opts 주석
+_XLSX_PICTURE_AREA_THRESHOLD = 0.0  # 엑셀 그림 캡션 면적 하한 — 근거는 _build_converter의 xlsx_opts 주석
 
 _picture_guards: list[PictureGuard] = []
 
@@ -149,6 +153,98 @@ def _table_options(opts: 'PdfPipelineOptions') -> 'TableStructureOptions':
     return cast('TableStructureOptions', opts.table_structure_options)
 
 
+def _caption_options() -> 'PictureDescriptionApiOptions':
+    """그림 캡션(VLM) 요청 옵션 — 세 형식이 공유한다(XLSX만 면적 하한을 바꿔 복제)."""
+    from docling.datamodel.pipeline_options import PictureDescriptionApiOptions  # 지연 import
+
+    return PictureDescriptionApiOptions(
+        url=AnyUrl(settings.vlm_caption_url),
+        params={
+            'model': settings.vlm_caption_model,
+            'temperature': settings.vlm_caption_temperature,  # params는 요청 body에 그대로 들어간다
+            # gpt-5 계열은 'max_tokens'를 400으로 거부한다 — 사내 vLLM·Gemini는 이 이름도 상한으로 받는다
+            'max_completion_tokens': settings.vlm_caption_max_tokens,
+        },
+        prompt=PICTURE_CAPTION_PROMPT,
+        picture_area_threshold=settings.vlm_caption_area_threshold,
+        scale=settings.vlm_caption_scale,
+        headers=caption_headers(),
+        timeout=settings.vlm_caption_timeout_seconds,
+        concurrency=settings.vlm_caption_concurrency,
+    )
+
+
+def _pdf_options(caption_opts: 'PictureDescriptionApiOptions') -> 'PdfPipelineOptions':
+    """PDF 파이프라인 노브 — 메모리·OCR·표 구조·가속기·캡션."""
+    from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
+    from docling.datamodel.pipeline_options import KserveV2OcrOptions, PdfPipelineOptions, TableFormerMode
+
+    opts = PdfPipelineOptions(artifacts_path=settings.docling_artifacts_path)
+    # 메모리 노브 — config.py 주석 참조. perf.page_batch_size는 쓰지 않는다: 기본 파이프라인이 그 값을 읽지 않는다.
+    opts.layout_batch_size = settings.docling_layout_batch_size
+    opts.queue_max_size = settings.docling_queue_max_size
+    # 상용 OCR(OCR_PROVIDER=llm)이면 Triton을 안 부른다 — 사진 표·스캔 쪽은 ocr_llm이 LLM으로 읽는다.
+    opts.do_ocr = settings.docling_do_ocr and settings.ocr_provider == 'triton'
+    if opts.do_ocr:
+        # 엔진은 원격 Triton. 기본 OcrMode는 비트맵 영역만 OCR하고 텍스트 레이어는 건드리지 않는다.
+        # 요청 실패는 docling이 삼키고 result.errors에만 남기므로 convert_with가 errors를 보고 실패로 올린다.
+        opts.ocr_options = KserveV2OcrOptions(
+            url=settings.ocr_kserve_url,
+            model_name=settings.ocr_kserve_model_name,
+            transport='http',
+            lang=[OCR_LANG],
+            scale=OCR_SCALE,
+            timeout=settings.ocr_kserve_timeout_seconds,
+        )
+    opts.do_table_structure = True
+    _table_options(opts).mode = (
+        TableFormerMode.FAST if settings.docling_table_mode == 'fast' else TableFormerMode.ACCURATE
+    )
+    _table_options(opts).do_cell_matching = settings.docling_do_cell_matching
+    # opts.document_timeout은 걸지 않는다 — 문서 마감은 convert_process.ConvertProcess가 프로세스째 끊는다. docling의 것은
+    # PDF 쪽 루프에서만 검사하고 PARTIAL_SUCCESS(→ 결정적 실패)로 끝나 "마감 초과 = 일시 실패"와 어긋난다.
+    opts.accelerator_options = AcceleratorOptions(
+        num_threads=settings.docling_num_threads, device=AcceleratorDevice(settings.docling_device)
+    )
+    # enable_remote_services를 안 켜면 do_picture_description이 설정 단계에서 OperationNotAllowed로 죽는다.
+    opts.enable_remote_services = True
+    opts.do_picture_description = True
+    opts.picture_description_options = caption_opts
+    return opts
+
+
+def _build_converter() -> 'DocumentConverter':
+    """PDF·DOCX·XLSX 변환기 조립 + 캡션 가드 끼우기(모델 로딩)."""
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import ConvertPipelineOptions
+    from docling.document_converter import DocumentConverter, ExcelFormatOption, PdfFormatOption, WordFormatOption
+
+    caption_opts = _caption_options()
+    # DOCX·XLSX는 본문이 원래 텍스트라 레이아웃·OCR 없는 SimplePipeline. 캡션 설정만 PDF와 공유한다.
+    office_opts = ConvertPipelineOptions(
+        enable_remote_services=True, do_picture_description=True, picture_description_options=caption_opts
+    )
+    # XLSX만 면적 하한 0 — 엑셀은 쪽이 없어 docling이 시트를 칸 단위로 재고 그림을 크기와 무관하게 1×1칸으로 잡아,
+    # 비율이 그림 크기가 아니라 시트 데이터 양을 잰다(큰 차트도 하한에 걸려 빠진다). 장수 상한도 이 하한으로 센다.
+    # 네이티브 차트 객체는 그림으로 세지지만 이미지가 없어 캡션되지 않고 자리표시만 남는다(값은 시트 칸에 있다).
+    xlsx_opts = ConvertPipelineOptions(
+        enable_remote_services=True,
+        do_picture_description=True,
+        picture_description_options=caption_opts.model_copy(
+            update={'picture_area_threshold': _XLSX_PICTURE_AREA_THRESHOLD}
+        ),
+    )
+    converter = DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=_pdf_options(caption_opts)),
+            InputFormat.DOCX: WordFormatOption(pipeline_options=office_opts),
+            InputFormat.XLSX: ExcelFormatOption(pipeline_options=xlsx_opts),
+        }
+    )
+    _guard_picture_models(converter)
+    return converter
+
+
 def docling_converter() -> 'DocumentConverter':
     """프로세스당 1회: PDF·DOCX·XLSX 변환기(모델 로딩). 변환 프로세스(convert_process.ConvertProcess) 안에서 불린다.
 
@@ -158,90 +254,7 @@ def docling_converter() -> 'DocumentConverter':
     global _converter
     with DOCLING_LOCK:
         if _converter is None:
-            from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
-            from docling.datamodel.base_models import InputFormat
-            from docling.datamodel.pipeline_options import (
-                ConvertPipelineOptions,
-                KserveV2OcrOptions,
-                PdfPipelineOptions,
-                PictureDescriptionApiOptions,
-                TableFormerMode,
-            )
-            from docling.document_converter import (
-                DocumentConverter,
-                ExcelFormatOption,
-                PdfFormatOption,
-                WordFormatOption,
-            )
-
-            opts = PdfPipelineOptions(artifacts_path=settings.docling_artifacts_path)
-            # 메모리 노브 — config.py 주석 참조. perf.page_batch_size는 쓰지 않는다: 기본 파이프라인이 그 값을 읽지 않는다.
-            opts.layout_batch_size = settings.docling_layout_batch_size
-            opts.queue_max_size = settings.docling_queue_max_size
-            # 상용 OCR(OCR_PROVIDER=llm)이면 Triton을 안 부른다 — 사진 표·스캔 쪽은 ocr_llm이 LLM으로 읽는다.
-            opts.do_ocr = settings.docling_do_ocr and settings.ocr_provider == 'triton'
-            if opts.do_ocr:
-                # 엔진은 원격 Triton. 기본 OcrMode는 비트맵 영역만 OCR하고 텍스트 레이어는 건드리지 않는다.
-                # 요청 실패는 docling이 삼키고 result.errors에만 남기므로 convert_with가 errors를 보고 실패로 올린다.
-                opts.ocr_options = KserveV2OcrOptions(
-                    url=settings.ocr_kserve_url,
-                    model_name=settings.ocr_kserve_model_name,
-                    transport='http',
-                    lang=[OCR_LANG],
-                    scale=OCR_SCALE,
-                    timeout=settings.ocr_kserve_timeout_seconds,
-                )
-            opts.do_table_structure = True
-            _table_options(opts).mode = (
-                TableFormerMode.FAST if settings.docling_table_mode == 'fast' else TableFormerMode.ACCURATE
-            )
-            _table_options(opts).do_cell_matching = settings.docling_do_cell_matching
-            # opts.document_timeout은 걸지 않는다 — 문서 마감은 convert_process.ConvertProcess가 프로세스째 끊는다. docling의 것은
-            # PDF 쪽 루프에서만 검사하고 PARTIAL_SUCCESS(→ 결정적 실패)로 끝나 "마감 초과 = 일시 실패"와 어긋난다.
-            opts.accelerator_options = AcceleratorOptions(
-                num_threads=settings.docling_num_threads, device=AcceleratorDevice(settings.docling_device)
-            )
-            # enable_remote_services를 안 켜면 do_picture_description이 설정 단계에서 OperationNotAllowed로 죽는다.
-            caption_opts = PictureDescriptionApiOptions(
-                url=AnyUrl(settings.vlm_caption_url),
-                params={
-                    'model': settings.vlm_caption_model,
-                    'temperature': settings.vlm_caption_temperature,  # params는 요청 body에 그대로 들어간다
-                    # gpt-5 계열은 'max_tokens'를 400으로 거부한다 — 사내 vLLM·Gemini는 이 이름도 상한으로 받는다
-                    'max_completion_tokens': settings.vlm_caption_max_tokens,
-                },
-                prompt=PICTURE_CAPTION_PROMPT,
-                picture_area_threshold=settings.vlm_caption_area_threshold,
-                scale=settings.vlm_caption_scale,
-                headers=caption_headers(),
-                timeout=settings.vlm_caption_timeout_seconds,
-                concurrency=settings.vlm_caption_concurrency,
-            )
-            opts.enable_remote_services = True
-            opts.do_picture_description = True
-            opts.picture_description_options = caption_opts
-            # DOCX·XLSX는 본문이 원래 텍스트라 레이아웃·OCR 없는 SimplePipeline. 캡션 설정만 PDF와 공유한다.
-            office_opts = ConvertPipelineOptions(
-                enable_remote_services=True, do_picture_description=True, picture_description_options=caption_opts
-            )
-            # XLSX만 면적 하한 0 — 엑셀은 쪽이 없어 docling이 시트를 칸 단위로 재고 그림을 크기와 무관하게 1×1칸으로 잡아,
-            # 비율이 그림 크기가 아니라 시트 데이터 양을 잰다(큰 차트도 하한에 걸려 빠진다). 장수 상한도 이 하한으로 센다.
-            # 네이티브 차트 객체는 그림으로 세지지만 이미지가 없어 캡션되지 않고 자리표시만 남는다(값은 시트 칸에 있다).
-            xlsx_opts = ConvertPipelineOptions(
-                enable_remote_services=True,
-                do_picture_description=True,
-                picture_description_options=caption_opts.model_copy(
-                    update={'picture_area_threshold': _XLSX_PICTURE_AREA_THRESHOLD}
-                ),
-            )
-            _converter = DocumentConverter(
-                format_options={
-                    InputFormat.PDF: PdfFormatOption(pipeline_options=opts),
-                    InputFormat.DOCX: WordFormatOption(pipeline_options=office_opts),
-                    InputFormat.XLSX: ExcelFormatOption(pipeline_options=xlsx_opts),
-                }
-            )
-            _guard_picture_models(_converter)
+            _converter = _build_converter()
     return _converter
 
 

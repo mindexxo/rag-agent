@@ -19,7 +19,6 @@ from collections import defaultdict
 from pathlib import Path
 
 import rag.chunking as ch
-import rag.xlsx_chunking as xc
 from eval.table_parsing.build import build_all
 from eval.table_parsing.expected import expected_cells, expected_rows, expected_tables, flat
 from eval.table_parsing.score import (Score, all_row_texts, all_texts, chunk_tables, docling_tables, match_rows,
@@ -47,14 +46,14 @@ def _score_pair(spec, path, doc, chunks):
 
 def _convert_and_chunk(path_file: Path, path: str):
     doc = ch.convert_process.convert_local(path_file, **({'max_num_pages': 100} if path in ('img', 'pdf') else {}))
-    orig_ch, orig_xc = ch.docling_convert, xc.docling_convert
-    ch.docling_convert = xc.docling_convert = lambda p, **k: doc      # 같은 변환 결과로 청킹(두 번 변환 안 함)
+    orig = ch.convert_process.docling_convert
+    ch.convert_process.docling_convert = lambda p, **k: doc      # 같은 변환 결과로 청킹(두 번 변환 안 함)
     try:
         chunks = ch.chunk_file(path_file, description='표') if path == 'xlsx' else ch.chunk_file(path_file)
     except Exception as e:                                             # noqa: BLE001 — 청킹 실패도 결과다(L2만)
         chunks = e
     finally:
-        ch.docling_convert, xc.docling_convert = orig_ch, orig_xc
+        ch.convert_process.docling_convert = orig
     return doc, chunks
 
 

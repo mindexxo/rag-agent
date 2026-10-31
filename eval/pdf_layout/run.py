@@ -108,12 +108,12 @@ def evaluate(spec: dict, pdf: Path) -> dict:
     furniture = [f for f in spec.get('furniture', []) if f != '쪽' and any(f in (t or '') for _, t, _, _ in elements)]
 
     # 조각 — 변환을 다시 하지 않고 같은 문서를 끼운다(표 축 #246 run.py와 같은 방식)
-    orig = ch.docling_convert
-    ch.docling_convert = lambda *a, **k: doc
+    orig = ch.convert_process.docling_convert
+    ch.convert_process.docling_convert = lambda *a, **k: doc
     try:
         chunks = ch.chunk_file(pdf)
     finally:
-        ch.docling_convert = orig
+        ch.convert_process.docling_convert = orig
     # 조각 본문의 표식만 본다 — 헤딩으로 올라간 문단(docling이 표 도입 문장을 section_header로 내기도 한다, L04)은 제목 경로에
     # 있어 순서와 무관하고, 본문 앞에 붙이면 거짓 내림이 난다
     chunk_toks = [tokens_in(c.text) for c in chunks]

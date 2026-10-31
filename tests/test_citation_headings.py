@@ -17,7 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from rag.chunking import _md_sections, chunk_file
+from rag.chunking import chunk_file
+from rag.chunking.markdown import md_sections
 from rag.chunking.sections import build_sections
 from rag.identifiers import chunk_identifiers, cut_identifier_span, effective_headings, normalize_identifiers
 from eval.chunk_invariants import chunks_lost, norm, sections_lost
@@ -96,7 +97,7 @@ class TestMdSections:
         p = tmp_path / 'r.md'
         p.write_text('# 규정\n\n## 제1조(목적)\n\n목적 본문\n\n## 제2조(삭제)\n\n## 제3조(정의)\n\n정의 본문\n\n'
                      '## 제4조(삭제)\n', encoding='utf-8')
-        assert [(s.heading_path, s.body) for s in _md_sections(p)] == [
+        assert [(s.heading_path, s.body) for s in md_sections(p)] == [
             (['규정', '제1조(목적)'], '목적 본문'),
             (['규정', '제3조(정의)'], '제2조(삭제)\n정의 본문'),
             (['규정'], '제4조(삭제)'),
@@ -106,7 +107,7 @@ class TestMdSections:
         # #267부터 docling — 문단은 요소 하나씩 나오고 조립이 줄바꿈 하나로 잇는다(PDF·DOCX와 같은 모양, 정규식 시절엔 빈 줄까지 뒀다)
         p = tmp_path / 'r.md'
         p.write_text('# 제목\n\n\n첫 문단\n\n둘째 문단\n\n\n## 절\n\n\n', encoding='utf-8')
-        assert [(s.heading_path, s.body) for s in _md_sections(p)] == [(['제목'], '첫 문단\n둘째 문단'), (['제목'], '절')]
+        assert [(s.heading_path, s.body) for s in md_sections(p)] == [(['제목'], '첫 문단\n둘째 문단'), (['제목'], '절')]
 
 
 # ----- 문서 단위: 합성 4건 + 골드 *_ct -------------------------------------------------------------

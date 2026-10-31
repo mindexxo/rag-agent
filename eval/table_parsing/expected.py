@@ -6,7 +6,7 @@ L2 규칙은 코드의 현재 **설계**를 옮긴 것이다 — 정답이 아�
 그것도 결과에 드러나야 하므로 여기서 보정하지 않는다.
 - 전 경로 공통(#252 결정 2로 PDF·이미지도 `docling_grid_rows`): 첫 행이 헤더, 병합 칸은 가로·세로 모두
   칸마다 반복(#252 결정 9 — 그 전엔 가로 병합은 첫 열에만), 값이 하나도 없는 행은 뺌(#220 결정 10). 셀 안 줄바꿈은 공백으로(#252 C), 엑셀 날짜 `00:00:00` 꼬리 없음(F).
-- 표 안의 표는 어느 경로든 **평탄화**(flatten_nested — PDF는 TableFormer가, DOCX는 _docx_table_rows가 같은 모양으로).
+- 표 안의 표는 어느 경로든 **평탄화**(flatten_nested — PDF는 TableFormer가, DOCX는 docx.docx_table_rows가 같은 모양으로).
 - (#252 전: PDF는 export_to_dataframe 경로라 2단 헤더를 '.'로 잇고 column_header가 없으면 열 이름이 0,1,2…였다 — 실문서
   PDF 표 55%가 숫자 헤더로 색인되던 결함 A의 원인. 그 규칙은 지웠다.)
 """
@@ -85,7 +85,7 @@ def flatten_nested(rows) -> list[list]:
 
 def expected_tables(spec, path: str | None = None, layer: str = 'l2') -> list[list[list]]:
     """정의 하나가 담는 표(들)의 격자 목록 — 나란히 축은 2개. 중첩 축은 층·경로에 따라 다르다:
-    - L2(색인 결과)는 어느 경로든 평탄화된 1개(flatten_nested — PDF는 TableFormer가, DOCX는 rag/chunking._docx_table_rows가
+    - L2(색인 결과)는 어느 경로든 평탄화된 1개(flatten_nested — PDF는 TableFormer가, DOCX는 rag/chunking/docx.docx_table_rows가
       같은 모양으로, #252 결정 4).
     - L1(docling 추출)은 docling이 내는 모양 그대로: PDF·이미지는 TableFormer 평탄화 1개, DOCX는 바깥(칸 비움) + 안쪽 2개."""
     if spec.get('side_by_side'):

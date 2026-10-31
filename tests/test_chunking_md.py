@@ -1,4 +1,4 @@
-"""MD 파서 = docling + 보정 3개(#267, 정의점 rag/chunking._md_sections).
+"""MD 파서 = docling + 보정 3개(#267, 정의점 rag/chunking/markdown.md_sections).
 
 docling(2.126) MD 백엔드를 그대로 쓰면 표 칸 '\\|'의 내용을 버리고, '<br>'이 든 행을 표 밖으로 흩뜨리고, 링크 주소를 빼고, 인라인
 서식으로 문장을 조각낸다(#267 실측). 그 보정과, 정규식 파서가 못 하던 구조 인식(밑줄식 헤딩·닫는 '#'·표 블록)을 고정한다.
@@ -12,7 +12,8 @@ from pathlib import Path
 import pytest
 
 from eval.chunk_invariants import chunks_lost
-from rag.chunking import _md_sections, chunk_file
+from rag.chunking import chunk_file
+from rag.chunking.markdown import md_sections
 
 pytest.importorskip('docling')
 
@@ -29,7 +30,7 @@ def _md(tmp_path, text: str) -> Path:
 
 
 def _body(tmp_path, text: str) -> str:
-    return '\n'.join(s.body for s in _md_sections(_md(tmp_path, text)))
+    return '\n'.join(s.body for s in md_sections(_md(tmp_path, text)))
 
 
 # ── 보정 ─────────────────────────────────────────────────────────────────────
@@ -70,12 +71,12 @@ def test_코드_블록은_들여쓰기를_지킨다(tmp_path):
 # ── 구조 인식(정규식 파서가 못 하던 것) ──────────────────────────────────────────
 
 def test_밑줄식_헤딩도_헤딩이다(tmp_path):
-    secs = _md_sections(_md(tmp_path, '안내\n====\n\n머리말.\n\n해지 응대\n--------\n\n본문.\n'))
+    secs = md_sections(_md(tmp_path, '안내\n====\n\n머리말.\n\n해지 응대\n--------\n\n본문.\n'))
     assert [(s.heading_path, s.body) for s in secs] == [(['안내'], '머리말.'), (['안내', '해지 응대'], '본문.')]
 
 
 def test_닫는_샾은_제목에_남지_않는다(tmp_path):
-    assert _md_sections(_md(tmp_path, '# 기준 #\n\n## 1. 경로 ##\n\n본문.\n'))[0].heading_path == ['기준', '1. 경로']
+    assert md_sections(_md(tmp_path, '# 기준 #\n\n## 1. 경로 ##\n\n본문.\n'))[0].heading_path == ['기준', '1. 경로']
 
 
 def test_전부_1로_쓴_번호_목록은_순서대로_번호가_붙는다(tmp_path):
@@ -83,7 +84,7 @@ def test_전부_1로_쓴_번호_목록은_순서대로_번호가_붙는다(tmp_p
 
 
 def test_앞머리_메타는_빈_헤딩을_만들지_않는다(tmp_path):
-    secs = _md_sections(_md(tmp_path, '---\n문서번호: X-1\n시행일: 2027-03-01\n---\n\n# 제목\n\n본문.\n'))
+    secs = md_sections(_md(tmp_path, '---\n문서번호: X-1\n시행일: 2027-03-01\n---\n\n# 제목\n\n본문.\n'))
     assert all(h for s in secs for h in s.heading_path)
     assert '2027-03-01' in '\n'.join(s.body for s in secs)
 

@@ -138,7 +138,7 @@ async def test_docling_변환_실패는_failed로_끝나고_비상_경로로_색
     def _boom(*args, **kwargs):
         raise RuntimeError('docling 변환 불완전(테스트 주입)')
 
-    monkeypatch.setattr(rc, 'docling_convert', _boom)      # PDF·DOCX·MD 경로가 이 이름을 부른다(XLSX는 xlsx_chunking이 따로 import)
+    monkeypatch.setattr(rc.convert_process, 'docling_convert', _boom)  # PDF·DOCX·MD·XLSX 경로가 전부 이 이름을 부른다
     assert await ingest(body['document_id']) == {'done': 0, 'failed': 1}
     assert not hasattr(settings, 'docling_enabled')         # 스위치가 되살아나면 여기서 깨진다 — 이슈 결정(2026-10-19)의 강제점
 

@@ -37,7 +37,7 @@ MAX_TOKENS = 4000
 TIMEOUT = 180.0
 
 _orig_convert_local = C.convert_process.convert_local
-_orig_docling_convert = C.docling_convert
+_orig_docling_convert = C.convert_process.docling_convert
 _converter = None
 
 
@@ -136,7 +136,7 @@ def _convert_vlm(file_path, **kwargs):
 
 def install() -> None:
     C.convert_process.convert_local = _convert_vlm
-    C.docling_convert = lambda p, **kw: C.convert_process.convert_local(p, **kw)     # 자식 프로세스 대신 이 프로세스에서(설정 교체가 먹게)
+    C.convert_process.docling_convert = lambda p, **kw: C.convert_process.convert_local(p, **kw)     # 자식 프로세스 대신 이 프로세스에서(설정 교체가 먹게)
 
 
 def uninstall() -> None:
@@ -146,5 +146,5 @@ def uninstall() -> None:
     _retries[0] = 0
     RAW.clear()                      # 모드 사이에 누적되지 않게(스캔 대조는 한 프로세스에서 여러 모드를 돈다)
     C.convert_process.convert_local = _orig_convert_local
-    C.docling_convert = _orig_docling_convert
+    C.convert_process.docling_convert = _orig_docling_convert
     _converter = None

@@ -1,8 +1,8 @@
 """운영 리포트 API (지표 MVP).
 
 Alli형 지표 — 사용량·답변률·지식 갭. 전부 messages 원천 데이터의 기간 집계 (별도 수집 인프라 없음).
-"운영자가 보고 행동할 수 있는 것만" 노출한다 (2026-08-07 정리):
-- 관여율/해결률: agent-assist 특성상 관찰 불가라 영구 제외 (봇이 상담을 끝내는 제품 아님 — 7/18)
+"운영자가 보고 행동할 수 있는 것만" 노출한다:
+- 관여율/해결률: agent-assist 특성상 관찰 불가라 영구 제외 (봇이 상담을 끝내는 제품 아님)
 - 활성 사용자: 인증 전엔 X-User-Id 하드코딩이라 항상 1 — 진짜 수치가 될 때까지 미노출
 - 응답 지연·캐시 적중·차단/실패: 내부 모니터링(SLO·알람) 소관 — 원천 컬럼은 계속 저장하므로 필요 시 SQL로
 """
@@ -12,16 +12,16 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
-from routers.kms import get_tenant_id
+from routers.deps import get_tenant_id
 from schemas.common import KST
 from schemas.stats import DailyCount, StatsSummary, TopDocument, UnansweredItem
 
-# ── 기간 경계는 KST 자정 (#181) ──────────────────────────────
-# DB 세션 tz는 Etc/UTC(실측)라 `now()::date`·`created_at::date`는 UTC 자정에서 갈린다 — 그러면
+# ── 기간 경계는 KST 자정 ──────────────────────────────
+# DB 세션 tz는 Etc/UTC라 `now()::date`·`created_at::date`는 UTC 자정에서 갈린다 — 그러면
 # "오늘 질문 수"가 KST 오전 9시에 바뀐다. 응답 시각(schemas/common.KstDatetime)과 **같은 상수**를
 # :tz로 바인드해 벽시계를 KST로 옮긴 뒤 날짜를 자른다. 세 SQL이 같은 조각을 쓴다 — 정의점 하나.
-# `make_interval(days => :days)`를 원식대로 두는 이유: `date - :days`로 바꾸면 asyncpg가 그 바인드를
-# int/interval 중 무엇으로 볼지 모호해질 수 있다. now()만 KST 벽시계로 바꾸고 구조는 유지한다.
+# `make_interval(days => :days)`를 쓰는 이유: `date - :days`로 쓰면 asyncpg가 그 바인드를
+# int/interval 중 무엇으로 볼지 모호해질 수 있다.
 _TODAY_KST = "(now() AT TIME ZONE :tz)::date"
 _TODAY_KST_MINUS_DAYS = "((now() AT TIME ZONE :tz) - make_interval(days => :days))::date + 1"
 _SINCE_KST = f"(({_TODAY_KST_MINUS_DAYS})::timestamp AT TIME ZONE :tz)"  # KST 자정 → timestamptz
@@ -34,7 +34,7 @@ async def stats_summary(
     days: int = Query(7, ge=1, le=90),
     tenant_id: str = Depends(get_tenant_id),
     session: AsyncSession = Depends(get_session),
-):
+) -> StatsSummary:
     params = {'tenant_id': tenant_id, 'days': days, 'tz': KST.key}
 
     # 기간 경계는 모든 쿼리가 '달력일' 기준을 공유한다 — days=7이면 오늘 포함 최근 7일(일 단위 절단).
@@ -42,10 +42,9 @@ async def stats_summary(
     # 불일치가 난다 (일별 표는 날짜 단위라 부분날을 표현할 수 없음).
     #
     # 답변률: 분모는 KNOWLEDGE 인텐트만 — OTHER(인사·요약 등)는 애초에 근거를 댈 일이 없는
-    # 경로라 분모에 넣으면 답변률이 잡담 비율만큼 부풀어 "지식 커버리지 신호"가 못 된다
-    # (2026-08-07). #61 이후 이 필터는 **더 중요해졌다** — 판정이 인용 개수로 바뀌면서 OTHER는
-    # 꼬리 메커니즘 자체가 없어 항상 인용 0건이 되므로, 필터가 없으면 잡담이 전부 분자에
-    # 들어간다(같은 이유로 stats_unanswered에도 이 필터를 새로 넣었다).
+    # 경로라 분모에 넣으면 답변률이 잡담 비율만큼 부풀어 "지식 커버리지 신호"가 못 된다.
+    # 판정이 인용 개수이고 OTHER는 꼬리 메커니즘 자체가 없어 항상 인용 0건이 되므로, 필터가
+    # 없으면 잡담이 전부 분자에 들어간다(같은 이유로 stats_unanswered에도 이 필터가 있다).
     # 분자도 같은 조건 필수 — intent NULL(컬럼 도입 전 행)이 분자에만 들어가면 분자가 분모의
     # 부분집합이 아니게 돼 근거미확인율이 1을 넘거나 답변률이 음수가 된다.
     row = (
@@ -90,10 +89,10 @@ async def stats_summary(
     ).all()
 
     # 인용 top 문서 — 저장 시 확정된 실인용 목록(cited_docs)만 집계. 본문 재파싱·전송 없음.
-    # (저장 시점에 출처 꼬리 해석(rag/turn/citation_tail, #56)이 확정 — 단일 정의점.
+    # (저장 시점에 출처 꼬리 해석(rag/turn/citation_tail)이 확정 — 단일 정의점.
     #  첨부 인용은 '첨부: 파일명' 문자열로 함께 잡힌다 — 첨부 기반 답변도 지표에 노출)
-    # FAQ 항목 인용(#278)은 cited_faq_ids에 id로 있다 — 'FAQ: 질문'(현재 질문, 인용 표시명과 같은 꼴)으로 합쳐
-    # 같은 top에 올린다. 삭제된 FAQ는 조인에서 빠진다. #278 전 행의 'FAQ' 원소는 cited_docs 쪽에서 그대로 잡힌다.
+    # FAQ 항목 인용은 cited_faq_ids에 id로 있다 — 'FAQ: 질문'(현재 질문, 인용 표시명과 같은 꼴)으로 합쳐
+    # 같은 top에 올린다. 삭제된 FAQ는 조인에서 빠진다. 항목별 인용 도입 전 행의 'FAQ' 원소는 cited_docs 쪽에서 그대로 잡힌다.
     top_rows = (
         await session.execute(
             text(f"""
@@ -137,7 +136,7 @@ async def stats_unanswered(
     limit: int = Query(50, ge=1, le=200),
     tenant_id: str = Depends(get_tenant_id),
     session: AsyncSession = Depends(get_session),
-):
+) -> list[UnansweredItem]:
     """지식 갭 — 근거를 못 댄 질문 원문 (최신순). FAQ/문서 보강의 직접 재료.
 
     판정·질문 짝 모두 저장 시 확정된 컬럼(cited_docs, question_message_id) —

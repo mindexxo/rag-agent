@@ -5,19 +5,19 @@
 soft_delete_documents, 색인 반영 시점은 rag/outbox.py, 실효 참조의 색인용 판정은
 rag/search/os_index.py의 effective_searchable.
 
-문서 식별·버전 정책 (2026-08-05 확정):
+문서 식별·버전 정책:
 - 식별 기준은 **filename 완전 일치** 하나뿐. 유사 파일명은 별개 문서로 본다.
 - 같은 이름 재업로드 = 새 version + 기존 버전 supersede. 내용이 같아도 마찬가지 —
-  내용 해시 dedupe는 제거했다(규칙을 하나로 유지).
+  내용 해시 dedupe는 하지 않는다(규칙을 하나로 유지).
   supersede가 **무엇을 언제** 하는지는 rag/ingestion.py의 index_pending_document가 정의점이다
-  (#186 이후 구버전 청크 삭제는 커밋 즉시가 아니라 다음 회차의 DROP 작업이다 — 최대 1분 공존).
+  (구버전 청크 삭제는 커밋 즉시가 아니라 다음 회차의 DROP 작업이다 — 최대 1분 공존).
 - 원본 파일은 테넌트 디렉터리 아래 UUID 이름으로 저장 (업로드 1건 = 파일 1개).
 - 버전 롤백은 미지원. 되돌리려면 이전 파일을 다시 업로드한다.
-- **예외(#161)**: failed 문서는 사용자에게 "없는 문서"다 — 목록에는 보이되(재시도·삭제해야 하므로)
+- **예외**: failed 문서는 사용자에게 "없는 문서"다 — 목록에는 보이되(재시도·삭제해야 하므로)
   exists·_current_version·handle_upload 셋이 한 기준으로 없는 것처럼 답한다.
   기준 상수는 rag/models.py의 ALIVE_DOCUMENT_STATUSES, 되살리는 규칙은 handle_upload docstring.
 
-동시 업로드 (2026-08-07 추가):
+동시 업로드:
 - FE가 확인창에서 본 버전을 expect_version으로 보내면, 그 사이 DB가 바뀌었을 때 409를 준다.
   조회 후 확인창을 띄우는 흐름은 조회~업로드 사이 창이 원리적으로 남으므로(TOCTOU),
   화면에서 몇 번을 확인해도 서버 검사 없이는 남의 문서를 조용히 대체할 수 있다.
@@ -32,7 +32,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, func, select
 from sqlalchemy import text as sql_text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,9 +54,9 @@ from rag.documents import (
 )
 from rag.models import ALIVE_DOCUMENT_STATUSES, Document, Folder
 from rag.turn import cache
-from routers.kms import get_tenant_id, get_user_id
+from routers.deps import get_tenant_id, get_user_id
+from routers.uploads import checked_filename, reject_if_oversized
 from schemas.kms import (
-    ATTACHMENT_FILENAME_MAX,
     BULK_MAX_ITEMS,
     DOC_LIST_DEFAULT_LIMIT,
     DOC_LIST_MAX_LIMIT,
@@ -85,7 +85,7 @@ def _to_response(doc: Document, ref_count: int | None = None) -> DocumentUploadR
         uploaded_at=doc.uploaded_at,
         uploaded_by=doc.uploaded_by,
         ref_count=ref_count,
-        # #194 — 다섯 엔드포인트(업로드·목록·단건·일괄 PATCH·단건 PATCH)가 이 함수 하나를
+        # 다섯 엔드포인트(업로드·목록·단건·일괄 PATCH·단건 PATCH)가 이 함수 하나를
         # 거치므로 여기 한 줄이 전부에 반영된다.
         description=doc.description,
         indexed_at=doc.indexed_at,
@@ -94,39 +94,7 @@ def _to_response(doc: Document, ref_count: int | None = None) -> DocumentUploadR
 
 router = APIRouter(prefix='/kms')
 
-# F1a: 지원 형식 화이트리스트 (확장자 기준). 그 외는 400.
-SUPPORTED_SUFFIXES = {'.pdf', '.docx', '.xlsx', '.txt', '.md'}
 DOC_MAX_FILE_BYTES = 10 * 1024 * 1024  # 문서 업로드 크기 상한 (첨부와 별개)
-
-
-def reject_if_oversized(request: Request, limit: int) -> None:
-    """Content-Length로 명백한 초과 업로드를 body read 전에 차단 (C2-A, 코스 가드).
-    조작·multipart 오버헤드로 부정확할 수 있어 정확 경계는 read 후 len() 검사가 담당 —
-    여기선 여유(margin)를 두고 '거대 본문을 메모리에 올리기 전에 끊는' 용도. (실전 상한은 nginx도 병행)"""
-    cl = request.headers.get('content-length')
-    if cl and cl.isdigit() and int(cl) > limit + 8192:
-        raise HTTPException(status_code=413, detail='파일이 너무 큽니다.')
-
-
-def checked_filename(file: UploadFile) -> str:
-    """업로드·첨부 공용 파일명 검사 — 누락·미지원 형식 400, 상한 초과 422. NFC 정규화 값을 돌려준다.
-
-    길이는 정규화 후 값으로 잰다 — NFD 한글은 글자당 최대 3코드포인트라 raw 길이로 재면 스키마(mode='before')와
-    기준이 어긋난다. 경로 문자는 정제하지 않는다(식별이 파일명 완전 일치, blob은 UUID 이름).
-    """
-    if not file.filename:
-        raise HTTPException(status_code=400, detail='파일명이 없습니다.')
-    filename = normalize_filename(file.filename)
-    suffix = Path(filename).suffix.lower()
-    if suffix not in SUPPORTED_SUFFIXES:
-        raise HTTPException(
-            status_code=400, detail=f'지원하지 않는 형식입니다: {suffix or "확장자 없음"}. 지원: PDF/DOCX/XLSX/TXT/MD'
-        )
-    if len(filename) > ATTACHMENT_FILENAME_MAX:
-        raise HTTPException(
-            status_code=422, detail=f'파일명이 너무 깁니다 ({ATTACHMENT_FILENAME_MAX}자 이내로 줄여 주세요).'
-        )
-    return filename
 
 
 async def _current_version(session: AsyncSession, tenant_id: str, filename: str) -> int:
@@ -134,8 +102,8 @@ async def _current_version(session: AsyncSession, tenant_id: str, filename: str)
 
     판정 기준은 exists API·handle_upload의 재사용 판정과 **정확히 같아야** 한다 — tenant + filename
     완전 일치, status가 살아 있는 것(ALIVE_DOCUMENT_STATUSES — 세 곳이 같은 상수를 쓴다).
-    기준이 어긋나면 "확인창에서 본 것과 다른 문서가 대체되는" 사고가 난다. failed를 빼는 이유는
-    #161 — 그 문서는 검색에 없고 재업로드가 그 행을 되살리므로(version 유지) "없는 문서"다.
+    기준이 어긋나면 "확인창에서 본 것과 다른 문서가 대체되는" 사고가 난다. failed를 빼는 이유:
+    그 문서는 검색에 없고 재업로드가 그 행을 되살리므로(version 유지) "없는 문서"다.
     """
     return (
         await session.execute(
@@ -166,8 +134,7 @@ def _version_conflict(filename: str, current_version: int) -> JSONResponse:
 def _validation_detail(e: ValidationError, fallback: str = 'document-data') -> str:
     """pydantic 오류 하나를 "필드: 사유" 한 줄로 — 업로드 데이터의 두 수신 경로가 공유한다.
 
-    메시지를 한 곳에 모아둔 것은 경로마다 다른 문구가 나가지 않게 하려는 것이다
-    (평면 Form 경로는 #194 전까지 아예 예외를 안 잡아 500이었다).
+    메시지를 한 곳에 모아둔 것은 경로마다 다른 문구가 나가지 않게 하려는 것이다.
     """
     first = e.errors()[0]
     where = '.'.join(str(x) for x in first['loc']) or fallback
@@ -177,7 +144,7 @@ def _validation_detail(e: ValidationError, fallback: str = 'document-data') -> s
 async def _resolve_upload_data(
     document_data: UploadFile | str | None, description: str | None, expect_version: int | None
 ) -> tuple[DocumentUploadMetadata, bool]:
-    """업로드 데이터를 확정한다 (#165). 반환: (데이터, folder_id를 실제로 보냈는지).
+    """업로드 데이터를 확정한다. 반환: (데이터, folder_id를 실제로 보냈는지).
 
     받는 방식이 둘이다 — 새 방식은 `document-data` 파트의 JSON 한 덩어리, 옛 방식은 평면 Form
     필드(description·expect_version). 옛 방식은 FE 전환 전 호환용이고, 그쪽에는 folder_id가 없다.
@@ -188,15 +155,15 @@ async def _resolve_upload_data(
     문자열로 실으면 str로 들어온다. 어느 쪽이든 본문은 같으므로 여기서 하나로 만든다.
     """
     if document_data is None:
-        # 옛 방식도 try로 감싼다 (#194) — description에 max_length가 붙으면서 이 생성이
-        # ValidationError를 낼 수 있게 됐다. FastAPI는 **수동 생성**한 pydantic 예외를 422로
+        # 옛 방식도 try로 감싼다 — description에 max_length가 있어 이 생성이
+        # ValidationError를 낼 수 있다. FastAPI는 **수동 생성**한 pydantic 예외를 422로
         # 바꿔주지 않으므로, 감싸지 않으면 201자를 평면 Form으로 보낼 때 500이 난다.
         try:
             return DocumentUploadMetadata(description=description, expect_version=expect_version), False
         except ValidationError as e:
             raise HTTPException(
                 status_code=422, detail=f'입력값이 올바르지 않습니다 ({_validation_detail(e, "description")}).'
-            )
+            ) from e
     if description is not None or expect_version is not None:
         raise HTTPException(
             status_code=400,
@@ -212,7 +179,7 @@ async def _resolve_upload_data(
     except ValidationError as e:
         raise HTTPException(
             status_code=422, detail=f'document-data JSON이 올바르지 않습니다 ({_validation_detail(e)}).'
-        )
+        ) from e
     # null 전송과 미전송을 가르는 지점 — PATCH의 update_document와 같은 방식이다.
     return meta, 'folder_id' in meta.model_fields_set
 
@@ -221,13 +188,13 @@ async def _resolve_upload_data(
 async def upload_document(
     request: Request,
     file: UploadFile = File(...),
-    # 업로드 데이터 JSON 파트 (#165) — folder_id·description·expect_version을 한 덩어리로.
+    # 업로드 데이터 JSON 파트 — folder_id·description·expect_version을 한 덩어리로.
     # ICCS의 @RequestPart("sr-data") 관례와 같은 꼴이라 이름도 그 관례를 따른다.
     # Content-Type: application/json을 실은 파트(브라우저 Blob → UploadFile로 들어온다)와
-    # 평범한 문자열 필드를 **둘 다** 받는다 — 둘 다 실측했다.
+    # 평범한 문자열 필드를 **둘 다** 받는다.
     document_data: Annotated[UploadFile | str | None, Form(alias='document-data')] = None,
     # ── 아래 둘은 옛 방식(평면 Form 필드). document-data 파트가 없을 때만 쓴다 ──
-    # F1a: 표 설명 (xlsx 검색 보강). xlsx는 필수 — 판정은 계승까지 따진 뒤 아래 1-1에서 한다 (#194).
+    # 표 설명 (xlsx 검색 보강). xlsx는 필수 — 판정은 계승까지 따진 뒤 아래 1-1에서 한다.
     description: str | None = Form(None, max_length=DOCUMENT_DESCRIPTION_MAX),
     # 낙관적 잠금 (선택). exists 응답의 version을 그대로 보낸다 — 없는 이름이면 0.
     #   미전송 → 검사 없음 (기존 호출부 호환)
@@ -235,20 +202,20 @@ async def upload_document(
     #   N      → 현재 버전이 N이어야 함 (대체하려는 경우)
     expect_version: int | None = Form(None),
     tenant_id: str = Depends(get_tenant_id),
-    # 등록자 (#164). 헤더 미전송이면 None → uploaded_by=NULL로 남긴다.
+    # 등록자. 헤더 미전송이면 None → uploaded_by=NULL로 남긴다.
     # conversation의 DEFAULT_USER('test-user') 폴백을 여기선 쓰지 않는다 —
     # 대화 스코핑 키와 달리 이 값은 문서 관리 화면의 '등록자' 컬럼에 그대로 뜬다.
     user_id: str | None = Depends(get_user_id),
     session: AsyncSession = Depends(get_session),
-):
+) -> DocumentUploadResponse | JSONResponse:
     # 0. 형식·크기 게이트 (인덱싱 전에 명시적으로 막음)
-    reject_if_oversized(request, DOC_MAX_FILE_BYTES)  # 거대 본문은 read 전에 차단 (C2-A)
+    reject_if_oversized(request, DOC_MAX_FILE_BYTES)  # 거대 본문은 read 전에 차단
     # 이하 전부 정규화된 값을 쓴다(원본 file.filename 금지) — 브라우저가 NFD로 주면 DB에 분해형이 저장되고 LLM이 NFC로 인용해 매칭이 깨진다.
     filename = checked_filename(file)
     suffix = Path(filename).suffix.lower()
 
-    # 0-1. 업로드 데이터 확정 + 폴더 검증 (#165).
-    #      **blob을 쓰기 전에** 한다 — 뒤에 두면 실패 경로마다 unlink를 챙겨야 한다(지금 2곳).
+    # 0-1. 업로드 데이터 확정 + 폴더 검증.
+    #      **blob을 쓰기 전에** 한다 — 뒤에 두면 실패 경로마다 unlink를 챙겨야 한다.
     meta, folder_given = await _resolve_upload_data(document_data, description, expect_version)
     if meta.folder_id is not None:
         if await get_folder(session, tenant_id, meta.folder_id) is None:  # 남의 테넌트 폴더 차단
@@ -259,15 +226,14 @@ async def upload_document(
     if len(content) > DOC_MAX_FILE_BYTES:
         raise HTTPException(status_code=413, detail='파일이 10MB를 초과합니다.')
 
-    # 1-1. xlsx 사전검증 (#194·#222) — 표 설명 필수 + 표 크기 상한. **blob을 쓰기 전에** 한다(위 0-1과 같은 이유).
-    #      #139로 파싱이 워커로 옮겨간 뒤 이 둘은 "업로드는 200인데 1분 뒤 failed"였다. 사용자가
-    #      성공으로 알고 화면을 떠난 뒤 실패하고, 디스크엔 blob이, 목록엔 failed 행이 남았다.
-    #      결정적 실패라 재시도해도 결과가 같으므로 동기 경로로 끌어올린다.
+    # 1-1. xlsx 사전검증 — 표 설명 필수 + 표 크기 상한. **blob을 쓰기 전에** 한다(위 0-1과 같은 이유).
+    #      파싱은 워커가 하므로 여기서 막지 않으면 "업로드는 200인데 1분 뒤 failed"가 되고
+    #      디스크엔 blob이, 목록엔 failed 행이 남는다. 결정적 실패라 동기 경로에서 거절한다.
     #      xlsx가 아니면 추가 쿼리도 워크북 open도 없다.
     docs = None
     if suffix == '.xlsx':
-        # 설명 필수는 "이번 요청에 보냈는가"가 아니라 **계승까지 따진 최종값**으로 판정한다(계승 허용,
-        # 2026-10-03). 계승 출처·식은 handle_upload와 같은 latest_alive·resolve_description — 기준을
+        # 설명 필수는 "이번 요청에 보냈는가"가 아니라 **계승까지 따진 최종값**으로 판정한다(계승 허용).
+        # 계승 출처·식은 handle_upload와 같은 latest_alive·resolve_description — 기준을
         # ALIVE로 맞춘 배경은 그 docstring 참조. docs는 handle_upload에 그대로 넘겨 재조회를 막는다.
         docs = await document_versions(session, tenant_id, filename)
         final_description = resolve_description(meta.description, latest_alive(docs))
@@ -275,16 +241,15 @@ async def upload_document(
             # 워크북 열기는 CPU 작업 — 이벤트 루프를 막지 않게 스레드로(extract_attachment와 같은 규율).
             await run_in_threadpool(validate_xlsx_upload, content, final_description)
         except XlsxUploadRejected as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception:
-            # openpyxl이 못 여는 파일(손상·확장자 위장). 라우터가 처음으로 xlsx를 직접 열게 되면서
-            # 워커가 받던 이 예외를 여기서 받는다 — 안 잡으면 500이 된다. openpyxl은 손상 종류마다
-            # 다른 예외를 낸다(BadZipFile·KeyError·ParseError·IOError — 3.1.5 소스 확인). 나열하지 않고 넓게 잡는다.
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:
+            # openpyxl이 못 여는 파일(손상·확장자 위장) — 안 잡으면 500이 된다. openpyxl은 손상 종류마다
+            # 다른 예외를 낸다(BadZipFile·KeyError·ParseError·IOError — 3.1.5 기준). 나열하지 않고 넓게 잡는다.
             raise HTTPException(
                 status_code=400, detail='xlsx 파일을 열 수 없습니다 (손상되었거나 올바른 xlsx 형식이 아닙니다).'
-            )
+            ) from e
 
-    # 2. blob 저장. 테넌트별 디렉터리 아래 UUID 파일명으로 저장한다 (2026-08-05).
+    # 2. blob 저장. 테넌트별 디렉터리 아래 UUID 파일명으로 저장한다.
     #    업로드 1건 = 파일 1개로 고정 — 내용이 같아도 경로를 공유하지 않는다.
     #    (내용 해시를 쓰면 v1·v2가 같은 파일을 가리켜, 나중에 비활성 문서 blob을
     #     정리할 때 살아 있는 문서의 원본까지 지워질 수 있다. 디스크는 조금 더 쓰지만
@@ -313,45 +278,45 @@ async def upload_document(
             uploaded_by=user_id,
             folder_id=meta.folder_id,
             folder_given=folder_given,
-            docs=docs,  # xlsx 사전검증이 이미 읽었으면 재사용 (#194) — 아니면 None이라 안에서 읽는다
+            docs=docs,  # xlsx 사전검증이 이미 읽었으면 재사용 — 아니면 None이라 안에서 읽는다
         )
         await session.commit()
     except IntegrityError, FailedReuseConflict:
         # IntegrityError: 같은 이름·같은 version이 방금 먼저 들어왔다 — UNIQUE(tenant_id, filename,
         # version). 위 조회를 두 요청이 함께 통과했을 때의 최종 방어선.
-        # (expect_version 미전송 호출도 여기서 409가 된다 — 이전엔 그대로 터져 500이었다)
-        # FailedReuseConflict(#161): 같은 failed를 둘이 동시에 되살리려 했고 이쪽이 졌다.
+        # (expect_version 미전송 호출도 여기서 409가 된다)
+        # FailedReuseConflict: 같은 failed를 둘이 동시에 되살리려 했고 이쪽이 졌다.
         # 둘 다 새 blob만 지운다 — 옛 blob은 DB가 여전히 가리키고 있다.
         await session.rollback()
         blob_path.unlink(missing_ok=True)
         return _version_conflict(filename, await _current_version(session, tenant_id, filename))
-    # failed 행을 되살린 경우 옛 blob은 **커밋 뒤에** 지운다 (#161) — 커밋 전에 지우면 롤백 시
+    # failed 행을 되살린 경우 옛 blob은 **커밋 뒤에** 지운다 — 커밋 전에 지우면 롤백 시
     # DB는 옛 경로를 가리키는데 파일은 없다. failed는 인용된 적이 없어 보존할 이유도 없다.
     if result.stale_blob:
         Path(result.stale_blob).unlink(missing_ok=True)
 
-    # 색인 대기열 행은 handle_upload가 문서와 같은 트랜잭션에 등록했다 (#139 outbox) —
+    # 색인 대기열 행은 handle_upload가 문서와 같은 트랜잭션에 등록했다 (outbox) —
     # 워커 cron(1분)이 처리한다. 응답 시점의 status는 pending이고, 검색 반영은 최대 1~5분.
     return _to_response(result.document)
 
 
 def _list_where(
     tenant_id: str, q: str | None, folder_id: int | None, status: list[str] | None, is_searchable: bool | None
-):
-    """목록 조회 조건 (#176). **count와 페이지 쿼리가 같은 것을 써야** has_more가 어긋나지 않는다.
+) -> ColumnElement[bool]:
+    """목록 조회 조건. **count와 페이지 쿼리가 같은 것을 써야** has_more가 어긋나지 않는다.
 
     supersede된 구버전(deleted)은 항상 빠진다 — 죽은 행에 폴더/참조 컨트롤이 노출되는 혼란 방지.
     호출부가 위생 처리를 끝낸 값을 넘긴다(q는 빈 문자열이 아닌 str 또는 None).
     """
     where = (Document.tenant_id == tenant_id) & (Document.status != 'deleted')
     if q is not None:
-        # 파일명은 경계에서 NFC로 저장된다(#34). 검색어도 맞춰야 한다 — text_norm의 정책은
+        # 파일명은 경계에서 NFC로 저장된다. 검색어도 맞춰야 한다 — text_norm의 정책은
         # "타이핑 입력은 IME가 NFC를 내므로 위험군이 아니다"지만, 파일명 검색은 사용자가
         # **이름을 복사해 붙여넣는** 경로가 흔하고 macOS에서 복사한 이름은 NFD일 수 있다.
         where &= Document.filename.ilike(like_pattern(normalize_filename(q)), escape=LIKE_ESCAPE_CHAR)
     if folder_id is not None:
         # 0은 '미분류' 약속 — 폴더 id는 1부터라 유효한 값과 겹치지 않는다. 쿼리 파라미터에는
-        # null이 없어서(#165의 multipart와 같은 제약) 값 하나로 표현했다.
+        # null이 없어서(multipart와 같은 제약) 값 하나로 표현했다.
         where &= Document.folder_id.is_(None) if folder_id == 0 else Document.folder_id == folder_id
     if status:
         where &= Document.status.in_(status)
@@ -361,11 +326,11 @@ def _list_where(
 
 
 async def _ref_counts(session: AsyncSession, tenant_id: str, filenames: list[str]) -> dict[str, int]:
-    """파일명별 인용 횟수 (F5) — 저장 시 확정된 실인용 목록(messages.cited_docs)의 집계.
+    """파일명별 인용 횟수 — 저장 시 확정된 실인용 목록(messages.cited_docs)의 집계.
 
-    sources(검색 후보 노출 수)가 아닌 **실인용**이다 — stats top_documents와 정의를 통일했다.
+    sources(검색 후보 노출 수)가 아닌 **실인용**이다 — stats top_documents와 같은 정의다.
     filename 키라 버전 교체 후에도 카운트가 이어진다.
-    **이번 페이지의 파일명으로만** 좁혀 부른다 (#176) — 예전엔 테넌트의 messages 전체를 훑었다.
+    **이번 페이지의 파일명으로만** 좁혀 부른다.
     """
     if not filenames:
         return {}
@@ -396,7 +361,7 @@ async def list_documents(
     is_searchable: bool | None = None,  # 문서 스위치 값 기준 (아래 주석)
     tenant_id: str = Depends(get_tenant_id),
     session: AsyncSession = Depends(get_session),
-):
+) -> DocumentListResponse:
     """테넌트의 문서 목록 — 페이징·검색·필터 (#176). 최신 업로드가 위로 온다.
 
     supersede된 구버전(deleted)은 제외한다 — 죽은 행에 폴더/참조 컨트롤이 노출되는 혼란 방지.
@@ -447,7 +412,7 @@ async def list_documents(
 @router.get('/documents/exists', response_model=DocumentExistsResponse)
 async def document_exists(
     filename: str, tenant_id: str = Depends(get_tenant_id), session: AsyncSession = Depends(get_session)
-):
+) -> DocumentExistsResponse:
     """업로드 전 동일 파일명 확인 (FE가 대체 확인 창을 띄울지 판단).
 
     판정 기준은 _current_version·handle_upload의 재사용 판정과 **정확히 같아야** 한다 — tenant +
@@ -458,7 +423,7 @@ async def document_exists(
     이 API는 안내용일 뿐 강제력이 없다. 업로드 API는 확인 없이도 통과하며(2026-08-05 결정),
     그 경우 기존 버전이 그대로 대체된다.
     """
-    # 업로드와 같은 경계 정규화 (#34) — 여기만 빠지면 위 "판정 기준이 정확히 같아야 한다"가
+    # 업로드와 같은 경계 정규화 — 여기만 빠지면 위 "판정 기준이 정확히 같아야 한다"가
     # 깨져, NFD 이름으로 물어본 클라이언트가 exists=false를 받고 중복 문서를 만든다.
     filename = normalize_filename(filename)
     doc = (
@@ -490,7 +455,7 @@ async def document_exists(
 @router.get('/documents/{document_id}', response_model=DocumentUploadResponse)
 async def get_document(
     document_id: int, tenant_id: str = Depends(get_tenant_id), session: AsyncSession = Depends(get_session)
-):
+) -> DocumentUploadResponse:
     doc = (
         (
             await session.execute(
@@ -526,8 +491,7 @@ def _effective_ref(doc_is_searchable: bool, folder_is_on: bool) -> bool:
     """실효 참조 = 문서 스위치 on AND 폴더 on(미분류는 on으로 친다). **라우터 판정의 정의점**.
 
     폴더 상태를 어떻게 얻는지는 호출부가 정한다 — 단건은 문서마다 조회(_effective_ref_now),
-    일괄은 대상 폴더를 미리 한 번에 모은 dict(bulk_update_documents). 판정식만 여기로 모았기
-    때문에 쿼리 횟수는 전과 같다 (#188 B-1).
+    일괄은 대상 폴더를 미리 한 번에 모은 dict(bulk_update_documents). 판정식만 여기 둔다.
 
     ⚠ rag/search/os_index.py의 `effective_searchable`과 **다른 판정**이다. 이름이 닮았지만 그쪽은
     색인용이라 is_faq·is_active·status=='ready'까지 본다. 여기는 사용자가 돌린 스위치 둘만 본다
@@ -539,9 +503,7 @@ def _effective_ref(doc_is_searchable: bool, folder_is_on: bool) -> bool:
 async def _effective_ref_now(session: AsyncSession, tenant_id: str, doc: Document) -> bool:
     """이 문서의 지금 실효 참조 — 폴더 상태를 문서마다 조회하는 단건 경로.
 
-    문서 스위치가 꺼져 있으면 폴더를 조회하지 않는다. 전 호출부가
-    `doc.is_searchable and await _folder_is_on(...)`로 단축 평가하던 것을 그대로 옮긴 것이라
-    판정 결과도 쿼리 횟수도 같다.
+    문서 스위치가 꺼져 있으면 폴더를 조회하지 않는다(단축 평가).
     """
     if not doc.is_searchable:
         return False
@@ -551,7 +513,7 @@ async def _effective_ref_now(session: AsyncSession, tenant_id: str, doc: Documen
 def _require_all_found(requested: list[int], found: set[int]) -> None:
     """요청한 문서 id가 전부 조회됐는지. 하나라도 빠지면 **아무것도 바꾸지 않고** 404.
 
-    일괄 변경(#166)·일괄 삭제(#174)가 공유하는 응답 규약이다 — 화면에서 체크한 목록과 결과가
+    일괄 변경·일괄 삭제가 공유하는 응답 규약이다 — 화면에서 체크한 목록과 결과가
     어긋나면 무엇이 반영됐는지 되짚을 방법이 없어서, 부분 성공 대신 전부 거절한다.
     남의 테넌트 id인지 없는 id인지 **구분해 알려주지 않는다** — 요청자가 보낸 값을 되돌려줄 뿐이다.
 
@@ -567,7 +529,7 @@ async def bulk_update_documents(
     request: DocumentBulkUpdateRequest,
     tenant_id: str = Depends(get_tenant_id),
     session: AsyncSession = Depends(get_session),
-):
+) -> list[DocumentUploadResponse]:
     """문서 여러 건의 폴더 소속·참조 on/off를 한 번에 바꾼다 (#166).
 
     단건 PATCH를 N번 부른 것과 결과는 같지만 커밋도, 색인 갱신 대기열 행도 한 번이다.
@@ -638,7 +600,7 @@ async def bulk_update_documents(
         if before and not _effective(doc):
             await cache.invalidate_source(session, tenant_id, doc.id)
 
-    # 5. 색인의 비정규화 메타 갱신은 **한 행**에 담는다 (#139). 워커는 최종값이 같은 문서끼리
+    # 5. 색인의 비정규화 메타 갱신은 **한 행**에 담는다. 워커는 최종값이 같은 문서끼리
     #    묶어 갱신하므로(os_index.sync_meta_documents_now) 200건이어도 보통 질의 1~2회다.
     outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=[d.id for d in docs])
     await session.commit()
@@ -652,7 +614,7 @@ async def update_document(
     request: DocumentUpdateRequest,
     tenant_id: str = Depends(get_tenant_id),
     session: AsyncSession = Depends(get_session),
-):
+) -> DocumentUploadResponse:
     """문서 속성 변경 (F2): 폴더 소속·참조 on/off·표 설명. 보낸 필드만 반영.
 
     **경로가 둘이다 (#194).** folder_id·is_searchable은 색인의 비정규화 메타만 바꾸므로
@@ -667,8 +629,7 @@ async def update_document(
             await session.execute(
                 select(Document)
                 .where(Document.tenant_id == tenant_id)
-                # 삭제된 문서는 대상이 아니다 (#166). 목록·exists 조회는 전부 이 필터를 갖고 있는데
-                # 여기만 빠져 있어, 목록에 뜨지도 않는 죽은 행의 폴더·참조 컬럼이 200으로 바뀌었다.
+                # 삭제된 문서는 대상이 아니다 — 목록·단건 조회와 같은 필터.
                 .where(Document.status != 'deleted')
                 .where(Document.id == document_id)
             )
@@ -679,7 +640,7 @@ async def update_document(
     if doc is None:
         raise HTTPException(status_code=404, detail="document not found")
 
-    # ── 검증 전부 먼저, mutation은 그 뒤 (#194) — 거절로 빠질 때 doc이 반쯤 바뀐 채 남지 않게 ──
+    # ── 검증 전부 먼저, mutation은 그 뒤 — 거절로 빠질 때 doc이 반쯤 바뀐 채 남지 않게 ──
     # 표 설명은 2-way: 미전송(None)이면 안 건드리고, 보낸 값은 strip 후 빈 문자열이면 지움으로 본다
     # (routers/folders.py의 FolderUpdateRequest와 같은 방식 — 문서만 3-way로 가면 비일관).
     new_description, reindex = doc.description, False
@@ -690,7 +651,7 @@ async def update_document(
             # 업로드에서 필수로 받아놓고 여기서 비울 수 있으면 규칙이 샌다.
             raise HTTPException(status_code=400, detail='xlsx 문서는 표 설명을 비울 수 없습니다.')
         # 재색인은 **ready인 xlsx의 값이 실제로 바뀐** 경우만. pending이면 대기 중인 그 행이 처리될 때
-        # 최신값을 읽고, failed는 되살리지 않는다 — 되살리기는 재업로드 경로의 역할이다(#161). 같은 값
+        # 최신값을 읽고, failed는 되살리지 않는다 — 되살리기는 재업로드 경로의 역할이다. 같은 값
         # 재전송에 재임베딩을 돌릴 이유도 없고, 비-xlsx는 설명이 청크에 안 들어가 재색인해도 같다.
         reindex = is_xlsx and new_description != doc.description and doc.status == 'ready'
     if 'folder_id' in request.model_fields_set and request.folder_id is not None:
@@ -718,8 +679,8 @@ async def update_document(
         # 설명이 청크 본문을 바꾸므로 전체 재색인 — pending으로 되돌리고 INDEX_DOCUMENT를
         # 다시 태운다(rag/os_reconcile.py의 reconcile과 같은 전례). 재파싱·재임베딩·ready
         # 승격은 index_pending_document 한 곳이 맡는다 — 두 벌을 두지 않는다.
-        # 버전은 올리지 않는다: 번호가 올라가는 사건은 **파일 재업로드**뿐이라는 기존 정책 유지.
-        # 수용한 대가 둘(#194) — ① index_parsed_document가 같은 document_id의 청크를 지우고
+        # 버전은 올리지 않는다: 번호가 올라가는 사건은 **파일 재업로드**뿐이다.
+        # 수용한 대가 둘 — ① index_parsed_document가 같은 document_id의 청크를 지우고
         # 다시 넣으므로 1초 미만 검색 공백이 생긴다. ② 재색인이 실패하면 outbox가 문서를 failed로 굳힌다 —
         # 설명만 고치려던 사용자가 문서 전체를 잃는 모양이지만, 재업로드로 되살릴 수 있다.
         doc.status = 'pending'
@@ -728,7 +689,7 @@ async def update_document(
         # "검색에서 빠지는가"만 보기 때문에 설명 변경을 못 잡는다.
         await cache.invalidate_source(session, tenant_id, doc.id)
     else:
-        # 외부 색인의 비정규화 메타 갱신을 같은 트랜잭션에 적재 (#139) — 검색가능·폴더 값이
+        # 외부 색인의 비정규화 메타 갱신을 같은 트랜잭션에 적재 — 검색가능·폴더 값이
         # 청크 문서마다 복사돼 있어 fan-out이 필요하다. **재색인이 아니라 부분 갱신**이다
         # (재색인은 벡터 없는 구성에서 재임베딩을 부른다 — rag/search/os_index.py의 _update_meta).
         outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=[doc.id])
@@ -741,7 +702,7 @@ async def bulk_delete_documents(
     ids: Annotated[list[int] | None, Query(max_length=BULK_MAX_ITEMS)] = None,
     tenant_id: str = Depends(get_tenant_id),
     session: AsyncSession = Depends(get_session),
-):
+) -> None:
     """문서 여러 건 삭제 (#174). 실제 처리는 단건과 **같은 경로**(soft_delete_documents)다.
 
     id 목록을 본문이 아니라 쿼리 파라미터로 받는다 — DELETE 요청의 content는 RFC 9110상
@@ -776,7 +737,7 @@ async def bulk_delete_documents(
 @router.delete('/documents/{document_id}', status_code=204)
 async def delete_document(
     document_id: int, tenant_id: str = Depends(get_tenant_id), session: AsyncSession = Depends(get_session)
-):
+) -> None:
     """문서 소프트 삭제 (F5). 같은 filename의 전 버전을 비활성 처리한다.
 
     무엇을 하는지는 rag/documents.py의 soft_delete_documents가 정의점이다 —
@@ -791,7 +752,7 @@ async def delete_document(
 @router.get('/documents/{document_id}/download')
 async def download_document(
     document_id: int, tenant_id: str = Depends(get_tenant_id), session: AsyncSession = Depends(get_session)
-):
+) -> FileResponse:
     """원본 blob 파일 다운로드. 답변 인용(sources)의 document_id에서 연결된다."""
     doc = (
         (

@@ -1,8 +1,6 @@
 """KMS 쿼리 라우터.
 
   POST /kms/query — SSE 전용 (text/event-stream). X-Tenant-Id 헤더로 테넌트 식별.
-  비스트리밍 JSON 경로(?stream=false)는 #26에서 삭제 — FE는 SSE만 쓰고, 두 경로가
-  갈라져 자란 탓에 출력 차단 턴이 저장되지 않는 등 불일치가 쌓였다.
 
 이 파일은 HTTP 경계만 담당한다 — 헤더 파싱, 동시 상한(429), prepare 단계 오류의 상태코드 매핑(_prepare_error),
 StreamingResponse 조립, 그리고 요청 스코프 자원(리미터 슬롯·OTel 루트 스팬)의 소유권 부기.
@@ -11,8 +9,9 @@ StreamingResponse 조립, 그리고 요청 스코프 자원(리미터 슬롯·OT
 
 import asyncio
 import time
+from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
@@ -27,6 +26,7 @@ from rag.turn.conversation import ConversationNotFound
 from rag.turn.llm_schemas import LlmJudgmentFailed
 from rag.turn.prepared import PreparedRag
 from rag.turn.service import RagService
+from routers.deps import get_tenant_id, get_user_id
 from schemas.kms import KmsQueryRequest
 
 router = APIRouter(prefix='/kms')
@@ -64,27 +64,16 @@ async def _prepare_turn(service: RagService, request: KmsQueryRequest, turn: ote
         raise http_error from exc
 
 
-def get_tenant_id(x_tenant_id: str = Header(..., min_length=1, pattern=r'\S')) -> str:
-    """X-Tenant-Id 필수 — 없거나 공백뿐이면 422. 빈 테넌트로 행이 쌓이면 격리가 깨진다."""
-    return x_tenant_id
-
-
-def get_user_id(x_user_id: str | None = Header(None, pattern=r'\S')) -> str | None:
-    """X-User-Id (선택). 있으면 사용자별 동시 제한·대화 소유 판정에 쓰고, 없으면 테넌트 제한만.
-    보냈는데 공백뿐이면 422 — 폴백 사용자로 조용히 합쳐지지 않게."""
-    return x_user_id
-
-
 async def concurrency_guard(
     tenant_id: str = Depends(get_tenant_id),
     user_id: str | None = Depends(get_user_id),
     session: AsyncSession = Depends(get_session),
-):
-    """테넌트별 동시 in-flight 상한 (F6). 초과 시 429. 획득한 Lease를 핸들러에 넘긴다.
+) -> AsyncIterator[Lease]:
+    """테넌트별 동시 in-flight 상한. 초과 시 429. 획득한 Lease를 핸들러에 넘긴다.
 
     생성 경로는 반납 책임을 백그라운드 태스크로 넘기므로(lease.handed_off) 그 경우 여기
-    finally에서 반납하지 않는다 — 연결이 끊겨도 태스크가 도는 동안 슬롯을 잡고 있어야 한다
-    (REVIEW P1-11). 즉시 경로는 여기서 반납.
+    finally에서 반납하지 않는다 — 연결이 끊겨도 태스크가 도는 동안 슬롯을 잡고 있어야 한다.
+    즉시 경로는 여기서 반납.
     """
     quota = (await session.execute(select(TenantQuota).where(TenantQuota.tenant_id == tenant_id))).scalars().first()
     tenant_limit = quota.concurrency_limit if quota else settings.concurrency_limit_default
@@ -102,18 +91,18 @@ async def concurrency_guard(
 
 @router.post('/query')
 async def query(
-    request: KmsQueryRequest,  # FastAPI가 요청 바디 JSON을 자동으로 파싱해서 KmsQueryRequest 객체로 만들어줍니다. 타입 힌트만 써주면 됨
-    tenant_id: str = Depends(get_tenant_id),  # FastAPI가 get_tenant_id() 먼저 호출 → 결과를 tenant_id에 넣어줌
+    request: KmsQueryRequest,
+    tenant_id: str = Depends(get_tenant_id),
     user_id: str | None = Depends(get_user_id),
     session: AsyncSession = Depends(get_session),
     lease: Lease = Depends(concurrency_guard),
-):
+) -> StreamingResponse:
     t_request = time.monotonic()  # 응답시간 기준점 — prepare(인텐트·검색·condense) 포함 (사용자 체감)
     service = RagService(tenant_id=tenant_id, session=session, user_id=user_id)
 
-    # 턴 루트 스팬(#7) — 데코레이터가 아닌 수동 관리: 두 스트림(즉시·생성) 모두 핸들러가
+    # 턴 루트 스팬 — 데코레이터가 아닌 수동 관리: 두 스트림(즉시·생성) 모두 핸들러가
     # 반환한 뒤에야 답이 확정되므로, span.end()를 스트림 쪽에 핸드오프해 루트 duration이
-    # 턴 전체를 반영하게 한다(#54). 핸들러 finally는 스트림이 시작되지 못한 경우
+    # 턴 전체를 반영하게 한다. 핸들러 finally는 스트림이 시작되지 못한 경우
     # (prepare 단계 예외)만 직접 종료한다.
     turn = otel.start_turn()
     root_handed_off = False
@@ -121,7 +110,7 @@ async def query(
         prepared = await _prepare_turn(service, request, turn)
         otel.set_attrs(
             turn.span,
-            {  # 루트 스팬 속성 — prepare 결과 반영 (#7)
+            {  # 루트 스팬 속성 — prepare 결과 반영
                 otel.INPUT_VALUE: request.query,
                 'kms.tenant_id': tenant_id,
                 'kms.conversation_id': prepared.conversation_id,
@@ -138,7 +127,7 @@ async def query(
                 media_type="text/event-stream",
                 headers=_SSE_HEADERS,
             )
-            # 스팬 종료는 immediate_stream의 finally가 담당(#54) — 플래그는 응답 객체 생성 '뒤'에
+            # 스팬 종료는 immediate_stream의 finally가 담당 — 플래그는 응답 객체 생성 '뒤'에
             # 세워, 여기서 실패하면 핸들러 finally가 종료한다(생성 경로의 spawn 순서와 같은 원칙).
             # lease는 손대지 않는다 — concurrency_guard(yield 의존성)가 스트림 종료까지 물고
             # 있다가 반납하므로, handed_off를 세우면 아무도 반납하지 않는다(슬롯 영구 유출).
@@ -146,7 +135,7 @@ async def query(
             return response
 
         # ── 생성 경로 (LLM → 백그라운드 태스크 + 큐 리더) ──
-        # 자리표시는 prepare()가 턴 시작에 이미 커밋했다(#72) — prepared.assistant_message_id가
+        # 자리표시는 prepare()가 턴 시작에 이미 커밋했다 — prepared.assistant_message_id가
         # 채워져 있으므로 여기서 따로 열 것이 없다. 태스크가 다른 세션에서 그 id로 UPDATE한다.
         queue: asyncio.Queue = asyncio.Queue()  # unbounded 필수 — 근거는 streaming.queue_reader docstring
         streaming.spawn_generation(prepared, queue, lease, t_request, turn.span)

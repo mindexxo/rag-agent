@@ -23,7 +23,7 @@ _MIME_OVERRIDES = {
 def _detect_mime(blob_path: Path) -> str:
     """확장자로 mime 추론. `mimetypes`가 docx를 못 알아보는 환경이 있어 override를 먼저 본다.
 
-    라우터의 SUPPORTED_SUFFIXES가 전부 여기서 판별돼야 업로드가 500 없이 끝난다.
+    routers/uploads.py의 SUPPORTED_SUFFIXES가 전부 여기서 판별돼야 업로드가 500 없이 끝난다.
     """
     suffix = blob_path.suffix.lower()
     if suffix in _MIME_OVERRIDES:

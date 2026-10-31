@@ -1,3 +1,5 @@
+"""죽은 레거시 — 참조처 없음, 새 코드에서 쓰지 마라."""
+
 from pydantic import BaseModel
 
 

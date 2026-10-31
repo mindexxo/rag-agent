@@ -1,4 +1,4 @@
-"""폴더 라우터 (F2 — 1단 그룹, 검색 참조 제어).
+"""폴더 라우터 (1단 그룹, 검색 참조 제어).
 
 폴더 CRUD + 폴더 단위 참조 on/off. 문서의 폴더 소속 변경은 documents 라우터의 PATCH가 담당.
 """
@@ -13,7 +13,7 @@ from rag import outbox
 from rag.documents import get_folder
 from rag.models import Document, Folder
 from rag.turn import cache
-from routers.kms import get_tenant_id
+from routers.deps import get_tenant_id
 from schemas.kms import FolderCreateRequest, FolderInfo, FolderUpdateRequest
 
 router = APIRouter(prefix='/kms')
@@ -56,7 +56,7 @@ async def _get_folder(session: AsyncSession, tenant_id: str, folder_id: int) -> 
 async def list_folders(
     tenant_id: str = Depends(get_tenant_id),
     session: AsyncSession = Depends(get_session),
-):
+) -> list[FolderInfo]:
     folders = (
         (await session.execute(select(Folder).where(Folder.tenant_id == tenant_id).order_by(Folder.name)))
         .scalars()
@@ -70,15 +70,15 @@ async def create_folder(
     request: FolderCreateRequest,
     tenant_id: str = Depends(get_tenant_id),
     session: AsyncSession = Depends(get_session),
-):
+) -> FolderInfo:
     name = request.name  # 공백 제거·빈 값 거절은 스키마가 했다
     folder = Folder(tenant_id=tenant_id, name=name, description=(request.description or '').strip() or None)
     session.add(folder)
     try:
         await session.commit()
-    except IntegrityError:
+    except IntegrityError as e:
         await session.rollback()
-        raise HTTPException(status_code=409, detail=f"'{name}' 폴더가 이미 있습니다.")
+        raise HTTPException(status_code=409, detail=f"'{name}' 폴더가 이미 있습니다.") from e
     return _to_info(folder)
 
 
@@ -88,7 +88,7 @@ async def update_folder(
     request: FolderUpdateRequest,
     tenant_id: str = Depends(get_tenant_id),
     session: AsyncSession = Depends(get_session),
-):
+) -> FolderInfo:
     folder = await _get_folder(session, tenant_id, folder_id)
     if request.name is not None:
         folder.name = request.name
@@ -104,7 +104,7 @@ async def update_folder(
         if folder.is_searchable and not request.is_searchable:
             await _invalidate_folder_docs(session, tenant_id, folder.id)
         folder.is_searchable = request.is_searchable
-    # 폴더 이름·설명·검색토글은 소속 문서의 **모든 청크 문서**에 복사돼 있다 (#139) —
+    # 폴더 이름·설명·검색토글은 소속 문서의 **모든 청크 문서**에 복사돼 있다 —
     # 같은 트랜잭션에 fan-out 갱신을 적재한다. 폴더가 fan-out의 최대 단위이고, 부분 갱신이라
     # 청크 수와 무관하게 _update_by_query 1~2회로 끝난다.
     doc_ids = (
@@ -120,9 +120,9 @@ async def update_folder(
         outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=list(doc_ids))
     try:
         await session.commit()
-    except IntegrityError:
+    except IntegrityError as e:
         await session.rollback()
-        raise HTTPException(status_code=409, detail='같은 이름의 폴더가 이미 있습니다.')
+        raise HTTPException(status_code=409, detail='같은 이름의 폴더가 이미 있습니다.') from e
     return _to_info(folder)
 
 
@@ -131,7 +131,7 @@ async def delete_folder(
     folder_id: int,
     tenant_id: str = Depends(get_tenant_id),
     session: AsyncSession = Depends(get_session),
-):
+) -> None:
     """폴더 삭제. 내부에 문서가 있으면 삭제 불가(409) — 검색제외 폴더를 지웠을 때 문서가
     미분류로 풀려 조용히 검색에 복귀하는 사고 방지(P1-17). 문서를 옮기거나 삭제한 뒤 폴더를 지운다."""
     folder = await _get_folder(session, tenant_id, folder_id)

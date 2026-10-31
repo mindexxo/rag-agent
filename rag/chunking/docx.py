@@ -1,9 +1,9 @@
 """DOCX 파서 — docling 문서(헤딩·표·그림) → Section, 스타일 없는 문서의 조문 헤딩 폴백; 채팅 첨부용 python-docx 평문 추출."""
 
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from docx import Document as DocxDocument
 from docx.table import Table as DocxTable
@@ -12,6 +12,9 @@ from docx.text.paragraph import Paragraph as DocxParagraph
 from rag.chunking import convert_process, docling_elements, sections
 from rag.chunking.types import Section, TableBlock
 from rag.identifiers import HeadingSplit, is_heading_line, split_heading_line
+
+if TYPE_CHECKING:
+    from docling_core.types.doc import DoclingDocument, TableItem
 
 _DOCX_HEADING_RE = re.compile(r'^Heading (\d+)$')  # python-docx는 빌트인 헤딩을 영문명으로 준다
 
@@ -60,7 +63,9 @@ def split_heading_head(text: str) -> tuple[str, str]:
     return head_split.head, (head_split.rest + ('\n' + rest_lines if rest_lines else '')).strip()
 
 
-def docx_fallback_headings(items: list[tuple[bool, int, str, bool]]) -> list[tuple[bool, int, str, bool]]:
+def docx_fallback_headings(
+    items: Sequence[tuple[bool, int, 'str | TableBlock', bool]],
+) -> Sequence[tuple[bool, int, 'str | TableBlock', bool]]:
     """Heading 스타일이 하나도 없는 docx의 조문 패턴 승격. 입력에 헤딩이 하나라도 있으면 그대로 돌려준다.
 
     스타일 없는 문서는 전체가 섹션 하나가 되어 분할기가 아무 데서나 자른다. 층은 PDF(docling_elements.sections_from_docling_elements)와 같다:
@@ -72,11 +77,11 @@ def docx_fallback_headings(items: list[tuple[bool, int, str, bool]]) -> list[tup
     """
     if any(is_heading for is_heading, _, _, _ in items):
         return items
-    out: list[tuple[bool, int, str, bool]] = []
+    out: list[tuple[bool, int, 'str | TableBlock', bool]] = []
     has_title = False
     seen_chapter = False
     for i, (is_heading, level, text, from_table) in enumerate(items):
-        if from_table:
+        if from_table or not isinstance(text, str):  # 표·그림은 승격 대상이 아니다(표 블록은 언제나 from_table)
             out.append((is_heading, level, text, from_table))
             continue
         first_line = text.split('\n', 1)[0].strip()
@@ -115,11 +120,11 @@ class DocxItem(NamedTuple):
 
     is_heading: bool
     level: int  # 헤딩 레벨(본문 줄은 0)
-    text: str
+    text: 'str | TableBlock'
     from_table: bool  # 표·그림 — 폴백 헤딩 승격에서 제외하는 표지
 
 
-def docx_table_rows(table, doc) -> list[list[str]]:
+def docx_table_rows(table: 'TableItem', doc: 'DoclingDocument') -> list[list[str]]:
     """DOCX·MD 표 → 행 목록(첫 행 헤더), 표 안의 표는 평탄화한다.
 
     표 안 요소는 따로 건너뛰므로(table_descendants) 안쪽 표는 여기서 바깥 표에 실어야 사라지지 않는다. 모양은 PDF
@@ -152,16 +157,16 @@ def docx_table_rows(table, doc) -> list[list[str]]:
         for c in {c for (_, c) in nested}
     }
     out: list[list[str]] = []
-    for r, row in enumerate(base):
+    for r, base_row in enumerate(base):
         inner_rows = max((len(rows) for (rr, _), rows in nested.items() if rr == r), default=0)
         for i in range(max(inner_rows, 1)):
             line: list[str] = []
-            for c, text in enumerate(row):
+            for c, text in enumerate(base_row):
                 if c in width:
-                    rows = nested.get((r, c))
-                    if rows:
-                        cells = rows[i] if i < len(rows) else []
-                        line.extend((cells + [''] * width[c])[: width[c]])
+                    inner_rows_here = nested.get((r, c))
+                    if inner_rows_here:
+                        inner_cells = inner_rows_here[i] if i < len(inner_rows_here) else []
+                        line.extend((inner_cells + [''] * width[c])[: width[c]])
                     else:
                         line.extend([text] * width[c])  # 넓어진 열에 걸친 칸 = 가로 병합 — 칸마다 반복
                 else:
@@ -170,7 +175,7 @@ def docx_table_rows(table, doc) -> list[list[str]]:
     return [row for row in out if any(row)]
 
 
-def docx_docling_items(doc) -> Iterator[DocxItem]:
+def docx_docling_items(doc: 'DoclingDocument') -> Iterator[DocxItem]:
     """docling Word 문서 → DocxItem 흐름.
 
     - 헤딩 레벨은 docling section_header.level 그대로(Heading 스타일 레벨과 같다). 'title' 라벨은 본문 줄이다.

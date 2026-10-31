@@ -1,7 +1,7 @@
 """크기 분할 — 섹션을 청크 조각으로. 표는 행 묶음으로, 글은 SentenceSplitter로 나눈 뒤 블록 사이를 다시 잇는다."""
 
 import re
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from rag.chunking.errors import TableTooLargeError
 from rag.chunking.sections import restore_leading_marker, strip_orphan_marker
@@ -9,6 +9,9 @@ from rag.chunking.tables import TABLE_BATCH_CHARS, TABLE_MAX_TOKENS, batch_table
 from rag.chunking.types import Section, TableBlock, blocks_of
 from rag.identifiers import is_heading_line
 from rag.tokens import estimate_tokens_conservative
+
+if TYPE_CHECKING:
+    from llama_index.core.node_parser import SentenceSplitter
 
 _TABLE_LEAD_MAX = (
     150  # 큰 표 묶음마다 붙이는 '표 바로 위 한 줄'의 최대 길이 — 이보다 길면 표 설명이 아니라 본문 문단으로 본다
@@ -32,7 +35,7 @@ TABLE_NOTE = re.compile(
 def _table_lead_lines(text: str, headings: set[str]) -> list[str]:
     """표 바로 위 글 블록 → 표 설명 줄(문서 순). 끝에서부터 모으고 제목 줄·줄 수·글자 수 한도에서 멈춘다."""
     out: list[str] = []
-    for line in reversed([l.strip() for l in text.split('\n') if l.strip()]):
+    for line in reversed([ln.strip() for ln in text.split('\n') if ln.strip()]):
         if (
             line in headings
             or is_heading_line(line)
@@ -47,7 +50,7 @@ def _table_lead_lines(text: str, headings: set[str]) -> list[str]:
 def _table_note_lines(text: str) -> list[str]:
     """표 바로 아래 글 블록 → 주석 줄. 첫 줄부터 TABLE_NOTE 표지로 시작하는 줄이 이어지는 동안만."""
     out: list[str] = []
-    for line in (l.strip() for l in text.split('\n') if l.strip()):
+    for line in (ln.strip() for ln in text.split('\n') if ln.strip()):
         if (
             not TABLE_NOTE.match(line)
             or len(out) >= _TABLE_CONTEXT_LINES
@@ -79,7 +82,7 @@ def _check_table_size(block: TableBlock, table_text: str, page: int | None) -> N
         raise TableTooLargeError(page, header, -(-tokens * 100 // TABLE_MAX_TOKENS), len(block.rows) - 1, len(header))
 
 
-def split_section(section: Section, splitter) -> list[Piece]:
+def split_section(section: Section, splitter: 'SentenceSplitter') -> list[Piece]:
     """섹션 → 조각(청크 글, 본문 오프셋, 큰 표면 표 정보). 표 블록은 행 묶음(batch_table_rows)으로, 글 블록만
     SentenceSplitter로 나눈 뒤 블록 사이를 다시 잇는다 — 따로 자르기만 하면 표 위 소제목·단위 줄이 혼자 남는 작은 청크가 된다:
       - 작은 표(묶음 하나): 이웃 조각과 합쳐 TABLE_BATCH_CHARS 안이면 한 청크로. 같은 글 블록의 조각끼리는 합치지 않는다
@@ -108,7 +111,7 @@ def split_section(section: Section, splitter) -> list[Piece]:
             lead = lead if len(batches) > 1 and len(lead) <= _TABLE_LEAD_MAX else ''
             if lead and pieces and pieces[-1][0].strip() == lead:
                 pieces.pop()  # 그 줄만 든 조각은 묶음마다 머리로 들어가므로 혼자 남기지 않는다
-            after = blocks[bi + 1] if bi + 1 < len(blocks) and isinstance(blocks[bi + 1], str) else ''
+            after = next((b for b in blocks[bi + 1 : bi + 2] if isinstance(b, str)), '')  # 바로 다음 글 블록만
             table_text = '\n'.join([*_table_lead_lines(last_text, heading_set), rendered, *_table_note_lines(after)])
             _check_table_size(block, table_text, block.row_pages[0] if block.row_pages else section.page)
             ref = TableRef(bi, table_text) if len(batches) > 1 else None

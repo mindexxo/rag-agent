@@ -2,15 +2,22 @@
 
 import logging
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import pdfplumber
 
 from rag.chunking import sections
 from rag.chunking.tables import to_markdown_table
-from rag.chunking.types import Item, Section, TableBlock
+from rag.chunking.types import ChunkData, Item, Section, TableBlock
 from rag.identifiers import split_heading_line
+
+if TYPE_CHECKING:
+    from docling_core.types.doc import DocItem, DoclingDocument, NodeItem, PictureItem, TableCell, TableItem
+
+# (label, text, page, table_rows) — docling_elements가 내는 요소. table_rows는 표일 때 행 목록(튜플만 먹이는 단위 테스트는 markdown 글).
+Element = tuple[str, str, int | None, list[list[str]] | str | None]
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +42,7 @@ def markers_from_words(words: list[tuple[str, float, float]]) -> set[str]:
     line: list[tuple[str, float]] = []
     line_top: float | None = None
 
-    def flush():
+    def flush() -> None:
         if not line:
             return
         body = max(size for _, size in line)
@@ -89,7 +96,7 @@ def docling_norm(text: str) -> str:
     return re.sub(r'[  ]+', ' ', text).strip()
 
 
-def docling_grid_markdown(table, doc=None) -> str | None:
+def docling_grid_markdown(table: 'TableItem', doc: 'DoclingDocument | None' = None) -> str | None:
     """docling 표 → markdown, 셀 원문(grid)에서 직접 그린다. docling 표 렌더의 정의점(첫 행 = 헤더, 열이 없으면 None).
 
     - 병합 칸은 범위의 모든 칸에 값을 둔다(가로·세로 모두) — 첫 칸에만 두면 나머지 칸이 빈칸으로 읽히거나, 청크 경계에서
@@ -104,7 +111,7 @@ def docling_grid_markdown(table, doc=None) -> str | None:
     return to_markdown_table(rows[0], rows[1:]) if rows else None
 
 
-def docling_grid_rows(table, doc=None) -> list[list[str]]:
+def docling_grid_rows(table: 'TableItem', doc: 'DoclingDocument | None' = None) -> list[list[str]]:
     """docling 표 → 행 목록(첫 행 = 헤더). docling_grid_markdown의 행 단계(규칙은 그 docstring) — 행 묶음은 글로
     바꾸기 전에 나눠야 해서 따로 둔다(batch_table_rows)."""
     rows = [[grid_cell_text(cell, doc) for cell in row] for row in table.data.grid]
@@ -121,7 +128,7 @@ def cell_text_norm(text: str) -> str:
     return _XLSX_MIDNIGHT_RE.sub(r'\1', text)
 
 
-def grid_cell_text(cell, doc) -> str:
+def grid_cell_text(cell: 'TableCell', doc: 'DoclingDocument | None') -> str:
     """표 칸 하나의 글자 — 칸 원문(cell_text_norm) + 칸 안 그림의 설명(docling_grid_markdown 참조)."""
     from docling_core.types.doc import PictureItem, RichTableCell  # 지연 import — docling은 톱레벨에 안 들인다
 
@@ -135,12 +142,12 @@ def grid_cell_text(cell, doc) -> str:
     return ' '.join(p for p in parts if p)
 
 
-def docling_picture_text(element) -> str:
+def docling_picture_text(element: 'PictureItem') -> str:
     """그림 요소의 본문 한 줄 — 캡션, 없으면 자리표시(캡션 대상이 아닌 그림)."""
     return docling_norm(docling_picture_caption(element)) or PICTURE_PLACEHOLDER
 
 
-def docling_block_text(item, doc) -> str:
+def docling_block_text(item: 'NodeItem', doc: 'DoclingDocument') -> str:
     """docling 요소 하나 → 본문 텍스트(없으면 ''). DOCX·MD·XLSX가 공유하는 요소 종류 분기의 정의점.
 
     목록 항목은 docling이 text에서 뗀 번호(marker)를 되붙인다. 헤딩 판정은 형식마다 달라 호출부가 한다.
@@ -159,7 +166,7 @@ def docling_block_text(item, doc) -> str:
     return ''
 
 
-def count_picture_placeholders(chunks) -> int:
+def count_picture_placeholders(chunks: Iterable[ChunkData]) -> int:
     """청크들에 남은 그림 자리표시 수 — 캡션 대상에서 빠진 그림(면적 하한 미만·MD 그림·엑셀 차트 객체)의 수.
 
     캡션이 붙은 그림은 본문과 구분되지 않아 셀 수 없다. 지표 기록은 호출부(rag/ingestion.py)가 한다 — 이 모듈은
@@ -168,7 +175,7 @@ def count_picture_placeholders(chunks) -> int:
     return sum(c.text.count(PICTURE_PLACEHOLDER) for c in chunks)
 
 
-def docling_picture_caption(element) -> str:
+def docling_picture_caption(element: 'PictureItem') -> str:
     """그림 요소의 VLM 캡션(없으면 ''). docling은 캡션을 element.text가 아니라 annotations에 담는다 — 첫 비어 있지 않은 것."""
     for ann in getattr(element, 'annotations', None) or []:
         text = (getattr(ann, 'text', '') or '').strip()
@@ -177,23 +184,22 @@ def docling_picture_caption(element) -> str:
     return ''
 
 
-def docling_elements(
-    doc, footnote_markers: dict[int, set[str]] | None = None
-) -> Iterator[tuple[str, str, int | None, list[list[str]] | None]]:
+def docling_elements(doc: 'DoclingDocument', footnote_markers: dict[int, set[str]] | None = None) -> Iterator[Element]:
     """docling PDF 문서 → (label, text, page, table_rows) 흐름(읽기 순서). table_rows는 표일 때만 행 목록(docling_grid_rows).
 
     sections_from_docling_elements와 나눈 것은 매핑 규칙을 docling 없이 튜플만으로 단위 테스트하기 위해서다.
     footnote_markers(쪽 → 각주 표시)는 텍스트 요소에서만 뗀다 — 표·그림은 대상이 아니다.
     """
     footnote_markers = footnote_markers or {}
-    for element, _depth in doc.iterate_items():
+    for node, _depth in doc.iterate_items():
+        element = cast('DocItem', node)  # 기본 순회(with_groups=False)는 DocItem만 낸다 — 타입만 좁힌다
         label = element.label.value if hasattr(element.label, 'value') else str(element.label)
         page = element.prov[0].page_no if getattr(element, 'prov', None) else None
         if label == 'table':
-            yield label, '', page, docling_grid_rows(element, doc) or None
+            yield label, '', page, docling_grid_rows(cast('TableItem', element), doc) or None
         elif label == 'picture':
             # 캡션이 없는 그림은 빈 문자열이 나가고, 소비자가 자리표시로 바꾼다.
-            yield label, docling_picture_caption(element), page, None
+            yield label, docling_picture_caption(cast('PictureItem', element)), page, None
         else:
             text = getattr(element, 'text', '') or ''
             # docling은 목록 번호·글머리('2.1', '-', '(1)')를 text에서 떼어 marker에 둔다 — export_to_markdown처럼 다시 붙인다.
@@ -205,7 +211,7 @@ def docling_elements(
             yield label, text, page, None
 
 
-def _join_split_article_titles(elements):
+def _join_split_article_titles(elements: Iterable[Element]) -> Iterator[Element]:
     """닫는 괄호만 다음 요소로 떨어진 조 제목을 잇는다 — '제 7 조 ( 징계종류' + ')' → '제 7 조 ( 징계종류 )'."""
     elements = list(elements)
     i = 0
@@ -228,7 +234,7 @@ def _join_split_article_titles(elements):
         i += 1
 
 
-def sections_from_docling_elements(elements) -> list[Section]:
+def sections_from_docling_elements(elements: Iterable[Element]) -> list[Section]:
     """(label, text, page, table) 흐름 → Section. PDF 헤딩 층 복원 규칙의 정의점. table은 행 목록(TableBlock으로
     운반)이거나 markdown 문자열(그대로 글 블록 — 튜플만 먹이는 테스트용).
 
@@ -269,14 +275,16 @@ def sections_from_docling_elements(elements) -> list[Section]:
             if isinstance(table_markdown, str):  # markdown 문자열 — 튜플만 먹이는 단위 테스트 호환
                 items.append((page, table_markdown, None))
                 continue
-            block = TableBlock(table_markdown, [page] * len(table_markdown))
+            row_pages: list[int | None] = [page] * len(table_markdown)
+            block = TableBlock(table_markdown, row_pages)
             # 쪽을 넘긴 표 잇기 — docling은 쪽마다 표를 따로 낸다. 바로 앞 항목이 표이고 헤더가 같을 때만 뒤 표의 헤더를
             # 떼고 행을 잇는다. 행별 쪽 번호는 각자 것을 지킨다(row_pages).
-            if items and isinstance(items[-1][1], TableBlock) and items[-1][1].rows[0] == block.rows[0]:
-                prev_page, prev_block, _ = items[-1]
+            prev_block = items[-1][1] if items else None
+            if isinstance(prev_block, TableBlock) and prev_block.rows[0] == block.rows[0]:
+                assert prev_block.row_pages is not None  # 이 함수가 만든 표 블록은 행별 쪽을 항상 채운다
                 items[-1] = (
-                    prev_page,
-                    TableBlock(prev_block.rows + block.rows[1:], prev_block.row_pages + block.row_pages[1:]),
+                    items[-1][0],
+                    TableBlock(prev_block.rows + block.rows[1:], prev_block.row_pages + row_pages[1:]),
                     None,
                 )
                 continue
@@ -291,6 +299,6 @@ def sections_from_docling_elements(elements) -> list[Section]:
     return sections.build_sections(items)
 
 
-def table_descendants(doc) -> set[str]:
+def table_descendants(doc: 'DoclingDocument') -> set[str]:
     """표 칸 안에 든 요소들의 self_ref. 표 자신은 빼고, 중첩 표는 바깥 표의 후손이라 들어간다(docx_table_rows가 평탄화해 싣는다)."""
     return {item.self_ref for table in doc.tables for item, _ in doc.iterate_items(root=table) if item is not table}

@@ -1,4 +1,4 @@
-"""청킹 파서 단위 테스트 — 첨부 추출(pdf_pages / _docx_text)과 형식 분기(chunk_file)의 계약.
+"""청킹 파서 단위 테스트 — 첨부 추출(plain.pdf_pages / docx.docx_text)과 형식 분기(chunk_file)의 계약.
 
 chunk_file 케이스는 전부 docling 변환 프로세스를 탄다(_needs_docling 표시) — PDF·DOCX·XLSX·MD 색인 경로가 docling 하나뿐이라서
 (#143·#220·#267, 비상 스위치는 #272에서 없앴다). 첨부 추출과 순수 함수는 docling 없이 돈다. docling 경로의 세부(제목 층·표·캡션)는
@@ -12,7 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from rag.chunking import _docx_text, _md_sections, chunk_file
+from rag.chunking import chunk_file
+from rag.chunking.docx import docx_text
+from rag.chunking.markdown import md_sections
 from rag.chunking.plain import pdf_pages
 
 CORPUS = Path(__file__).resolve().parent.parent / 'sample_docs' / 'corpus_v2'
@@ -49,7 +51,7 @@ class TestPdfPages:
 
 class TestDocxText:
     def test_문단과_표_셀_포함(self):
-        text = _docx_text(DOCX)
+        text = docx_text(DOCX)
         assert '정기후원' in text
         assert ' | ' in text          # 표 행은 셀을 ' | '로 조인 — 표 누락 방지
 
@@ -138,13 +140,13 @@ class TestMdSections:
         # 옛 MarkdownNodeParser 경로는 '## 2. 봉제 불량' 한 줄짜리 청크를 만들었다
         # (실측 md 청크의 19%). docx는 진작 막고 있던 것을 md에도 맞춘 것.
         p = self._write(tmp_path, '# 제목\n\n## 2. 상위\n\n### 2.1 하위\n\n실제 본문이다.\n')
-        bodies = [s.body for s in _md_sections(p)]
+        bodies = [s.body for s in md_sections(p)]
         assert bodies == ['실제 본문이다.']
 
     def test_헤딩은_본문에_안_들어간다(self, tmp_path):
         # heading_path가 들고 있고 index_text가 앞에 붙이므로 본문에 넣으면 중복
         p = self._write(tmp_path, '# 제목\n\n## 1. 절\n\n내용 한 줄.\n')
-        section = _md_sections(p)[0]
+        section = md_sections(p)[0]
         assert section.heading_path == ['제목', '1. 절']
         assert '#' not in section.body
 
@@ -152,43 +154,43 @@ class TestMdSections:
         # md는 빈 줄이 문단 구분 — 걷어내면 문단이 붙어버린다. docling은 문단을 요소 하나씩 주고 조립(build_sections)이 줄바꿈
         # 하나로 잇는다 — PDF·DOCX와 같은 모양(#267 전 정규식 파서는 빈 줄까지 그대로 뒀다)
         p = self._write(tmp_path, '# 제목\n\n첫 문단.\n\n둘째 문단.\n')
-        assert _md_sections(p)[0].body == '첫 문단.\n둘째 문단.'
+        assert md_sections(p)[0].body == '첫 문단.\n둘째 문단.'
 
     def test_백틱_펜스_안의_샾은_헤딩이_아니다(self, tmp_path):
         p = self._write(tmp_path, '# 제목\n\n```bash\n# 이건 셸 주석이다\necho hi\n```\n끝.\n')
-        sections = _md_sections(p)
+        sections = md_sections(p)
         assert [s.heading_path for s in sections] == [['제목']]
         assert '# 이건 셸 주석이다' in sections[0].body
 
     def test_틸드_펜스도_가드한다(self, tmp_path):
         # 옛 MarkdownNodeParser는 백틱만 봤다 — 여기는 개선분이라 회귀로 잠근다
         p = self._write(tmp_path, '# 제목\n\n~~~python\n# 파이썬 주석\n~~~\n끝.\n')
-        assert [s.heading_path for s in _md_sections(p)] == [['제목']]
+        assert [s.heading_path for s in md_sections(p)] == [['제목']]
 
     def test_펜스는_같은_문자로만_닫힌다(self, tmp_path):
         # ``` 안에서 ~~~를 만나도 안 닫혀야 그 뒤 '#'이 헤딩으로 새지 않는다
         p = self._write(tmp_path, '# 제목\n\n```\n~~~\n# 코드 안\n```\n\n실제 본문.\n')
-        assert [s.heading_path for s in _md_sections(p)] == [['제목']]
+        assert [s.heading_path for s in md_sections(p)] == [['제목']]
 
     def test_들여쓰기_코드블록의_샾도_헤딩이_아니다(self, tmp_path):
         # CommonMark상 들여쓴 줄은 코드블록이다 — docling이 문법대로 거른다(#267 전 정규식은 열 0 요구로 걸렀다)
         p = self._write(tmp_path, '# 제목\n\n    # 들여쓴 코드\n\n본문.\n')
-        assert [s.heading_path for s in _md_sections(p)] == [['제목']]
+        assert [s.heading_path for s in md_sections(p)] == [['제목']]
 
     def test_레벨_건너뛰기(self, tmp_path):
         # H1 → H3 (H2 생략) — pdf·docx와 같은 `del stack[level-1:]` 동작
         p = self._write(tmp_path, '# 제목\n\n### 건너뜀\n\n본문.\n')
-        assert _md_sections(p)[0].heading_path == ['제목', '건너뜀']
+        assert md_sections(p)[0].heading_path == ['제목', '건너뜀']
 
     def test_page는_항상_None(self, tmp_path):
         p = self._write(tmp_path, '# 제목\n\n본문.\n')
-        assert _md_sections(p)[0].page is None
+        assert md_sections(p)[0].page is None
 
     def test_빈_파일은_섹션_0개(self, tmp_path):
-        assert _md_sections(self._write(tmp_path, '')) == []
+        assert md_sections(self._write(tmp_path, '')) == []
 
     def test_헤딩만_있는_파일도_섹션_0개(self, tmp_path):
-        assert _md_sections(self._write(tmp_path, '# 제목\n\n## 절\n')) == []
+        assert md_sections(self._write(tmp_path, '# 제목\n\n## 절\n')) == []
 
 
 class TestChunkFileDispatch:
@@ -213,75 +215,75 @@ class TestDocxFallbackHeadings:
     """Heading 스타일 없는 docx의 조문 패턴 승격 (#205). 튜플 단위 + python-docx 생성 fixture."""
 
     def test_스타일_헤딩이_하나라도_있으면_무변경(self):
-        from rag.chunking import _docx_fallback_headings
+        from rag.chunking.docx import docx_fallback_headings
         items = [(True, 1, '제목', False), (False, 0, '제1조(목적) 본문', False)]
-        assert _docx_fallback_headings(items) == items
+        assert docx_fallback_headings(items) == items
 
     def test_제목_장_조_3단(self):
-        from rag.chunking import _docx_fallback_headings
+        from rag.chunking.docx import docx_fallback_headings
         items = [(False, 0, '장애관리 지침서\n< 컨택센터 사업부문 >', False), (False, 0, '제 1 장 총칙', False),
                  (False, 0, '제1조(목적)', False), (False, 0, '이 지침은 …', False), (False, 0, '제2조(적용 범위)', False)]
-        assert _docx_fallback_headings(items) == [
+        assert docx_fallback_headings(items) == [
             (True, 1, '장애관리 지침서', False), (False, 0, '< 컨택센터 사업부문 >', False), (True, 2, '제 1 장 총칙', False),
             (True, 3, '제1조(목적)', False), (False, 0, '이 지침은 …', False), (True, 3, '제2조(적용 범위)', False)]
 
     def test_장이_없으면_조는_L2_제목_없으면_한_단계_위(self):
-        from rag.chunking import _docx_fallback_headings
+        from rag.chunking.docx import docx_fallback_headings
         with_title = [(False, 0, '지침서', False), (False, 0, '제1조(목적)', False), (False, 0, '본문', False)]
-        assert [lv for h, lv, _, _ in _docx_fallback_headings(with_title) if h] == [1, 2]
+        assert [lv for h, lv, _, _ in docx_fallback_headings(with_title) if h] == [1, 2]
         no_title = [(False, 0, '제1조(목적)', False), (False, 0, '본문', False)]
-        assert [lv for h, lv, _, _ in _docx_fallback_headings(no_title) if h] == [1]
+        assert [lv for h, lv, _, _ in docx_fallback_headings(no_title) if h] == [1]
 
     def test_번호_목록과_표_행과_장애_같은_낱말은_승격하지_않는다(self):
-        from rag.chunking import _docx_fallback_headings
+        from rag.chunking.docx import docx_fallback_headings
         items = [(False, 0, '제목', False), (False, 0, '1. 출근시간 선택', False), (False, 0, '제3조(장애) | 설명', True),
                  (False, 0, '제3조의 장애 등급', False), (False, 0, '<표 1. 장애의 분류>', False)]
-        assert [h for h, _, _, _ in _docx_fallback_headings(items)] == [True, False, False, False, False]
+        assert [h for h, _, _, _ in docx_fallback_headings(items)] == [True, False, False, False, False]
 
     def test_같은_문단에_이어진_본문은_헤딩에서_분리된다(self):
-        from rag.chunking import _docx_fallback_headings
+        from rag.chunking.docx import docx_fallback_headings
         items = [(False, 0, '제목', False), (False, 0, '제8조(역할과 책임) ① 운영관리자는 장애를 접수한다.\n② 복구는 담당자가 한다.', False)]
-        assert _docx_fallback_headings(items)[1:] == [
+        assert docx_fallback_headings(items)[1:] == [
             (True, 2, '제8조(역할과 책임)', False), (False, 0, '① 운영관리자는 장애를 접수한다.\n② 복구는 담당자가 한다.', False)]
         # 괄호 제목이 없는 장은 첫 줄 전체가 머리
-        assert _docx_fallback_headings([(False, 0, '제 1 장 총칙\n이 장은 …', False)])[0] == (True, 1, '제 1 장 총칙', False)
+        assert docx_fallback_headings([(False, 0, '제 1 장 총칙\n이 장은 …', False)])[0] == (True, 1, '제 1 장 총칙', False)
 
     def test_가지_조문과_전각_괄호(self):
-        from rag.chunking import _docx_fallback_headings
+        from rag.chunking.docx import docx_fallback_headings
         items = [(False, 0, '제목', False), (False, 0, '제3조의2（특례）', False), (False, 0, '제1장(총칙)', False)]
-        assert [(h, lv, txt) for h, lv, txt, _ in _docx_fallback_headings(items)] == [
+        assert [(h, lv, txt) for h, lv, txt, _ in docx_fallback_headings(items)] == [
             (True, 1, '제목'), (True, 2, '제3조의2（특례）'), (True, 2, '제1장(총칙)')]
 
     def test_인용_문단은_승격하지_않는다(self):
         # #233: 예전 _ARTICLE_RE(조 번호 뒤 공백·괄호·줄끝)가 이 꼴을 전부 제목으로 올려, 뒤에 다른 제목이 오면 문장이 사라졌다
-        from rag.chunking import _docx_fallback_headings
+        from rag.chunking.docx import docx_fallback_headings
         cites = ['제98조 및 제99조에 따라 처리한다.', '제98조 제2항의 규정에 의한다.',
                  '제98조(이하 "보상조항"이라 한다)에 따라 지급한다.', '제98조(보상)에 따라 지급한다.']
         items = [(False, 0, '제목', False), *((False, 0, c, False) for c in cites), (False, 0, '제2조(정의)', False)]
-        assert [(h, txt) for h, _, txt, _ in _docx_fallback_headings(items)[1:]] == [
+        assert [(h, txt) for h, _, txt, _ in docx_fallback_headings(items)[1:]] == [
             *((False, c) for c in cites), (True, '제2조(정의)')]
 
     def test_괄호_중첩_제목은_짝까지가_머리(self):
         # #233: 예전 머리 정규식은 안쪽 닫는 괄호에서 잘라 '제2조(시향 예약(단체)'와 본문 ')'로 갈랐다
-        from rag.chunking import _docx_fallback_headings
+        from rag.chunking.docx import docx_fallback_headings
         items = [(False, 0, '제목', False), (False, 0, '제2조(시향 예약(단체)) 예약은 전화로 받는다.', False)]
-        assert _docx_fallback_headings(items)[1:] == [
+        assert docx_fallback_headings(items)[1:] == [
             (True, 2, '제2조(시향 예약(단체))', False), (False, 0, '예약은 전화로 받는다.', False)]
 
     def test_첫_문단이_길면_제목이_없고_한_단계_위로(self):
-        from rag.chunking import _docx_fallback_headings
+        from rag.chunking.docx import docx_fallback_headings
         items = [(False, 0, '가' * 61, False), (False, 0, '제1조(목적)', False), (False, 0, '본문', False)]
-        out = _docx_fallback_headings(items)
+        out = docx_fallback_headings(items)
         assert out[0] == (False, 0, '가' * 61, False) and out[1] == (True, 1, '제1조(목적)', False)
 
     def test_Heading_스타일_문서는_폴백을_타지_않고_첨부_평문도_불변(self):
-        from rag.chunking import _docx_fallback_headings, _docx_items
+        from rag.chunking.docx import docx_fallback_headings, docx_items
         from docx import Document as _Doc
-        items = list(_docx_items(DOCX))                         # corpus 합성 docx — Heading 스타일 있음
-        assert _docx_fallback_headings(items) is items
+        items = list(docx_items(DOCX))                         # corpus 합성 docx — Heading 스타일 있음
+        assert docx_fallback_headings(items) is items
         d = _Doc(str(DOCX))
         expected = [p.text.strip() for p in d.paragraphs if p.text.strip()]
-        assert all(line in _docx_text(DOCX) for line in expected)
+        assert all(line in docx_text(DOCX) for line in expected)
 
     @_needs_docling
     def test_생성한_docx_제목_장_조_3단_경로(self, tmp_path):

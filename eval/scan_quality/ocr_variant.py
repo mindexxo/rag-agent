@@ -55,5 +55,5 @@ def install(name: str) -> None:
             return PO.RapidOcrOptions(lang=kw.get('lang', ['korean']), scale=kw.get('scale', 3.0), text_score=0.5,
                                       use_cls=False, rapidocr_params=params)
         PO.KserveV2OcrOptions = _local
-    C.docling_convert = lambda p, **kw: C.convert_process.convert_local(p, **kw)
+    C.convert_process.docling_convert = lambda p, **kw: C.convert_process.convert_local(p, **kw)
     C.document_converter._converter = None                       # 다음 변환에서 새 옵션으로 변환기를 다시 만든다

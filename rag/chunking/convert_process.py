@@ -185,3 +185,17 @@ class ConvertProcess:
 
 
 process = ConvertProcess()
+
+
+def abort_conversion() -> None:
+    """진행 중인 docling 변환을 끊는다(변환 프로세스 kill). 색인 잡이 취소될 때 rag/ingestion.py가 부른다."""
+    process.abort()
+
+
+def docling_convert(file_path: str | Path, **kwargs):
+    """docling 변환 한 번 → DoclingDocument(변환 프로세스에 맡긴다). PDF·DOCX·MD·XLSX가 공유한다.
+
+    실패 분류(outbox.is_transient): TimeoutError·CaptionFailedError·LlmReadFailedError는 일시,
+    PictureLimitError·불완전 변환 RuntimeError는 결정적.
+    """
+    return process.convert(file_path, kwargs)

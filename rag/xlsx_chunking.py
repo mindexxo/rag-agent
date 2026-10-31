@@ -29,8 +29,8 @@ from rag.chunking import (
     TABLE_MAX_TOKENS,
     ChunkData,
     batch_table_rows,
+    convert_process,
     docling_block_text,
-    docling_convert,
     docling_grid_rows,
     to_markdown_table,
 )
@@ -219,7 +219,7 @@ def chunk_xlsx(file_path, description: str = '') -> list[ChunkData]:
     비워 내면 조용히 빠뜨리지 않고 실패로 올린다. 셀 없이 그림만 있는 시트는 docling 결과가 있으면 뒤에 붙인다.
     """
     titles = _check_workbook_size(file_path)
-    blocks = _docling_sheet_blocks(docling_convert(file_path))
+    blocks = _docling_sheet_blocks(convert_process.docling_convert(file_path))
     if missing := [t for t in titles if t not in blocks]:
         raise RuntimeError(f'docling이 셀이 있는 시트를 비워 냈다: {missing}')
     chunks: list[ChunkData] = []

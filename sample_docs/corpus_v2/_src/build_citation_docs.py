@@ -107,7 +107,7 @@ GOODPEOPLE = [   # (스타일, 글) — 'h1' 문서 제목 / 'ch' 장 / 'h2' 조
 
 
 def build_aromanica() -> Path:
-    """Heading 스타일이 하나도 없는 워드 — 전부 Normal 문단이라 조문 폴백(_docx_fallback_headings)을 탄다."""
+    """Heading 스타일이 하나도 없는 워드 — 전부 Normal 문단이라 조문 폴백(docx.docx_fallback_headings)을 탄다."""
     from docx import Document as DocxDocument
     p = OUT / 'aromanica' / 'aromanica_16_시향관운영지침.docx'
     d = DocxDocument()

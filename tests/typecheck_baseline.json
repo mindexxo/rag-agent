@@ -80,6 +80,7 @@
  "rag/chunking/convert_process.py",
  "rag/chunking/docling_elements.py",
  "rag/chunking/document_converter.py",
+ "rag/chunking/docx.py",
  "rag/chunking/ocr_llm.py",
  "rag/chunking/plain.py",
  "rag/chunking/sections.py",

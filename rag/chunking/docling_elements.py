@@ -289,3 +289,8 @@ def sections_from_docling_elements(elements) -> list[Section]:
             if text:
                 items.append((page, text, None))
     return sections.build_sections(items)
+
+
+def table_descendants(doc) -> set[str]:
+    """표 칸 안에 든 요소들의 self_ref. 표 자신은 빼고, 중첩 표는 바깥 표의 후손이라 들어간다(docx_table_rows가 평탄화해 싣는다)."""
+    return {item.self_ref for table in doc.tables for item, _ in doc.iterate_items(root=table) if item is not table}

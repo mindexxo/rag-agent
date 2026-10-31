@@ -11,7 +11,8 @@ import openpyxl
 import pytest
 
 from config import settings
-from rag.chunking import CaptionFailedError, PictureLimitError, _docx_sections, chunk_file, count_picture_placeholders, docling_grid_markdown
+from rag.chunking import CaptionFailedError, PictureLimitError, chunk_file, count_picture_placeholders, docling_grid_markdown
+from rag.chunking.docx import docx_sections
 from tests.conftest import FAKE_CAPTION
 
 pytest.importorskip('docling')
@@ -88,7 +89,7 @@ class TestDocxDocling:
             doc.add_heading('1.2 새벽 배송', level=3)
             doc.add_paragraph('새벽 배송은 전날 23시까지 주문분이다.')
         p = _docx(tmp_path, build)
-        new = [s.heading_path for s in _docx_sections(p)]     # 섹션 단위로 본다 — 청크는 형제 섹션을 묶어 공통 조상만 남긴다
+        new = [s.heading_path for s in docx_sections(p)]     # 섹션 단위로 본다 — 청크는 형제 섹션을 묶어 공통 조상만 남긴다
         assert new == [['배송 정책', '1. 배송 유형', '1.1 일반 배송'], ['배송 정책', '1. 배송 유형', '1.2 새벽 배송']]
 
     def test_표_셀은_한_번만_들어가고_굵게_표시가_없다(self, tmp_path):
@@ -125,7 +126,7 @@ class TestDocxDocling:
             doc.add_paragraph('제1장 총칙')
             doc.add_paragraph('제1조(목적) 이 지침은 장애 대응 절차를 정한다.')
             doc.add_paragraph('제2조(적용) 전 시스템에 적용한다.')
-        assert [s.heading_path for s in _docx_sections(_docx(tmp_path, build))] == [
+        assert [s.heading_path for s in docx_sections(_docx(tmp_path, build))] == [
             ['장애관리 지침서', '제1장 총칙', '제1조(목적)'], ['장애관리 지침서', '제1장 총칙', '제2조(적용)']]
 
     def test_표_칸_안의_그림은_그_칸에_설명이_붙는다(self, tmp_path):
@@ -201,7 +202,7 @@ class TestDocxDocling:
         def build(doc):
             doc.add_paragraph('제1조(목적) 본문.')
             doc.add_picture(BytesIO(_png()))
-        sections = _docx_sections(_docx(tmp_path, build))
+        sections = docx_sections(_docx(tmp_path, build))
         assert all('제9조(그림 속 조문)' not in ' '.join(sec.heading_path) for sec in sections)
         assert any('제9조(그림 속 조문) 캡처 내용' in sec.body for sec in sections)
 
@@ -353,7 +354,7 @@ class TestXlsxDocling:
             chunk_file(_xlsx(tmp_path, build))
 
     def test_크기_상한은_docling_변환_전에_openpyxl로_건다(self, tmp_path, monkeypatch):
-        import rag.xlsx_chunking as xc
+        from rag.chunking import convert_process
         from rag.xlsx_chunking import XlsxTableTooLarge
 
         def build(wb):
@@ -363,7 +364,7 @@ class TestXlsxDocling:
 
         def boom(*a, **k):
             raise AssertionError('크기 상한 위반인데 docling 변환까지 갔다')
-        monkeypatch.setattr(xc, 'docling_convert', boom)
+        monkeypatch.setattr(convert_process, 'docling_convert', boom)
         with pytest.raises(XlsxTableTooLarge):
             chunk_file(_xlsx(tmp_path, build))
 
@@ -373,14 +374,11 @@ class TestXlsxDocling:
 class TestAttachmentStaysPlain:
     def test_첨부_추출은_docling_변환을_부르지_않는다(self, tmp_path, monkeypatch):
         # 첨부는 사용자 대기 경로 — docling 변환 프로세스를 색인과 나누면 PDF 색인 뒤에 줄을 선다
-        import rag.chunking as ch
-        import rag.xlsx_chunking as xc
-        from rag.chunking import extract_text
+        from rag.chunking import convert_process, extract_text
 
         def boom(*a, **k):
             raise AssertionError('첨부가 docling을 탔다')
-        monkeypatch.setattr(ch, 'docling_convert', boom)
-        monkeypatch.setattr(xc, 'docling_convert', boom)
+        monkeypatch.setattr(convert_process, 'docling_convert', boom)
 
         def build_x(wb):
             wb.active.append(['col'])

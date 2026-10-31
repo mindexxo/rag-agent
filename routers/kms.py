@@ -4,8 +4,8 @@
   비스트리밍 JSON 경로(?stream=false)는 #26에서 삭제 — FE는 SSE만 쓰고, 두 경로가
   갈라져 자란 탓에 출력 차단 턴이 저장되지 않는 등 불일치가 쌓였다.
 
-이 파일은 HTTP 경계만 담당한다 — 헤더 파싱, 동시 상한(429), 404 매핑, StreamingResponse
-조립, 그리고 요청 스코프 자원(리미터 슬롯·OTel 루트 스팬)의 소유권 부기.
+이 파일은 HTTP 경계만 담당한다 — 헤더 파싱, 동시 상한(429), prepare 단계 오류의 상태코드 매핑(_prepare_error),
+StreamingResponse 조립, 그리고 요청 스코프 자원(리미터 슬롯·OTel 루트 스팬)의 소유권 부기.
 이벤트 어휘와 두 경로의 수명 관리는 rag/streaming.py (FE 이벤트 계약도 그 모듈 docstring에).
 """
 import asyncio
@@ -18,16 +18,48 @@ from starlette.responses import StreamingResponse
 
 from config import settings
 from database import get_session
-from rag import limiter, otel, streaming
+from rag import limiter, otel, outbox, streaming
+from rag.conversation import ConversationNotFound
 from rag.limiter import Lease
 from rag.llm_schemas import LlmJudgmentFailed
 from rag.models import TenantQuota
+from rag.prepared import PreparedRag
 from rag.service import RagService
 from schemas.kms import KmsQueryRequest
 
 router = APIRouter(prefix='/kms')
 
 _SSE_HEADERS = streaming.SSE_HEADERS   # 정의점은 rag/streaming.py (재접속 라우터와 공유)
+
+
+def _prepare_error(exc: Exception) -> HTTPException | None:
+    """prepare 단계 예외의 상태코드 매핑 — 정의점.
+
+    404는 대화 없음에만, 503은 재시도로 풀릴 수 있는 실패(LLM 판단 불가, 연결·타임아웃·429/5xx 등
+    outbox.is_transient 기준)에만. None은 예상외 오류라 그대로 전파해 500이 된다 — 서버 결함을
+    클라이언트 오류나 일시 장애로 위장하지 않는다.
+    """
+    if isinstance(exc, ConversationNotFound):
+        return HTTPException(status_code=404, detail='대화를 찾을 수 없습니다.')
+    if isinstance(exc, LlmJudgmentFailed) or outbox.is_transient(exc):
+        return HTTPException(status_code=503, detail='일시적으로 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.')
+    return None
+
+
+async def _prepare_turn(service: RagService, request: KmsQueryRequest, turn: otel.TurnSpan) -> PreparedRag:
+    """prepare()를 부르고 실패를 HTTP 오류로 바꾼다. 이 시점엔 질문이 저장돼 있고 안전망이 자리표시를 failed로 닫은 뒤다."""
+    try:
+        return await service.prepare(
+            request.query, request.conversation_id, request.attachments, domain_hint=request.domain_hint
+        )
+    except Exception as exc:
+        http_error = _prepare_error(exc)
+        if http_error is None:
+            raise
+        if http_error.status_code >= 500:
+            # 5xx는 시스템 건강 신호라 스팬에 남긴다 — query의 `except HTTPException`은 마킹 없이 통과시킨다.
+            otel.mark_error(turn.span, exc)
+        raise http_error from exc
 
 
 def get_tenant_id(x_tenant_id: str = Header(...)) -> str:
@@ -86,25 +118,7 @@ async def query(
     turn = otel.start_turn()
     root_handed_off = False
     try:
-        try:
-            prepared = await service.prepare(request.query, request.conversation_id, request.attachments,
-                                             domain_hint=request.domain_hint)
-        except LlmJudgmentFailed as exc:
-            # LLM이 분류·재작성 판단을 못 냈다 (#72) — 폴백으로 추측하지 않고 실패로 끝낸다.
-            # 500(서버 버그)이 아니라 503: 재시도하면 될 수 있는 일시적 실패다.
-            # 이 시점엔 사용자의 질문이 이미 저장돼 있고(턴 시작 자리표시), prepare()의
-            # 안전망이 그 자리표시를 failed로 닫아둔 상태다.
-            #
-            # **스팬은 ERROR로 남긴다.** 404(존재하지 않는 대화)와 달리 이건 클라이언트 잘못이
-            # 아니라 시스템 건강 신호다 — 폴백을 걷어내면서 새로 생긴 실패 계열이라, 여기서
-            # 마킹하지 않으면 에러율 대시보드에 아예 안 잡힌다. 아래 `except HTTPException`이
-            # 마킹 없이 통과시키므로 이 자리에서 직접 남겨야 한다.
-            otel.mark_error(turn.span, exc)
-            raise HTTPException(status_code=503, detail='일시적으로 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.')
-        except ValueError:
-            # 존재하지 않거나 다른 테넌트 소유의 conversation_id — 500 아닌 404 (REVIEW findings ③)
-            # 정상 클라이언트 오류 — 스팬을 ERROR로 남기지 않는다 (에러율 오염 방지, 리뷰 반영)
-            raise HTTPException(status_code=404, detail='대화를 찾을 수 없습니다.')
+        prepared = await _prepare_turn(service, request, turn)
         otel.set_attrs(turn.span, {          # 루트 스팬 속성 — prepare 결과 반영 (#7)
             otel.INPUT_VALUE: request.query,
             'kms.tenant_id': tenant_id,

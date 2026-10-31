@@ -24,16 +24,9 @@ from io import BytesIO
 import openpyxl
 
 # 표 markdown 조립은 rag/chunking/tables.py가 정의점 — 형식마다 표 모양이 다르면 프롬프트·리랭커·어휘 채널이 다른 모양을 본다.
-from rag.chunking import (
-    TABLE_BATCH_TOKENS,
-    TABLE_MAX_TOKENS,
-    ChunkData,
-    batch_table_rows,
-    convert_process,
-    docling_block_text,
-    docling_grid_rows,
-    to_markdown_table,
-)
+from rag.chunking import convert_process, docling_elements
+from rag.chunking.tables import TABLE_BATCH_TOKENS, TABLE_MAX_TOKENS, batch_table_rows, to_markdown_table
+from rag.chunking.types import ChunkData, TableBlock
 from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN, estimate_tokens_conservative
 
 logger = logging.getLogger(__name__)
@@ -123,13 +116,12 @@ def validate_xlsx_upload(content: bytes, description: str | None) -> None:
             _check_sheet_size(title, header, body)
 
 
-# 시트 블록: ('table', 행 목록[첫 행 = 헤더]) 또는 ('text', 본문) — 행 묶음을 행 단계에서 나누려고 표는 행 목록으로 든다.
-Block = tuple[str, object]
+# 시트 블록 — 글 또는 표(chunking 공통 블록 자료형). 행 묶음을 행 단계에서 나누려고 표는 행 목록(TableBlock)으로 든다.
+Block = str | TableBlock
 
 
 def _render(block: Block) -> str:
-    kind, value = block
-    return to_markdown_table(value[0], value[1:]) if kind == 'table' else value
+    return block.render() if isinstance(block, TableBlock) else block
 
 
 def _sheet_chunks(title: str, blocks: list[Block], description: str, start: int) -> list[ChunkData]:
@@ -149,8 +141,8 @@ def _sheet_chunks(title: str, blocks: list[Block], description: str, start: int)
     budget = int(TABLE_BATCH_TOKENS * CONSERVATIVE_CHARS_PER_TOKEN)
     parts = [
         p
-        for kind, value in blocks
-        for p in (batch_table_rows(value[0], value[1:], budget) if kind == 'table' else [value])
+        for block in blocks
+        for p in (batch_table_rows(block.rows[0], block.rows[1:], budget) if isinstance(block, TableBlock) else [block])
     ]
     return [
         ChunkData(
@@ -180,7 +172,7 @@ def xlsx_plain_text(file_path) -> str:
     색인용 크기 상한은 걸지 않는다 — 첨부에는 더 좁은 자체 상한(schemas.kms.ATTACHMENT_MAX_TEXT_CHARS)이 있고, 여기서
     먼저 막으면 라우터의 일반 예외 처리에 걸려 거절 사유가 가려진다.
     """
-    return '\n'.join(_render(('table', rows)) for _, rows in _plain_sheets(file_path, check_size=False))
+    return '\n'.join(_render(TableBlock(rows)) for _, rows in _plain_sheets(file_path, check_size=False))
 
 
 def _check_workbook_size(file_path) -> list[str]:
@@ -203,10 +195,10 @@ def _docling_sheet_blocks(doc) -> dict[str, list[Block]]:
         blocks: list[Block] = []
         for item, _ in doc.iterate_items(root=group):
             if isinstance(item, TableItem):
-                if rows := docling_grid_rows(item, doc):
-                    blocks.append(('table', rows))
-            elif text := docling_block_text(item, doc):
-                blocks.append(('text', text))
+                if rows := docling_elements.docling_grid_rows(item, doc):
+                    blocks.append(TableBlock(rows))
+            elif text := docling_elements.docling_block_text(item, doc):
+                blocks.append(text)
         if blocks:
             sheets[group.name] = blocks
     return sheets

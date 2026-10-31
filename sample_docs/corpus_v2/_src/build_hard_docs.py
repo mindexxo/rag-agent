@@ -4,7 +4,7 @@
 문서(각 테넌트 11~13번)부터는 이 스크립트가 변환의 정본이다. 원본을 고치면 재실행으로
 산출물이 따라온다.
 
-파서 계약(rag/chunking/·rag/xlsx_chunking.py)을 만족하도록 변환한다:
+파서 계약(rag/chunking/·rag/chunking/xlsx.py)을 만족하도록 변환한다:
 - PDF: 헤딩 판정이 **글자 크기**다(본문 최빈 크기보다 큰 줄) — # 레벨별로 본문(10pt)보다
   큰 16/13/11.5pt를 적용한다. 한글은 reportlab 내장 CID 폰트(HYGothic-Medium)로 —
   TTF 파일 의존이 없어 어느 환경에서든 같은 산출물이 나온다.
@@ -12,7 +12,7 @@
 - DOCX: 헤딩 판정이 **스타일명**(Heading N)이다 — add_heading(level=N)을 쓴다.
   md 표는 실제 워드 표로 변환한다(파서의 표 경로 시험).
 - XLSX: 시트=청크 계약 — json 스펙({sheets: [{name, rows: [[...]]}]})에서 생성.
-  첫 행 헤더·A1 시작·수치는 숫자 타입·시트 표 크기 상한 이하(스크립트가 검증 — rag.xlsx_chunking과 같은 판정, #222).
+  첫 행 헤더·A1 시작·수치는 숫자 타입·시트 표 크기 상한 이하(스크립트가 검증 — rag.chunking.xlsx과 같은 판정, #222).
 
 사용: python sample_docs/corpus_v2/_src/build_hard_docs.py
   _src/<tenant>/<tenant>_1[1-4]_*.md|.xlsx.json 을 찾아 sample_docs/corpus_v2/<tenant>/ 에 산출.
@@ -102,14 +102,14 @@ def build_xlsx(spec_path: Path, out_path: Path) -> None:
     for sheet in spec["sheets"]:
         rows = sheet["rows"]
         # 업로드 판정과 같은 함수로 잰다(#222: 행 수가 아니라 내용의 양) — 상수를 복제하면 또 어긋난다
-        from rag.xlsx_chunking import XlsxTableTooLarge, _check_sheet_size
+        from rag.chunking.xlsx import XlsxTableTooLarge, _check_sheet_size
         try:
             _check_sheet_size(sheet["name"], [str(c) for c in rows[0]], [[str(c) for c in r] for r in rows[1:]])
         except XlsxTableTooLarge as e:
             raise SystemExit(f"{spec_path.name}: {e} — 업로드가 거절된다")
         ws = wb.create_sheet(sheet["name"])
         for row in rows:
-            # 숫자 문자열은 숫자 타입으로 — xlsx_chunking·gold 오염검사가 기대하는 형태
+            # 숫자 문자열은 숫자 타입으로 — xlsx 청커·gold 오염검사가 기대하는 형태
             ws.append([float(c) if isinstance(c, str) and re.fullmatch(r"-?\d+(\.\d+)?", c)
                        else c for c in row])
     wb.save(str(out_path))

@@ -289,7 +289,7 @@ class TestXlsxDocling:
 
     def test_숨긴_시트는_색인하지_않고_행_상한에도_세지_않는다(self, tmp_path):
         # #220 리뷰 — 숨긴 시트가 있으면 문서 전체가 실패했다(openpyxl은 세고 docling은 비워 냄). 서비스 결정: 숨긴 시트는 건너뛴다
-        from rag.xlsx_chunking import validate_xlsx_upload
+        from rag.chunking.xlsx import validate_xlsx_upload
 
         def build(wb):
             wb.active.title = '보임1'
@@ -344,7 +344,7 @@ class TestXlsxDocling:
 
     def test_docling이_셀_있는_시트를_비워_내면_실패한다(self, tmp_path, monkeypatch):
         # 조용히 시트를 빠뜨린 채 ready가 되지 않게 — PDF 경로의 불완전 결과 가드와 같은 규율
-        import rag.xlsx_chunking as xc
+        import rag.chunking.xlsx as xc
 
         def build(wb):
             wb.active.append(['col'])
@@ -355,7 +355,7 @@ class TestXlsxDocling:
 
     def test_크기_상한은_docling_변환_전에_openpyxl로_건다(self, tmp_path, monkeypatch):
         from rag.chunking import convert_process
-        from rag.xlsx_chunking import XlsxTableTooLarge
+        from rag.chunking.xlsx import XlsxTableTooLarge
 
         def build(wb):
             wb.active.append(['col'])

@@ -41,10 +41,10 @@ from starlette.responses import FileResponse, JSONResponse
 from config import settings
 from database import get_session
 from rag import cache, outbox
+from rag.chunking.xlsx import XlsxUploadRejected, description_missing, validate_xlsx_upload
 from rag.documents import (FailedReuseConflict, document_versions, get_folder, handle_upload,
                            latest_alive, resolve_description, soft_delete_documents)
 from rag.models import ALIVE_DOCUMENT_STATUSES, Document, Folder
-from rag.xlsx_chunking import XlsxUploadRejected, description_missing, validate_xlsx_upload
 from routers.kms import get_tenant_id, get_user_id
 from schemas.kms import (ATTACHMENT_FILENAME_MAX, BULK_MAX_ITEMS,
                          DOC_LIST_DEFAULT_LIMIT, DOC_LIST_MAX_LIMIT, DOC_STATUSES,
@@ -586,7 +586,7 @@ async def update_document(
 
     **경로가 둘이다 (#194).** folder_id·is_searchable은 색인의 비정규화 메타만 바꾸므로
     `META_DOCUMENTS` 부분 갱신으로 끝난다. 반면 `description`은 xlsx 청크 **본문**에 병합되는
-    값이라(rag/xlsx_chunking.chunk_xlsx) 메타 갱신으로는 반영되지 않는다 — 재파싱·재임베딩이
+    값이라(rag/chunking/xlsx.chunk_xlsx) 메타 갱신으로는 반영되지 않는다 — 재파싱·재임베딩이
     따르는 전체 재색인이 필요하다. 그래서 이 핸들러에 "가벼운 갱신"과 "무거운 재인제스션"이
     공존한다. 둘은 **배타적으로** 적재한다(재색인이 돌면 index_pending_document가 폴더·토글
     최신값을 스스로 다시 읽으므로 META 행은 중복이다).

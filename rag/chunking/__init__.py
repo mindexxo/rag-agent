@@ -4,7 +4,7 @@
 - PDF·DOCX·MD: docling 변환(상주 자식 프로세스) → 헤딩 스택으로 섹션 조립(sections.build_sections).
   docling이 실패하면 색인도 실패한다 — 저품질 경로로 조용히 바꾸지 않는다.
 - TXT: 평문 하나가 섹션 하나(heading_path 없음).
-- XLSX: rag/xlsx_chunking에 위임(행 묶음 + 시트 완성본, 크기 초과면 업로드 거절).
+- XLSX: xlsx 모듈에 위임(행 묶음 + 시트 완성본, 크기 초과면 업로드 거절).
 채팅 첨부(extract_text)는 사용자 대기 경로라 docling을 안 태우고 pdfplumber·python-docx·openpyxl로 평문만 뽑는다.
 
 표는 행 단위로 나누고 묶음마다 헤더를 반복한다. 묶음 둘 이상인 표의 청크 meta에는
@@ -18,7 +18,7 @@ from pathlib import Path
 from llama_index.core.node_parser import SentenceSplitter
 
 from config import settings
-from rag.chunking import convert_process, docling_elements, docx, markdown, plain, sections, split
+from rag.chunking import convert_process, docling_elements, docx, markdown, plain, sections, split, xlsx
 from rag.chunking.convert_process import abort_conversion, docling_convert
 from rag.chunking.docling_elements import (
     count_picture_placeholders,
@@ -39,7 +39,7 @@ from rag.chunking.tables import (
 )
 from rag.chunking.types import ChunkData, Item, Section, TableBlock, blocks_of, join_blocks
 
-# 밖(ingestion·routers·xlsx_chunking·eval)이 쓰는 공개 표면 — 하위 모듈로 옮겨도 여기서 이름을 유지한다.
+# 밖(ingestion·routers·eval)이 쓰는 공개 표면 — 하위 모듈로 옮겨도 여기서 이름을 유지한다.
 __all__ = [
     'TABLE_BATCH_CHARS',
     'TABLE_BATCH_TOKENS',
@@ -96,11 +96,8 @@ def extract_text(file_path: str | Path) -> str:
     if low.endswith('.docx'):
         return docx.docx_text(file_path).strip()
     if low.endswith('.xlsx'):
-        from rag.xlsx_chunking import (
-            xlsx_plain_text,
-        )  # 첨부는 openpyxl — docling 변환 프로세스를 색인과 나누지 않는다
-
-        return xlsx_plain_text(str(file_path)).strip()  # 첨부는 행 묶음 없이 시트 전체
+        # 첨부는 openpyxl — docling 변환 프로세스를 색인과 나누지 않는다. 행 묶음 없이 시트 전체
+        return xlsx.xlsx_plain_text(str(file_path)).strip()
     return plain.read_text(file_path).strip()  # txt/md/기타
 
 
@@ -122,9 +119,7 @@ def chunk_file(file_path: str | Path, *, description: str = '') -> list[ChunkDat
     splitter = SentenceSplitter(chunk_size=512, chunk_overlap=50)
 
     if suffix == '.xlsx':
-        from rag.xlsx_chunking import chunk_xlsx  # 지연 import (xlsx_chunking → chunking 순환 방지)
-
-        return chunk_xlsx(str(file_path), description=description)
+        return xlsx.chunk_xlsx(str(file_path), description=description)
 
     parser = _SECTION_PARSERS.get(suffix)
     if parser is None:

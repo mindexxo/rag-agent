@@ -13,7 +13,7 @@ TABLE_MAX_TOKENS = 6000
 
 
 def batch_table_rows(header: list[str], body: list[list[str]], budget_chars: int = TABLE_BATCH_CHARS) -> list[str]:
-    """표 → 행 묶음 markdown들, 묶음마다 헤더 반복. 표 행 묶음의 형식 공통 정의점(rag/xlsx_chunking이 import한다).
+    """표 → 행 묶음 markdown들, 묶음마다 헤더 반복. 표 행 묶음의 형식 공통 정의점(xlsx가 import한다).
 
     글로 바꾸기 전에 행 목록에서 나누므로 경계는 항상 행 사이다(렌더한 글을 다시 나누면 칸 안 줄바꿈에서 깨진다).
     크기는 렌더한 길이로 잰다. 예산보다 긴 행은 혼자 한 묶음(자르지 않는다), 데이터 행이 없으면 헤더만.
@@ -34,7 +34,7 @@ def batch_table_rows(header: list[str], body: list[list[str]], budget_chars: int
 
 
 def to_markdown_table(header: list[str], body: list[list[str]]) -> str:
-    """헤더 + 데이터행 → markdown 표. 표 직렬화의 정의점(rag/xlsx_chunking이 import한다).
+    """헤더 + 데이터행 → markdown 표. 표 직렬화의 정의점(xlsx가 import한다).
 
     빈 셀은 자리를 지킨다 — 지우면 뒷 열이 앞으로 당겨져 값이 다른 열로 읽힌다. 행은 헤더 길이에 맞춰 채우거나 자른다.
     """

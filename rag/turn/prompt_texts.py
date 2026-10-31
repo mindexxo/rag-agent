@@ -1,6 +1,6 @@
 """LLM에 보내는 프롬프트 문구와 고정 반환 문구 — 순수 문자열만 담고 import이 없다.
 
-조립은 rag/prompts.py, 출처 꼬리 해석은 rag/citation_tail.py가 한다. 문구는 답변 품질과 함께 바뀌고
+조립은 rag/turn/prompts.py, 출처 꼬리 해석은 rag/turn/citation_tail.py가 한다. 문구는 답변 품질과 함께 바뀌고
 (수정하면 eval 재측정), 조립은 구조와 함께 바뀌어 파일을 나눴다.
 
 주의: _SYSTEM_PROMPT_TEMPLATE은 f-string이라 위에 정의된 NO_EVIDENCE_ANSWER·TAIL_* 상수를 본문에 보간한다
@@ -22,7 +22,7 @@ SMALLTALK_ANSWER = '추가 질문 있으시면 말씀해 주세요!'
 # 입력 가드레일 차단(인젝션/PII/악의 유도) 시 반환 문구
 BLOCKED_INPUT_ANSWER = '해당 요청은 처리할 수 없습니다. 상담 관련 문의를 남겨 주세요.'
 
-# 이력 렌더용 취소 턴 표식 — DB 저장본에는 없고 프롬프트 조립 시점에만 rag/conversation.py의
+# 이력 렌더용 취소 턴 표식 — DB 저장본에는 없고 프롬프트 조립 시점에만 rag/turn/conversation.py의
 # _history_content가 붙인다. 모델이 잘린 답을 완결된 안내로 오인하지 않게 하는 맥락 정보다.
 CANCELLED_TURN_SUFFIX = ' (안내 중단됨)'  # 부분 답변 뒤에 접미
 CANCELLED_TURN_EMPTY = '(답변 없음)'  # 첫 토큰 전 취소(content='') 대체
@@ -34,7 +34,7 @@ FAILED_TURN_EMPTY = '(오류로 답변하지 못함)'
 DEFAULT_DOMAIN_HINT = '테넌트에 등록된 문서를 근거로 하는 상담 지식 전반'  # 도메인 중립 폴백
 
 # 출처 꼬리 마커의 정의점 — 답변 끝에 TAIL_EXAMPLE_MULTI 형태로 붙는다. 프롬프트가 f-string으로
-# 보간하므로 문구와 같은 파일에 둔다. TAIL_START·TAIL_END의 소비처는 rag/citation_labels.py 재노출을 거쳐 import한다 — 재정의 금지.
+# 보간하므로 문구와 같은 파일에 둔다. TAIL_START·TAIL_END의 소비처는 rag/turn/citation_labels.py 재노출을 거쳐 import한다 — 재정의 금지.
 # «»는 한국어 상담 문서에 사실상 안 나오고, 두 겹이면 인용부호 오용까지 피한다. 꼬리 토큰이 곧 각주 지연이라 짧게 유지한다.
 TAIL_START = '««'
 TAIL_END = '»»'
@@ -95,7 +95,7 @@ _SYSTEM_PROMPT_TEMPLATE = f"""당신은 한국어 콜센터 상담원을 돕는 
 PRIOR_TURNS_LABEL = '이전 맥락(참고용, 근거 아님):'
 
 # 재작성 질의 참고 줄의 라벨 — "질문:"에는 원 질문을 두고 검색에 쓴 재작성 질의를 병기한다. 재작성본이
-# 정답 청크와 어휘가 겹쳐 인용 번호 지목의 앵커가 되므로 빼지 말 것. 붙일지 판정은 rag/prompts.py:build_user_message.
+# 정답 청크와 어휘가 겹쳐 인용 번호 지목의 앵커가 되므로 빼지 말 것. 붙일지 판정은 rag/turn/prompts.py:build_user_message.
 STANDALONE_QUERY_LABEL = '검색에 사용한 재작성 질문:'
 
 # {prior_turns_block}  : 이전 대화 (없으면 빈 문자열)

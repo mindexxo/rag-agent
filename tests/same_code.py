@@ -4,7 +4,7 @@
 그 외 한 글자라도 다르면 실패다. docstring이 실행에 쓰이는 곳(pydantic 모델 설명이 LLM 스키마에 들어가는 등)은
 이 도구가 못 보니 `tests/test_prompt_bytes.py`가 맡는다.
 
-    python -m tests.same_code origin/main rag/service.py rag/streaming.py ...
+    python -m tests.same_code origin/main rag/turn/service.py rag/turn/streaming.py ...
 """
 
 import ast

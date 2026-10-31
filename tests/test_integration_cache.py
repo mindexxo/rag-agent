@@ -7,13 +7,13 @@ import pytest
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from rag import cache
 from rag.models import AnswerCache as AnswerCacheRow
 from rag.models import Conversation
-from rag.prepared import PreparedRag
-from rag.prompt_texts import NO_EVIDENCE_ANSWER
 from rag.search.retrieval_types import RetrievalResult
-from rag.service import RagService
+from rag.turn import cache
+from rag.turn.prepared import PreparedRag
+from rag.turn.prompt_texts import NO_EVIDENCE_ANSWER
+from rag.turn.service import RagService
 from schemas.kms import SourceCitation
 from tests.conftest import FakeLlm, fake_vector, register_faq
 
@@ -174,8 +174,8 @@ async def test_무효화는_해당_문서_참조_행만(tenant_id, fake_embed):
 async def test_생성_중_FAQ_수정되면_캐시_저장_스킵(tenant_id, fake_embed):
     """write-back 레이스(#16): prepare 스냅샷 이후 FAQ가 바뀌면 set이 저장을 스킵.
     FAQ는 id 불변이라 doc집합 비교가 자가치유 못 하는 유일한 출처 — 이 검증이 마지막 방어선."""
-    from rag.cache import snapshot_faq_versions
     from rag.models import Faq
+    from rag.turn.cache import snapshot_faq_versions
     async with AsyncSessionLocal() as session:
         faq = Faq(tenant_id=tenant_id, question='반품 기간?', answer='14일')
         session.add(faq)
@@ -201,8 +201,8 @@ async def test_생성_중_FAQ_수정되면_캐시_저장_스킵(tenant_id, fake_
 
 @pytest.mark.asyncio
 async def test_FAQ_변경_없으면_스냅샷_검증_통과_저장(tenant_id, fake_embed):
-    from rag.cache import snapshot_faq_versions
     from rag.models import Faq
+    from rag.turn.cache import snapshot_faq_versions
     async with AsyncSessionLocal() as session:
         faq = Faq(tenant_id=tenant_id, question='반품 기간?', answer='14일')
         session.add(faq)
@@ -256,7 +256,7 @@ async def test_벡터를_넘기면_임베딩을_다시_하지_않는다(tenant_i
     """
     async def boom(text):
         raise RuntimeError('불려선 안 된다')
-    monkeypatch.setattr('rag.cache.embed_query', boom)
+    monkeypatch.setattr('rag.turn.cache.embed_query', boom)
 
     vec = fake_vector('배송비 얼마예요')     # 검색이 넘겨줬을 벡터를 손으로 재현
     src = [SourceCitation(document_id=5, filename='정책.pdf', version=1)]
@@ -327,8 +327,8 @@ async def test_보존기간_지난_미히트_캐시만_청소(tenant_id, fake_em
 async def test_FAQ_스냅샷_검증도_테넌트_격리(tenant_id, other_tenant_id, fake_embed):
     """snapshot_faq_versions/_faqs_unchanged는 타 테넌트의 같은 faq_id를 보면 안 된다
     (WHERE-clause 격리 전략 — 새 테넌트 스코프 쿼리 경로마다 통합 테스트가 계약)."""
-    from rag.cache import snapshot_faq_versions
     from rag.models import Faq
+    from rag.turn.cache import snapshot_faq_versions
     async with AsyncSessionLocal() as session:
         faq = Faq(tenant_id=other_tenant_id, question='반품 기간?', answer='14일')
         session.add(faq)

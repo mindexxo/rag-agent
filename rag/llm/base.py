@@ -20,7 +20,7 @@ FinishReason = Literal["stop", "length", "other"]
 class CitationTail:
     """답변 끝 출처 꼬리 제약 — "start와 end 사이에는 1..count 정수 배열만 온다".
 
-    count=0이면 빈 배열만 허용한다. 후보 수를 세는 규칙은 호출부(rag/prompts.build_citation_tail)가 정한다.
+    count=0이면 빈 배열만 허용한다. 후보 수를 세는 규칙은 호출부(rag/turn/prompts.build_citation_tail)가 정한다.
     """
 
     count: int

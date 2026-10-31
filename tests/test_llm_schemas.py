@@ -1,4 +1,4 @@
-"""구조화 출력 공용 헬퍼 계약 테스트 (#43) — rag/llm_schemas.acomplete_validated.
+"""구조화 출력 공용 헬퍼 계약 테스트 (#43) — rag/turn/llm_schemas.acomplete_validated.
 
 고정하는 것: (a) 스키마가 **의도**(schema=)로 공급자에 넘어간다(#287 — 서버 문법은 구현 몫)
 (b) 응답의 펜스·부연 방어 (c) 비JSON·스키마 위반→LlmJudgmentFailed, 부분 복구 없음
@@ -7,7 +7,7 @@
 """
 import pytest
 
-from rag.llm_schemas import CondenseMultiResult, LlmJudgmentFailed, RouteDecision, acomplete_validated
+from rag.turn.llm_schemas import CondenseMultiResult, LlmJudgmentFailed, RouteDecision, acomplete_validated
 
 
 class _StubLlm:

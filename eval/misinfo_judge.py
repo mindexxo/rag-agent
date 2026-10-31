@@ -17,7 +17,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from rag.llm import LlmClient
-from rag.llm_schemas import acomplete_validated
+from rag.turn.llm_schemas import acomplete_validated
 
 JUDGE_PROMPT_VERSION = "v1"
 

@@ -15,7 +15,7 @@
 ext는 ext_label로 고정 집합에 접는다. 테넌트별 비즈니스 지표는 routers/stats.py(DB 집계) 소관이다.
 
 전역 REGISTRY는 프로세스별이다 — 단일 uvicorn 프로세스 전제(멀티프로세스면 PROMETHEUS_MULTIPROC_DIR 모드 필요).
-웹(rag/streaming.py: TTFT·finish_reason)과 워커(rag/ingestion.py·rag/outbox.py: 인제스션·동기화)가
+웹(rag/turn/streaming.py: TTFT·finish_reason)과 워커(rag/ingestion.py·rag/outbox.py: 인제스션·동기화)가
 각자 기록하므로 지표는 앱 /metrics와 워커 /metrics(WORKER_METRICS_PORT)에 나뉘어 노출된다.
 """
 

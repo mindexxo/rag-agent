@@ -10,7 +10,8 @@ import pytest
 from sqlalchemy import func, select, update
 
 from database import AsyncSessionLocal
-from rag import cache, outbox
+from rag import outbox
+from rag.turn import cache
 from rag.models import AnswerCache as AnswerCacheRow, Document, SearchIndexOutbox
 from tests.conftest import ingest
 from tests.helpers_documents import (MD, chunk_texts, doc_data, get_doc, list_docs, make_folder,

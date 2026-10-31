@@ -1,6 +1,6 @@
 """FAQ 항목 인용 정확도 축 (#278) — "FAQ 여러 개 중 **맞는 항목**을 인용하나".
 
-#278 전에는 FAQ 인용이 'FAQ' 하나로 접혀(rag/citation_labels.sources_from_chunks) 어느 항목을 인용했는지
+#278 전에는 FAQ 인용이 'FAQ' 하나로 접혀(rag/turn/citation_labels.sources_from_chunks) 어느 항목을 인용했는지
 어디에도 남지 않았다 — 그래서 골드셋(eval/gold_set_v2.jsonl)에 FAQ 문항이 0건이고 잴 수 있는 것도
 "FAQ를 인용했나"뿐이었다. 이 축은 항목 단위로 잰다: 합성 FAQ 30개(eval/faq_set.jsonl, 주제가 가까운 6묶음×5 —
 옆 항목과 헷갈려야 시험이 된다)를 전용 테넌트에 넣고, 항목당 질문 2개(대표 질문 그대로·구어체 바꿔 쓰기)로
@@ -32,11 +32,11 @@ from sqlalchemy import delete, select
 from database import AsyncSessionLocal
 from eval.axis_common import commit
 from eval.generation import CONCURRENCY, RESULT_DIR, generate, retrieved_context
-from rag.citation_labels import sources_from_chunks
-from rag.citation_tail import TailSplitter, resolve_citations
 from rag.llm import LlmClient, create_llm
 from rag.models import Faq
 from rag.search import os_index
+from rag.turn.citation_labels import sources_from_chunks
+from rag.turn.citation_tail import TailSplitter, resolve_citations
 
 FAQ_EVAL_TENANT = "faq_eval"          # 전용 테넌트 — 다른 축의 측정 테넌트에 FAQ를 섞지 않는다(eval/axis_common.load_chunks 전제)
 SET = Path("eval/faq_set.jsonl")

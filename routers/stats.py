@@ -53,7 +53,7 @@ async def stats_summary(
           count(*) FILTER (WHERE role = 'assistant' AND status = 'done'
                              AND intent = 'KNOWLEDGE')                                 AS knowledge_done,
           -- 근거없음(#61): 거절 문구 부분일치(옛 is_refusal 컬럼)를 실인용 0건으로 대체했다.
-          -- 폐기 사유·실측은 rag/citation_tail.py 모듈 docstring(단일 정의점).
+          -- 폐기 사유·실측은 rag/turn/citation_tail.py 모듈 docstring(단일 정의점).
           -- coalesce: cited_docs NULL도 0건으로 본다 — routers/conversations.py의
           -- `m.cited_docs or []` 관례와 같은 결론. (assistant·done 행에는 NULL이 없는 것을
           -- 개발계에서 확인했지만, 컬럼이 nullable이라 방어는 남긴다.)
@@ -79,7 +79,7 @@ async def stats_summary(
     """), params)).all()
 
     # 인용 top 문서 — 저장 시 확정된 실인용 목록(cited_docs)만 집계. 본문 재파싱·전송 없음.
-    # (저장 시점에 출처 꼬리 해석(rag/citation_tail, #56)이 확정 — 단일 정의점.
+    # (저장 시점에 출처 꼬리 해석(rag/turn/citation_tail, #56)이 확정 — 단일 정의점.
     #  첨부 인용은 '첨부: 파일명' 문자열로 함께 잡힌다 — 첨부 기반 답변도 지표에 노출)
     # FAQ 항목 인용(#278)은 cited_faq_ids에 id로 있다 — 'FAQ: 질문'(현재 질문, 인용 표시명과 같은 꼴)으로 합쳐
     # 같은 top에 올린다. 삭제된 FAQ는 조인에서 빠진다. #278 전 행의 'FAQ' 원소는 cited_docs 쪽에서 그대로 잡힌다.

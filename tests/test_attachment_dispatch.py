@@ -9,7 +9,7 @@ RETRY(#59)와 같은 전이 인텐트 — 단 저장 라벨(intent)은 ATTACHMEN
 import pytest
 
 from database import AsyncSessionLocal
-from rag.service import RagService
+from rag.turn.service import RagService
 from schemas.kms import QueryAttachment
 
 ATTACHMENT_JSON = '{"safe": true, "intent": "ATTACHMENT"}'

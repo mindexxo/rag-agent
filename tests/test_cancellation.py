@@ -20,10 +20,11 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from database import AsyncSessionLocal
-from rag import cancellation, limiter, otel
+from rag import limiter, otel
 from rag.models import Message
-from rag.service import RagService
-from rag.streaming import _run_generation, spawn_generation
+from rag.turn import cancellation
+from rag.turn.service import RagService
+from rag.turn.streaming import _run_generation, spawn_generation
 from tests.conftest import register_faq
 from tests.polling import inflight_count, wait_inflight
 

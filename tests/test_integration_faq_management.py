@@ -8,7 +8,7 @@ from httpx import ASGITransport, AsyncClient
 
 from database import AsyncSessionLocal
 from rag import outbox
-from rag.citation_labels import citation_tail
+from rag.turn.citation_labels import citation_tail
 from schemas.kms import FAQ_CATEGORY_NAME_MAX
 from tests.conftest import sse_done, sse_meta, sync_faq
 

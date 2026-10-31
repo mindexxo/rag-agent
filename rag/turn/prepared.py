@@ -7,10 +7,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
-from rag.citation_labels import CitationCandidates
 from rag.models import Attachment, TurnStatus
-from rag.prompt_texts import BLOCKED_INPUT_ANSWER, NO_EVIDENCE_ANSWER
 from rag.search.retrieval_types import RetrievalResult
+from rag.turn.citation_labels import CitationCandidates
+from rag.turn.prompt_texts import BLOCKED_INPUT_ANSWER, NO_EVIDENCE_ANSWER
 from schemas.kms import SourceCitation
 
 
@@ -96,7 +96,7 @@ class PreparedRag:
     def citation_candidates(self) -> CitationCandidates:
         """인용 후보 (검색 출처, 첨부 파일명) — 꼬리 제약과 파서가 공유하는 단일 파생점.
 
-        둘이 어긋나면 에러 없이 다른 문서로 오귀속된다. 순서 계약은 rag/citation_labels.py가 정의점이다.
+        둘이 어긋나면 에러 없이 다른 문서로 오귀속된다. 순서 계약은 rag/turn/citation_labels.py가 정의점이다.
         """
         return CitationCandidates(self.sources, [a['filename'] for a in (self.attachments or [])])
 

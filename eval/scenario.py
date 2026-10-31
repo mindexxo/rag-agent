@@ -31,10 +31,10 @@ from database import AsyncSessionLocal
 from eval._turn_cleanup import discard_turn
 from eval.generation import _citation_match, _contains_point
 from eval.refusal import _citations
-from rag.conversation import ensure_conversation
 from rag.models import Message
-from rag.prepared import PreparedRag
-from rag.service import RagService
+from rag.turn.conversation import ensure_conversation
+from rag.turn.prepared import PreparedRag
+from rag.turn.service import RagService
 from schemas.kms import QueryAttachment
 
 GOLD = Path(__file__).resolve().parent / "scenario_set_v1.jsonl"

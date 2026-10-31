@@ -1,7 +1,7 @@
 """TurnStatus 계약 (#85) — 캐노니컬과 파생 집합의 불변식.
 
 status 값 5종이 다섯 파일에 각자 나열돼 있던 것을 rag/models.TurnStatus 하나로 모았다.
-이 테스트는 그 정의와 파생(rag/turn_state)의 관계가 조용히 어긋나는 것을 막는다 —
+이 테스트는 그 정의와 파생(rag/turn/turn_state)의 관계가 조용히 어긋나는 것을 막는다 —
 #59(cancelled)·#72(failed) 때 나열이 흩어져 있어서 두 번 놓친 이력이 이 축의 동기다.
 """
 import json
@@ -9,7 +9,7 @@ import json
 from fastapi.encoders import jsonable_encoder
 
 from rag.models import TurnStatus
-from rag.turn_state import HISTORY_ISOLATED, TERMINAL, UNANSWERED
+from rag.turn.turn_state import HISTORY_ISOLATED, TERMINAL, UNANSWERED
 
 
 class TestStrEnumCompat:

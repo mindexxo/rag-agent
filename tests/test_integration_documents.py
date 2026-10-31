@@ -17,7 +17,8 @@ from sqlalchemy import func, select
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import cache, outbox
+from rag import outbox
+from rag.turn import cache
 from rag.models import AnswerCache as AnswerCacheRow, Document, SearchIndexOutbox
 from tests.conftest import ingest
 from tests.helpers_documents import MD, chunk_texts, get_doc, post_upload, upload

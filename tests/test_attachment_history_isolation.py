@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from database import AsyncSessionLocal
 from rag.models import Message
-from rag.service import RagService
+from rag.turn.service import RagService
 from tests.conftest import seed_turn
 
 

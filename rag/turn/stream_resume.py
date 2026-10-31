@@ -1,6 +1,6 @@
 """생성 중 재접속 — 턴 이벤트를 Redis Stream에 미러링하고, 새 연결이 그걸 재생한다.
 
-인메모리 큐(rag/streaming.py)와 이중 쓰기다 — Redis가 죽어도 진행 중인 턴의 원 연결은 끊기지 않게.
+인메모리 큐(rag/turn/streaming.py)와 이중 쓰기다 — Redis가 죽어도 진행 중인 턴의 원 연결은 끊기지 않게.
 읽기는 XREAD(비파괴)라 여러 탭이 각자 전체를 받는다.
 예외 방침: 쓰기 실패는 삼키고 그 턴만 폴링으로 강등한다(재접속은 부차 기능). 읽기 실패는 전파한다.
 """
@@ -121,7 +121,7 @@ async def reconnect_reader(tenant_id: str, message_id: int) -> AsyncIterator[str
 
     호출부가 소유 검증을 끝냈다는 전제다(messages.id는 전 테넌트 공용 시퀀스).
     """
-    from rag.streaming import EVENT_PING, sse_event  # 순환 import 회피
+    from rag.turn.streaming import EVENT_PING, sse_event  # 순환 import 회피
 
     key = stream_key(tenant_id, message_id)
     last_id = '0'

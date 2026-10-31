@@ -77,9 +77,9 @@ def _code_strings(tree: ast.Module) -> list[tuple[str, int]]:
 
 
 def test_INV30_turn_state는_commit을_호출하지_않는다():
-    """INV-30 turn_state 함수는 commit하지 않는다 — 호출부가 커밋 시점을 정한다(rag/turn_state.py 모듈 docstring
+    """INV-30 turn_state 함수는 commit하지 않는다 — 호출부가 커밋 시점을 정한다(rag/turn/turn_state.py 모듈 docstring
     "세션 규약"). `x.commit(...)` 형태의 호출(Attribute attr=='commit')이 모듈 어디에도 없어야 한다."""
-    tree = _tree(RAG / 'turn_state.py')
+    tree = _tree(RAG / 'turn' / 'turn_state.py')
     funcs = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
     assert funcs, 'turn_state.py에서 함수를 하나도 못 읽었다 — 검사가 빈 채로 통과하면 안 된다'
     commits = [
@@ -87,7 +87,7 @@ def test_INV30_turn_state는_commit을_호출하지_않는다():
         for n in ast.walk(tree)
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == 'commit'
     ]
-    assert commits == [], f'rag/turn_state.py가 commit을 호출한다(줄 {commits}) — 커밋은 호출자 소관이다'
+    assert commits == [], f'rag/turn/turn_state.py가 commit을 호출한다(줄 {commits}) — 커밋은 호출자 소관이다'
 
 
 # ── INV-73 ────────────────────────────────────────────────────────────────────────────────────────

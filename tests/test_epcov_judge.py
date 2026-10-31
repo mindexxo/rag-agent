@@ -11,7 +11,7 @@ import pytest
 
 from eval import epcov_judge as E
 from eval import generation as G
-from rag.llm_schemas import LlmJudgmentFailed
+from rag.turn.llm_schemas import LlmJudgmentFailed
 
 
 class _FakeJudge:

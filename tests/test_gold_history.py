@@ -1,6 +1,6 @@
 """gold 이력 어댑터 통합 회귀 (#77).
 
-막으려는 버그 클래스: rag/conversation.py의 이력 함수가 **새 속성을 읽기 시작했는데**
+막으려는 버그 클래스: rag/turn/conversation.py의 이력 함수가 **새 속성을 읽기 시작했는데**
 eval 픽스처가 그 속성이 없는 객체를 만들어 AttributeError로 죽는 것. 실제로 두 번 났다
 (#59 status 도입, #72 failed 분기 추가) — 두 번 다 사람이 우연히 발견했고 그 사이
 생성축·멀티턴검색축이 정지해 있었다.
@@ -20,9 +20,9 @@ DB·LLM 없음 — Message는 세션 없이 transient로만 쓰고, LLM은 conft
 import pytest
 
 from eval._gold_history import DEFAULT_STATUS, messages_from_conversation
-from rag.conversation import build_prior_turns, condense_query, condense_to_queries
 from rag.models import Message
-from rag.prompt_texts import CANCELLED_TURN_EMPTY, CANCELLED_TURN_SUFFIX, FAILED_TURN_EMPTY
+from rag.turn.conversation import build_prior_turns, condense_query, condense_to_queries
+from rag.turn.prompt_texts import CANCELLED_TURN_EMPTY, CANCELLED_TURN_SUFFIX, FAILED_TURN_EMPTY
 from tests.conftest import FakeLlm
 
 # gold_set_v2.jsonl의 multi_turn 이력과 같은 모양 — role·content 두 키뿐이다.

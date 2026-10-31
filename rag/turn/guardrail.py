@@ -9,8 +9,8 @@ import logging
 
 from rag import otel
 from rag.llm import LlmClient
-from rag.llm_schemas import RouteDecision, acomplete_validated
-from rag.prompts import build_classify_user_message, build_intent_guard_prompt
+from rag.turn.llm_schemas import RouteDecision, acomplete_validated
+from rag.turn.prompts import build_classify_user_message, build_intent_guard_prompt
 
 logger = logging.getLogger(__name__)
 

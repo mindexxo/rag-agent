@@ -12,9 +12,9 @@ import pytest
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from rag.turn_state import last_unanswered_turn
+from rag.turn.turn_state import last_unanswered_turn
 from rag.models import Conversation, Message
-from rag.service import RagService
+from rag.turn.service import RagService
 from tests.conftest import register_faq, seed_turn
 
 RETRY_JSON = '{"safe": true, "intent": "RETRY"}'
@@ -237,8 +237,8 @@ async def test_실패턴_뒤_다시는_그_질문으로_재실행(client, tenant
 @pytest.mark.asyncio
 async def test_실패턴_질문이_이력에서_사라지지_않는다(client, tenant_id, fake_llm, fake_embed, pass_gate):
     """격리 필터가 실패 턴을 빼면 화면(조회 API는 노출)과 모델 이력이 어긋난다."""
-    from rag.conversation import build_prior_turns, load_recent_messages
-    from rag.prompt_texts import FAILED_TURN_EMPTY
+    from rag.turn.conversation import build_prior_turns, load_recent_messages
+    from rag.turn.prompt_texts import FAILED_TURN_EMPTY
 
     cid = await seed_turn(tenant_id, '그럼 교환은 며칠까지예요?', '', status='failed')
     async with AsyncSessionLocal() as s:

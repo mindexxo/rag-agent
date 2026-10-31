@@ -11,7 +11,8 @@ import pytest
 from sqlalchemy import delete as sql_delete, func, select
 
 from database import AsyncSessionLocal
-from rag import cache, outbox
+from rag import outbox
+from rag.turn import cache
 from rag.models import AnswerCache as AnswerCacheRow, Document, SearchIndexOutbox
 from tests.conftest import ingest
 from tests.helpers_documents import MD, doc_data, get_doc, make_folder, upload

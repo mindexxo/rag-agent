@@ -15,8 +15,8 @@ import pytest
 from database import AsyncSessionLocal
 from rag import limiter, otel
 from rag.models import Message
-from rag.service import RagService
-from rag.streaming import _run_generation
+from rag.turn.service import RagService
+from rag.turn.streaming import _run_generation
 from tests.conftest import register_faq
 from tests.polling import inflight_count, wait_inflight
 
@@ -69,7 +69,7 @@ async def test_캐시_저장이_실패해도_턴은_done이다(client, tenant_id
     """캐시 적재는 done 뒤의 부가물(#56 재배치) — 저장 실패(TEI 블립 등)가 완결된 턴을
     failed로 오염시키지 않아야 한다. 재배치 전엔 finalize 안에 있어서 턴 전체가 failed였다."""
     await register_faq(client)
-    from rag import cache
+    from rag.turn import cache
 
     async def boom(*a, **kw):
         raise RuntimeError('TEI 블립 재현')

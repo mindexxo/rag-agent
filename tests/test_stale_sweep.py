@@ -1,4 +1,4 @@
-"""고착 generating 스윕 통합 테스트 — rag.turn_state.sweep_stale_generating (#46).
+"""고착 generating 스윕 통합 테스트 — rag.turn.turn_state.sweep_stale_generating (#46).
 
 lazy 스윕(GET 조회 시 정리)을 cron 단독으로 옮긴 변경의 회귀 그물이다.
 옮기기 전엔 스윕 자체를 고정하는 테스트가 0건이었다.
@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import func, select, update
 
 from database import AsyncSessionLocal
-from rag.turn_state import GENERATION_STALE_SECONDS, sweep_stale_generating
+from rag.turn.turn_state import GENERATION_STALE_SECONDS, sweep_stale_generating
 from rag.models import Conversation, Message
 
 USER_A = {'X-User-Id': 'agent-a'}
@@ -143,8 +143,8 @@ async def test_스윕이_만든_failed는_RETRY_대상이_된다(tenant_id):
     이 체인이 성립하기 위한 계약이다. failed가 UNANSWERED에서 빠지면 죽은 프로세스의
     턴은 "다시"로 되살릴 수 없게 된다 — 그 회귀를 여기서 잡는다.
     """
-    from rag.turn_state import last_unanswered_turn
-    from rag.conversation import load_recent_messages
+    from rag.turn.turn_state import last_unanswered_turn
+    from rag.turn.conversation import load_recent_messages
 
     # 질문 user + 고착 generating assistant 쌍을 심는다 (실제 턴 모양 그대로)
     async with AsyncSessionLocal() as s:

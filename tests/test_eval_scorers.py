@@ -7,8 +7,8 @@ import pytest
 
 import eval.generation as gen
 from eval.generation import _citation_match, citation_accuracy, expected_points_coverage
-from rag.citation_labels import TAIL_END, TAIL_START, citation_tail
 from rag.search.retrieval_types import RetrievedChunk
+from rag.turn.citation_labels import TAIL_END, TAIL_START, citation_tail
 
 
 def _tail(*nums: int) -> str:

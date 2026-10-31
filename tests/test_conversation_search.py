@@ -13,7 +13,7 @@ from httpx import ASGITransport, AsyncClient
 
 from database import AsyncSessionLocal
 from rag.models import Conversation, Message
-from rag.conversation_search import SNIPPET_RADIUS, _build_snippet
+from rag.turn.conversation_search import SNIPPET_RADIUS, _build_snippet
 from text_norm import like_pattern
 
 USER_A = {'X-User-Id': 'agent-a'}

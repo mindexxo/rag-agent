@@ -3,7 +3,7 @@
   TailSplitter        스트리밍 도중 꼬리가 delta로 새어나가지 않게 분리하는 상태 기계
   resolve_citations   꼬리 번호 목록 → 범위 검증 → SourceCitation 목록
 
-"무엇이 인용인가"의 정의점이다(번호↔출처 순서는 rag/citation_labels.py).
+"무엇이 인용인가"의 정의점이다(번호↔출처 순서는 rag/turn/citation_labels.py).
 
 근거없음(ungrounded) = resolve_citations 결과가 빈 목록 — 이 규약의 정의점도 여기다. 거절 문구 일치로
 판정하면 프롬프트 문구에 묶이고 문구가 다른 부재 단정을 놓친다. 근거 없이 확신한 답변까지 포함하는 것은 의도다.
@@ -14,7 +14,7 @@ malformed 꼬리는 부분 복구하지 않고 그 번호만 버린다 — 그�
 
 import re
 
-from rag.citation_labels import TAIL_END, TAIL_START, attachment_display
+from rag.turn.citation_labels import TAIL_END, TAIL_START, attachment_display
 from schemas.kms import SourceCitation
 
 # 이 길이를 넘도록 END가 안 나오면 꼬리가 아니라 본문 속 우연한 마커로 판정한다.

@@ -25,7 +25,7 @@ CANCEL_CHANNEL = 'kms:cancel'
 SUBSCRIBE_RETRY_MIN_SECONDS = 1
 SUBSCRIBE_RETRY_MAX_SECONDS = 10  # 상한이 곧 '복구 후 원격 취소가 다시 먹기까지의 최대 지연'
 
-# 진행 중 생성 태스크: assistant_message_id → task. 등록/해제는 rag/streaming.py가 한다.
+# 진행 중 생성 태스크: assistant_message_id → task. 등록/해제는 rag/turn/streaming.py가 한다.
 _registry: dict[int, asyncio.Task] = {}
 
 

@@ -24,8 +24,8 @@ from database import AsyncSessionLocal
 from eval._turn_cleanup import discard_turn
 from eval.generation import must_not_contain_violations
 from eval.refusal import _citations
-from rag.conversation import ensure_conversation
-from rag.service import RagService
+from rag.turn.conversation import ensure_conversation
+from rag.turn.service import RagService
 from schemas.kms import QueryAttachment
 
 GOLD = Path(__file__).resolve().parent / "adversarial_set_v1.jsonl"

@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from database import AsyncSessionLocal
 from rag.models import AnswerCache as AnswerCacheRow, Message
-from rag.prompt_texts import BLOCKED_INPUT_ANSWER, NO_EVIDENCE_ANSWER
+from rag.turn.prompt_texts import BLOCKED_INPUT_ANSWER, NO_EVIDENCE_ANSWER
 from tests.conftest import register_faq, sse_events as _events, sse_answer, sse_done
 
 
@@ -23,7 +23,7 @@ from tests.conftest import register_faq, sse_events as _events, sse_answer, sse_
 async def test_KNOWLEDGE_생성_경로_SSE_전체흐름(client, tenant_id, fake_llm, pass_gate):
     faq_id = await register_faq(client)
     # 실제 후보(FAQ, 유일 후보 = 1번)를 출처 꼬리로 인용 — done.citations 검증이 실질이 되게 (#56)
-    from rag.citation_labels import TAIL_END, TAIL_START, citation_tail
+    from rag.turn.citation_labels import TAIL_END, TAIL_START, citation_tail
     fake_llm.answer = f'테스트 답변입니다. {citation_tail([1])}'
 
     res = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
@@ -103,7 +103,7 @@ async def test_OTHER_경로_스몰토크(client, tenant_id, fake_llm):
     fake_llm.intent_json = '{"safe": true, "intent": "OTHER"}'
     # 마커 문자열을 일부러 본문에 — OTHER는 꼬리 분리(splitter) 미적용이라 그대로 통과해야
     # 한다(게이트 회귀 검증). 실제 OTHER 프롬프트는 꼬리를 지시하지 않는다.
-    from rag.citation_labels import TAIL_START
+    from rag.turn.citation_labels import TAIL_START
     fake_llm.answer = f'안녕하세요! 무엇을 도와드릴까요? {TAIL_START}표기_예시'
 
     res = await client.post('/kms/query', json={'query': '안녕'})
@@ -154,7 +154,7 @@ async def test_꼬리가_잘린_답변은_인용_없이_완주한다(client, ten
     """max_tokens 도달 등으로 END 전에 스트림이 끝나는 경우(#56 truncated) — 잘린 버퍼는
     화면·저장 어디에도 없고 citations는 빈 목록이어야 한다."""
     await register_faq(client)
-    from rag.citation_labels import TAIL_START
+    from rag.turn.citation_labels import TAIL_START
     fake_llm.answer = f'테스트 답변입니다. {TAIL_START}1'        # END 없이 끊김
 
     res = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})

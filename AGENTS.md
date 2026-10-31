@@ -14,21 +14,22 @@
 (모든 모듈이 층에 있는지·0층 예외·진입점·지연 import 목록·순환).
 
 - **0층(leaf, 다른 `rag/` 모듈을 안 씀)**: `config.py`, `rag/models.py`, `rag/tokens.py`,
-  `rag/prompt_texts.py`, `rag/llm/`(공급자별 구현 — `base.py`·`openai_compat.py`·`vllm.py`·`litellm.py`, #287·#288), `rag/chunking/`(청킹 패키지 — `types`·`tables`·`errors`·`plain`·`sections`·`split`·`document_converter`·`ocr_llm`·`convert_process`·`docling_elements`·`docx`·`markdown`·`xlsx` 하위 모듈과 본체 `__init__`),
+  `rag/turn/prompt_texts.py`, `rag/llm/`(공급자별 구현 — `base.py`·`openai_compat.py`·`vllm.py`·`litellm.py`, #287·#288), `rag/chunking/`(청킹 패키지 — `types`·`tables`·`errors`·`plain`·`sections`·`split`·`document_converter`·`ocr_llm`·`convert_process`·`docling_elements`·`docx`·`markdown`·`xlsx` 하위 모듈과 본체 `__init__`),
   `rag/limiter.py`, `rag/otel.py`, `rag/metrics.py`, `rag/identifiers.py`.
   예외 하나: `rag/chunking/`는 0층 둘(`rag/tokens.py`·`rag/identifiers.py`)만 쓴다 — 조 제목 판정을 색인 이름표와
   같은 함수로 하려고(#233)
 - **중간층(조합)**: `rag/search/`(검색 패키지 — `os_client`·`os_search`·`os_index`·`retriever`·`reranker`·`embeddings`·`index_text`·`lexical`·
   `faq_indexing`·`retrieval_types`; 패키지 밖으로는 `models`·`tokens`·`identifiers`·`metrics`·`otel`만 톱레벨에서 쓴다. `os_client`의 톱레벨은 `config`만 —
   `opensearchpy`는 `client()` 안에서 지연 import한다: 매핑 상수만 보는 테스트가 그 패키지 없이도 import할 수 있게),
-  `rag/citation_labels.py`, `rag/clients.py`, `rag/llm_schemas.py`,
-  `rag/turn_state.py`, `rag/cache.py`,
-  `rag/stream_resume.py`, `rag/cancellation.py`, `rag/citation_tail.py`, `rag/documents.py`, `rag/ingestion.py`,
-  `rag/prepared.py`,
-  `rag/prompts.py`, `rag/conversation.py`, `rag/guardrail.py`, `rag/outbox.py`,
-  `rag/os_reconcile.py`(색인 정합 복구 CLI — `outbox`로 재등재하므로 `search/` 안에 두면 단위 순환이 된다), `rag/conversation_search.py`(`models`만 쓴다)
-- **조립점**: `rag/service.py` — 한 턴의 수명(prepare → generate → finalize)을 조율한다.
-- **진입점**(다른 모듈이 톱레벨에서 import하지 않는다 — 예외는 아래 지연 목록의 `stream_resume`→`streaming`): `rag/streaming.py`(SSE),
+  `rag/turn/citation_labels.py`, `rag/clients.py`, `rag/turn/llm_schemas.py`,
+  `rag/turn/turn_state.py`, `rag/turn/cache.py`,
+  `rag/turn/stream_resume.py`, `rag/turn/cancellation.py`, `rag/turn/citation_tail.py`, `rag/documents.py`, `rag/ingestion.py`,
+  `rag/turn/prepared.py`,
+  `rag/turn/prompts.py`, `rag/turn/conversation.py`, `rag/turn/guardrail.py`, `rag/outbox.py`,
+  `rag/os_reconcile.py`(색인 정합 복구 CLI — `outbox`로 재등재하므로 `search/` 안에 두면 단위 순환이 된다), `rag/turn/conversation_search.py`(`models`만 쓴다)
+- **조립점**: `rag/turn/service.py` — 한 턴의 수명(prepare → generate → finalize)을 조율한다. `rag/turn/`은 턴 수명 모듈 15개를 모은 패키지인데
+  안에 조립점·진입점이 있어 계층 검사는 이 패키지만 모듈 단위로 본다(`tests/test_architecture.py`의 투명 패키지).
+- **진입점**(다른 모듈이 톱레벨에서 import하지 않는다 — 예외는 아래 지연 목록의 `turn/stream_resume`→`turn/streaming`): `rag/turn/streaming.py`(SSE),
   `rag/worker.py`(arq 백그라운드), `routers/*.py`(HTTP), `main.py`(FastAPI 부트스트랩 전용).
 
 절대 규칙 둘:
@@ -37,7 +38,7 @@
 
 **함수 안 지연 import은 순환 회피용이며 의도된 것이다 — 톱레벨로 끌어올리지 마라.**
 이걸 하는 모듈: `search`·`limiter`(→clients) — `search/` 안에서는 `embeddings`·`reranker`가 `clients`를, `retriever`가 `reranker`를, `reranker`가
-`embeddings`를 함수 안에서 들인다(패키지 안 간선은 계층 검사에서 한 단위라 목록엔 `search`→`clients`만 남는다), `stream_resume`(→clients, streaming),
+`embeddings`를 함수 안에서 들인다(패키지 안 간선은 계층 검사에서 한 단위라 목록엔 `search`→`clients`만 남는다), `turn/stream_resume`(→clients, turn/streaming),
 `outbox`(→ingestion).
 순환 회피가 아닌 지연 import은 둘이다. `opensearchpy` — `rag/` 어느 모듈도 톱레벨에 들이지 않고
 `search.os_client.client()`·`outbox.is_transient()`가 함수 안에서 import한다(매핑 상수만 보는 테스트가 그 패키지
@@ -96,12 +97,12 @@ TEI→인덱싱·검색·캐시(`EMBED_PROVIDER`·`RERANK_PROVIDER`가 tei가 �
   `Message.cited_docs`(실인용 **문서** 파일명 — FAQ 항목 인용은 `Message.cited_faq_ids`에 id로, #278) /
   `PreparedRag.sources`(인메모리 후보)
   / `ConversationMessage.citations`(API 응답 필터 결과) / SSE `done.citations`(생성 시점 재계산).
-  다섯이 네 파일에 흩어져 있고(`rag/models.py`·`rag/prepared.py`·`schemas/conversations.py`·
-  `rag/streaming.py`) 이 구분 자체를 설명하는 문장은 코드에 없다 — 여기가 유일한 설명이다.
-  헷갈리면 각 정의 위치를 직접 열어 확인하라. (별개로 `rag/citation_labels.py`는 "인용 번호
+  다섯이 네 파일에 흩어져 있고(`rag/models.py`·`rag/turn/prepared.py`·`schemas/conversations.py`·
+  `rag/turn/streaming.py`) 이 구분 자체를 설명하는 문장은 코드에 없다 — 여기가 유일한 설명이다.
+  헷갈리면 각 정의 위치를 직접 열어 확인하라. (별개로 `rag/turn/citation_labels.py`는 "인용 번호
   순서"의 정의점이다 — 이름이 비슷하지만 다른 문제를 다룬다.)
 - `RetrievalResult.no_evidence`(원시 판정) ≠ `PreparedRag.no_evidence`(첨부 보정 후 실제 판정).
-- SSE `done`의 finish_reason(TurnStatus 어휘 — `rag/streaming.py`의 `TurnResult`)
+- SSE `done`의 finish_reason(TurnStatus 어휘 — `rag/turn/streaming.py`의 `TurnResult`)
   ≠ LLM 레벨 finish_reason(`stop`/`length`/`other` 공통 어휘 — `RagService.last_finish_reason`, SSE로
   나가지 않고 지표 `kms_llm_finish_reason_total`·스팬 속성 전용, #129). 이름이 같지만 다른 축.
 - `Message.intent`(DB 저장값) ≠ `RouteDecision.intent`(LLM 출력, RETRY는 저장 전 소멸)
@@ -116,7 +117,7 @@ TEI→인덱싱·검색·캐시(`EMBED_PROVIDER`·`RERANK_PROVIDER`가 tei가 �
 
 - 정의점: `grep -rn "정의점" rag/ routers/ schemas/ eval/*.py`
 - 절대규칙: `grep -rn "금지\|말 것" rag/ eval/*.py`
-  — 밀도 최상위는 `rag/prompt_texts.py`(모델에게 거는 규칙이라 성격이 다르다).
+  — 밀도 최상위는 `rag/turn/prompt_texts.py`(모델에게 거는 규칙이라 성격이 다르다).
 
 불변식 대장 `INVARIANTS.md`는 예외로 표다 — 규칙 한 줄과 그것을 강제하는 테스트의 연결이라, 낡으면
 `tests/test_invariants_registry.py`가 깨진다(#312). 강제 칸이 `—`인 것이 할 일이다.

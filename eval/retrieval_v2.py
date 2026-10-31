@@ -93,8 +93,8 @@ async def compute(expand: bool = False, tenants: set[str] | None = None) -> dict
     # 1단계(expand만): LLM 선병렬 — vLLM 연속 배칭 활용 (#18). DB 접근 없어 gather 안전
     queries_map: dict[str, list[str]] = {}
     if expand:
-        from rag.conversation import condense_to_queries
         from rag.llm import create_aux_llm
+        from rag.turn.conversation import condense_to_queries
         llm = create_aux_llm()   # 재작성은 운영과 같은 보조 클라이언트(#297)
         sem = asyncio.Semaphore(6)   # worker15 공유 장비 — RAGAS와 동일 안전선
 

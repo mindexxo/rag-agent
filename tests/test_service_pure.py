@@ -6,9 +6,9 @@ needs_generation은 SSE 백그라운드 생성 분기와 정확히 일치해야 
 """
 import pytest
 
-from rag.prepared import PreparedRag
 from rag.search.retrieval_types import RetrievalResult, RetrievedChunk
-from rag.service import _source_doc_ids
+from rag.turn.prepared import PreparedRag
+from rag.turn.service import _source_doc_ids
 
 
 def _chunk(document_id=None, faq_id=None) -> RetrievedChunk:
@@ -112,7 +112,7 @@ class TestResolvedAnswer:
     """needs_generation과 generate()가 함께 보는 단일 판정점 (#36)."""
 
     def test_blocked는_고정문구(self):
-        from rag.prompt_texts import BLOCKED_INPUT_ANSWER
+        from rag.turn.prompt_texts import BLOCKED_INPUT_ANSWER
         assert _prepared(route='blocked', retrieval=None).resolved_answer == BLOCKED_INPUT_ANSWER
 
     def test_other는_생성_필요(self):
@@ -123,7 +123,7 @@ class TestResolvedAnswer:
         assert _prepared(cached_answer='캐시된 답').resolved_answer == '캐시된 답'
 
     def test_근거없음은_고정문구(self):
-        from rag.prompt_texts import NO_EVIDENCE_ANSWER
+        from rag.turn.prompt_texts import NO_EVIDENCE_ANSWER
         r = RetrievalResult(chunks=[], no_evidence=True, reason='no_results')
         assert _prepared(retrieval=r).resolved_answer == NO_EVIDENCE_ANSWER
 
@@ -154,7 +154,7 @@ class TestGenerateQuerySlot:
                             prior_turns=prior_turns, domain_hint=domain_hint)
             return [{'role': 'system', 'content': 's'}, {'role': 'user', 'content': 'u'}]
 
-        monkeypatch.setattr('rag.service.build_knowledge_generation_prompt', fake_build)
+        monkeypatch.setattr('rag.turn.service.build_knowledge_generation_prompt', fake_build)
 
         class _Llm:
             async def astream(self, prompt, *, citations=None, on_finish_reason=None, **_):
@@ -162,7 +162,7 @@ class TestGenerateQuerySlot:
                 if on_finish_reason:
                     on_finish_reason('stop')
 
-        from rag.service import RagService
+        from rag.turn.service import RagService
         svc = RagService(tenant_id='t', session=None)
         svc._llm = _Llm()
         prepared = _prepared(original_query='그건 한 마리에 얼마예요?',

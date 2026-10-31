@@ -33,7 +33,7 @@ class RetrievedChunk:
 
 
 # query_embedding(아래 두 자료형 공통) — 원본 쿼리의 dense 벡터. 한 턴의 쿼리 벡터는 하나여야 해서(TEI는 호출마다
-# 미세하게 비결정적) rag/cache.py가 다시 임베딩하지 않고 이걸 재사용한다. 확장 변형 벡터는 담지 않는다.
+# 미세하게 비결정적) rag/turn/cache.py가 다시 임베딩하지 않고 이걸 재사용한다. 확장 변형 벡터는 담지 않는다.
 # repr=False: 1024차원 float가 트레이스백·로그에 통째로 새는 것을 막는다.
 
 

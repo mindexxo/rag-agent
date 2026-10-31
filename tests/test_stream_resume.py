@@ -17,9 +17,10 @@ import pytest
 import pytest_asyncio
 
 from database import AsyncSessionLocal
-from rag import limiter, otel, stream_resume
-from rag.service import RagService
-from rag.streaming import _run_generation
+from rag import limiter, otel
+from rag.turn import stream_resume
+from rag.turn.service import RagService
+from rag.turn.streaming import _run_generation
 from schemas.kms import QueryAttachment
 from tests.conftest import register_faq, sse_meta
 
@@ -495,7 +496,7 @@ async def test_마커도_done도_없는_반쪽_스트림은_done_없이_닫힌�
     미러링이 degraded가 되면 그 뒤로 아무것도 안 쓰므로 done도 마커도 없다. 종료 시 키 삭제까지
     실패하면 반쪽 스트림이 TTL 내내 남는다. 그때 리더는 **done 없이** 닫혀야 한다 —
     있지도 않은 done을 지어내면 실패·취소가 성공으로 보인다. FE는 이 종료를 비정상으로
-    보고 이력을 재조회한다(rag/streaming.py 이벤트 계약).
+    보고 이력을 재조회한다(rag/turn/streaming.py 이벤트 계약).
     """
     await register_faq(client)
     prepared = await _prepared_turn(tenant_id)

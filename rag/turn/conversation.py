@@ -1,6 +1,6 @@
 """멀티턴 대화 관리 — 소유권 판정·프롬프트 이력 조립·condense 질의 재작성.
 
-턴 시작·종료(자리표시 기록·마감)는 rag/turn_state.py가 맡는다.
+턴 시작·종료(자리표시 기록·마감)는 rag/turn/turn_state.py가 맡는다.
 """
 
 from sqlalchemy import select
@@ -8,18 +8,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from rag import otel
 from rag.llm import LlmClient
-from rag.llm_schemas import CondenseMultiResult, CondenseResult, acomplete_validated
 from rag.models import Conversation, Message, TurnStatus
-from rag.prompt_texts import (
+from rag.tokens import estimate_tokens
+from rag.turn.llm_schemas import CondenseMultiResult, CondenseResult, acomplete_validated
+from rag.turn.prompt_texts import (
     CANCELLED_TURN_EMPTY,
     CANCELLED_TURN_SUFFIX,
     CONDENSE_MULTI_SYSTEM_PROMPT,
     CONDENSE_SYSTEM_PROMPT,
     FAILED_TURN_EMPTY,
 )
-from rag.prompts import build_chat_prompt, build_condense_user_message
-from rag.tokens import estimate_tokens
-from rag.turn_state import HISTORY_ISOLATED
+from rag.turn.prompts import build_chat_prompt, build_condense_user_message
+from rag.turn.turn_state import HISTORY_ISOLATED
 
 # X-User-Id 미전송 시 created_by 저장과 소유 필터에 똑같이 쓰는 폴백.
 DEFAULT_USER = 'test-user'

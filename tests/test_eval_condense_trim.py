@@ -1,6 +1,6 @@
 """eval의 condense 입력이 운영과 같은 예산으로 잘리는지 (#81).
 
-운영은 rag/service.py에서 trim_messages_for_condense(messages, 600)을 거쳐 condense를
+운영은 rag/turn/service.py에서 trim_messages_for_condense(messages, 600)을 거쳐 condense를
 부른다. eval 세 축(condense·generation·retrieval_mt)이 그걸 안 태우던 것이 #81이었다 —
 긴 이력을 그대로 넘기면 이전 답변의 수치가 재작성 질의에 주입된다(실측: 1751tk 전제보존
 1/5 → 493tk 5/5, config.py의 condense_history_budget_tokens 주석).
@@ -16,7 +16,7 @@ import ast   # noqa: F401  (각 테스트가 지역 import하지 않도록 모�
 class TestCondenseTrimParity:
     """eval의 condense 입력이 운영과 같은 예산으로 잘리는지 (#81).
 
-    운영은 rag/service.py에서 trim_messages_for_condense(messages, 600)을 거쳐 condense를
+    운영은 rag/turn/service.py에서 trim_messages_for_condense(messages, 600)을 거쳐 condense를
     부른다. eval 세 축(condense·generation·retrieval_mt)이 그걸 안 태우던 것이 #81이었다 —
     긴 이력을 그대로 넘기면 이전 답변의 수치가 재작성 질의에 주입된다(실측: 1751tk 전제보존
     1/5 → 493tk 5/5, config.py의 condense_history_budget_tokens 주석).
@@ -87,5 +87,5 @@ class TestCondenseTrimParity:
         for rel in self._AXES:
             tree = ast.parse(self._src(rel))
             imported = {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
-                        and n.module == 'rag.conversation' for a in n.names}
+                        and n.module == 'rag.turn.conversation' for a in n.names}
             assert 'trim_messages_for_condense' in imported, f'{rel}: rag/의 함수를 안 쓴다'

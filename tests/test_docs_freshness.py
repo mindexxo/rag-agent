@@ -12,6 +12,7 @@
 에러 메시지에는 반드시 **무엇을 어떻게 고쳐야 하는지**를 적는다. 이 테스트의 독자는 대개
 에이전트이고, 메시지가 그대로 수정 지침이 되어야 사람 손을 덜 탄다.
 """
+
 from __future__ import annotations
 
 import ast
@@ -28,7 +29,17 @@ _ROOT = Path(__file__).resolve().parent.parent
 def _scan_files() -> list[Path]:
     """문서 문장이 들어있는 파일 — 코드의 docstring·주석과 루트 마크다운."""
     files: list[Path] = []
-    for pkg in ('rag', 'rag/llm', 'rag/chunking', 'rag/search', 'routers', 'schemas', 'eval', 'tests'):  # rag/ 하위 패키지도 래칫 안에
+    for pkg in (
+        'rag',
+        'rag/llm',
+        'rag/chunking',
+        'rag/search',
+        'rag/turn',
+        'routers',
+        'schemas',
+        'eval',
+        'tests',
+    ):  # rag/ 하위 패키지도 래칫 안에
         files += sorted((_ROOT / pkg).glob('*.py'))
     files += [_ROOT / n for n in ('config.py', 'main.py', 'database.py', 'schema.sql')]
     files += [_ROOT / n for n in ('AGENTS.md', 'CLAUDE.md', 'README.md', 'INVARIANTS.md')]
@@ -55,8 +66,8 @@ _PATH_RE = re.compile(
 
 # gitignore된 디렉터리 — 저장소만으로는 실존을 검증할 수 없다(생성물·내부 기획문서).
 _UNVERIFIABLE_PREFIXES = (
-    'docs_internal/',    # .gitignore:36 — 내부 기획문서
-    'eval/results/',     # .gitignore:26 — 측정 산출물
+    'docs_internal/',  # .gitignore:36 — 내부 기획문서
+    'eval/results/',  # .gitignore:26 — 측정 산출물
 )
 
 # 이 저장소는 폐기된 것을 '구 X'·'옛 X'로 표기한다(실측 관용구, 여러 모듈에서 사용).
@@ -70,14 +81,21 @@ _PAST_TENSE_RE = re.compile(r'(?:구|옛)\s*$')
 
 def _is_past_tense(text: str, start: int) -> bool:
     """참조 직전에 폐기 마커가 붙어 있는가."""
-    return bool(_PAST_TENSE_RE.search(text[max(0, start - 4):start]))
+    return bool(_PAST_TENSE_RE.search(text[max(0, start - 4) : start]))
 
 
 # 위 두 규칙으로도 걸러지지 않는 과거형 서술만 등록한다. 등록 시 사유를 반드시 적는다.
 # 이 딕셔너리는 늘어나는 방향이 아니라 줄어드는 방향으로 관리한다.
 _PATH_WHITELIST: dict[tuple[str, str], str] = {
-    ('rag/citation_tail.py', 'rag/answer_check.py'):
-        '#61에서 삭제된 파일. citation_tail.py가 과거형으로 폐기 사유를 설명하는 문장이라 오도가 아니다.',
+    (
+        'rag/turn/citation_tail.py',
+        'rag/answer_check.py',
+    ): '#61에서 삭제된 파일. citation_tail.py가 과거형으로 폐기 사유를 설명하는 문장이라 오도가 아니다.',
+    (
+        'rag/turn/llm_schemas.py',
+        'rag/prompt_texts.py',
+    ): 'pydantic 모델 docstring은 JSON 스키마 description으로 LLM에 간다 — 경로를 고치면 프롬프트 바이트가 바뀐다'
+    '(tests/test_prompt_bytes.py). 파일은 rag/turn/prompt_texts.py로 옮겨졌다.',
 }
 
 
@@ -152,15 +170,15 @@ class TestSymbolReferences:
                 ref_path, symbol, wildcard = m.group(1), m.group(2), m.group(3)
                 target = _ROOT / ref_path
                 if not target.exists():
-                    continue          # 경로 자체 문제는 ①이 잡는다
+                    continue  # 경로 자체 문제는 ①이 잡는다
                 if _is_past_tense(text, m.start()):
-                    continue          # '구 X의 Y' — 폐기된 구조를 설명하는 문장
+                    continue  # '구 X의 Y' — 폐기된 구조를 설명하는 문장
                 # dotted 참조·문장 끝 마침표는 마지막 조각만 대조한다.
                 leaf = symbol.rstrip('.').split('.')[-1]
                 if not leaf:
                     continue
                 defined = _defined_names(target)
-                if wildcard:          # 'TAIL_EXAMPLE_*' — 계열이 하나라도 있으면 된다
+                if wildcard:  # 'TAIL_EXAMPLE_*' — 계열이 하나라도 있으면 된다
                     if not any(n.startswith(leaf) for n in defined):
                         broken.append((_rel(f), ref_path, symbol + '*'))
                     continue
@@ -187,9 +205,12 @@ class TestSymbolReferences:
 _DOCSTRING_COUNT_CLAIMS = (
     ('eval/refusal.py', 'eval/gold_set_v2.jsonl', 'type', ('no_evidence', 'trap')),
     # 캐시 셋 40쌍 확장(#113) — kind별 건수를 docstring이 주장하므로 기계 검증
-    ('eval/cache_eval.py', 'eval/cache_set_v1.jsonl', 'kind',
-     ('negation', 'numeric', 'condition', 'temporal', 'exception',
-      'para_surface', 'para_deep')),
+    (
+        'eval/cache_eval.py',
+        'eval/cache_set_v1.jsonl',
+        'kind',
+        ('negation', 'numeric', 'condition', 'temporal', 'exception', 'para_surface', 'para_deep'),
+    ),
 )
 
 
@@ -232,15 +253,19 @@ _NUMBER_INVARIANTS = (
 
 def _config_default(field: str) -> int:
     tree = ast.parse((_ROOT / 'config.py').read_text(encoding='utf-8'))
-    cls = next((n for n in ast.walk(tree)
-                if isinstance(n, ast.ClassDef) and n.name == 'Settings'), None)
+    cls = next((n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == 'Settings'), None)
     assert cls is not None, (
         'config.py에서 Settings 클래스를 찾지 못했다. 클래스명이 바뀌었으면 '
         'tests/test_docs_freshness.py의 _config_default도 같이 고쳐라.'
     )
-    node = next((n for n in cls.body
-                 if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)
-                 and n.target.id == field), None)
+    node = next(
+        (
+            n
+            for n in cls.body
+            if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) and n.target.id == field
+        ),
+        None,
+    )
     assert node is not None, (
         f"config.py의 Settings에 '{field}' 필드가 없다. 필드명이 바뀌었으면 "
         f'tests/test_docs_freshness.py의 _NUMBER_INVARIANTS에서 이 항목의 이름을 갱신하고, '

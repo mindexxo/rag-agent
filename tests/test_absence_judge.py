@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from eval.absence_judge import (FIXTURES, JUDGE_PROMPT_VERSION, AbsenceJudgment,
                                 _build_messages)
-from rag.prompt_texts import NO_EVIDENCE_ANSWER
+from rag.turn.prompt_texts import NO_EVIDENCE_ANSWER
 
 
 class TestPromptAssembly:
@@ -35,7 +35,7 @@ class TestSchema:
 
     def test_label에_기본값이_없다(self):
         """기본값이 있으면 json 스키마에서 required가 빠져 모델이 생략해도 합법이 된다 —
-        강제력이 조용히 약해진다(rag/llm_schemas.py 규약)."""
+        강제력이 조용히 약해진다(rag/turn/llm_schemas.py 규약)."""
         assert 'label' in AbsenceJudgment.model_json_schema()['required']
         with pytest.raises(ValidationError):
             AbsenceJudgment()

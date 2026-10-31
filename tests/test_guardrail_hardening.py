@@ -7,8 +7,8 @@ import pytest
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from rag.conversation import load_recent_messages
 from rag.models import Conversation, Message
+from rag.turn.conversation import load_recent_messages
 from schemas.kms import ATTACHMENT_MAX_ITEMS, ATTACHMENT_MAX_TEXT_CHARS
 
 USER_A = {'X-User-Id': 'agent-a'}
@@ -118,8 +118,8 @@ async def test_취소_턴은_짝으로_이력에_남는다(tenant_id):
 @pytest.mark.asyncio
 async def test_취소_턴은_프롬프트_이력에서_중단_표식(tenant_id):
     """부분 답변이 완결된 안내로 오인되지 않게 — 표식은 조립 시점에만(#59), 저장본 무변경."""
-    from rag.conversation import build_prior_turns
-    from rag.prompt_texts import CANCELLED_TURN_SUFFIX
+    from rag.turn.conversation import build_prior_turns
+    from rag.turn.prompt_texts import CANCELLED_TURN_SUFFIX
     cid = await _seed_turn(tenant_id, '사이즈 가이드해줘', 'S(1): 평소 착용', 'cancelled')
     async with AsyncSessionLocal() as s:
         msgs = await load_recent_messages(s, tenant_id, cid)
@@ -130,8 +130,8 @@ async def test_취소_턴은_프롬프트_이력에서_중단_표식(tenant_id):
 @pytest.mark.asyncio
 async def test_빈_취소_턴도_질문은_남고_답변은_표식(tenant_id):
     """첫 토큰 전 취소(content='') — 질문까지 지우면 '다시'가 그 이전 턴을 가리킨다(#59 결정)."""
-    from rag.conversation import build_prior_turns
-    from rag.prompt_texts import CANCELLED_TURN_EMPTY
+    from rag.turn.conversation import build_prior_turns
+    from rag.turn.prompt_texts import CANCELLED_TURN_EMPTY
     cid = await _seed_turn(tenant_id, '사이즈 가이드해줘', '', 'cancelled')
     async with AsyncSessionLocal() as s:
         msgs = await load_recent_messages(s, tenant_id, cid)
@@ -143,8 +143,8 @@ async def test_빈_취소_턴도_질문은_남고_답변은_표식(tenant_id):
 @pytest.mark.asyncio
 async def test_취소_표식은_condense_이력에도_동일(tenant_id, fake_llm):
     """이력 재료의 단일 규칙(#59) — prior_turns와 condense가 다른 이력을 보면 안 된다."""
-    from rag.conversation import condense_query
-    from rag.prompt_texts import CANCELLED_TURN_SUFFIX
+    from rag.turn.conversation import condense_query
+    from rag.turn.prompt_texts import CANCELLED_TURN_SUFFIX
     cid = await _seed_turn(tenant_id, '사이즈 가이드해줘', 'S(1): 평소 착용', 'cancelled')
     async with AsyncSessionLocal() as s:
         msgs = await load_recent_messages(s, tenant_id, cid)
@@ -182,7 +182,7 @@ async def test_차단_턴만_빠지고_정상_턴_짝짓기는_유지(tenant_id)
         msgs = await load_recent_messages(s, tenant_id, cid)
     assert [m.content for m in msgs] == ['정상1', '답1', '정상2', '답2']
 
-    from rag.conversation import build_prior_turns
+    from rag.turn.conversation import build_prior_turns
     turns = build_prior_turns(msgs, budget_tokens=2000)
     assert turns == [{'q': '정상1', 'a': '답1'}, {'q': '정상2', 'a': '답2'}]
 

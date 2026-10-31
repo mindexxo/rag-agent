@@ -2,7 +2,7 @@
 
 digest는 semantic 캐시(answer_cache.cache_key)의 키 — 정규화가 바뀌면 기존 캐시 전체가 미스가 된다.
 """
-from rag.cache import _build_cache_digest, _normalize_query, _sources_from_json, _sources_to_json
+from rag.turn.cache import _build_cache_digest, _normalize_query, _sources_from_json, _sources_to_json
 from schemas.kms import SourceCitation
 
 

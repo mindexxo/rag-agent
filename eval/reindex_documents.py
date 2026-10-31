@@ -28,9 +28,10 @@ from sqlalchemy import select
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import cache, outbox
+from rag import outbox
 from rag.models import Document
 from rag.search import os_client
+from rag.turn import cache
 
 
 async def _targets(tenant_id: str | None) -> list[tuple[int, str, str, int]]:

@@ -1,7 +1,7 @@
 """불변식 대장(INVARIANTS.md) "턴·스트리밍·취소" 절의 빈 칸·부분 칸을 채우는 테스트 (#315).
 
 각 테스트는 이름이 INV 번호로 시작하고, docstring 첫 줄이 그 규칙이다. 규칙의 정의점은
-rag/streaming.py(이벤트 방출·finally 정리), rag/cancellation.py(레지스트리), rag/stream_resume.py
+rag/turn/streaming.py(이벤트 방출·finally 정리), rag/turn/cancellation.py(레지스트리), rag/turn/stream_resume.py
 (재접속 미러링), routers/kms.py(리미터 lease 소유권)다 — 근거 문장은 거기 있고 여기선 관측만 한다.
 
 관측 수단 두 가지:
@@ -20,10 +20,11 @@ import pytest_asyncio
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import cancellation, clients, limiter, otel, stream_resume, streaming
+from rag import clients, limiter, otel
 from rag.models import Message
-from rag.service import RagService
-from rag.streaming import _run_generation, spawn_generation
+from rag.turn import cancellation, stream_resume, streaming
+from rag.turn.service import RagService
+from rag.turn.streaming import _run_generation, spawn_generation
 from tests.conftest import register_faq, sse_done, sse_events, sse_meta
 from tests.polling import inflight_count, wait_inflight
 
@@ -96,7 +97,7 @@ def _queued_events(queue: asyncio.Queue) -> list:
 async def test_INV04_생성_실패의_예외_원문은_SSE에도_재접속_스트림에도_실리지_않는다(
     client, tenant_id, fake_llm, pass_gate, monkeypatch
 ):
-    """INV-04: 생성 실패 시 예외 원문을 클라이언트에 보내지 않는다(rag/streaming.py).
+    """INV-04: 생성 실패 시 예외 원문을 클라이언트에 보내지 않는다(rag/turn/streaming.py).
 
     예외 메시지에 내부 경로를 심고, 클라이언트가 볼 수 있는 두 통로(SSE 본문 · 재접속용 Redis 스트림)
     어디에도 그 문자열이 없고 error는 고정 코드·고정 문구인지 본다.
@@ -277,7 +278,7 @@ async def test_INV40_생성_경로는_연결이_끊겨도_태스크가_슬롯을
 
 @pytest.mark.asyncio
 async def test_INV47_캐시_적재는_done_방출_뒤에_따로_한다(client, tenant_id, fake_llm, pass_gate, monkeypatch):
-    """INV-47: 캐시 적재는 done 전송 뒤에 따로 한다(rag/streaming.py, rag/service.py maybe_cache).
+    """INV-47: 캐시 적재는 done 전송 뒤에 따로 한다(rag/turn/streaming.py, rag/turn/service.py maybe_cache).
 
     큐 put과 maybe_cache 호출을 한 순서 기록에 남겨 done이 maybe_cache보다 먼저인지 본다.
     """
@@ -359,11 +360,11 @@ async def _replay_then_pings(reader, n: int) -> tuple[int, list[str]]:
 async def test_INV35_유휴_ping은_재접속_스트림에_저장되지_않는다(
     client, tenant_id, fake_llm, pass_gate, monkeypatch, fresh_redis
 ):
-    """INV-35: 스트림 ping은 Redis 스트림에 저장하지 않는다(rag/stream_resume.py reconnect_reader).
+    """INV-35: 스트림 ping은 Redis 스트림에 저장하지 않는다(rag/turn/stream_resume.py reconnect_reader).
 
     ping을 합성하는 재접속 리더를 직접 돌린다 — 생성이 멈춘 턴(generating, 종료 마커 없음)에서 블록 주기를 줄여
     ping을 여러 번 받는 동안 그 턴의 XLEN이 그대로인지 본다. ping을 실제로 받았는지도 단언한다(안 나오면 공허하다).
-    같은 유휴 구간에 생성 경로의 로컬 리더(rag/streaming.py queue_reader)도 돌려 본다 — 로컬 리더엔 Redis 쓰기
+    같은 유휴 구간에 생성 경로의 로컬 리더(rag/turn/streaming.py queue_reader)도 돌려 본다 — 로컬 리더엔 Redis 쓰기
     수단이 없으니 이쪽이 막는 것은 ping을 emit(큐 + 스트림 이중 쓰기) 경로로 옮기는 변경이다.
     """
     await register_faq(client)
@@ -392,7 +393,7 @@ async def test_INV35_유휴_ping은_재접속_스트림에_저장되지_않는�
 
 
 def test_INV36_pop과_cancel_사이에_await가_끼어들_수_없다():
-    """INV-36: 레지스트리 pop과 task.cancel() 사이에 await가 없다(rag/cancellation.py).
+    """INV-36: 레지스트리 pop과 task.cancel() 사이에 await가 없다(rag/turn/cancellation.py).
 
     cancel_local·unregister가 코루틴이 아닌 동기 함수면 그 안에는 await가 존재할 수 없다 —
     원자성의 구조적 근거를 고정한다(코루틴으로 바뀌는 순간 실패).
@@ -407,7 +408,7 @@ def test_INV36_pop과_cancel_사이에_await가_끼어들_수_없다():
 async def test_INV36_실패한_생성_태스크는_finally_첫_await_전에_레지스트리에서_빠진다(
     client, tenant_id, fake_llm, pass_gate
 ):
-    """INV-36: 생성 태스크는 finally 맨 앞에서 동기로 레지스트리 등록을 푼다(rag/streaming.py).
+    """INV-36: 생성 태스크는 finally 맨 앞에서 동기로 레지스트리 등록을 푼다(rag/turn/streaming.py).
 
     실패 분기를 쓰는 이유: done 분기는 maybe_cache 앞에서 이미 한 번 빠지고, 취소 분기는 cancel_local이
     pop하므로 finally의 해제만 따로 보이는 것은 실패 분기뿐이다. finally의 첫 await(sentinel put) 순간의
@@ -441,7 +442,7 @@ async def test_INV36_실패한_생성_태스크는_finally_첫_await_전에_레�
 async def test_INV36_완주한_생성_태스크는_캐시_적재_전에_이미_취소_대상이_아니다(
     client, tenant_id, fake_llm, pass_gate, monkeypatch
 ):
-    """INV-36: done 뒤의 await(maybe_cache)·finally 정리 중 늦은 취소가 태스크를 못 찾는다(rag/streaming.py).
+    """INV-36: done 뒤의 await(maybe_cache)·finally 정리 중 늦은 취소가 태스크를 못 찾는다(rag/turn/streaming.py).
 
     spawn_generation으로 실제 등록된 태스크를 완주시키고, maybe_cache 진입 순간과 sentinel put 순간
     모두 레지스트리에 그 id가 없는지, 완주 후에도 없는지 본다.

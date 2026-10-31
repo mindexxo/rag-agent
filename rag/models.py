@@ -53,9 +53,9 @@ class Folder(Base):
     __table_args__ = (UniqueConstraint("tenant_id", "name"),)
 
 
-# Document.status 6값 중 색인·supersede·DROP 판정 대상인 "살아 있는" 넷의 정의점.
+# Document.status 4값(pending|ready|failed|deleted) 중 색인·supersede·DROP 판정 대상인 "살아 있는" 둘의 정의점.
 # deleted·failed는 사용자에게 없는 문서다. rag/documents.py·rag/ingestion.py·rag/outbox.py가 같은 집합을 써야 한다.
-ALIVE_DOCUMENT_STATUSES = ('pending', 'parsing', 'embedding', 'ready')
+ALIVE_DOCUMENT_STATUSES = ('pending', 'ready')
 
 
 class Document(Base):
@@ -74,7 +74,7 @@ class Document(Base):
     )  # 검색 대상 버전 (filename당 하나만 true)
     status: Mapped[str] = mapped_column(
         default="pending", server_default="pending"
-    )  # 문서 처리 6값 — Message.status(TurnStatus)와 별개 어휘. 살아 있는 넷은 ALIVE_DOCUMENT_STATUSES
+    )  # 문서 처리 4값 — Message.status(TurnStatus)와 별개 어휘. 살아 있는 둘은 ALIVE_DOCUMENT_STATUSES
     status_reason: Mapped[str | None]  # 실패/삭제 사유
     char_count: Mapped[int | None]
     uploaded_by: Mapped[str | None]
@@ -190,7 +190,7 @@ class Conversation(Base):
 
 
 class TurnStatus(StrEnum):
-    """messages.status 값 어휘의 정의점 — Document.status 6값과 별개 어휘다.
+    """messages.status 값 어휘의 정의점 — Document.status 4값과 별개 어휘다.
 
     str 서브클래스라 문자열 비교·직렬화·DB 저장과 호환된다. 여기는 어휘만 두고,
     파생 의미(이력 격리·미응답·종결 집합)는 rag/turn_state.py가 소유한다.

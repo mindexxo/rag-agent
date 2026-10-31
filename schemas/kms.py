@@ -139,7 +139,7 @@ class DocumentUploadMetadata(BaseModel):
     평면 Form 필드로는 표현할 수 없는 값이 있어서 도입했다: multipart는 값이 전부 문자열이라
     **null이 없고**, `int | None = Form(None)`에서는 빈 값과 미전송이 똑같이 None으로 들어온다.
     JSON으로 받으면 `folder_id`의 세 경우가 자연스럽게 갈리고, 판정도 PATCH와 같은
-    `model_fields_set`을 쓴다(routers/documents.py의 update_document와 같은 방식):
+    `model_fields_set`을 쓴다(rag/document_admin.py의 update_document와 같은 방식):
 
       {"folder_id": 7}     → 7번 폴더로
       {"folder_id": null}  → 미분류로 (직전 버전의 폴더를 떼라)
@@ -199,7 +199,7 @@ class DocumentUpdateRequest(BaseModel):
     folder_id: int | None = Field(None, gt=0)  # null=미분류, 0은 거절(목록 필터의 0=미분류와 다르다)
     is_searchable: bool | None = None
     # 표 설명 수정 — 파일을 새 버전으로 다시 올리지 않고 고친다.
-    # 값이 바뀌면 재색인이 따른다(routers/documents.py의 update_document).
+    # 값이 바뀌면 재색인이 따른다(rag/document_admin.py의 update_document).
     # folder_id와 달리 model_fields_set 3단 구분을 쓰지 않는다 — description은 None이 "미분류"
     # 같은 유효한 목표값이 아니라서 "미전송"과 "null 전송"이 똑같이 "안 바꿈"이면 충분하다.
     # 지우려면 빈 문자열을 보낸다(routers/folders.py의 FolderUpdateRequest와 같은 2-way).

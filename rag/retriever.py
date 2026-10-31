@@ -175,28 +175,10 @@ async def retrieve_candidates(
     q_embs = await embed_texts(queries, kind="query")
     query_embedding = q_embs[0].dense  # 캐시가 재사용하는 원본 쿼리 벡터 — Embedding 래퍼는 여기서 벗긴다
 
-    dense = await _dense_candidates(tenant_id, q_embs, candidates_per_branch)
-
-    # 어느 쪽이든 자르지 않는다 — 슬라이스는 리랭크 뒤에서 한 번만.
-    multi = len(dense.per_query_ids) > 1
-    top_ids = _rank_multi(dense.per_query_ids) if multi else dense.per_query_ids[0]
-
-    # dense가 비면 어휘 주입도 안 한다 — 어휘 후보만으로 채우면 '근거 없음' 판정이 조용히 무력화된다.
+    ident_tokens = normalize_identifiers(query) if settings.ident_channel_enabled else []
+    dense, top_ids = await _build_pool(tenant_id, query, q_embs, candidates_per_branch, ident_tokens)
     if not top_ids:
         return RetrievalCandidates(chunks=[], top_dense_distance=999.0, query_embedding=query_embedding)
-
-    # 주입 후보는 '뒤에' 붙인다 — 리랭크 꺼짐/실패 폴백에서 dense 순위가 깨지지 않아야 한다.
-    if settings.hybrid_lexical_enabled:
-        lex_ids = await _lexical_candidates(tenant_id, query, candidates_per_branch)
-        seen = set(top_ids)
-        top_ids = top_ids + [cid for cid in lex_ids if cid not in seen][: settings.hybrid_lexical_inject]
-
-    # 식별자 정확 일치 조각 주입 — 주입만으로는 장·조를 못 가리는 리랭커를 못 넘어 리랭크 뒤 가산이 함께 필요하다.
-    ident_tokens = normalize_identifiers(query) if settings.ident_channel_enabled else []
-    if ident_tokens:
-        ident_ids = await os_search.search_identifiers(tenant_id, ident_tokens, settings.ident_inject)
-        seen = set(top_ids)
-        top_ids = top_ids + [cid for cid in ident_ids if cid not in seen][: settings.ident_inject]
 
     chunk_map = await _chunk_map(top_ids)
     # `if cid in chunk_map` 필수 — 검색과 본문 조회 사이에 문서가 지워지면 mget에서 빠진다.
@@ -204,39 +186,8 @@ async def retrieve_candidates(
 
     # 호출 시점마다 settings를 읽는다 — eval/retrieval.py가 이 속성을 런타임에 켰다 껐다 한다.
     if settings.rerank_enabled and result:
-        with otel.span('rerank', 'RERANKER') as sp:
-            otel.set_attrs(
-                sp,
-                {
-                    otel.RERANK_QUERY: query,
-                    otel.RERANK_TOP_K: top_n,
-                    'kms.pool_size': len(result),
-                    'kms.mode': 'maxpool' if multi else 'single',
-                },
-            )
-            # 단일/멀티 공통 — 쿼리 1개의 max-pool은 단일 리랭크와 같다.
-            from rag.reranker import rerank_maxpool  # 지연 import (retriever ↔ reranker 순환 방지)
-
-            result, best, best_qi = await rerank_maxpool(queries, result)
-            if best is None:
-                otel.set_attrs(sp, {'kms.fallback': 'rrf' if multi else 'dense'})
-            elif ident_tokens:
-                # 점수 실패 시엔 가산도 없다(주입만 남는다).
-                result, best, best_qi = apply_identifier_boost(
-                    result, best, best_qi, ident_tokens, settings.ident_boost
-                )
-                otel.set_attrs(
-                    sp,
-                    {
-                        'kms.ident_tokens': list(ident_tokens),
-                        'kms.ident_matched': [str(c.chunk_id) for c in result if c.matched_ident],
-                    },
-                )
-            if best is not None and sp.is_recording():  # 채택 점수·기여 쿼리 — DB에 안 남는 진단 정보
-                for i, (ch, score, qi) in enumerate(zip(result[:top_n], best[:top_n], best_qi[:top_n])):
-                    sp.set_attribute(f'reranker.output_documents.{i}.document.id', str(ch.chunk_id))
-                    sp.set_attribute(f'reranker.output_documents.{i}.document.score', float(score))
-                    sp.set_attribute(f'reranker.output_documents.{i}.document.query_index', qi)  # 0=원본, 1..=확장
+        multi = len(dense.per_query_ids) > 1
+        result = await _rerank_pool(queries, result, ident_tokens, top_n, multi)
 
     # top_n이 확정되는 유일한 지점 — 리랭크 뒤라 하위 후보를 끌어올릴 여지를 미리 깎지 않는다.
     result = result[:top_n]
@@ -244,6 +195,69 @@ async def retrieve_candidates(
     # 게이트 신호는 원본 쿼리의 top-1 dense 거리다.
     top_dense_dist = dense.top[0].distance if dense.top else 999.0
     return RetrievalCandidates(chunks=result, top_dense_distance=top_dense_dist, query_embedding=query_embedding)
+
+
+async def _build_pool(
+    tenant_id: str, query: str, q_embs: list, candidates_per_branch: int, ident_tokens: list[str]
+) -> tuple[DenseHits, list[int]]:
+    """리랭크 전 후보 풀 — dense(멀티면 RRF) 뒤에 어휘·식별자 후보를 '뒤에' 붙인다(리랭크 꺼짐/실패 폴백에서 dense 순위 보존).
+
+    dense가 비면 주입도 안 한다 — 어휘 후보만으로 채우면 '근거 없음' 판정이 조용히 무력화된다. 자르는 건 리랭크 뒤 한 번만.
+    """
+    dense = await _dense_candidates(tenant_id, q_embs, candidates_per_branch)
+    multi = len(dense.per_query_ids) > 1
+    top_ids = _rank_multi(dense.per_query_ids) if multi else dense.per_query_ids[0]
+    if not top_ids:
+        return dense, []
+
+    if settings.hybrid_lexical_enabled:
+        lex_ids = await _lexical_candidates(tenant_id, query, candidates_per_branch)
+        seen = set(top_ids)
+        top_ids = top_ids + [cid for cid in lex_ids if cid not in seen][: settings.hybrid_lexical_inject]
+
+    # 식별자 정확 일치 조각 주입 — 주입만으로는 장·조를 못 가리는 리랭커를 못 넘어 리랭크 뒤 가산이 함께 필요하다.
+    if ident_tokens:
+        ident_ids = await os_search.search_identifiers(tenant_id, ident_tokens, settings.ident_inject)
+        seen = set(top_ids)
+        top_ids = top_ids + [cid for cid in ident_ids if cid not in seen][: settings.ident_inject]
+    return dense, top_ids
+
+
+async def _rerank_pool(
+    queries: list[str], result: list[RetrievedChunk], ident_tokens: list[str], top_n: int, multi: bool
+) -> list[RetrievedChunk]:
+    """쿼리별 max-pool 리랭크 + 식별자 가산. 점수 실패면 입력 순서(RRF/dense) 그대로 — 가산도 없다."""
+    with otel.span('rerank', 'RERANKER') as sp:
+        otel.set_attrs(
+            sp,
+            {
+                otel.RERANK_QUERY: queries[0],
+                otel.RERANK_TOP_K: top_n,
+                'kms.pool_size': len(result),
+                'kms.mode': 'maxpool' if multi else 'single',
+            },
+        )
+        # 단일/멀티 공통 — 쿼리 1개의 max-pool은 단일 리랭크와 같다.
+        from rag.reranker import rerank_maxpool  # 지연 import (retriever ↔ reranker 순환 방지)
+
+        result, best, best_qi = await rerank_maxpool(queries, result)
+        if best is None:
+            otel.set_attrs(sp, {'kms.fallback': 'rrf' if multi else 'dense'})
+        elif ident_tokens:
+            result, best, best_qi = apply_identifier_boost(result, best, best_qi, ident_tokens, settings.ident_boost)
+            otel.set_attrs(
+                sp,
+                {
+                    'kms.ident_tokens': list(ident_tokens),
+                    'kms.ident_matched': [str(c.chunk_id) for c in result if c.matched_ident],
+                },
+            )
+        if best is not None and sp.is_recording():  # 채택 점수·기여 쿼리 — DB에 안 남는 진단 정보
+            for i, (ch, score, qi) in enumerate(zip(result[:top_n], best[:top_n], best_qi[:top_n])):
+                sp.set_attribute(f'reranker.output_documents.{i}.document.id', str(ch.chunk_id))
+                sp.set_attribute(f'reranker.output_documents.{i}.document.score', float(score))
+                sp.set_attribute(f'reranker.output_documents.{i}.document.query_index', qi)  # 0=원본, 1..=확장
+    return result
 
 
 # ===== 근거 게이트 ==================================================

@@ -8,7 +8,7 @@
     python -m eval.table_parsing.run --engine llm --paths img   # #299: 운영 상용 OCR 경로(OCR_PROVIDER=llm — 사진 표는 잘라서 LLM)
 
 산출물(<out>/): docs/(생성 문서·png), results.jsonl(건별·즉시 기록), matrix_l1.md·matrix_l2.md(축 × 경로),
-mismatches.md(틀린 칸 기대↔실제 나란히 + 실제 markdown 행). 변환은 `_convert_local`(docling 인프로세스 — 워커의 변환
+mismatches.md(틀린 칸 기대↔실제 나란히 + 실제 markdown 행). 변환은 `convert_process.convert_local`(docling 인프로세스 — 워커의 변환
 프로세스와 같은 변환기) 한 번으로 L1을 채점하고, 그 문서를 `chunk_file`에 끼워 L2를 낸다(두 번 변환하지 않는다 —
 OCR 시간이 두 배가 된다). L2는 분할기(SentenceSplitter 512·겹침 50) 흔적까지 **색인에 들어간 그대로** 잰다(결정 a).
 """
@@ -46,7 +46,7 @@ def _score_pair(spec, path, doc, chunks):
 
 
 def _convert_and_chunk(path_file: Path, path: str):
-    doc = ch._convert_local(path_file, **({'max_num_pages': 100} if path in ('img', 'pdf') else {}))
+    doc = ch.convert_process.convert_local(path_file, **({'max_num_pages': 100} if path in ('img', 'pdf') else {}))
     orig_ch, orig_xc = ch.docling_convert, xc.docling_convert
     ch.docling_convert = xc.docling_convert = lambda p, **k: doc      # 같은 변환 결과로 청킹(두 번 변환 안 함)
     try:
@@ -139,7 +139,7 @@ def main():
     if args.engine == 'llm':
         from eval import vlm_engine
         from config import settings
-        settings.ocr_provider = 'llm'                    # 운영 코드 그대로 — _convert_local이 _convert_pdf_llm으로 보낸다
+        settings.ocr_provider = 'llm'                    # 운영 코드 그대로 — convert_local이 ocr_llm.convert_pdf로 보낸다
         _ENGINE = vlm_engine.label().replace('vlm_', 'ocrllm_', 1)
         print(f'engine={_ENGINE} max_tokens={settings.ocr_llm_max_tokens} concurrency={settings.ocr_llm_concurrency}', flush=True)
     if args.engine == 'vlm':

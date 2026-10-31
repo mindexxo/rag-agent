@@ -255,7 +255,7 @@ class Settings(BaseSettings):
     docling_queue_max_size: int = 4            # 스테이지 간 큐 길이(기본 100). 긴 문서에서 처리 대기 쪽이
                                                # 쌓이는 상한 — layout_batch와 함께 내려야 효과가 있다
     docling_document_timeout_seconds: float = 900.0   # **문서 1건의 변환 마감 — PDF·DOCX·XLSX 전 형식, 그림 캡션 단계 포함(#223).**
-                                              # rag/chunking._ConvertProcess가 변환 프로세스를 kill해 끊는다(docling의
+                                              # rag/chunking/convert_process.ConvertProcess가 변환 프로세스를 kill해 끊는다(docling의
                                               # document_timeout은 PDF 쪽 루프에서만 검사해 캡션·DOCX·XLSX를 못 막았다 — 그래서 안 쓴다).
                                               # 넘기면 TimeoutError → outbox가 일시 실패로 백오프 재시도(#223 결정 5, 최대 약 24시간).
                                               # 값 근거: 정상 최악 = PDF 100쪽(#168 리눅스 실측 쪽당 약 6.1초 → 약 610초)
@@ -290,7 +290,7 @@ class Settings(BaseSettings):
     # 서버 상수다(serving/triton-ocr/model_repository/ocr/1/model.py).
     # OCR 엔진(#299 결정 6). triton = 사내(위 docling_do_ocr·아래 ocr_kserve_*, 지금 동작 그대로) | llm = 상용 — Triton을 안 부르고
     # (docling_do_ocr 무시) 사진 표·스캔 쪽을 캡션과 같은 LLM(vlm_caption_url·model·api_key·temperature)이 읽는다. 라우팅·근거는
-    # rag/chunking/의 '상용 OCR' 절. 캡션과 연결을 공유하는 이유: #296에서 한 모델이 둘 다 Triton보다 잘 읽었고(표 숫자 오독 6 vs 26),
+    # rag/chunking/ocr_llm.py. 캡션과 연결을 공유하는 이유: #296에서 한 모델이 둘 다 Triton보다 잘 읽었고(표 숫자 오독 6 vs 26),
     # 같은 값을 두 벌 적으면 한쪽만 바꾸는 실수가 난다 — 다른 모델이 필요해지면 그때 나눈다.
     ocr_provider: Literal["triton", "llm"] = "triton"
     ocr_llm_max_tokens: int = 4000            # 쪽 하나·표 하나의 출력 상한. 캡션(1,500)보다 큰 이유: 표 한 쪽이 1,500을 넘는다(#296 측정 엔진 값)

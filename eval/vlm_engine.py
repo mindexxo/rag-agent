@@ -1,7 +1,7 @@
 """측정용 VLM 변환 엔진(#296) — docling VlmPipeline + ApiVlmOptions로 **쪽 전체**를 VLM에 넣어 마크다운으로 받고, 그걸 DoclingDocument로
 만든다. 상용 전환 a안("캡션과 같은 VLM이 OCR까지")의 운영 모양 그대로라, 하네스가 이 엔진으로 돌린 결과 = a안을 채택했을 때의 색인이다.
 
-운영 코드는 건드리지 않는다 — rag/chunking의 `_convert_local`만 이 프로세스 안에서 바꿔 끼운다(eval/scan_quality/ocr_variant와 같은 패턴).
+운영 코드는 건드리지 않는다 — rag/chunking/convert_process의 `convert_local`만 이 프로세스 안에서 바꿔 끼운다(eval/scan_quality/ocr_variant와 같은 패턴).
 VLM 주소·모델·키·온도는 캡션 설정(VLM_CAPTION_*)을 그대로 쓴다 — 벤더 전환은 .env 세 줄(#290 "주소가 곧 벤더").
 
 고정값(비교 조건 — 보고에 적을 것): 프롬프트 PROMPT(기본 V2), scale 2.0(72dpi 기준 배수 — docling 기본값. 캡션의 4.0보다 낮은 건 쪽
@@ -11,7 +11,7 @@ VLM 주소·모델·키·온도는 캡션 설정(VLM_CAPTION_*)을 그대로 쓴
 측정 결과(10/25, 이슈 #296 코멘트가 정본): gpt-5-mini 표 22축 셀 94.2%·숫자 오독 6(Triton 80.9%·26), 스캔 5건 헤딩 0.93·띄어쓰기
 0.96(Triton 0.80·0.68). 사내 7B는 숫자 오독 51로 Triton보다 나쁘다. Gemini 2.5 Flash는 무료 한도(하루 20건)로 표 12축만.
 
-사용: install() 뒤 rag.chunking.chunk_file / _convert_local 호출. uninstall()로 원복(스캔 하네스의 디지털 기준 변환이 섞이지 않게).
+사용: install() 뒤 rag.chunking.chunk_file / convert_process.convert_local 호출. uninstall()로 원복(스캔 하네스의 디지털 기준 변환이 섞이지 않게).
 """
 import os
 import time
@@ -36,7 +36,7 @@ SCALE = 2.0
 MAX_TOKENS = 4000
 TIMEOUT = 180.0
 
-_orig_convert_local = C._convert_local
+_orig_convert_local = C.convert_process.convert_local
 _orig_docling_convert = C.docling_convert
 _converter = None
 
@@ -135,8 +135,8 @@ def _convert_vlm(file_path, **kwargs):
 
 
 def install() -> None:
-    C._convert_local = _convert_vlm
-    C.docling_convert = lambda p, **kw: C._convert_local(p, **kw)     # 자식 프로세스 대신 이 프로세스에서(설정 교체가 먹게)
+    C.convert_process.convert_local = _convert_vlm
+    C.docling_convert = lambda p, **kw: C.convert_process.convert_local(p, **kw)     # 자식 프로세스 대신 이 프로세스에서(설정 교체가 먹게)
 
 
 def uninstall() -> None:
@@ -145,6 +145,6 @@ def uninstall() -> None:
         print(f'[vlm_engine] 빈 응답 재시도 {_retries[0]}회', flush=True)
     _retries[0] = 0
     RAW.clear()                      # 모드 사이에 누적되지 않게(스캔 대조는 한 프로세스에서 여러 모드를 돈다)
-    C._convert_local = _orig_convert_local
+    C.convert_process.convert_local = _orig_convert_local
     C.docling_convert = _orig_docling_convert
     _converter = None

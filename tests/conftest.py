@@ -476,7 +476,7 @@ def _no_remote_ocr():
 # docling 캡션은 OpenAI 호환 /v1/chat/completions를 HTTP로 부른다. 테스트는 로컬 HTTP 서버로 대신한다 —
 # 외부 서비스 없이 결정적이고, 실패(5xx)·지연까지 주입할 수 있다. 이전에는 VLM을 죽인 채 돌려
 # '캡션 실패 = 자리표시'를 고정했는데, #223부터 캡션 실패는 문서 재시도라 그 길로는 그림 문서를 변환할 수 없다.
-# 변환은 자식 프로세스(rag/chunking._ConvertProcess)에서 일어나지만 HTTP라 그대로 닿는다 — 설정(URL)은
+# 변환은 자식 프로세스(rag/chunking/convert_process.ConvertProcess)에서 일어나지만 HTTP라 그대로 닿는다 — 설정(URL)은
 # 부모의 스냅숏이 자식에 넘어간다.
 FAKE_CAPTION = '테스트 캡션: 로그인 화면'
 

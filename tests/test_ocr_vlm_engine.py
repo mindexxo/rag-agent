@@ -37,13 +37,13 @@ def test_title만_section_header로_바뀌고_글은_그대로():
 
 
 def test_install_uninstall은_변환기를_원복한다():
-    before = (C._convert_local, C.docling_convert)
+    before = (C.convert_process.convert_local, C.docling_convert)
     vlm_engine.install()
     try:
-        assert C._convert_local is vlm_engine._convert_vlm
+        assert C.convert_process.convert_local is vlm_engine._convert_vlm
     finally:
         vlm_engine.uninstall()
-    assert (C._convert_local, C.docling_convert) == before and vlm_engine._converter is None
+    assert (C.convert_process.convert_local, C.docling_convert) == before and vlm_engine._converter is None
 
 
 def test_PDF가_아니면_원래_변환기(monkeypatch):

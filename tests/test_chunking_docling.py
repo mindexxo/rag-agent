@@ -1,7 +1,7 @@
 """docling PDF 경로 (#143) — 매핑 규칙은 docling 없이, 실변환은 설치 시에만.
 
 두 층으로 나눈다:
-  - `_sections_from_docling_elements` 단위 테스트: 튜플만 먹인다. 헤딩 층 복원·표·그림·NBSP.
+  - `sections_from_docling_elements` 단위 테스트: 튜플만 먹인다. 헤딩 층 복원·표·그림·NBSP.
     모델 다운로드가 없어 항상 돈다.
   - 실변환 테스트: `pytest.importorskip("docling")` — 패키지 1.4GB + 첫 실행 모델 다운로드가
     필요해 CI에선 건너뛰고 로컬·워커에서 돈다.
@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 from config import settings
-from rag.chunking import _PICTURE_PLACEHOLDER, _docling_elements, _docling_norm, _markers_from_words, _sections_from_docling_elements, _strip_footnote_markers, chunk_file, count_picture_placeholders
+from rag.chunking import chunk_file, count_picture_placeholders
+from rag.chunking.docling_elements import PICTURE_PLACEHOLDER, docling_elements, docling_norm, markers_from_words, sections_from_docling_elements, strip_footnote_markers
 
 
 def _h(text, page=1):
@@ -26,7 +27,7 @@ class TestHeadingLevels:
     """docling은 장·조를 같은 레벨로 낸다 — 한국 규정 번호 체계로 층을 복원해야 조항끼리 묶인다."""
 
     def test_제목_장_조_3단(self):
-        secs = _sections_from_docling_elements([
+        secs = sections_from_docling_elements([
             _h('주식회사 인티큐브 취업규칙'), _h('제 1 장 총 칙'), _h('제 1 조(목 적)'), _t('본문 A'),
             _h('제 2 조(적용범위)'), _t('본문 B'),
             _h('제 2 장 인 사'), _h('제 3 조(채용)'), _t('본문 C'),
@@ -38,7 +39,7 @@ class TestHeadingLevels:
         ]
 
     def test_장이_없는_가이드_문서는_제목_아래_2단(self):
-        secs = _sections_from_docling_elements([
+        secs = sections_from_docling_elements([
             _h('[ 총무 | 가이드 ] 노트북 대여'), _h('■ 신청 절차'), _t('본문'), _h('■ 참고 사항'), _t('본문2'),
         ])
         assert [s.heading_path for s in secs] == [
@@ -49,32 +50,32 @@ class TestHeadingLevels:
     def test_같은_장_아래_형제_조항은pack_sections가_묶을_수_있다(self):
         # joinable = 공통 조상 깊이 ≥2. 층 복원이 없으면(전부 L1) 공통 조상이 []라 아무것도 안 묶인다.
         from rag.chunking.sections import _common_prefix
-        secs = _sections_from_docling_elements([
+        secs = sections_from_docling_elements([
             _h('제목'), _h('제 1 장 총칙'), _h('제 1 조'), _t('a'), _h('제 2 조'), _t('b')])
         assert len(_common_prefix([s.heading_path for s in secs])) == 2
 
     # ── 조 제목 보정(#240·#241) — 레이아웃 모델이 같은 꼴의 조 제목을 들쭉날쭉 text로 낸다(회계 규정 35/97) ──
 
     def test_text로_나온_조_제목은_제목으로_올린다(self):
-        secs = _sections_from_docling_elements([
+        secs = sections_from_docling_elements([
             _h('규정'), _h('제1조 (목 적)'), _t('목적 본문'), _t('제2조 (적 용)'), _t('적용 본문'), _t('제3조（회계단위（본사））'), _t('단위 본문')])   # 전각·중첩 괄호도
         assert [s.heading_path for s in secs] == [['규정', '제1조 (목 적)'], ['규정', '제2조 (적 용)'], ['규정', '제3조（회계단위（본사））']]
         assert secs[1].body == '적용 본문'
 
     def test_장_아래에서_올린_조_제목은_조_층(self):
-        secs = _sections_from_docling_elements([_h('규정'), _h('제 1 장 총칙'), _t('제 1 조(목적)'), _t('본문')])
+        secs = sections_from_docling_elements([_h('규정'), _h('제 1 장 총칙'), _t('제 1 조(목적)'), _t('본문')])
         assert secs[0].heading_path == ['규정', '제 1 장 총칙', '제 1 조(목적)']
 
     def test_제목과_첫_문장이_한_요소면_떼어서_제목과_본문으로(self):
         # '제1조 (목적) 이 규정은 …' — 조 제목 뒤 간격이 좁으면 docling이 한 덩어리로 낸다(실측 간격 합성 규정 30/30, 회계 규정 3건)
-        secs = _sections_from_docling_elements([
+        secs = sections_from_docling_elements([
             _h('규정'), _h('제1조 (목적)'), _t('본문'), _t('제24조 (자금의 관리) 회사의 자금은 재무팀장이 총괄한다.'), _t('둘째 줄')])
         assert secs[-1].heading_path == ['규정', '제24조 (자금의 관리)']
         assert secs[-1].body == '회사의 자금은 재무팀장이 총괄한다.\n둘째 줄'
 
     def test_알려진_한계_괄호_뒤_공백_인용으로_시작하는_문단은_제목이_된다(self):
         # DOCX 폴백(#205)과 같은 규칙·같은 위험(#233 결정 2) — 글은 남는다. 이 동작이 바뀌면 이 단언을 고친다
-        secs = _sections_from_docling_elements([_h('규정'), _h('제1조 (목적)'), _t('본문'), _t('제3조(보상) 규정에 따라 지급한다')])
+        secs = sections_from_docling_elements([_h('규정'), _h('제1조 (목적)'), _t('본문'), _t('제3조(보상) 규정에 따라 지급한다')])
         assert secs[-1].heading_path == ['규정', '제3조(보상)'] and secs[-1].body == '규정에 따라 지급한다'
 
     @pytest.mark.parametrize('line', [
@@ -83,17 +84,17 @@ class TestHeadingLevels:
         "제98조(이하 '보상조항'이라 한다)에 …",   # 정의 꼴
     ])
     def test_조_인용_문장은_올리지_않는다(self, line):
-        secs = _sections_from_docling_elements([_h('규정'), _h('제1조 (목적)'), _t('본문'), _t(line)])
+        secs = sections_from_docling_elements([_h('규정'), _h('제1조 (목적)'), _t('본문'), _t(line)])
         assert [s.heading_path for s in secs] == [['규정', '제1조 (목적)']] and line in secs[0].body
 
     def test_문서_제목보다_먼저_나온_조_제목_꼴은_올리지_않는다(self):
         # 문서 제목(첫 section_header) 전의 글은 본문으로 둔다 — 올리면 '규정'이 조 아래 헤딩으로 밀려 제목 경로가 틀어진다
-        secs = _sections_from_docling_elements([_t('제1조 (목적)'), _h('규정'), _h('제2조 (적용)'), _t('본문')])
+        secs = sections_from_docling_elements([_t('제1조 (목적)'), _h('규정'), _h('제2조 (적용)'), _t('본문')])
         assert [(s.heading_path, s.body) for s in secs] == [([], '제1조 (목적)'), (['규정', '제2조 (적용)'], '본문')]
 
     def test_닫는_괄호가_다음_요소로_떨어진_조_제목은_잇는다(self):
         # 징계규정 실문서 3건(#241) — 전에는 ')'가 따로 제목이 되어 제목 경로가 [... , ')']였다
-        secs = _sections_from_docling_elements([
+        secs = sections_from_docling_elements([
             _h('징계규정'), _h('제 1 장 총 칙'), _h('제 7 조 ( 징계종류'), _h(')'), _t('징계의 종류는 5 종으로 한다 .'),
             _h('제 8 조 ( 양정기준'), _t('）'), _t('양정 본문')])
         assert [s.heading_path for s in secs] == [['징계규정', '제 1 장 총 칙', '제 7 조 ( 징계종류 )'],
@@ -101,11 +102,11 @@ class TestHeadingLevels:
 
     def test_괄호가_떨어진_조_제목이_text로_나와도_잇고_올린다(self):
         # 제목 쪽이 text로 오면(①이 올릴 꼴) ②가 먼저 잇는다 — 안 그러면 ')'가 본문 첫 줄로 남는다(리뷰 지적)
-        secs = _sections_from_docling_elements([_h('규정'), _t('제 7 조 ( 징계종류'), _t(')'), _t('본문')])
+        secs = sections_from_docling_elements([_h('규정'), _t('제 7 조 ( 징계종류'), _t(')'), _t('본문')])
         assert [(s.heading_path, s.body) for s in secs] == [(['규정', '제 7 조 ( 징계종류 )'], '본문')]
 
     def test_괄호_하나만_있는_요소라도_조_제목_뒤가_아니면_건드리지_않는다(self):
-        secs = _sections_from_docling_elements([_h('규정'), _h('■ 안내'), _t(')'), _t('본문')])
+        secs = sections_from_docling_elements([_h('규정'), _h('■ 안내'), _t(')'), _t('본문')])
         assert secs[0].heading_path == ['규정', '■ 안내'] and secs[0].body.startswith(')')
 
     def test_장_패턴_변형(self):
@@ -117,23 +118,23 @@ class TestHeadingLevels:
 class TestElementMapping:
     def test_표는_markdown_그대로_본문에_들어간다(self):
         md = '| 구 분 | 무상수리 |\n| --- | --- |\n| 침수 | 없음 |'
-        secs = _sections_from_docling_elements([_h('제목'), _h('■ 기준'), ('table', '', 1, md)])
+        secs = sections_from_docling_elements([_h('제목'), _h('■ 기준'), ('table', '', 1, md)])
         assert secs[0].body == md
         assert secs[0].line_pages == [1, 1, 1]          # 표 3줄 ↔ 쪽 3개 — 1:1 대응 (결함 6)
 
     def test_그림은_캡션이_없으면_자리표시로_남긴다(self):
-        secs = _sections_from_docling_elements([_h('제목'), _h('(1) 프로세스'), ('picture', '', 1, None), _t('설명')])
-        assert secs[0].body.split('\n') == [_PICTURE_PLACEHOLDER, '설명']
+        secs = sections_from_docling_elements([_h('제목'), _h('(1) 프로세스'), ('picture', '', 1, None), _t('설명')])
+        assert secs[0].body.split('\n') == [PICTURE_PLACEHOLDER, '설명']
 
     def test_헤더_푸터는_요소로_오지_않는다는_전제(self):
         # docling은 page_header/page_footer를 iterate_items()에 넣지 않는다(실측). 만약 들어오면
         # 본문으로 취급되므로 여기서 그 라벨이 본문에 섞이지 않게 막을지는 #143 후속 판단 — 현재 전제만 고정.
-        secs = _sections_from_docling_elements([_h('제목'), _t('본문')])
+        secs = sections_from_docling_elements([_h('제목'), _t('본문')])
         assert secs[0].body == '본문'
 
     def test_NBSP_정규화(self):
-        assert _docling_norm('■ 신청\xa0절차') == '■ 신청 절차'
-        assert _docling_norm('\xa0\xa0개인부담\xa0') == '개인부담'
+        assert docling_norm('■ 신청\xa0절차') == '■ 신청 절차'
+        assert docling_norm('\xa0\xa0개인부담\xa0') == '개인부담'
 
     def test_목록_항목은_번호와_글머리를_text에_되붙인다(self):
         # docling ListItem은 '2.1'·'-' 같은 marker를 text에서 뗀다. 안 붙이면 소항목 번호가 색인에서 사라진다.
@@ -147,11 +148,11 @@ class TestElementMapping:
             (el('list_item', '마커 없는 이어지는 줄', ''), 2),
             (el('text', '본문', None), 0),
         ])
-        assert [t for _, t, _, _ in _docling_elements(doc)] == [
+        assert [t for _, t, _, _ in docling_elements(doc)] == [
             '2. 주요 개정 내용', '2.1 얼리버드 할인율 상향', '- 정가의 15%로 상향한다.', '마커 없는 이어지는 줄', '본문']
 
     def test_빈_헤딩과_빈_텍스트는_건너뛴다(self):
-        secs = _sections_from_docling_elements([_h('제목'), _h('\xa0'), _t(''), _t('본문')])
+        secs = sections_from_docling_elements([_h('제목'), _h('\xa0'), _t(''), _t('본문')])
         assert [s.heading_path for s in secs] == [['제목']] and secs[0].body == '본문'
 
 
@@ -160,25 +161,25 @@ class TestPictureCaption:
 
     def test_캡션이_있으면_자리표시_대신_캡션이_본문에_들어간다(self):
         cap = '4단계 흐름도: 신청 접수 → 자격 심사 → 매칭 승인 → 집행·보고'
-        secs = _sections_from_docling_elements([_h('제목'), _h('(1) 절차'), ('picture', cap, 1, None), _t('설명')])
+        secs = sections_from_docling_elements([_h('제목'), _h('(1) 절차'), ('picture', cap, 1, None), _t('설명')])
         assert secs[0].body.split('\n') == [cap, '설명']
 
     def test_캡션이_비면_자리표시로_되돌아간다(self):
         # VLM이 죽거나 꺼져 있으면 docling이 캡션을 안 만든다(예외 없음) — 그때의 경로다.
-        secs = _sections_from_docling_elements([_h('제목'), ('picture', '', 1, None)])
-        assert secs[0].body == _PICTURE_PLACEHOLDER
+        secs = sections_from_docling_elements([_h('제목'), ('picture', '', 1, None)])
+        assert secs[0].body == PICTURE_PLACEHOLDER
 
     def test_캡션이_공백뿐이면_자리표시로_되돌아간다(self):
-        secs = _sections_from_docling_elements([_h('제목'), ('picture', '\xa0  ', 1, None)])
-        assert secs[0].body == _PICTURE_PLACEHOLDER
+        secs = sections_from_docling_elements([_h('제목'), ('picture', '\xa0  ', 1, None)])
+        assert secs[0].body == PICTURE_PLACEHOLDER
 
     def test_그림마다_캡션_유무가_달라도_각각_처리된다(self):
-        secs = _sections_from_docling_elements([
+        secs = sections_from_docling_elements([
             _h('제목'), _h('절'),
             ('picture', '그림1 설명', 1, None), _t('본문1'),
             ('picture', '', 1, None), _t('본문2'),
         ])
-        assert secs[0].body.split('\n') == ['그림1 설명', '본문1', _PICTURE_PLACEHOLDER, '본문2']
+        assert secs[0].body.split('\n') == ['그림1 설명', '본문1', PICTURE_PLACEHOLDER, '본문2']
 
     def test_캡션은_annotations에서_꺼낸다(self):
         # 캡션은 element.text가 아니라 annotations에 붙는다. text만 보면 조용히 버려진다 —
@@ -193,15 +194,15 @@ class TestPictureCaption:
             (pic(None), 2),
             (pic([NS(text=''), NS(text='두 번째가 살아있다')]), 3),
         ])
-        assert [t for _, t, _, _ in _docling_elements(doc)] == [
+        assert [t for _, t, _, _ in docling_elements(doc)] == [
             '막대그래프: 면 100% 40℃, 린넨 30℃', '', '', '두 번째가 살아있다']
 
     def test_자리표시_집계는_캡션_실패_수를_센다(self):
         # 지표(kms_index_picture_placeholder_total)의 입력. 캡션 성공분은 일반 본문과 구분되지
         # 않아 셀 수 없다 — 이 함수는 성공률이 아니라 실패 신호다.
         from types import SimpleNamespace as NS
-        chunks = [NS(text=f'앞 {_PICTURE_PLACEHOLDER} 뒤'), NS(text='캡션이 붙은 그림 설명'),
-                  NS(text=f'{_PICTURE_PLACEHOLDER}\n{_PICTURE_PLACEHOLDER}')]
+        chunks = [NS(text=f'앞 {PICTURE_PLACEHOLDER} 뒤'), NS(text='캡션이 붙은 그림 설명'),
+                  NS(text=f'{PICTURE_PLACEHOLDER}\n{PICTURE_PLACEHOLDER}')]
         assert count_picture_placeholders(chunks) == 3
         assert count_picture_placeholders([]) == 0
 
@@ -499,47 +500,47 @@ class TestFootnoteMarkers:
     def test_같은_줄_본문보다_작은_N괄호_토큰만_각주(self):
         words = [('승인자', 12.0, 144.0), (':', 12.0, 144.0), ('PM', 12.0, 144.0),
                  ('2)', 8.0, 142.0), ('>팀장>사업부장', 12.0, 144.0)]   # 위첨자는 top이 2pt 위
-        assert _markers_from_words(words) == {'2)'}
+        assert markers_from_words(words) == {'2)'}
 
     def test_열거는_본문과_같은_크기라_각주가_아니다(self):
         words = [('다.', 11.0, 300.0), ('1)', 11.0, 300.0), ('직원이', 11.0, 300.0),
                  ('2)', 11.0, 300.0), ('회사의', 11.0, 300.0)]
-        assert _markers_from_words(words) == set()
+        assert markers_from_words(words) == set()
 
     def test_정의_줄은_줄_전체가_작아_걸리지_않는다(self):
         words = [('2)', 8.9, 500.0), ('PM', 8.9, 500.0), ('없는', 8.9, 500.0), ('경우', 8.9, 500.0)]
-        assert _markers_from_words(words) == set()
+        assert markers_from_words(words) == set()
 
     def test_줄_묶기는_top_허용치_밖이면_다른_줄(self):
         # 작은 글자 '3)'이 혼자 다른 줄(10pt 아래)에 있으면 비교 대상이 없어 각주가 아니다
         words = [('계획대상선택', 14.0, 70.0), ('3)', 9.4, 85.0)]
-        assert _markers_from_words(words) == set()
+        assert markers_from_words(words) == set()
 
     def test_본문에서_단어_뒤_표시만_뗀다(self):
-        assert _strip_footnote_markers('( 승인자 : PM 2) > 팀장 > 사업부장 )', {'2)'}) == '( 승인자 : PM > 팀장 > 사업부장 )'
-        assert _strip_footnote_markers('확정 실적은 PM 2) , 팀장 승인 전까지', {'2)'}) == '확정 실적은 PM , 팀장 승인 전까지'
-        assert _strip_footnote_markers('계획대상선택 3) → [ 이전계획불러오기 ]', {'3)'}) == '계획대상선택 → [ 이전계획불러오기 ]'
+        assert strip_footnote_markers('( 승인자 : PM 2) > 팀장 > 사업부장 )', {'2)'}) == '( 승인자 : PM > 팀장 > 사업부장 )'
+        assert strip_footnote_markers('확정 실적은 PM 2) , 팀장 승인 전까지', {'2)'}) == '확정 실적은 PM , 팀장 승인 전까지'
+        assert strip_footnote_markers('계획대상선택 3) → [ 이전계획불러오기 ]', {'3)'}) == '계획대상선택 → [ 이전계획불러오기 ]'
 
     def test_정의_줄과_다른_번호_열거는_그대로(self):
-        assert _strip_footnote_markers('2) PM 없는 경우 생략', {'2)'}) == '2) PM 없는 경우 생략'
+        assert strip_footnote_markers('2) PM 없는 경우 생략', {'2)'}) == '2) PM 없는 경우 생략'
         enum = '다. 1) 직원이 임원을 수행하여 출장하는 경우 2) 회사의 손님을 수행'
-        assert _strip_footnote_markers(enum, set()) == enum                 # 그 쪽에 각주 표시가 없으면 무변경
-        assert _strip_footnote_markers(enum, {'3)'}) == enum                # 다른 번호면 무변경
+        assert strip_footnote_markers(enum, set()) == enum                 # 그 쪽에 각주 표시가 없으면 무변경
+        assert strip_footnote_markers(enum, {'3)'}) == enum                # 다른 번호면 무변경
 
     def test_더_큰_숫자의_일부는_각주가_아니다(self):
         # 리뷰(#204): lookbehind의 \\w가 숫자를 포함해 "서식 12)"의 "2)"를 지우면 숫자가 변조된다
-        assert _strip_footnote_markers('서식 12) 참조', {'2)'}) == '서식 12) 참조'
-        assert _strip_footnote_markers('총 1000 2) 명', {'2)'}) == '총 1000 명'     # 공백 뒤는 각주
+        assert strip_footnote_markers('서식 12) 참조', {'2)'}) == '서식 12) 참조'
+        assert strip_footnote_markers('총 1000 2) 명', {'2)'}) == '총 1000 명'     # 공백 뒤는 각주
 
     def test_두_자리_각주와_뒤에_붙은_화살표(self):
         words = [('상세', 12.0, 50.0), ('10)', 8.0, 48.0), ('→', 12.0, 50.0)]
-        assert _markers_from_words(words) == {'10)'}
-        assert _strip_footnote_markers('상세 10)→ 다음', {'10)'}) == '상세→ 다음'
+        assert markers_from_words(words) == {'10)'}
+        assert strip_footnote_markers('상세 10)→ 다음', {'10)'}) == '상세→ 다음'
 
     def test_줄바꿈_너머의_정의_줄_머리는_지우지_않는다(self):
         # 요소가 합쳐진 뒤 적용돼도 "상신\n2) PM 없는 경우 생략"의 줄 머리 '2)'는 남아야 한다
         text = '6. 상신\n2) PM 없는 경우 생략'
-        assert _strip_footnote_markers(text, {'2)'}) == text
+        assert strip_footnote_markers(text, {'2)'}) == text
 
     def test_요소_흐름에_쪽별로_적용된다(self, monkeypatch):
         class _El:
@@ -549,13 +550,13 @@ class TestFootnoteMarkers:
         class _Doc:
             def iterate_items(self):
                 return [(_El('text', '승인자 : PM 2) > 팀장', 4), None), (_El('text', '열거 2) 유지', 5), None)]
-        els = list(_docling_elements(_Doc(), {4: {'2)'}}))
+        els = list(docling_elements(_Doc(), {4: {'2)'}}))
         assert els[0][1] == '승인자 : PM > 팀장'
         assert els[1][1] == '열거 2) 유지'      # 5쪽엔 각주 표시가 없다
 
 
 class TestFootnoteSidecarPdf:
-    """_footnote_markers I/O 래퍼 — reportlab으로 그린 실제 PDF에서 위첨자만 잡히는지(#204). docling 불필요."""
+    """pdf_footnote_markers I/O 래퍼 — reportlab으로 그린 실제 PDF에서 위첨자만 잡히는지(#204). docling 불필요."""
 
     def _pdf(self, tmp_path):
         from reportlab.pdfgen import canvas
@@ -570,14 +571,14 @@ class TestFootnoteSidecarPdf:
         return p
 
     def test_실제_PDF에서_위첨자만_각주로_잡힌다(self, tmp_path):
-        from rag.chunking import _footnote_markers
-        assert _footnote_markers(self._pdf(tmp_path)) == {1: {'2)'}}
+        from rag.chunking.docling_elements import pdf_footnote_markers
+        assert pdf_footnote_markers(self._pdf(tmp_path)) == {1: {'2)'}}
 
     def test_못_여는_파일은_빈_dict와_경고(self, tmp_path, caplog):
-        from rag.chunking import _footnote_markers
+        from rag.chunking.docling_elements import pdf_footnote_markers
         import logging
         with caplog.at_level(logging.WARNING, logger='rag.chunking'):
-            assert _footnote_markers(tmp_path / 'missing.pdf') == {}
+            assert pdf_footnote_markers(tmp_path / 'missing.pdf') == {}
         assert any('각주 사이드카 실패' in r.message for r in caplog.records)
 
 
@@ -714,33 +715,35 @@ class TestTableBlocks:
 
     def test_쪽을_넘긴_표는_헤더가_같으면_하나로_이어진다(self):
         # #252 결정 5(E): docling은 쪽마다 표를 따로 낸다(45행 → 36 + 10). 바로 이어지고 첫 행이 같으면 뒤 표 헤더를 떼고 잇는다
-        from rag.chunking import TableBlock, _sections_from_docling_elements
+        from rag.chunking import TableBlock
+        from rag.chunking.docling_elements import sections_from_docling_elements
         rows = self._long(5)
-        secs = _sections_from_docling_elements([_h('제목'), ('table', '', 1, rows[:4]), ('table', '', 2, [rows[0]] + rows[4:])])
+        secs = sections_from_docling_elements([_h('제목'), ('table', '', 1, rows[:4]), ('table', '', 2, [rows[0]] + rows[4:])])
         assert [b.rows for b in secs[0].blocks] == [rows]
         assert secs[0].body == TableBlock(rows).render()
         assert secs[0].line_pages[:1] == [1] and len(secs[0].line_pages) == len(rows) + 1
 
     def test_헤더가_다르거나_사이에_글이_있으면_잇지_않는다(self):
-        from rag.chunking import TableBlock, _sections_from_docling_elements
+        from rag.chunking import TableBlock
+        from rag.chunking.docling_elements import sections_from_docling_elements
         a, b = [['x', 'y'], ['1', '2']], [['x', 'z'], ['3', '4']]
-        secs = _sections_from_docling_elements([_h('제목'), ('table', '', 1, a), ('table', '', 1, b)])
+        secs = sections_from_docling_elements([_h('제목'), ('table', '', 1, a), ('table', '', 1, b)])
         assert [x.rows for x in secs[0].blocks] == [a, b]
-        secs = _sections_from_docling_elements([_h('제목'), ('table', '', 1, a), _t('설명'), ('table', '', 2, a)])
+        secs = sections_from_docling_elements([_h('제목'), ('table', '', 1, a), _t('설명'), ('table', '', 2, a)])
         assert [x.rows if isinstance(x, TableBlock) else x for x in secs[0].blocks] == [a, '설명', a]
 
     def test_옛_계약_markdown_문자열_표는_글_블록으로_남는다(self):
-        from rag.chunking import _sections_from_docling_elements
+        from rag.chunking.docling_elements import sections_from_docling_elements
         md = '| 구 분 | 무상수리 |\n| --- | --- |\n| 침수 | 없음 |'
-        secs = _sections_from_docling_elements([_h('제목'), ('table', '', 1, md)])
+        secs = sections_from_docling_elements([_h('제목'), ('table', '', 1, md)])
         assert secs[0].blocks == [md] and secs[0].body == md
 
     def test_칸_글자는_줄바꿈을_공백으로_접고_엑셀_자정_꼬리를_뗀다(self):
-        from rag.chunking import _cell_text_norm
-        assert _cell_text_norm('1. 요청서 수신\n2. 담당자 배정') == '1. 요청서 수신 2. 담당자 배정'     # C
-        assert _cell_text_norm('2024-10-02 00:00:00') == '2024-10-02'                               # F
-        assert _cell_text_norm('2024-10-02 09:30:00') == '2024-10-02 09:30:00'                      # 실제 시각은 유지
-        assert _cell_text_norm('구분\xa0(원)') == '구분 (원)'
+        from rag.chunking.docling_elements import cell_text_norm
+        assert cell_text_norm('1. 요청서 수신\n2. 담당자 배정') == '1. 요청서 수신 2. 담당자 배정'     # C
+        assert cell_text_norm('2024-10-02 00:00:00') == '2024-10-02'                               # F
+        assert cell_text_norm('2024-10-02 09:30:00') == '2024-10-02 09:30:00'                      # 실제 시각은 유지
+        assert cell_text_norm('구분\xa0(원)') == '구분 (원)'
 
     def test_묶기는_블록을_잇고_body는_블록에서_파생된다(self):
         from rag.chunking import Section, TableBlock
@@ -755,11 +758,11 @@ class TestTableBlocks:
     def test_이어진_표의_행_묶음은_자기_쪽_번호를_가진다(self):
         # 리뷰 지적: 잇기(E)로 한 표가 되면 뒷 쪽 행 묶음이 앞 쪽 번호를 물려받는다(#137 결함 6) — row_pages로 막는다
         from llama_index.core.node_parser import SentenceSplitter
-        from rag.chunking import _sections_from_docling_elements
+        from rag.chunking.docling_elements import sections_from_docling_elements
         from rag.chunking.sections import page_at
         from rag.chunking.split import split_section
         rows = self._long(60)
-        secs = _sections_from_docling_elements([_h('제목'), ('table', '', 1, rows[:31]), ('table', '', 2, [rows[0]] + rows[31:])])
+        secs = sections_from_docling_elements([_h('제목'), ('table', '', 1, rows[:31]), ('table', '', 2, [rows[0]] + rows[31:])])
         chunks = split_section(secs[0], SentenceSplitter(chunk_size=512, chunk_overlap=50))
         pages = [page_at(secs[0], off) for _, off, _ in chunks]
         assert pages[0] == 1 and pages[-1] == 2 and pages == sorted(pages)      # 앞 묶음은 1쪽, 뒷 묶음은 2쪽
@@ -776,9 +779,10 @@ class TestTableBlocks:
         assert chunks == [(body, len(to_markdown_table(['a', 'b'], [])) + 1, None)]   # 표 + 뒤 글이 한 청크, 오프셋은 첫 데이터 행
 
     def test_그림이_사이에_있으면_잇지_않는다(self):
-        from rag.chunking import TableBlock, _sections_from_docling_elements
+        from rag.chunking import TableBlock
+        from rag.chunking.docling_elements import sections_from_docling_elements
         a = [['x', 'y'], ['1', '2']]
-        secs = _sections_from_docling_elements([_h('제목'), ('table', '', 1, a), ('picture', '캡션', 1, None), ('table', '', 2, a)])
+        secs = sections_from_docling_elements([_h('제목'), ('table', '', 1, a), ('picture', '캡션', 1, None), ('table', '', 2, a)])
         assert secs[0].blocks == [TableBlock(a, [1, 1]), '캡션', TableBlock(a, [2, 2])]
 
     def test_작은_표는_앞_문장과_한_청크에_남는다(self):

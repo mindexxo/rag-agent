@@ -49,7 +49,7 @@ def run(out: Path) -> list[dict]:
         spec = BY_ID[sid]
         pdf = build_img_pdf(spec, out, out / 'png')
         doc = ch.docling_convert(pdf, max_num_pages=100)
-        captions = [ch._docling_picture_caption(it) for it, _ in doc.iterate_items() if isinstance(it, PictureItem)]
+        captions = [ch.docling_elements.docling_picture_caption(it) for it, _ in doc.iterate_items() if isinstance(it, PictureItem)]
         n_tables = sum(1 for it, _ in doc.iterate_items() if isinstance(it, TableItem))
         caption = '\n'.join(c for c in captions if c)
         r = {'id': sid, 'classified': '그림' if captions else ('표' if n_tables else '없음'), 'pictures': len(captions),

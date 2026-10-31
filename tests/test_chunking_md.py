@@ -63,7 +63,7 @@ def test_인라인_서식으로_쪼개진_문장은_원문_띄어쓰기대로_�
 
 
 def test_코드_블록은_들여쓰기를_지킨다(tmp_path):
-    # _docling_norm은 공백을 접는다 — 코드에 태우면 YAML 구조가 깨졌다(#267 리뷰 A: 'root:\n child:\n leaf: 1')
+    # docling_norm은 공백을 접는다 — 코드에 태우면 YAML 구조가 깨졌다(#267 리뷰 A: 'root:\n child:\n leaf: 1')
     assert _body(tmp_path, '# 제목\n\n```yaml\nroot:\n  child:\n    leaf: 1\n```\n') == 'root:\n  child:\n    leaf: 1'
 
 

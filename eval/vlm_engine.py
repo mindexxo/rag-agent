@@ -102,7 +102,7 @@ def _patch_requests():
         M._vlm296_patched = True
 
 
-# 헤딩 조립 보정(#296) — VLM이 '#'로 쓴 줄은 docling에서 title 라벨이 되는데 PDF 청킹(_sections_from_docling_elements)은 section_header만
+# 헤딩 조립 보정(#296) — VLM이 '#'로 쓴 줄은 docling에서 title 라벨이 되는데 PDF 청킹(docling_elements.sections_from_docling_elements)은 section_header만
 # 헤딩으로 본다 → 문서 제목이 본문 줄로 떨어졌다(채점 '제목 ✗'의 원인, 실측 10/25). title → section_header로 바꾸면 청킹이 첫 헤딩을
 # 문서 제목, 나머지를 절로 층을 다시 만든다.
 # 기각한 보정: '번호 헤딩 꼴 글 줄을 헤딩으로 올리기' — gpt-5-mini 33줄 중 확인 항목 목록 4줄 이상을 헤딩으로 올렸고(오탐), 근본 원인

@@ -51,7 +51,7 @@ def build_goodpeople() -> Path:
     story = [
         Paragraph('자원봉사 활동 규정 (GP-VOL-015)', _H1),
         P('제정 2024. 3. 1. / 개정 2026. 9. 1. / 주관: 나눔사업본부 봉사협력팀'),
-        # '제 N 장'이 있어야 조가 3단 헤딩이 되어 같은 장 안에서 묶인다(_sections_from_docling_elements) — 묶여야 조 헤딩이
+        # '제 N 장'이 있어야 조가 3단 헤딩이 되어 같은 장 안에서 묶인다(docling_elements.sections_from_docling_elements) — 묶여야 조 헤딩이
         # 본문 줄로 내려가 결정 8(헤딩 바로 아래 표)이 생긴다. 장이 없는 PDF는 조마다 섹션이라 이 경우가 원리적으로 없다.
         Paragraph('제 1 장 총칙', _H2),
         Paragraph('제 1 조(목적)', _H2),

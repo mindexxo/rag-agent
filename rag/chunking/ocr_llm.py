@@ -168,7 +168,7 @@ def require_pages(doc, first: int, last: int) -> None:
 
 def _titles_to_section_headers(doc) -> None:
     """title 라벨을 section_header로 바꾼다 — LLM이 '#'로 쓴 줄은 title이 되는데 PDF 섹션 조립
-    (_sections_from_docling_elements)은 section_header만 헤딩으로 봐서, 그대로면 문서 제목이 본문 줄로 떨어진다."""
+    (docling_elements.sections_from_docling_elements)은 section_header만 헤딩으로 봐서, 그대로면 문서 제목이 본문 줄로 떨어진다."""
     from docling_core.types.doc import DocItemLabel  # 지연 import — docling은 톱레벨에 안 들인다
 
     for item, _ in doc.iterate_items():

@@ -14,7 +14,6 @@ from tests.conftest import sse_meta
 from tests.helpers_documents import MD, upload
 
 # 테넌트 헤더 없이 동작하는 것이 현재 동작인 경로 — 검증 기준은 스펙 결정 대기다.
-NO_TENANT_HEADER_ROUTES = {('POST', '/kms/attachments/extract')}
 
 
 def _client_for(tenant: str | None) -> AsyncClient:
@@ -44,12 +43,9 @@ async def test_KMS_전_라우트는_테넌트_헤더가_없으면_422(_loop_hygi
     routes = _kms_routes()
     listed = {(method, path) for method, path, _ in routes}
     assert ('POST', '/kms/query') in listed  # 열거가 비어 통과하는 일을 막는다
-    assert NO_TENANT_HEADER_ROUTES <= listed  # 제외 목록이 사라진 라우트를 가리키면 알아챈다
 
     async with _client_for(None) as bare:
         for method, path, url in routes:
-            if (method, path) in NO_TENANT_HEADER_ROUTES:
-                continue
             res = await bare.request(method, url)
             assert res.status_code == 422, f'{method} {path}: {res.status_code}'
             locs = [tuple(e['loc']) for e in res.json()['detail']]

@@ -62,14 +62,14 @@ async def _prepare_turn(service: RagService, request: KmsQueryRequest, turn: ote
         raise http_error from exc
 
 
-def get_tenant_id(x_tenant_id: str = Header(...)) -> str:
-    """X-TENANT-ID 헤더 필수 없을 시 422 응답"""
+def get_tenant_id(x_tenant_id: str = Header(..., min_length=1, pattern=r'\S')) -> str:
+    """X-Tenant-Id 필수 — 없거나 공백뿐이면 422. 빈 테넌트로 행이 쌓이면 격리가 깨진다."""
     return x_tenant_id
 
 
-def get_user_id(x_user_id: str | None = Header(None)) -> str | None:
-    """X-User-Id (선택). 있으면 사용자별 동시 제한도 적용, 없으면 테넌트 제한만.
-    (기본값·상한은 config/tenant_quotas. GPU/모델 확정 시 env로 튜닝.)"""
+def get_user_id(x_user_id: str | None = Header(None, pattern=r'\S')) -> str | None:
+    """X-User-Id (선택). 있으면 사용자별 동시 제한·대화 소유 판정에 쓰고, 없으면 테넌트 제한만.
+    보냈는데 공백뿐이면 422 — 폴백 사용자로 조용히 합쳐지지 않게."""
     return x_user_id
 
 

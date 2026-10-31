@@ -1,9 +1,9 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from schemas.common import KstDatetime
-from schemas.kms import SourceCitation
+from schemas.kms import SourceCitation, strip_text
 
 # 👎 사유 태그 (#8) — 수리 경로별 고정 슬러그. 검증은 이 Literal 하나 (4종에 테이블은 과설계)
 FeedbackTag = Literal['wrong_info', 'wrong_source', 'outdated_doc', 'insufficient']
@@ -26,9 +26,13 @@ class ConversationListResponse(BaseModel):
     total: int = 0               # 필터 적용 후 전체 대화 수 (#28) — q 없으면 내 대화 총 개수
 
 
+CONVERSATION_SEARCH_MAX = 200   # 대화 검색어(q) 상한 — ILIKE 패턴 길이 상한
+
+
 class ConversationTitleUpdate(BaseModel):
     """PATCH 바디 — 제목 변경만 허용."""
-    title: str = Field(min_length=1, max_length=80)   # 80자 = 자동 제목(첫 질문 앞 80자)과 동일 상한
+    title: str = Field(min_length=1, max_length=80)   # 80자 = 자동 제목(첫 질문 앞 80자)과 동일 상한. 공백 제거 후
+    _strip = field_validator('title', mode='before')(strip_text)
 
 
 class ConversationMessage(BaseModel):

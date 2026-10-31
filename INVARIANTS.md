@@ -20,7 +20,7 @@
 | INV-04 | 생성 실패 시 예외 원문을 클라이언트에 보내지 않는다 | `rag/streaming.py` | `tests/test_invariants_turn.py::test_INV04_생성_실패의_예외_원문은_SSE에도_재접속_스트림에도_실리지_않는다` |  |
 | INV-05 | 커밋된 설정·config 기본값에 평문 비밀값을 두지 않는다 | `AGENTS.md` | `tests/test_guardrails.py::test_커밋된_설정에_평문_비밀값이_없다` · `tests/test_guardrails.py::test_config의_비밀_필드_기본값은_비어_있다` |  |
 | INV-06 | 첨부가 있는 대화의 답변은 공용 캐시에 넣지 않는다 | `rag/service.py` | `tests/test_integration_cache.py::test_첨부_대화_답변은_공용_캐시_유출_금지` |  |
-| INV-07 | 채팅 첨부 추출은 저장하지 않는다(DB 행·blob 없음) | `routers/documents.py` | `tests/test_invariants_docs.py::test_INV07_첨부_추출은_DB_행도_blob도_남기지_않는다` |  |
+| INV-07 | 채팅 첨부 추출은 저장하지 않는다(DB 행·blob 없음) | `routers/attachments.py` | `tests/test_invariants_docs.py::test_INV07_첨부_추출은_DB_행도_blob도_남기지_않는다` |  |
 | INV-08 | 테스트는 개발계 공유 인프라(DB·Redis·OpenSearch)에 붙지 않는다 — 로컬 컨테이너 주소로 고정 | `conftest.py` | `tests/test_test_infra.py::test_설정이_보는_인프라_주소는_TEST_INFRA_그대로다` · `tests/test_test_infra.py::test_TEST_INFRA는_로컬이고_compose가_127_0_0_1에_연_포트와_같다` | 세션 픽스처 `_test_infra`가 실행 시점에도 로컬이 아니면 멈춘다. eval은 범위 밖(개발계 색인을 읽는다) |
 
 ## 색인·outbox·문서 버전

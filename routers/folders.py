@@ -64,9 +64,7 @@ async def create_folder(
         tenant_id: str = Depends(get_tenant_id),
         session: AsyncSession = Depends(get_session),
 ):
-    name = request.name.strip()
-    if not name:
-        raise HTTPException(status_code=422, detail='폴더 이름이 비어 있습니다.')
+    name = request.name   # 공백 제거·빈 값 거절은 스키마가 했다
     folder = Folder(tenant_id=tenant_id, name=name,
                     description=(request.description or '').strip() or None)
     session.add(folder)
@@ -87,10 +85,7 @@ async def update_folder(
 ):
     folder = await _get_folder(session, tenant_id, folder_id)
     if request.name is not None:
-        name = request.name.strip()
-        if not name:
-            raise HTTPException(status_code=422, detail='폴더 이름이 비어 있습니다.')
-        folder.name = name
+        folder.name = request.name
     if request.description is not None:
         # 설명은 리랭커 입력에 들어가 검색 순위를 바꾼다 → 옛 순위로 만든 답변 캐시를 버린다.
         # (설명이 실제로 달라졌을 때만 — 같은 값 재전송으로 캐시가 날아가지 않게)

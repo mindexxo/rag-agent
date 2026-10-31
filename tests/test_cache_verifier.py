@@ -6,6 +6,7 @@ hit 조건(순서대로): 유사도 ≥ floor(후보 게이트) → doc집합 �
 판정기(_verify_reuse)는 몽키패치로 고정한다 — LLM 판정 품질은 오프라인 검증
 (prompt_texts 주석의 40쌍 실측)이 담당하고, 여기서는 배선만 고정한다.
 """
+
 import math
 
 import pytest
@@ -37,8 +38,9 @@ class _StubLlm:
 
 async def _seed(session, tenant_id: str) -> None:
     src = [SourceCitation(document_id=5, filename='정책.pdf', version=1)]
-    await cache.save_answer(session, tenant_id, '단순변심 반품 며칠까지 돼요?',
-                            '14일입니다', src, [5], query_embedding=_unit(0))
+    await cache.save_answer(
+        session, tenant_id, '단순변심 반품 며칠까지 돼요?', '14일입니다', src, [5], query_embedding=_unit(0)
+    )
     await session.commit()
 
 
@@ -49,6 +51,7 @@ def _patch_verdict(monkeypatch, verdict: bool, calls: list) -> None:
         calls.append((cached_query, new_query))
         orig_calls.append((cached_original, new_original))
         return verdict
+
     orig_calls: list = []
     fake_verify.orig_calls = orig_calls
     monkeypatch.setattr(cache, '_verify_reuse', fake_verify)
@@ -61,8 +64,9 @@ async def test_판정_승인이면_히트(tenant_id, fake_embed, monkeypatch):
     _patch_verdict(monkeypatch, True, calls)
     async with AsyncSessionLocal() as session:
         await _seed(session, tenant_id)
-        hit = await cache.get_semantic(session, tenant_id, '단순변심 반품 기간 알려주세요',
-                                       [5], query_embedding=_mix(0.90), llm=_StubLlm())
+        hit = await cache.get_semantic(
+            session, tenant_id, '단순변심 반품 기간 알려주세요', [5], query_embedding=_mix(0.90), llm=_StubLlm()
+        )
     assert hit is not None and hit.answer == '14일입니다'
     assert len(calls) == 1
 
@@ -73,8 +77,9 @@ async def test_판정_거절이면_미스(tenant_id, fake_embed, monkeypatch):
     _patch_verdict(monkeypatch, False, calls)
     async with AsyncSessionLocal() as session:
         await _seed(session, tenant_id)
-        hit = await cache.get_semantic(session, tenant_id, '하자 반품 기간 알려주세요',
-                                       [5], query_embedding=_mix(0.90), llm=_StubLlm())
+        hit = await cache.get_semantic(
+            session, tenant_id, '하자 반품 기간 알려주세요', [5], query_embedding=_mix(0.90), llm=_StubLlm()
+        )
     assert hit is None
     assert len(calls) == 1
 
@@ -90,8 +95,9 @@ async def test_고유사도도_판정을_거친다(tenant_id, fake_embed, monkey
     _patch_verdict(monkeypatch, True, calls)
     async with AsyncSessionLocal() as session:
         await _seed(session, tenant_id)
-        hit = await cache.get_semantic(session, tenant_id, '단순변심 반품 며칠까지 돼요?',
-                                       [5], query_embedding=_unit(0), llm=_StubLlm())
+        hit = await cache.get_semantic(
+            session, tenant_id, '단순변심 반품 며칠까지 돼요?', [5], query_embedding=_unit(0), llm=_StubLlm()
+        )
     assert hit is not None
     assert len(calls) == 1, '유사도 1.0인데 판정을 건너뛰었다 — 자동 서빙 임계가 되살아남'
 
@@ -102,8 +108,9 @@ async def test_llm이_없으면_항상_미스(tenant_id, fake_embed, monkeypatch
     _patch_verdict(monkeypatch, True, calls)
     async with AsyncSessionLocal() as session:
         await _seed(session, tenant_id)
-        hit = await cache.get_semantic(session, tenant_id, '단순변심 반품 며칠까지 돼요?',
-                                       [5], query_embedding=_unit(0))
+        hit = await cache.get_semantic(
+            session, tenant_id, '단순변심 반품 며칠까지 돼요?', [5], query_embedding=_unit(0)
+        )
     assert hit is None, 'llm=None인데 서빙됐다 — 판정 없는 히트 경로가 생김'
     assert calls == []
 
@@ -114,8 +121,9 @@ async def test_floor_미만은_판정_없이_미스(tenant_id, fake_embed, monke
     _patch_verdict(monkeypatch, True, calls)
     async with AsyncSessionLocal() as session:
         await _seed(session, tenant_id)
-        hit = await cache.get_semantic(session, tenant_id, '전혀 다른 질문',
-                                       [5], query_embedding=_mix(0.60), llm=_StubLlm())
+        hit = await cache.get_semantic(
+            session, tenant_id, '전혀 다른 질문', [5], query_embedding=_mix(0.60), llm=_StubLlm()
+        )
     assert hit is None
     assert calls == [], 'floor 미만인데 판정 콜이 나갔다 — 비용 누수'
 
@@ -126,8 +134,9 @@ async def test_doc집합이_다르면_판정_없이_미스(tenant_id, fake_embed
     _patch_verdict(monkeypatch, True, calls)
     async with AsyncSessionLocal() as session:
         await _seed(session, tenant_id)
-        hit = await cache.get_semantic(session, tenant_id, '단순변심 반품 며칠까지 돼요?',
-                                       [5, 7], query_embedding=_unit(0), llm=_StubLlm())
+        hit = await cache.get_semantic(
+            session, tenant_id, '단순변심 반품 며칠까지 돼요?', [5, 7], query_embedding=_unit(0), llm=_StubLlm()
+        )
     assert hit is None
     assert calls == [], 'doc집합 불일치인데 판정 콜이 나갔다 — 순서 위반(비용 누수)'
 
@@ -136,21 +145,37 @@ async def test_doc집합이_다르면_판정_없이_미스(tenant_id, fake_embed
 # 판정 품질이 아니라 **원문이 저장되고 판정기까지 도달하는가**만 고정한다.
 # 판정 품질은 eval/cache_judge_probe.py(40쌍 + 방어 케이스)가 담당한다.
 
+
 @pytest.mark.asyncio
 async def test_원문이_저장되고_판정기까지_간다(tenant_id, fake_embed, monkeypatch):
     calls = []
     origs = _patch_verdict(monkeypatch, True, calls)
     src = [SourceCitation(document_id=5, filename='정책.pdf', version=1)]
     async with AsyncSessionLocal() as session:
-        await cache.save_answer(session, tenant_id, '인사 규정은 어떻게 되나요?', '...', src, [5],
-                                query_embedding=_unit(0), original_query='인사 규정')
+        await cache.save_answer(
+            session,
+            tenant_id,
+            '인사 규정은 어떻게 되나요?',
+            '...',
+            src,
+            [5],
+            query_embedding=_unit(0),
+            original_query='인사 규정',
+        )
         await session.commit()
-        hit = await cache.get_semantic(session, tenant_id, '인사 규정의 주요 내용은?',
-                                       [5], query_embedding=_mix(0.90), llm=_StubLlm(),
-                                       original_query='인사 규정')
+        hit = await cache.get_semantic(
+            session,
+            tenant_id,
+            '인사 규정의 주요 내용은?',
+            [5],
+            query_embedding=_mix(0.90),
+            llm=_StubLlm(),
+            original_query='인사 규정',
+        )
     assert hit is not None
-    assert origs == [('인사 규정', '인사 규정')], \
+    assert origs == [('인사 규정', '인사 규정')], (
         '원문이 판정기에 도달하지 않았다 — 저장(save_answer) 또는 전달(get_semantic) 배선 끊김'
+    )
 
 
 @pytest.mark.asyncio
@@ -159,10 +184,16 @@ async def test_도입_전_행은_원문이_None으로_간다(tenant_id, fake_emb
     calls = []
     origs = _patch_verdict(monkeypatch, True, calls)
     async with AsyncSessionLocal() as session:
-        await _seed(session, tenant_id)          # original_query 없이 저장 = 도입 전 행
-        hit = await cache.get_semantic(session, tenant_id, '단순변심 반품 기간 알려주세요',
-                                       [5], query_embedding=_mix(0.90), llm=_StubLlm(),
-                                       original_query='반품 기간')
+        await _seed(session, tenant_id)  # original_query 없이 저장 = 도입 전 행
+        hit = await cache.get_semantic(
+            session,
+            tenant_id,
+            '단순변심 반품 기간 알려주세요',
+            [5],
+            query_embedding=_mix(0.90),
+            llm=_StubLlm(),
+            original_query='반품 기간',
+        )
     assert hit is not None
     assert origs == [(None, '반품 기간')], '캐시 쪽 원문이 NULL인 경로가 깨졌다'
 
@@ -171,6 +202,7 @@ def test_원문이_없으면_템플릿에_없음이_박힌다():
     """프롬프트 계약 — 빈 문자열을 넣으면 판정기가 그것도 신호로 읽는다 (#153)."""
     from rag.turn.prompt_texts import CACHE_REUSE_JUDGE_NO_ORIGINAL
     from rag.turn.prompts import build_cache_reuse_judge_messages
+
     user = build_cache_reuse_judge_messages('재작성A', '재작성B')[1]['content']
     assert user.count(CACHE_REUSE_JUDGE_NO_ORIGINAL) == 2
     assert '__CACHED_ORIGINAL__' not in user and '__NEW_ORIGINAL__' not in user
@@ -188,14 +220,23 @@ async def test_원문이_달라도_같은_행을_갱신한다(tenant_id, fake_em
     (갈리면 upsert 충돌 계약이 깨진 것이고, 같은 질문의 캐시가 원문 표현마다 쌓인다.)
     """
     from sqlalchemy import select
+
     from rag.models import AnswerCache as Row
+
     src = [SourceCitation(document_id=5, filename='정책.pdf', version=1)]
     async with AsyncSessionLocal() as session:
         for orig in ('인사 규정', '인사규정 알려줘'):
-            await cache.save_answer(session, tenant_id, '인사 규정은 어떻게 되나요?', '...', src, [5],
-                                    query_embedding=_unit(0), original_query=orig)
+            await cache.save_answer(
+                session,
+                tenant_id,
+                '인사 규정은 어떻게 되나요?',
+                '...',
+                src,
+                [5],
+                query_embedding=_unit(0),
+                original_query=orig,
+            )
         await session.commit()
-        rows = (await session.execute(
-            select(Row).where(Row.tenant_id == tenant_id))).scalars().all()
+        rows = (await session.execute(select(Row).where(Row.tenant_id == tenant_id))).scalars().all()
     assert len(rows) == 1, f'원문이 cache_key에 섞였다 — 행이 {len(rows)}개로 갈림'
     assert rows[0].original_query == '인사규정 알려줘', '갱신 시 원문이 최신 턴 것으로 안 바뀜'

@@ -3,12 +3,13 @@
 채점기가 틀리면 측정 전체가 무의미 — corpus v2 기준선 측정의 전제.
 임베딩 폴백은 가짜(_sync 패치)로 통제한다.
 """
+
 import pytest
 
 import eval.generation as gen
 from eval.generation import _citation_match, citation_accuracy, expected_points_coverage
 from rag.search.retrieval_types import RetrievedChunk
-from rag.turn.citation_labels import TAIL_END, TAIL_START, citation_tail
+from rag.turn.citation_labels import citation_tail
 
 
 def _tail(*nums: int) -> str:
@@ -26,9 +27,18 @@ def _chunks(*filenames: str) -> list[RetrievedChunk]:
     out = []
     for i, fn in enumerate(filenames, start=1):
         faq = fn == 'FAQ'
-        out.append(RetrievedChunk(chunk_id=i, document_id=None if faq else i, text='본문',
-                                  heading_path=[], page=None, filename=fn, version=1,
-                                  faq_id=1 if faq else None))
+        out.append(
+            RetrievedChunk(
+                chunk_id=i,
+                document_id=None if faq else i,
+                text='본문',
+                heading_path=[],
+                page=None,
+                filename=fn,
+                version=1,
+                faq_id=1 if faq else None,
+            )
+        )
     return out
 
 
@@ -42,7 +52,7 @@ class TestCitationMatch:
         assert _citation_match('배송지연대응', 'kms_03_배송지연대응')
 
     def test_짧은_토큰_우연_매칭_거부(self):
-        assert not _citation_match('배송', 'kms_03_배송지연대응')     # 2자 포함 — 오탐 방지
+        assert not _citation_match('배송', 'kms_03_배송지연대응')  # 2자 포함 — 오탐 방지
         assert not _citation_match('첨부: 영수증', '배송지연대응')
 
 
@@ -50,14 +60,16 @@ class TestCitationAccuracy:
     """v3 (#56): 인용은 답변 끝 출처 꼬리(번호 목록)에서만 — 운영과 같은 배관으로 해석한다."""
 
     def test_전_기대문서_인용시_만점(self):
-        score = citation_accuracy('답변 ' + _tail(1, 2), ['환불정책.pdf', '배송정책.docx'],
-                                  _chunks('환불정책.pdf', '배송정책.docx'))
+        score = citation_accuracy(
+            '답변 ' + _tail(1, 2), ['환불정책.pdf', '배송정책.docx'], _chunks('환불정책.pdf', '배송정책.docx')
+        )
         assert score == 1.0
 
     def test_multi_doc_부분_인용은_비율(self):
         # v2 개정의 핵심 — any-match였으면 1.0 과대평가
-        score = citation_accuracy('답변 ' + _tail(1), ['환불정책.pdf', '배송정책.docx'],
-                                  _chunks('환불정책.pdf', '배송정책.docx'))
+        score = citation_accuracy(
+            '답변 ' + _tail(1), ['환불정책.pdf', '배송정책.docx'], _chunks('환불정책.pdf', '배송정책.docx')
+        )
         assert score == 0.5
 
     def test_FAQ_인용_미탐_해소(self):
@@ -65,8 +77,7 @@ class TestCitationAccuracy:
 
     def test_오인용만_있으면_0(self):
         # 1번(엉뚱문서)만 인용 — 기대(환불정책)는 2번인데 안 짚었다
-        assert citation_accuracy('답변 ' + _tail(1), ['환불정책.pdf'],
-                                 _chunks('엉뚱문서.pdf', '환불정책.pdf')) == 0.0
+        assert citation_accuracy('답변 ' + _tail(1), ['환불정책.pdf'], _chunks('엉뚱문서.pdf', '환불정책.pdf')) == 0.0
 
     def test_꼬리_없으면_0(self):
         # 형식 미준수(꼬리 누락)는 인용 0으로 집계 — 그게 사실이다 (#56)
@@ -74,8 +85,12 @@ class TestCitationAccuracy:
 
     def test_본문_숫자는_스캔하지_않는다(self):
         # v3의 핵심 — 본문의 숫자·[1]류가 인용으로 오인되지 않고, 꼬리 밖은 무시된다
-        assert citation_accuracy('[1] 본문 표기는 무효, 30일 같은 수치도 무효 ' + _tail(),
-                                 ['환불정책.pdf'], _chunks('환불정책.pdf')) == 0.0
+        assert (
+            citation_accuracy(
+                '[1] 본문 표기는 무효, 30일 같은 수치도 무효 ' + _tail(), ['환불정책.pdf'], _chunks('환불정책.pdf')
+            )
+            == 0.0
+        )
 
     def test_corpus_v2_확장자_스트립(self):
         assert citation_accuracy(_tail(1), ['공지.txt'], _chunks('공지.txt')) == 1.0
@@ -87,7 +102,7 @@ class TestCitationAccuracy:
         chunks = _chunks('멤버십포인트.pdf', '멤버십혜택표.xlsx', '제휴카드결제안내.docx')
         assert citation_accuracy(_tail(2, 3), exp, chunks) == 1.0
         assert citation_accuracy(_tail(1, 3), exp, chunks) == 1.0
-        assert citation_accuracy(_tail(3), exp, chunks) == 0.5   # 그룹 미커버는 여전히 감점
+        assert citation_accuracy(_tail(3), exp, chunks) == 0.5  # 그룹 미커버는 여전히 감점
 
 
 @pytest.fixture
@@ -100,6 +115,7 @@ def fake_embed(monkeypatch):
     **판정 구조**(어떤 조각과 대조하는가)만 본다.
     """
     from rag.search.embeddings import Embedding
+
     monkeypatch.setattr(gen, '_contains_point', lambda *a: False)
     # 벡터 자리에 원문을 실어 보내고, 코사인 자리에서 포함 여부로 답한다.
     monkeypatch.setattr(gen, 'embed_texts_sync', lambda texts: [Embedding(dense=[t]) for t in texts])
@@ -109,8 +125,8 @@ def fake_embed(monkeypatch):
 class TestSplitSegments:
     def test_문장과_절을_모두_후보로(self):
         segs = gen._split_segments('A는 1이고, B는 2입니다.')
-        assert 'A는 1이고, B는 2입니다' in segs      # 문장 통째
-        assert 'B는 2입니다' in segs                 # 절
+        assert 'A는 1이고, B는 2입니다' in segs  # 문장 통째
+        assert 'B는 2입니다' in segs  # 절
 
     def test_숫자_사이_마침표는_문장_경계가_아니다(self):
         # '78.4%'가 '78'/'4%'로 쪼개지면 그 사실을 담은 포인트는 영영 못 맞는다
@@ -124,9 +140,9 @@ class TestSplitSegments:
     # 없으면 주어가 든 줄과 값이 든 줄이 따로 놀아 어느 쪽도 포인트와 안 닮는다(#196 실측).
 
     def test_머리말과_불릿을_묶은_후보가_생긴다(self):
-        segs = gen._split_segments('수습 및 시용기간은 다음과 같습니다\n'
-                                   '- 일반 신규 채용: 3개월 이상\n'
-                                   '- 특별 채용: 두지 않을 수 있음')
+        segs = gen._split_segments(
+            '수습 및 시용기간은 다음과 같습니다\n- 일반 신규 채용: 3개월 이상\n- 특별 채용: 두지 않을 수 있음'
+        )
         joined = [x for x in segs if '수습 및 시용기간은 다음과 같습니다' in x and '3개월 이상' in x]
         assert joined, f'머리말+불릿 결합 후보가 없다: {segs}'
 
@@ -138,8 +154,7 @@ class TestSplitSegments:
     def test_런_전체를_묶는다_고정윈도우가_아니다(self):
         # 결재선 4줄을 2줄씩 묶으면 체인 절반만 모여 여전히 미달이었다(#196 실측 0.734)
         segs = gen._split_segments('- 작성자\n- HR팀장\n- 재무팀장\n- 경영전략부문장')
-        assert any(all(k in x for k in ('작성자', 'HR팀장', '재무팀장', '경영전략부문장'))
-                   for x in segs), segs
+        assert any(all(k in x for k in ('작성자', 'HR팀장', '재무팀장', '경영전략부문장')) for x in segs), segs
 
     def test_불릿_한_줄짜리는_묶지_않는다(self):
         # 쪼개진 게 아니므로 결합 후보를 만들 이유가 없다 — 후보만 늘면 잡음이다
@@ -167,9 +182,7 @@ class TestSplitSegments:
         임계(0.75)를 낮추지 않고 후보만 늘리는 설계라, 안전성은 "후보가 답변에 실제로
         존재하는 문자열인가"에 달려 있다. 이게 깨지면 없는 사실이 통과할 수 있다.
         """
-        text = ('지원 금액은 다음과 같습니다\n'
-                '- 유치원: 24회차까지\n'
-                '- 대학교: 8학기까지')
+        text = '지원 금액은 다음과 같습니다\n- 유치원: 24회차까지\n- 대학교: 8학기까지'
         src = text.replace('\n', ' ')
         for cand in gen._bullet_run_candidates(text):
             for tok in cand.split():
@@ -190,8 +203,8 @@ class TestSplitSegments:
 def no_embed_fallback(monkeypatch):
     """임베딩 2단을 무력화 — 부분문자열 1단만 검증할 때."""
     from rag.search.embeddings import Embedding
-    monkeypatch.setattr(gen, 'embed_texts_sync',
-                        lambda texts: [Embedding(dense=[0.0] * 8) for _ in texts])
+
+    monkeypatch.setattr(gen, 'embed_texts_sync', lambda texts: [Embedding(dense=[0.0] * 8) for _ in texts])
 
 
 class TestExpectedPointsCoverage:
@@ -253,7 +266,8 @@ class TestMustNotContainViolations:
 
     def test_여러_금지값_중_걸린_것만(self):
         v = gen.must_not_contain_violations(
-            '위약금은 50%이며 예약금은 30%입니다', ['위약금은 50%', '예약금은 10%', '무관한 값'])
+            '위약금은 50%이며 예약금은 30%입니다', ['위약금은 50%', '예약금은 10%', '무관한 값']
+        )
         assert v == ['위약금은 50%']
 
     def test_정정_문장은_단언문_규약으로_통과(self):
@@ -273,12 +287,14 @@ class TestGoldLoading:
 
     def test_load_gold가_실문서를_합친다(self):
         from eval.generation import GOLD, load_gold
+
         canonical = sum(1 for l in GOLD.read_text().splitlines() if l.strip())
         merged = len(load_gold())
         assert merged > canonical, f'gold_private가 안 합쳐졌다 (정본 {canonical} = 병합 {merged})'
 
     def test_실문서_테넌트가_라우팅된다(self):
         from eval.generation import V2_TENANTS, load_gold, row_tenant
+
         assert 'inticube' in V2_TENANTS
         tenants = {row_tenant(g) for g in load_gold()}
         assert 'inticube' in tenants, f'실문서가 demo로 폴백됐다: {sorted(tenants)}'
@@ -286,6 +302,7 @@ class TestGoldLoading:
     def test_골드_id가_중복되지_않는다(self):
         # 정본과 gold_private에 같은 id가 있으면 dict 조인에서 한쪽이 조용히 덮인다
         from eval.generation import load_gold
+
         ids = [g['id'] for g in load_gold()]
         assert len(ids) == len(set(ids)), f'중복 id {len(ids) - len(set(ids))}건'
 
@@ -299,11 +316,21 @@ class TestGoldLoading:
 
         import eval.ragas_adapter as ra
         from eval.generation import load_gold
+
         real = next(g for g in load_gold() if g['id'].startswith('inticube_'))
-        (tmp_path / 'generation_retrieved.jsonl').write_text(json.dumps({
-            'id': real['id'], 'type': real['type'], 'answer': '테스트 답변',
-            'retrieved_contexts': ['근거'], 'standalone_query': real['query'],
-        }, ensure_ascii=False) + '\n')
+        (tmp_path / 'generation_retrieved.jsonl').write_text(
+            json.dumps(
+                {
+                    'id': real['id'],
+                    'type': real['type'],
+                    'answer': '테스트 답변',
+                    'retrieved_contexts': ['근거'],
+                    'standalone_query': real['query'],
+                },
+                ensure_ascii=False,
+            )
+            + '\n'
+        )
         monkeypatch.setattr(ra, 'RESULT_DIR', tmp_path)
         ds = ra.build_dataset('retrieved')
         assert len(ds) == 1, '실문서 행이 gold 조회 실패로 스킵됐다'
@@ -313,6 +340,7 @@ class TestGoldLoading:
         import inspect
 
         import eval.generation as g
+
         src = inspect.getsource(g.main)
         assert 'GOLD.read_text()' not in src, 'main이 아직 정본을 직접 읽는다'
 
@@ -328,20 +356,22 @@ class TestRefusalConsistencyGold:
         import inspect
 
         import eval.refusal as r
+
         src = inspect.getsource(r.compute)
         assert 'GOLD.read_text()' not in src, '거절축이 아직 정본을 직접 읽는다'
 
     def test_거절축_대상에_실문서가_들어온다(self):
         from eval.generation import load_gold
         from eval.refusal import SHOULD_ANSWER, SHOULD_REFUSE
+
         target = [g for g in load_gold() if g['type'] in (SHOULD_REFUSE | SHOULD_ANSWER)]
-        assert any(g['id'].startswith('inticube_') for g in target), \
-            '거절 채점 대상에 실문서가 한 건도 없다'
+        assert any(g['id'].startswith('inticube_') for g in target), '거절 채점 대상에 실문서가 한 건도 없다'
 
     def test_consistency가_정본만_읽지_않는다(self):
         import inspect
 
         import eval.consistency as c
+
         src = inspect.getsource(c.main)
         assert 'GOLD.read_text()' not in src, 'consistency가 아직 정본을 직접 읽는다'
 
@@ -355,6 +385,7 @@ class TestVersionKeyTuple:
 
     def _report(self, capsys, cur, prev):
         from eval.run_all import _report
+
         _report({'stamp': 'now', 'refusal': cur}, {'stamp': 'before', 'refusal': prev})
         return capsys.readouterr().out
 

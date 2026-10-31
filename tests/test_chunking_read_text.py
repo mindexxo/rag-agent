@@ -2,6 +2,7 @@
 
 리팩토링에서 고친 P2(CP949 txt가 조용히 �로 깨지던 문제)를 고정한다.
 """
+
 from rag.chunking.plain import read_text
 
 
@@ -28,8 +29,8 @@ def test_둘_다_아니면_replace로_예외없이(tmp_path):
     p = tmp_path / 'c.txt'
     p.write_bytes(b'\xff\xfe\x00 broken \x81\x40')  # utf-8도 cp949도 아닌 바이트
     result = read_text(p)
-    assert 'broken' in result        # 읽을 수 있는 부분은 보존
-    assert '�' in result        # 깨진 바이트는 �로 표시 (replace — ignore로 바뀌면 조용한 소실)
+    assert 'broken' in result  # 읽을 수 있는 부분은 보존
+    assert '�' in result  # 깨진 바이트는 �로 표시 (replace — ignore로 바뀌면 조용한 소실)
 
 
 def test_빈_파일(tmp_path):

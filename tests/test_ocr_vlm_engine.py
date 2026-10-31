@@ -9,6 +9,7 @@
 5. 엔진 이름표에 키가 섞이지 않는다
 6. 요약: 숫자 오독(기대가 숫자인 칸의 오독)·추가(환각 후보)를 센다
 """
+
 import json
 from types import SimpleNamespace
 
@@ -20,9 +21,12 @@ from eval import vlm_engine
 
 def _doc():
     from docling_core.types.doc import DocItemLabel, DoclingDocument
+
     d = DoclingDocument(name='t')
     d.add_title(text='문서 제목')
-    d.add_text(label=DocItemLabel.TEXT, text='1. 주문번호, 상품명, 수령일')      # 번호 꼴이지만 목록 항목 — 헤딩으로 올리면 안 된다
+    d.add_text(
+        label=DocItemLabel.TEXT, text='1. 주문번호, 상품명, 수령일'
+    )  # 번호 꼴이지만 목록 항목 — 헤딩으로 올리면 안 된다
     d.add_heading(text='2.1 사진 증빙', level=1)
     return d
 
@@ -33,7 +37,11 @@ def _labels(d):
 
 def test_title만_section_header로_바뀌고_글은_그대로():
     d = vlm_engine._fix_headings(_doc())
-    assert _labels(d) == [('section_header', '문서 제목'), ('text', '1. 주문번호, 상품명, 수령일'), ('section_header', '2.1 사진 증빙')]
+    assert _labels(d) == [
+        ('section_header', '문서 제목'),
+        ('text', '1. 주문번호, 상품명, 수령일'),
+        ('section_header', '2.1 사진 증빙'),
+    ]
 
 
 def test_install_uninstall은_변환기를_원복한다():
@@ -79,26 +87,42 @@ def test_빈_응답_뒤_재시도로_성공(monkeypatch):
 def test_온도는_옵션_필드로_넘어간다(monkeypatch):
     """docling ApiVlmModel은 params 위에 vlm_options.temperature를 덮어쓴다 — params에만 넣으면 기본 0.0이 나가 gpt-5가 400(10/25 실측)."""
     from config import settings
+
     monkeypatch.setattr(settings, 'vlm_caption_temperature', 1.0)
     conv = vlm_engine.build_converter()
     from docling.datamodel.base_models import InputFormat
+
     vo = conv.format_to_options[InputFormat.PDF].pipeline_options.vlm_options
     assert vo.temperature == 1.0 and 'temperature' not in vo.params
-    assert vo.params['max_completion_tokens'] == vlm_engine.MAX_TOKENS and 'max_tokens' not in vo.params   # gpt-5는 max_tokens 거부(#290)
+    assert (
+        vo.params['max_completion_tokens'] == vlm_engine.MAX_TOKENS and 'max_tokens' not in vo.params
+    )  # gpt-5는 max_tokens 거부(#290)
 
 
 def test_헤딩_보정_스위치(monkeypatch):
     doc = _doc()
-    monkeypatch.setattr(vlm_engine, '_converter', SimpleNamespace(convert=lambda *a, **k: SimpleNamespace(
-        status=__import__('docling.datamodel.base_models', fromlist=['ConversionStatus']).ConversionStatus.SUCCESS, errors=[], document=doc)))
+    monkeypatch.setattr(
+        vlm_engine,
+        '_converter',
+        SimpleNamespace(
+            convert=lambda *a, **k: SimpleNamespace(
+                status=__import__(
+                    'docling.datamodel.base_models', fromlist=['ConversionStatus']
+                ).ConversionStatus.SUCCESS,
+                errors=[],
+                document=doc,
+            )
+        ),
+    )
     monkeypatch.setenv('VLM_FIX_HEADINGS', '0')
-    assert _labels(vlm_engine._convert_vlm('x.pdf'))[0][0] == 'title'                 # 끄면 docling 그대로
+    assert _labels(vlm_engine._convert_vlm('x.pdf'))[0][0] == 'title'  # 끄면 docling 그대로
     monkeypatch.setenv('VLM_FIX_HEADINGS', '1')
     assert _labels(vlm_engine._convert_vlm('x.pdf'))[0][0] == 'section_header'
 
 
 def test_이름표에_키가_없다(monkeypatch):
     from config import settings
+
     monkeypatch.setattr(settings, 'vlm_caption_api_key', 'sk-secret')
     monkeypatch.setattr(settings, 'vlm_caption_url', 'https://api.openai.com/v1/chat/completions')
     monkeypatch.setattr(settings, 'vlm_caption_model', 'gpt-5-mini')
@@ -109,13 +133,25 @@ def test_이름표에_키가_없다(monkeypatch):
 
 def test_요약은_숫자오독과_추가를_센다(tmp_path):
     from eval.ocr_vlm_summary import table_matrix
+
     run = tmp_path / 'eng'
     run.mkdir()
-    row = dict(id='S07', axis='07 숫자', path='img', layer='l1', seconds=1.0, clean=False,
-               cells=[2, 4], numeric=[1, 2], presence=[3, 4],
-               mismatches=[dict(kind='오독', expected='12,000원', actual='12,00원'),
-                           dict(kind='오독', expected='본인 결혼', actual='본인결혼'),
-                           dict(kind='추가', expected='', actual='지어낸 칸')])
+    row = dict(
+        id='S07',
+        axis='07 숫자',
+        path='img',
+        layer='l1',
+        seconds=1.0,
+        clean=False,
+        cells=[2, 4],
+        numeric=[1, 2],
+        presence=[3, 4],
+        mismatches=[
+            dict(kind='오독', expected='12,000원', actual='12,00원'),
+            dict(kind='오독', expected='본인 결혼', actual='본인결혼'),
+            dict(kind='추가', expected='', actual='지어낸 칸'),
+        ],
+    )
     (run / 'results.jsonl').write_text(json.dumps(row, ensure_ascii=False) + '\n')
     out = table_matrix([run])
     assert '숫자오독 1' in out and '추가 1' in out and '2/4' in out

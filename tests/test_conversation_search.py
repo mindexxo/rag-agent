@@ -6,6 +6,7 @@
   1. 한 대화에서 여러 메시지가 매칭돼도 결과·total은 대화 1건 (EXISTS 세미조인)
   2. 첨부 본문(attachments)은 검색 대상이 아니다 — 조회 API가 파일명만 주는 정책과 같은 이유
 """
+
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -20,8 +21,9 @@ USER_A = {'X-User-Id': 'agent-a'}
 USER_B = {'X-User-Id': 'agent-b'}
 
 
-async def _seed_conv(tenant_id: str, title: str | None, contents: list[str],
-                     created_by: str = 'agent-a', minutes: int = 0) -> int:
+async def _seed_conv(
+    tenant_id: str, title: str | None, contents: list[str], created_by: str = 'agent-a', minutes: int = 0
+) -> int:
     """대화 1건 + 메시지 여러 건. last_used_at을 분 단위로 벌려 정렬을 결정적이게.
 
     메시지의 created_at은 **전부 같은 값**을 준다 — 운영에서 한 턴의 user·assistant가
@@ -31,14 +33,21 @@ async def _seed_conv(tenant_id: str, title: str | None, contents: list[str],
     """
     base = datetime.now(timezone.utc)
     async with AsyncSessionLocal() as s:
-        conv = Conversation(tenant_id=tenant_id, created_by=created_by, title=title,
-                            last_used_at=base + timedelta(minutes=minutes))
+        conv = Conversation(
+            tenant_id=tenant_id, created_by=created_by, title=title, last_used_at=base + timedelta(minutes=minutes)
+        )
         s.add(conv)
         await s.flush()
         for i, content in enumerate(contents):
-            s.add(Message(conversation_id=conv.id, tenant_id=tenant_id,
-                          role='user' if i % 2 == 0 else 'assistant', content=content,
-                          created_at=base + timedelta(minutes=minutes)))
+            s.add(
+                Message(
+                    conversation_id=conv.id,
+                    tenant_id=tenant_id,
+                    role='user' if i % 2 == 0 else 'assistant',
+                    content=content,
+                    created_at=base + timedelta(minutes=minutes),
+                )
+            )
         cid = conv.id
         await s.commit()
     return cid
@@ -53,6 +62,7 @@ async def _search(client, q: str, **params) -> dict:
 
 # ── 순수 함수 (DB 불필요) ────────────────────────────────────
 
+
 def test_스니펫_중간매칭은_양쪽_말줄임():
     content = '가' * 100 + '배송' + '나' * 100
     snippet = _build_snippet(content, '배송')
@@ -63,9 +73,9 @@ def test_스니펫_중간매칭은_양쪽_말줄임():
 
 
 def test_스니펫_경계에서는_해당쪽_말줄임_없음():
-    assert _build_snippet('배송 문의', '배송') == '배송 문의'          # 원문이 창보다 짧음
-    assert _build_snippet('배송' + '가' * 200, '배송').startswith('배송')   # 맨 앞 매칭
-    assert _build_snippet('가' * 200 + '배송', '배송').endswith('배송')     # 맨 끝 매칭
+    assert _build_snippet('배송 문의', '배송') == '배송 문의'  # 원문이 창보다 짧음
+    assert _build_snippet('배송' + '가' * 200, '배송').startswith('배송')  # 맨 앞 매칭
+    assert _build_snippet('가' * 200 + '배송', '배송').endswith('배송')  # 맨 끝 매칭
 
 
 def test_스니펫_대소문자_무시():
@@ -83,17 +93,18 @@ def test_이스케이프_와일드카드():
     # 패턴 조립은 text_norm.like_pattern으로 옮겼다 (#176) — 문서 목록 검색도 같은 규칙을 쓴다.
     assert like_pattern('a_b') == r'%a\_b%'
     assert like_pattern('50%') == r'%50\%%'
-    assert like_pattern(r'a\b') == r'%a\\b%'    # 백슬래시가 먼저 — 이후 치환분을 재이스케이프하지 않는다
+    assert like_pattern(r'a\b') == r'%a\\b%'  # 백슬래시가 먼저 — 이후 치환분을 재이스케이프하지 않는다
 
 
 # ── 검색 동작 ────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_제목_매칭은_스니펫_없음(client, tenant_id):
     cid = await _seed_conv(tenant_id, '배송 문의', ['언제 오나요'])
     body = await _search(client, '배송')
     assert [i['conversation_id'] for i in body['items']] == [cid]
-    assert body['items'][0]['snippet'] is None    # 제목은 이미 title로 보인다
+    assert body['items'][0]['snippet'] is None  # 제목은 이미 title로 보인다
     assert body['total'] == 1
 
 
@@ -104,11 +115,15 @@ async def test_동률_created_at이면_나중에_저장된_매칭이_이긴다(c
     그래서 '가장 최근 매칭'을 시각만으로는 못 고르고 id 보조정렬이 실제로 일한다.
     (_seed_conv가 created_at을 일부러 같게 넣는 이유이기도 하다.)
     """
-    cid = await _seed_conv(tenant_id, '반품 규정', [
-        '교환은 7일 이내 가능하며 배송은 3~5영업일이 걸립니다',
-        '배송 지연 시 고객센터로 문의해 주세요',      # 같은 시각, 더 큰 id — 이쪽이 뽑혀야
-        '추가 문의는 없습니다',
-    ])
+    cid = await _seed_conv(
+        tenant_id,
+        '반품 규정',
+        [
+            '교환은 7일 이내 가능하며 배송은 3~5영업일이 걸립니다',
+            '배송 지연 시 고객센터로 문의해 주세요',  # 같은 시각, 더 큰 id — 이쪽이 뽑혀야
+            '추가 문의는 없습니다',
+        ],
+    )
     body = await _search(client, '배송')
     assert [i['conversation_id'] for i in body['items']] == [cid]
     assert '고객센터' in body['items'][0]['snippet']
@@ -118,10 +133,16 @@ async def test_동률_created_at이면_나중에_저장된_매칭이_이긴다(c
 async def test_턴이_다르면_created_at_최신이_이긴다(client, tenant_id):
     """턴이 다르면 커밋이 달라 created_at도 다르다 — 이땐 시각이 먼저 판단한다."""
     cid = await _seed_conv(tenant_id, '반품 규정', ['배송 지연 시 고객센터로 문의해 주세요'])
-    async with AsyncSessionLocal() as s:                       # 뒤이은 턴 (시각이 더 나중)
-        s.add(Message(conversation_id=cid, tenant_id=tenant_id, role='user',
-                      content='배송비는 누가 부담하나요',
-                      created_at=datetime.now(timezone.utc) + timedelta(minutes=10)))
+    async with AsyncSessionLocal() as s:  # 뒤이은 턴 (시각이 더 나중)
+        s.add(
+            Message(
+                conversation_id=cid,
+                tenant_id=tenant_id,
+                role='user',
+                content='배송비는 누가 부담하나요',
+                created_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            )
+        )
         await s.commit()
     body = await _search(client, '배송')
     assert '배송비' in body['items'][0]['snippet']
@@ -150,8 +171,15 @@ async def test_첨부_본문은_검색되지_않는다(client, tenant_id):
         conv = Conversation(tenant_id=tenant_id, created_by='agent-a', title='첨부 대화')
         s.add(conv)
         await s.flush()
-        s.add(Message(conversation_id=conv.id, tenant_id=tenant_id, role='user', content='이것 좀 봐줘',
-                      attachments=[{'filename': '계약서.pdf', 'text': '위약금 조항 상세'}]))
+        s.add(
+            Message(
+                conversation_id=conv.id,
+                tenant_id=tenant_id,
+                role='user',
+                content='이것 좀 봐줘',
+                attachments=[{'filename': '계약서.pdf', 'text': '위약금 조항 상세'}],
+            )
+        )
         await s.commit()
     assert (await _search(client, '위약금'))['items'] == []
 
@@ -165,12 +193,19 @@ async def test_차단된_턴의_본문도_검색된다(client, tenant_id):
     """
     cid = await _seed_conv(tenant_id, '문의', ['민감한 질문입니다'])
     async with AsyncSessionLocal() as s:
-        s.add(Message(conversation_id=cid, tenant_id=tenant_id, role='assistant',
-                      content='개인정보라 답변할수없습니다', status='blocked'))
+        s.add(
+            Message(
+                conversation_id=cid,
+                tenant_id=tenant_id,
+                role='assistant',
+                content='개인정보라 답변할수없습니다',
+                status='blocked',
+            )
+        )
         await s.commit()
     body = await _search(client, '개인정보')
     assert [i['conversation_id'] for i in body['items']] == [cid]
-    assert '개인정보' in body['items'][0]['snippet']    # 발췌도 차단 메시지에서 나온다
+    assert '개인정보' in body['items'][0]['snippet']  # 발췌도 차단 메시지에서 나온다
 
 
 @pytest.mark.asyncio
@@ -200,7 +235,7 @@ async def test_공백_q는_미전송과_동일(client, tenant_id):
     """'%%'는 전건 매칭이라 필터를 건 척만 하게 된다 — 전체 목록으로 취급."""
     await _seed_conv(tenant_id, '배송', ['내용'], minutes=1)
     await _seed_conv(tenant_id, '급여', ['내용'], minutes=2)
-    assert (await _search(client, '%20'))['total'] == 2       # q=' ' (공백)
+    assert (await _search(client, '%20'))['total'] == 2  # q=' ' (공백)
 
 
 @pytest.mark.asyncio
@@ -212,7 +247,7 @@ async def test_검색_페이지네이션_total과_has_more(client, tenant_id):
     page2 = await _search(client, '배송', limit=2, offset=2)
     assert len(page2['items']) == 1 and page2['total'] == 3 and page2['has_more'] is False
     got = [i['conversation_id'] for i in page1['items'] + page2['items']]
-    assert got == list(reversed(ids))                          # 이어붙이면 전체 최근순
+    assert got == list(reversed(ids))  # 이어붙이면 전체 최근순
 
     # offset이 total을 넘어도 total은 실제 값 그대로 (빈 페이지 ≠ 결과 없음)
     beyond = await _search(client, '배송', limit=2, offset=10)
@@ -238,8 +273,9 @@ async def test_타_테넌트_대화는_검색에_안_걸린다(client, tenant_id
     from main import app
 
     cid = await _seed_conv(tenant_id, '배송 문의', ['배송 내용'])
-    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://testserver',
-                           headers={'X-Tenant-Id': other_tenant_id}) as other:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url='http://testserver', headers={'X-Tenant-Id': other_tenant_id}
+    ) as other:
         res = await other.get('/kms/conversations?q=배송', headers=USER_A)
         assert all(c['conversation_id'] != cid for c in res.json()['items'])
         assert res.json()['total'] == 0

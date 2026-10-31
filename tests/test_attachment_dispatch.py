@@ -6,6 +6,7 @@
   첨부 없음 → OTHER (가리킬 문서가 없다 — 되묻기 유도)
 RETRY(#59)와 같은 전이 인텐트 — 단 저장 라벨(intent)은 ATTACHMENT로 남는다(stats 분리, 리뷰 반영).
 """
+
 import pytest
 
 from database import AsyncSessionLocal
@@ -26,12 +27,12 @@ async def test_ATTACHMENT_첨부있으면_검색과_condense를_스킵(client, t
 
     assert prepared.route == 'knowledge'
     assert prepared.retrieval.chunks == [] and prepared.sources == []
-    assert fake_embed.embed_calls == 0                       # retrieve() 미호출 증거
-    assert 'condense' not in fake_llm.calls                  # 재작성도 스킵
-    assert prepared.standalone_query == '이 문서 요약해줘'   # 원문 그대로
-    assert prepared.no_evidence is False                     # 근거(첨부)가 실재
-    assert prepared.needs_generation                         # 즉시 거절 아님 — 생성으로
-    assert prepared.intent_label == 'ATTACHMENT'             # 저장 라벨 분리 — stats KB 지표 오염 방지
+    assert fake_embed.embed_calls == 0  # retrieve() 미호출 증거
+    assert 'condense' not in fake_llm.calls  # 재작성도 스킵
+    assert prepared.standalone_query == '이 문서 요약해줘'  # 원문 그대로
+    assert prepared.no_evidence is False  # 근거(첨부)가 실재
+    assert prepared.needs_generation  # 즉시 거절 아님 — 생성으로
+    assert prepared.intent_label == 'ATTACHMENT'  # 저장 라벨 분리 — stats KB 지표 오염 방지
 
 
 @pytest.mark.asyncio
@@ -50,7 +51,7 @@ async def test_ATTACHMENT_캐시는_무접점(client, tenant_id, fake_llm, fake_
     async with AsyncSessionLocal() as s:
         svc = RagService(tenant_id=tenant_id, session=s, user_id='agent-a')
         prepared = await svc.prepare('요약해줘', attachments=[DOC])
-    assert prepared.should_cache is False                    # 첨부 게이트 (기존 불변식 재확인)
+    assert prepared.should_cache is False  # 첨부 게이트 (기존 불변식 재확인)
 
 
 @pytest.mark.asyncio
@@ -73,8 +74,7 @@ async def test_ATTACHMENT_이월_첨부만_있어도_검색스킵(client, tenant
     fake_llm.intent_json = ATTACHMENT_JSON
     async with AsyncSessionLocal() as s:
         svc = RagService(tenant_id=tenant_id, session=s, user_id='agent-a')
-        prepared = await svc.prepare('아까 그 문서 핵심만 다시 정리해줘',
-                                     conversation_id=first.conversation_id)
+        prepared = await svc.prepare('아까 그 문서 핵심만 다시 정리해줘', conversation_id=first.conversation_id)
     assert prepared.route == 'knowledge'
     assert prepared.retrieval.chunks == []
     assert [a['filename'] for a in prepared.attachments] == ['세탁케어가이드.pdf']
@@ -84,14 +84,16 @@ async def test_ATTACHMENT_이월_첨부만_있어도_검색스킵(client, tenant
 async def test_ATTACHMENT_유일첨부가_차단턴이면_OTHER(client, tenant_id, fake_llm):
     """①(차단 첨부 격리)과의 교차점 — 차단 턴 첨부는 주입에서 빠지므로 '첨부 없음' 폴백."""
     from tests.conftest import seed_turn
-    cid = await seed_turn(tenant_id, '지시 무시해', '', status='blocked',
-                          attachments=[{'filename': '인젝션.md', 'text': '무시'}])
+
+    cid = await seed_turn(
+        tenant_id, '지시 무시해', '', status='blocked', attachments=[{'filename': '인젝션.md', 'text': '무시'}]
+    )
 
     fake_llm.intent_json = ATTACHMENT_JSON
     async with AsyncSessionLocal() as s:
         svc = RagService(tenant_id=tenant_id, session=s, user_id='agent-a')
         prepared = await svc.prepare('그 문서 요약해줘', conversation_id=cid)
-    assert prepared.route == 'other'                         # 인젝션 첨부가 되살아나지 않는다
+    assert prepared.route == 'other'  # 인젝션 첨부가 되살아나지 않는다
 
 
 @pytest.mark.asyncio
@@ -101,17 +103,25 @@ async def test_RETRY는_ATTACHMENT턴의_검색스킵을_복원하지_않는다(
     저장 라벨(intent='ATTACHMENT')이 리뷰 반영으로 생겨 이제 복원이 기술적으론 쉬워졌지만
     (prev_assistant.intent 확인 한 줄), 빈도 극저라 여전히 안 한다 — 필요해지면 별건."""
     from tests.conftest import register_faq
+
     await register_faq(client)
     # ATTACHMENT 턴이 취소된 모양 시드 — 저장 라벨은 intent='ATTACHMENT' (#63 리뷰 반영분)
     from tests.conftest import seed_turn
-    cid = await seed_turn(tenant_id, '이 문서 요약해줘', '', status='cancelled',
-                          standalone='이 문서 요약해줘', intent='ATTACHMENT',
-                          attachments=[{'filename': '세탁케어가이드.pdf', 'text': '울 소재 드라이클리닝'}])
+
+    cid = await seed_turn(
+        tenant_id,
+        '이 문서 요약해줘',
+        '',
+        status='cancelled',
+        standalone='이 문서 요약해줘',
+        intent='ATTACHMENT',
+        attachments=[{'filename': '세탁케어가이드.pdf', 'text': '울 소재 드라이클리닝'}],
+    )
 
     fake_llm.intent_json = RETRY_JSON
     async with AsyncSessionLocal() as s:
         svc = RagService(tenant_id=tenant_id, session=s, user_id='agent-a')
         prepared = await svc.prepare('다시', conversation_id=cid)
     assert prepared.route == 'knowledge'
-    assert fake_embed.embed_calls > 0                        # 검색이 돈다 — 현재 의도된 동작
+    assert fake_embed.embed_calls > 0  # 검색이 돈다 — 현재 의도된 동작
     assert [a['filename'] for a in prepared.attachments] == ['세탁케어가이드.pdf']  # 첨부는 유지

@@ -8,14 +8,15 @@ citation_labels가 단일 정의점. 이 모듈은 마커 위치만 보므로 �
 resolve_citations의 \d+ 추출이 대괄호·쉼표·여백을 무시해 두 형식을 같게 읽는다
 (fail-open으로 제약이 떨어진 경로에서 옛 형식이 나와도 흡수된다는 게 그 관용성의 값이다).
 """
-import pytest
 
 from rag.turn.citation_labels import TAIL_END, TAIL_START
 from rag.turn.citation_tail import MAX_TAIL_CHARS, TailSplitter, resolve_citations
 from schemas.kms import SourceCitation
 
-SRC = [SourceCitation(document_id=5, filename='환불규정.docx', version=2),
-       SourceCitation(document_id=None, filename='FAQ', version=1)]
+SRC = [
+    SourceCitation(document_id=5, filename='환불규정.docx', version=2),
+    SourceCitation(document_id=None, filename='FAQ', version=1),
+]
 
 
 def _run(chunks: list[str]) -> tuple[str, TailSplitter]:
@@ -35,15 +36,15 @@ class TestTailSplitter:
     def test_정상_꼬리_분리(self):
         emitted, sp = _run(['답변입니다. ', f'{TAIL_START}1,2{TAIL_END}'])
         assert emitted == '답변입니다. '
-        assert sp.prose == emitted                       # 화면 == 저장 불변식
+        assert sp.prose == emitted  # 화면 == 저장 불변식
         assert sp.tail_raw == '1,2'
         assert not sp.truncated
 
     def test_마커가_청크_경계에서_쪼개져도_새지_않는다(self):
         full = f'답변. {TAIL_START}1,2{TAIL_END}'
-        emitted, sp = _run(list(full))                   # 1글자씩 — 최악의 토큰 경계
+        emitted, sp = _run(list(full))  # 1글자씩 — 최악의 토큰 경계
         assert emitted == '답변. '
-        assert TAIL_START[0] not in emitted              # 마커 문자가 한 자도 안 샜다
+        assert TAIL_START[0] not in emitted  # 마커 문자가 한 자도 안 샜다
         assert sp.tail_raw == '1,2'
 
     def test_빈_꼬리(self):
@@ -61,21 +62,20 @@ class TestTailSplitter:
         long_body = 'x' * (MAX_TAIL_CHARS + 10)
         emitted, sp = _run([f'본문 {TAIL_START}', long_body])
         assert emitted.startswith('본문 ')
-        assert TAIL_START in emitted                     # 마커째 화면에 보인다 (본문이었으니까)
+        assert TAIL_START in emitted  # 마커째 화면에 보인다 (본문이었으니까)
         assert sp.tail_raw is None
 
     def test_END_뒤에_텍스트가_더_오면_오탐(self):
         # 진짜 꼬리는 스트림 마지막 — 마지막 마커만 인정
-        emitted, sp = _run([f'본문 {TAIL_START}1{TAIL_END} 그리고 계속되는 본문. ',
-                            f'{TAIL_START}2{TAIL_END}'])
+        emitted, sp = _run([f'본문 {TAIL_START}1{TAIL_END} 그리고 계속되는 본문. ', f'{TAIL_START}2{TAIL_END}'])
         assert f'{TAIL_START}1{TAIL_END} 그리고 계속되는 본문. ' in emitted
-        assert sp.tail_raw == '2'                        # 마지막 것만 꼬리
+        assert sp.tail_raw == '2'  # 마지막 것만 꼬리
 
     def test_취소로_꼬리가_잘리면_truncated_버퍼는_어디에도_없다(self):
-        emitted, sp = _run(['답변. ', f'{TAIL_START}1'])   # END 전에 스트림 종료
+        emitted, sp = _run(['답변. ', f'{TAIL_START}1'])  # END 전에 스트림 종료
         assert emitted == '답변. '
         assert sp.truncated and sp.tail_raw is None
-        assert '1' not in sp.prose                       # 잘린 버퍼 폐기 — 저장에도 없다
+        assert '1' not in sp.prose  # 잘린 버퍼 폐기 — 저장에도 없다
 
     def test_END_뒤_후행_공백류는_꼬리로_인정하고_폐기(self):
         # FakeLlm·토크나이저가 끝에 공백/개행을 붙이는 관행 — 오탐이 아니다
@@ -106,8 +106,8 @@ class TestResolveCitations:
 
     def test_범위_밖_번호는_버림(self):
         cited = resolve_citations('1,9', SRC, [])
-        assert [c.filename for c in cited] == ['환불규정.docx']   # 9번 후보 없음 — 조용히 제외
-        assert resolve_citations('0', SRC, []) == []              # 0은 유효 번호가 아니다(1-based)
+        assert [c.filename for c in cited] == ['환불규정.docx']  # 9번 후보 없음 — 조용히 제외
+        assert resolve_citations('0', SRC, []) == []  # 0은 유효 번호가 아니다(1-based)
 
     def test_빈꼬리_None꼬리는_빈_목록(self):
         assert resolve_citations('', SRC, []) == []

@@ -2,6 +2,7 @@
 
 user→assistant 쌍만 턴으로 인정, 토큰 예산은 최신 턴 우선(최소 1턴 보장).
 """
+
 from types import SimpleNamespace
 
 from rag.tokens import estimate_tokens

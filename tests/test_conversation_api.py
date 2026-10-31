@@ -3,6 +3,7 @@
 실제 앱 + DB (conftest client 패턴). LLM 불필요 — 소유 검증은 prepare의
 ensure_conversation 단계(LLM 호출 전)에서 끝나므로 fake_llm 없이 404 경로 검증 가능.
 """
+
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -16,13 +17,16 @@ USER_A = {'X-User-Id': 'agent-a'}
 USER_B = {'X-User-Id': 'agent-b'}
 
 
-
 async def _seed(tenant_id: str, n: int, created_by: str = 'agent-a') -> list[int]:
     """대화 n개 삽입 — last_used_at을 1분 간격으로 명시해 정렬이 결정적이게."""
     base = datetime.now(timezone.utc)
     async with AsyncSessionLocal() as s:
-        convs = [Conversation(tenant_id=tenant_id, created_by=created_by, title=f'대화{i}',
-                              last_used_at=base + timedelta(minutes=i)) for i in range(n)]
+        convs = [
+            Conversation(
+                tenant_id=tenant_id, created_by=created_by, title=f'대화{i}', last_used_at=base + timedelta(minutes=i)
+            )
+            for i in range(n)
+        ]
         s.add_all(convs)
         await s.flush()
         ids = [c.id for c in convs]
@@ -38,7 +42,7 @@ async def test_목록_응답형태_정렬_updated_at(client, tenant_id):
     body = res.json()
     assert set(body.keys()) == {'items', 'has_more', 'total'}  # 배열 → 객체(#10), total 추가(#28)
     assert body['total'] == 3
-    assert [i['conversation_id'] for i in body['items']] == list(reversed(ids))   # 최근 사용순
+    assert [i['conversation_id'] for i in body['items']] == list(reversed(ids))  # 최근 사용순
     assert body['has_more'] is False
     assert all(i['updated_at'] for i in body['items'])
 
@@ -53,14 +57,14 @@ async def test_페이지네이션_has_more와_offset(client, tenant_id):
     page3 = (await client.get('/kms/conversations?limit=2&offset=4', headers=USER_A)).json()
     assert len(page3['items']) == 1 and page3['has_more'] is False
     got = [i['conversation_id'] for i in page1['items'] + page2['items'] + page3['items']]
-    assert got == list(reversed(ids))                          # 페이지 이어붙이면 전체 최근순
+    assert got == list(reversed(ids))  # 페이지 이어붙이면 전체 최근순
 
 
 @pytest.mark.asyncio
 async def test_user_스코핑_남의_대화_안보임(client, tenant_id):
     await _seed(tenant_id, 2, created_by='agent-a')
     res_b = await client.get('/kms/conversations', headers=USER_B)
-    assert res_b.json()['items'] == []                         # B에겐 빈 목록
+    assert res_b.json()['items'] == []  # B에겐 빈 목록
     # 헤더 미전송 → test-user 폴백 스코프
     await _seed(tenant_id, 1, created_by='test-user')
     res_none = await client.get('/kms/conversations')
@@ -77,7 +81,7 @@ async def test_메시지_조회도_소유_검증(client, tenant_id):
 @pytest.mark.asyncio
 async def test_소프트삭제_흐름(client, tenant_id):
     (cid,) = await _seed(tenant_id, 1)
-    async with AsyncSessionLocal() as s:                       # 이력 보존 검증용 메시지
+    async with AsyncSessionLocal() as s:  # 이력 보존 검증용 메시지
         s.add(Message(conversation_id=cid, tenant_id=tenant_id, role='user', content='q'))
         await s.commit()
 
@@ -85,9 +89,8 @@ async def test_소프트삭제_흐름(client, tenant_id):
     # 목록·조회·재질의 전부 미노출/404
     assert (await client.get('/kms/conversations', headers=USER_A)).json()['items'] == []
     assert (await client.get(f'/kms/conversations/{cid}/messages', headers=USER_A)).status_code == 404
-    res_q = await client.post('/kms/query', headers=USER_A,
-                              json={'query': '계속 질문', 'conversation_id': cid})
-    assert res_q.status_code == 404                            # 삭제된 대화로 질의 계속 차단
+    res_q = await client.post('/kms/query', headers=USER_A, json={'query': '계속 질문', 'conversation_id': cid})
+    assert res_q.status_code == 404  # 삭제된 대화로 질의 계속 차단
     # 재삭제도 404 (이미 안 보이는 대상)
     assert (await client.delete(f'/kms/conversations/{cid}', headers=USER_A)).status_code == 404
     # 소프트 삭제 — row·메시지는 감사 목적 보존
@@ -102,10 +105,12 @@ async def test_제목변경(client, tenant_id):
     (cid,) = await _seed(tenant_id, 1)
     res = await client.patch(f'/kms/conversations/{cid}', headers=USER_A, json={'title': '새 제목'})
     assert res.status_code == 200 and res.json()['title'] == '새 제목'
-    assert (await client.patch(f'/kms/conversations/{cid}', headers=USER_B,
-                               json={'title': 'x'})).status_code == 404   # 남의 대화
-    assert (await client.patch(f'/kms/conversations/{cid}', headers=USER_A,
-                               json={'title': ''})).status_code == 422    # 빈 제목
+    assert (
+        await client.patch(f'/kms/conversations/{cid}', headers=USER_B, json={'title': 'x'})
+    ).status_code == 404  # 남의 대화
+    assert (
+        await client.patch(f'/kms/conversations/{cid}', headers=USER_A, json={'title': ''})
+    ).status_code == 422  # 빈 제목
 
 
 @pytest.mark.asyncio
@@ -118,18 +123,20 @@ async def test_query_신규대화에_created_by_저장(client, tenant_id, fake_l
         conv = await s.get(Conversation, cid)
         assert conv.created_by == 'agent-a'
     # 만든 사람에겐 이어가기 허용, 남에겐 404
-    assert (await client.post('/kms/query', headers=USER_B,
-                              json={'query': '그럼 교환은?', 'conversation_id': cid})).status_code == 404
+    assert (
+        await client.post('/kms/query', headers=USER_B, json={'query': '그럼 교환은?', 'conversation_id': cid})
+    ).status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_updated_at은_KST_오프셋으로_나가고_시점은_같다(client, tenant_id):
     """#181 — 응답 스키마 세 곳이 같은 KstDatetime을 쓴다. 대화 목록 쪽도 형식·시점을 고정한다."""
     from datetime import datetime
+
     ids = await _seed(tenant_id, 1)
     body = (await client.get('/kms/conversations', headers=USER_A)).json()
     item = next(i for i in body['items'] if i['conversation_id'] == ids[0])
     assert item['updated_at'].endswith('+09:00')
     async with AsyncSessionLocal() as s:
         stored = (await s.get(Conversation, ids[0])).last_used_at
-    assert datetime.fromisoformat(item['updated_at']) == stored      # 변환이지 이동이 아니다
+    assert datetime.fromisoformat(item['updated_at']) == stored  # 변환이지 이동이 아니다

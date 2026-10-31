@@ -1,4 +1,5 @@
 """FAQ 청크 텍스트 조립 단위 테스트 — faq_indexing.build_faq_chunk_text."""
+
 from rag.search.faq_indexing import build_faq_chunk_text
 
 

@@ -11,6 +11,7 @@
 문서 텍스트는 가짜다(저장소 공개). 실문서에서 관측된 **표기 꼴**("제 11 조(…)", "제 11 장 …")만 옮겼다.
 dense는 fake_embed(결정적 가짜 벡터)로 통제하고 candidates_per_branch를 좁혀 '정답이 dense 후보 밖'인 상황을 만든다.
 """
+
 import uuid
 
 import pytest
@@ -39,24 +40,48 @@ QUERY = "가나규칙 11조 뭐야"
 
 async def _seed(tenant_id: str) -> dict[str, int]:
     async with AsyncSessionLocal() as s:
-        doc = Document(tenant_id=tenant_id, filename='가나규칙.pdf', mime='application/pdf',
-                       blob_path='blob://x.pdf', version=1, is_active=True, status='ready')
+        doc = Document(
+            tenant_id=tenant_id,
+            filename='가나규칙.pdf',
+            mime='application/pdf',
+            blob_path='blob://x.pdf',
+            version=1,
+            is_active=True,
+            status='ready',
+        )
         s.add(doc)
         await s.commit()
         doc_id = doc.id
     chunks = [
         # 묶음 — 제9조만 청킹이 기록했고(meta), 제10·11조는 레이아웃 모델이 본문으로 분류한 꼴(결정 15-3)
-        ParsedChunk(chunk_index=0, text=_PACKED, page=3, heading_path=['가나규칙', '제 2 장 인 사'],
-                    meta={'headings': ['제 9 조(고용관계)']}),
-        ParsedChunk(chunk_index=1, text=_CHAPTER, page=25, heading_path=['가나규칙', '제 11 장 괴롭힘의 예방'], meta={}),
+        ParsedChunk(
+            chunk_index=0,
+            text=_PACKED,
+            page=3,
+            heading_path=['가나규칙', '제 2 장 인 사'],
+            meta={'headings': ['제 9 조(고용관계)']},
+        ),
+        ParsedChunk(
+            chunk_index=1, text=_CHAPTER, page=25, heading_path=['가나규칙', '제 11 장 괴롭힘의 예방'], meta={}
+        ),
         ParsedChunk(chunk_index=2, text=_FILLER, page=1, heading_path=[], meta={}),
     ]
     await os_index.index_parsed_document(
-        document_id=doc_id, tenant_id=tenant_id, filename='가나규칙.pdf', version=1,
-        folder_id=None, folder_name=None, folder_description=None, searchable=True,
-        chunks=chunks, embeddings=[_Emb(c.text) for c in chunks])
-    return {k: os_index.chunk_os_id(document_id=doc_id, chunk_index=i)
-            for i, k in enumerate(('packed', 'chapter', 'filler'))}
+        document_id=doc_id,
+        tenant_id=tenant_id,
+        filename='가나규칙.pdf',
+        version=1,
+        folder_id=None,
+        folder_name=None,
+        folder_description=None,
+        searchable=True,
+        chunks=chunks,
+        embeddings=[_Emb(c.text) for c in chunks],
+    )
+    return {
+        k: os_index.chunk_os_id(document_id=doc_id, chunk_index=i)
+        for i, k in enumerate(('packed', 'chapter', 'filler'))
+    }
 
 
 @pytest.mark.asyncio
@@ -64,9 +89,9 @@ async def test_색인이_사전과_헤딩_줄을_채운다(tenant_id, fake_embed
     ids = await _seed(tenant_id)
     cm = await os_search.fetch_chunk_map(list(ids.values()))
     packed, chapter = cm[ids['packed']], cm[ids['chapter']]
-    assert packed.identifiers == ['2장', '9조', '10조', '11조']          # 제목 경로의 장 + 기록 헤딩 + 본문 헤딩 꼴 줄
+    assert packed.identifiers == ['2장', '9조', '10조', '11조']  # 제목 경로의 장 + 기록 헤딩 + 본문 헤딩 꼴 줄
     assert packed.headings == ['제 9 조(고용관계)', '제 10 조(인사발령)', '제 11 조(사무인계 의무)']
-    assert chapter.identifiers == ['11장', '111조']                     # '11조'는 없다
+    assert chapter.identifiers == ['11장', '111조']  # '11조'는 없다
     assert cm[ids['filler']].identifiers == [] and cm[ids['filler']].headings == []
 
 
@@ -87,7 +112,7 @@ async def test_dense가_놓친_정확_일치_조각이_주입된다(tenant_id, f
         cands = await retrieve_candidates(s, tenant_id, QUERY, top_n=20, candidates_per_branch=1)
     got = [c.chunk_id for c in cands.chunks]
     assert ids['packed'] in got, '식별자 주입이 동작하지 않았다'
-    assert all(c.matched_ident is None for c in cands.chunks)        # 리랭크 점수가 없으면 가산·표시 없음
+    assert all(c.matched_ident is None for c in cands.chunks)  # 리랭크 점수가 없으면 가산·표시 없음
 
 
 @pytest.mark.asyncio
@@ -96,11 +121,13 @@ async def test_가산이_장조_혼동을_넘고_근거는_그_조만_오린다(
     ids = await _seed(tenant_id)
     monkeypatch.setattr(settings, 'rerank_enabled', True)
     import rag.search.reranker
+
     fake_scores = {ids['chapter']: 0.97, ids['packed']: 0.72, ids['filler']: 0.05}
 
     async def _fake_maxpool(queries, chunks):
         rows = sorted(((c, fake_scores[c.chunk_id], 0) for c in chunks), key=lambda r: -r[1])
         return [r[0] for r in rows], [r[1] for r in rows], [r[2] for r in rows]
+
     monkeypatch.setattr(rag.search.reranker, 'rerank_maxpool', _fake_maxpool)
 
     async with AsyncSessionLocal() as s:
@@ -108,17 +135,19 @@ async def test_가산이_장조_혼동을_넘고_근거는_그_조만_오린다(
     assert cands.chunks[0].chunk_id == ids['packed'] and cands.chunks[0].matched_ident == '11조'
     assert cands.chunks[1].chunk_id == ids['chapter'] and cands.chunks[1].matched_ident is None
     ev = prepare_evidence(cands.chunks, 5)
-    assert ev[0].text == "제 11 조(사무인계 의무)\n퇴직하는 사원은 업무를 후임자에게 인계한다."   # 묶음에서 그 조만
-    assert ev[0].heading_path == ['가나규칙', '제 2 장 인 사'] and ev[0].page == 3         # 라벨·쪽 불변(결정 18)
-    assert ev[1].text == _CHAPTER                                                          # 다른 조각은 그대로
+    assert ev[0].text == "제 11 조(사무인계 의무)\n퇴직하는 사원은 업무를 후임자에게 인계한다."  # 묶음에서 그 조만
+    assert ev[0].heading_path == ['가나규칙', '제 2 장 인 사'] and ev[0].page == 3  # 라벨·쪽 불변(결정 18)
+    assert ev[1].text == _CHAPTER  # 다른 조각은 그대로
 
 
 @pytest.mark.asyncio
 async def test_식별자_없는_질문과_채널_off는_아무것도_안_바꾼다(tenant_id, fake_embed, monkeypatch):
     ids = await _seed(tenant_id)
     async with AsyncSessionLocal() as s:
-        plain = await retrieve_candidates(s, tenant_id, '해외 배송 관세가 얼마인가요', top_n=20, candidates_per_branch=1)
-        assert [c.chunk_id for c in plain.chunks] == [ids['filler']]            # 주입 없음 — dense 1개 그대로
+        plain = await retrieve_candidates(
+            s, tenant_id, '해외 배송 관세가 얼마인가요', top_n=20, candidates_per_branch=1
+        )
+        assert [c.chunk_id for c in plain.chunks] == [ids['filler']]  # 주입 없음 — dense 1개 그대로
         monkeypatch.setattr(settings, 'ident_channel_enabled', False)
         off = await retrieve_candidates(s, tenant_id, QUERY, top_n=20, candidates_per_branch=1)
     assert ids['packed'] not in [c.chunk_id for c in off.chunks]

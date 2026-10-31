@@ -4,6 +4,7 @@
 LLM·DB 없이 큐에 이벤트를 직접 넣어 순서·형식을 검증한다.
 #56 계약: 리더는 meta만 자체 생성하고 나머지는 순수 전달 — done도 큐로 온다(리더가 합성하지 않음).
 """
+
 import asyncio
 
 import pytest
@@ -16,9 +17,16 @@ from tests.conftest import sse_events
 
 
 def _prepared(**kw) -> PreparedRag:
-    base = dict(conversation_id=1, assistant_message_id=1, original_query='q', standalone_query='q',
-                prior_turns=[], retrieval=RetrievalResult(chunks=[], no_evidence=False, reason=None),
-                sources=[], source_doc_ids=[])
+    base = dict(
+        conversation_id=1,
+        assistant_message_id=1,
+        original_query='q',
+        standalone_query='q',
+        prior_turns=[],
+        retrieval=RetrievalResult(chunks=[], no_evidence=False, reason=None),
+        sources=[],
+        source_doc_ids=[],
+    )
     return PreparedRag(**{**base, **kw})
 
 
@@ -36,7 +44,7 @@ async def test_이벤트_순서_meta_delta_done():
     await queue.put(('delta', {'text': '안녕'}))
     await queue.put(('delta', {'text': '하세요'}))
     await queue.put(('done', _DONE))
-    await queue.put(None)                                   # 생성 태스크의 종료 sentinel
+    await queue.put(None)  # 생성 태스크의 종료 sentinel
 
     events = await _collect(_prepared(), queue)
     assert [e for e, _ in events] == ['meta', 'delta', 'delta', 'done']
@@ -47,8 +55,11 @@ async def test_이벤트_순서_meta_delta_done():
 async def test_done은_리더가_합성하지_않고_큐의_페이로드를_그대로_전달():
     # 구 계약에선 리더가 빈 done을 하드코딩으로 붙였다 — 이제 최종 상태는 생성 태스크만 안다 (#56)
     queue = asyncio.Queue()
-    payload = {'finish_reason': 'cancelled', 'latency_ms': 77,
-               'citations': [{'document_id': 5, 'filename': '정책.pdf', 'version': 2}]}
+    payload = {
+        'finish_reason': 'cancelled',
+        'latency_ms': 77,
+        'citations': [{'document_id': 5, 'filename': '정책.pdf', 'version': 2}],
+    }
     await queue.put(('done', payload))
     await queue.put(None)
 
@@ -99,14 +110,15 @@ async def test_큐_get_취소_직전에_들어온_아이템은_유실되지_않�
     """ping 구현(wait_for가 get을 취소)의 전제를 결정적으로 재현 — put으로 깨어난 getter를
     루프가 돌기 전에 취소해도 아이템은 큐에 남아 다음 get이 집는다 (타이밍 의존 없음)."""
     import contextlib
+
     queue: asyncio.Queue = asyncio.Queue()
     getter = asyncio.ensure_future(queue.get())
-    await asyncio.sleep(0)                     # getter가 대기에 진입
+    await asyncio.sleep(0)  # getter가 대기에 진입
     queue.put_nowait(('delta', {'text': 'x'}))  # getter 깨우기 예약
-    getter.cancel()                            # 깨어나기 전에 취소 — 정확히 그 경합
+    getter.cancel()  # 깨어나기 전에 취소 — 정확히 그 경합
     with contextlib.suppress(asyncio.CancelledError):
         await getter
-    assert queue.get_nowait() == ('delta', {'text': 'x'})   # 유실 없음
+    assert queue.get_nowait() == ('delta', {'text': 'x'})  # 유실 없음
 
 
 @pytest.mark.asyncio
@@ -119,7 +131,7 @@ async def test_유휴_시_ping이_나오고_이후_이벤트는_유실_없이_�
     queue = asyncio.Queue()
 
     async def late_producer():
-        await asyncio.sleep(0.12)                            # ping 최소 1회 발생할 시간
+        await asyncio.sleep(0.12)  # ping 최소 1회 발생할 시간
         await queue.put(('delta', {'text': '유실되면 안 됨'}))
         await queue.put(('done', _DONE))
         await queue.put(None)
@@ -128,7 +140,7 @@ async def test_유휴_시_ping이_나오고_이후_이벤트는_유실_없이_�
     events = await _collect(_prepared(), queue)
     await task
     names = [e for e, _ in events]
-    assert names.count('ping') >= 1                          # 유휴 구간에 ping이 나왔다
+    assert names.count('ping') >= 1  # 유휴 구간에 ping이 나왔다
     # ping을 걷어내면 정확히 원래 시퀀스 — 아이템 유실·중복 없음
     assert [e for e in names if e != 'ping'] == ['meta', 'delta', 'done']
     assert dict(events)['delta'] == {'text': '유실되면 안 됨'}

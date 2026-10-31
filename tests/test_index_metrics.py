@@ -4,14 +4,17 @@
 소요는 배치 전체라 건당으로 나눌 수 없다. 그래서 이 지표가 유일한 창이고, 라벨이 어긋나면
 (예: 확장자가 그대로 라벨이 되면) 카디널리티가 터지거나 조회가 조용히 빈다.
 """
-import pytest
 
 from rag.metrics import INDEX_DURATION_SECONDS, INDEX_TOTAL, ext_label
 
 
 def _counts(metric):
-    return {(s.labels.get('ext'), s.labels.get('result')): s.value
-            for m in metric.collect() for s in m.samples if s.name.endswith('_total')}
+    return {
+        (s.labels.get('ext'), s.labels.get('result')): s.value
+        for m in metric.collect()
+        for s in m.samples
+        if s.name.endswith('_total')
+    }
 
 
 class TestExtLabel:
@@ -36,9 +39,12 @@ class TestHistogram:
         for stage in ('parse', 'embed', 'index', 'total'):
             INDEX_DURATION_SECONDS.labels(stage=stage, ext='pdf').observe(0.5)
 
-        samples = {(s.labels.get('stage'), s.labels.get('ext')): s.value
-                   for m in INDEX_DURATION_SECONDS.collect() for s in m.samples
-                   if s.name.endswith('_count')}
+        samples = {
+            (s.labels.get('stage'), s.labels.get('ext')): s.value
+            for m in INDEX_DURATION_SECONDS.collect()
+            for s in m.samples
+            if s.name.endswith('_count')
+        }
         for stage in ('parse', 'embed', 'index', 'total'):
             assert samples.get((stage, 'pdf'), 0) >= 1
 
@@ -47,10 +53,15 @@ class TestHistogram:
         # "마감 직전 구간"을 읽는다. #223 전에는 '... or 300.0'이 붙어 있어 마감이 900으로 바뀐 뒤에도 통과했다
         # (300 위가 한 칸에 뭉쳤다). 이제 마감 값 자체가 유한 버킷의 최댓값이어야 한다.
         from config import settings
-        finite = [float(s.labels['le']) for m in INDEX_DURATION_SECONDS.collect()
-                  for s in m.samples if s.name.endswith('_bucket') and s.labels['le'] != '+Inf']
+
+        finite = [
+            float(s.labels['le'])
+            for m in INDEX_DURATION_SECONDS.collect()
+            for s in m.samples
+            if s.name.endswith('_bucket') and s.labels['le'] != '+Inf'
+        ]
         assert max(finite) == settings.docling_document_timeout_seconds
-        assert 600.0 in finite          # 정상 최악(약 810초)까지 300~900 사이에서 갈리게
+        assert 600.0 in finite  # 정상 최악(약 810초)까지 300~900 사이에서 갈리게
 
 
 class TestResultCounter:
@@ -73,5 +84,5 @@ class TestResultCounter:
         INDEX_TOTAL.labels(ext='docx', result='failed').inc(2)
         after = _counts(INDEX_TOTAL)
         ok, retry, failed = (after[('docx', r)] - before.get(('docx', r), 0) for r in ('ok', 'retry', 'failed'))
-        assert failed / (ok + failed) == 0.2      # retry 12건이 실패율을 흔들지 않는다
+        assert failed / (ok + failed) == 0.2  # retry 12건이 실패율을 흔들지 않는다
         assert retry == 12

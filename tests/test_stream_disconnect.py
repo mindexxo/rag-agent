@@ -7,6 +7,7 @@
 통합(HTTP 레이어에서 실제로 끊기)과 단위(소비자 없이 태스크만) 두 각도로 본다 —
 ASGITransport의 중단 시맨틱이 실서버와 다를 수 있어 통합만으로는 계약을 못 박는다.
 """
+
 import asyncio
 import time
 
@@ -32,7 +33,7 @@ async def test_소비자가_없어도_태스크는_완주해_finalize한다(clie
     # prepare까지는 정상 경로로 만들고(자리표시 확보), 그 다음을 소비자 없이 돌린다
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
-        prepared = await svc.prepare('환불 기간 알려줘')   # 자리표시는 prepare가 커밋한다 (#72)
+        prepared = await svc.prepare('환불 기간 알려줘')  # 자리표시는 prepare가 커밋한다 (#72)
         assistant_id = prepared.assistant_message_id
     assert assistant_id is not None
 
@@ -40,7 +41,7 @@ async def test_소비자가_없어도_태스크는_완주해_finalize한다(clie
     assert lease is not None
     assert await inflight_count(tenant_id) == 1
 
-    queue: asyncio.Queue = asyncio.Queue()          # 아무도 get()하지 않는다
+    queue: asyncio.Queue = asyncio.Queue()  # 아무도 get()하지 않는다
     root_span, token = otel.start_turn()
     try:
         await _run_generation(prepared, queue, lease, t_request=0.0, root_span=root_span)
@@ -60,7 +61,7 @@ async def test_소비자가_없어도_태스크는_완주해_finalize한다(clie
     drained = []
     while not queue.empty():
         drained.append(queue.get_nowait())
-    assert drained[-1] is None                       # 리더 종료 sentinel
+    assert drained[-1] is None  # 리더 종료 sentinel
     assert any(item and item[0] == 'delta' for item in drained)
 
 
@@ -78,7 +79,7 @@ async def test_캐시_저장이_실패해도_턴은_done이다(client, tenant_id
 
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
-        prepared = await svc.prepare('환불 기간 알려줘')   # 자리표시는 prepare가 커밋한다 (#72)
+        prepared = await svc.prepare('환불 기간 알려줘')  # 자리표시는 prepare가 커밋한다 (#72)
         assistant_id = prepared.assistant_message_id
 
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
@@ -97,8 +98,8 @@ async def test_캐시_저장이_실패해도_턴은_done이다(client, tenant_id
     while not queue.empty():
         drained.append(queue.get_nowait())
     done_events = [d for item in drained if item for k, d in [item] if k == 'done']
-    assert done_events and done_events[0]['finish_reason'] == 'done'   # done도 정상 전송
-    assert not any(item and item[0] == 'error' for item in drained)    # 에러 이벤트 없음
+    assert done_events and done_events[0]['finish_reason'] == 'done'  # done도 정상 전송
+    assert not any(item and item[0] == 'error' for item in drained)  # 에러 이벤트 없음
 
 
 @pytest.mark.asyncio
@@ -112,12 +113,12 @@ async def test_생성_실패도_failed로_남고_정리가_끝난다(client, ten
 
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
-        prepared = await svc.prepare('환불 기간 알려줘')   # 자리표시는 prepare가 커밋한다 (#72)
+        prepared = await svc.prepare('환불 기간 알려줘')  # 자리표시는 prepare가 커밋한다 (#72)
         assistant_id = prepared.assistant_message_id
 
     async def _boom(self, prepared):
         raise RuntimeError('LLM down')
-        yield   # async generator로 만들기 위한 도달 불가 yield
+        yield  # async generator로 만들기 위한 도달 불가 yield
 
     monkeypatch.setattr(RagService, 'generate', _boom)
 
@@ -139,13 +140,13 @@ async def test_생성_실패도_failed로_남고_정리가_끝난다(client, ten
         assert msg.status == 'failed'
         assert msg.latency_ms is not None and 0 <= msg.latency_ms < 60_000
 
-    assert await inflight_count(tenant_id) == 0     # 슬롯 반납 (finally)
+    assert await inflight_count(tenant_id) == 0  # 슬롯 반납 (finally)
 
     drained = []
     while not queue.empty():
         drained.append(queue.get_nowait())
-    assert drained[-1] is None                       # 리더 종료 sentinel
-    assert any(item and item[0] == 'error' for item in drained)   # 에러 이벤트 전달
+    assert drained[-1] is None  # 리더 종료 sentinel
+    assert any(item and item[0] == 'error' for item in drained)  # 에러 이벤트 전달
 
 
 @pytest.mark.asyncio
@@ -156,12 +157,13 @@ async def test_스트림_중단해도_턴이_done으로_남는다(client, tenant
     assistant_id = None
     async with client.stream('POST', '/kms/query', json={'query': '환불 기간 알려줘'}) as res:
         assert res.status_code == 200
-        async for raw in res.aiter_lines():          # meta 한 줄만 확인하고 즉시 이탈
+        async for raw in res.aiter_lines():  # meta 한 줄만 확인하고 즉시 이탈
             if raw.startswith('data: '):
                 import json
+
                 assistant_id = json.loads(raw.removeprefix('data: '))['assistant_message_id']
                 break
-    assert assistant_id is not None                  # placeholder는 스트림 전에 commit됨
+    assert assistant_id is not None  # placeholder는 스트림 전에 commit됨
 
     # 태스크는 응답과 무관하게 돌고 있다 — 완료까지 폴링 (고정 sleep은 느리고 불안정)
     for _ in range(100):
@@ -176,4 +178,4 @@ async def test_스트림_중단해도_턴이_done으로_남는다(client, tenant
         assert msg.status == 'done', '연결이 끊기면 생성이 중단됐다 — 태스크 분리가 깨졌다'
         assert '테스트 답변입니다.' in msg.content
 
-    assert await wait_inflight(tenant_id) == 0     # 슬롯도 반납됨(done 커밋·캐시 적재 뒤 finally)
+    assert await wait_inflight(tenant_id) == 0  # 슬롯도 반납됨(done 커밋·캐시 적재 뒤 finally)

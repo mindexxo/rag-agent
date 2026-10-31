@@ -3,6 +3,7 @@
 옛 대화에 턴이 추가되면 목록 첫 번째로 부상해야 한다.
 실 DB 사용 (tenant_isolation과 같은 패턴: 랜덤 tenant + finally 정리).
 """
+
 import uuid
 
 import pytest
@@ -10,8 +11,8 @@ import pytest_asyncio
 from sqlalchemy import delete, select
 
 from database import AsyncSessionLocal
-from rag.turn.turn_state import add_pending_turn
 from rag.models import Conversation, Message
+from rag.turn.turn_state import add_pending_turn
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -21,6 +22,7 @@ async def _reset_db_pool():
     (통합 테스트 확장 시 conftest 공용 fixture로 승격 예정)"""
     yield
     from database import engine
+
     await engine.dispose()
 
 
@@ -47,11 +49,17 @@ async def _create_two_conversations(tenant_id: str) -> tuple[int, int]:
 
 async def _ordered_ids(tenant_id: str) -> list[int]:
     async with AsyncSessionLocal() as session:
-        return list((await session.execute(
-            select(Conversation.id)
-            .where(Conversation.tenant_id == tenant_id)
-            .order_by(Conversation.last_used_at.desc())
-        )).scalars().all())
+        return list(
+            (
+                await session.execute(
+                    select(Conversation.id)
+                    .where(Conversation.tenant_id == tenant_id)
+                    .order_by(Conversation.last_used_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
 
 
 @pytest.mark.asyncio
@@ -73,17 +81,17 @@ async def test_타_테넌트_대화는_건드리지_않음(tenant_id):
     other = str(uuid.uuid4())
     try:
         async with AsyncSessionLocal() as session:
-            before = (await session.execute(
-                select(Conversation.last_used_at).where(Conversation.id == c1_id)
-            )).scalar_one()
+            before = (
+                await session.execute(select(Conversation.last_used_at).where(Conversation.id == c1_id))
+            ).scalar_one()
             # 다른 tenant_id로 같은 conversation_id에 저장 시도 — 메시지는 남의 대화에 붙지만
             # (ensure_conversation을 우회한 직접 호출), last_used_at은 갱신되면 안 된다
             await add_pending_turn(session, other, c1_id, 'q')
             await session.commit()
         async with AsyncSessionLocal() as session:
-            after = (await session.execute(
-                select(Conversation.last_used_at).where(Conversation.id == c1_id)
-            )).scalar_one()
+            after = (
+                await session.execute(select(Conversation.last_used_at).where(Conversation.id == c1_id))
+            ).scalar_one()
         assert after == before
     finally:
         async with AsyncSessionLocal() as session:

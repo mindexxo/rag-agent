@@ -2,6 +2,7 @@
 
 digest는 semantic 캐시(answer_cache.cache_key)의 키 — 정규화가 바뀌면 기존 캐시 전체가 미스가 된다.
 """
+
 from rag.turn.cache import _build_cache_digest, _normalize_query, _sources_from_json, _sources_to_json
 from schemas.kms import SourceCitation
 
@@ -42,6 +43,7 @@ class TestCacheDigest:
     def test_sha256_알고리즘_고정(self):
         # digest 알고리즘·인코딩이 바뀌면 기존 캐시(answer_cache.cache_key) 전체가 미스 — 값 자체를 고정
         import hashlib
+
         assert _build_cache_digest('환불') == hashlib.sha256('환불'.encode('utf-8')).hexdigest()
 
 

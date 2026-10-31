@@ -10,10 +10,11 @@
   4. 엔진이 돌려준 청크에 인용 메타가 다 실린다        (PG를 되묻지 않으므로)
   5. ensure_index는 못 붙으면 예외, 경합의 already_exists는 성공, soft는 예외 없이 False
 """
+
 import pytest
 
-from rag.search import os_client as C
 from rag.search import lexical
+from rag.search import os_client as C
 
 
 def test_bm25_hnsw_파라미터는_엔진_기본값을_쓴다():
@@ -34,7 +35,7 @@ def test_dense_필드는_임베딩_차원과_lucene_cosinesimil로_고정된다(
     dense = C.MAPPING["mappings"]["properties"]["dense"]
     assert dense["type"] == "knn_vector" and dense["dimension"] == C.DIM == 1024
     assert dense["method"]["name"] == "hnsw"
-    assert dense["method"]["engine"] == "lucene"           # cosinesimil 지원 + 필터를 kNN 탐색 단계에서 처리
+    assert dense["method"]["engine"] == "lucene"  # cosinesimil 지원 + 필터를 kNN 탐색 단계에서 처리
     assert dense["method"]["space_type"] == "cosinesimil"
 
 
@@ -52,17 +53,30 @@ def test_엔진이_돌려준_청크에_인용_메타가_다_실린다():
     """PG를 되묻지 않으므로 RetrievedChunk의 모든 필드가 _source에 있어야 한다.
     하나라도 빠지면 인용 표시나 리랭커 입력이 조용히 비어버린다."""
     props = C.MAPPING['mappings']['properties']
-    for f in ('chunk_id', 'document_id', 'faq_id', 'text', 'heading_path', 'page',
-              'filename', 'version', 'is_table', 'folder_name', 'folder_description',
-              'identifiers', 'headings'):        # 식별자 채널(#238)
+    for f in (
+        'chunk_id',
+        'document_id',
+        'faq_id',
+        'text',
+        'heading_path',
+        'page',
+        'filename',
+        'version',
+        'is_table',
+        'folder_name',
+        'folder_description',
+        'identifiers',
+        'headings',
+    ):  # 식별자 채널(#238)
         assert f in props, f
-    assert props['identifiers']['type'] == 'keyword'    # 정확 일치(terms) — 분석기로 쪼개면 채널 자체가 무의미
+    assert props['identifiers']['type'] == 'keyword'  # 정확 일치(terms) — 분석기로 쪼개면 채널 자체가 무의미
 
 
 @pytest.mark.asyncio
 async def test_엔진에_못_붙으면_ensure_index가_예외를_올린다(monkeypatch):
     """OpenSearch 없이 기동하면 죽어야 한다(E2E #10) — 검색 없는 서버가 조용히 뜨는 것을 막는 계약.
     main.lifespan·worker.startup이 이 함수를 첫 줄에서 부른다."""
+
     class _Indices:
         async def exists(self, *a, **k):
             raise ConnectionError('Cannot connect to host localhost:9200')
@@ -91,7 +105,7 @@ async def test_이미_있는_인덱스는_건드리지_않고_경합의_already_
             raise RuntimeError('resource_already_exists_exception: index already exists')
 
         async def get_mapping(self, *a, **k):
-            return {'kms': {'mappings': {'properties': {'text': {}}}}}     # 추가 필드 없음
+            return {'kms': {'mappings': {'properties': {'text': {}}}}}  # 추가 필드 없음
 
         async def put_mapping(self, *a, index=None, body=None, **k):
             calls.append(('put_mapping', sorted(body['properties'])))
@@ -106,7 +120,7 @@ async def test_이미_있는_인덱스는_건드리지_않고_경합의_already_
     assert calls == [('put_mapping', sorted(C.ADDITIVE_FIELDS))]
     calls.clear()
     monkeypatch.setattr(C, 'client', lambda: _Client(False))
-    await C.ensure_index()                               # 웹·워커 동시 생성 경합 — 예외 아님
+    await C.ensure_index()  # 웹·워커 동시 생성 경합 — 예외 아님
     assert calls == ['create']
 
 
@@ -114,6 +128,7 @@ async def test_이미_있는_인덱스는_건드리지_않고_경합의_already_
 async def test_ensure_index_soft는_못_붙어도_예외_없이_False(monkeypatch, caplog):
     """기동 경로(main lifespan·worker startup·drain)는 이걸 쓴다 — 로컬 개발에서 OpenSearch 없이도 앱이 뜨게
     (사용자 결정 2026-09-13). 실패는 삼키지 않고 ERROR 로그로 남긴다."""
+
     class _Indices:
         async def exists(self, *a, **k):
             raise ConnectionError('Cannot connect to host 10.1.32.20:23338')
@@ -123,6 +138,7 @@ async def test_ensure_index_soft는_못_붙어도_예외_없이_False(monkeypatc
 
     monkeypatch.setattr(C, 'client', lambda: _Client())
     import logging
+
     with caplog.at_level(logging.ERROR, logger='rag.search.os_client'):
         assert await C.ensure_index_soft() is False
     assert any('연결 실패' in r.getMessage() for r in caplog.records)
@@ -140,13 +156,16 @@ class TestConnectionPool:
         import inspect
 
         import rag.search.os_client as oc
+
         src = inspect.getsource(oc.client)
         assert 'maxsize=' in src, 'maxsize를 안 주면 기본 10으로 묶인다'
 
     def test_설정_기본값이_10보다_크다(self):
         from config import settings
+
         assert settings.opensearch_maxsize > 10, (
-            f'opensearch_maxsize={settings.opensearch_maxsize} — 라이브러리 기본값과 같거나 작다')
+            f'opensearch_maxsize={settings.opensearch_maxsize} — 라이브러리 기본값과 같거나 작다'
+        )
 
     def test_실제_커넥터_상한에_반영된다(self):
         """소스 문자열이 아니라 **만들어진 객체**로 확인한다 — 인자 이름이 바뀌거나
@@ -158,15 +177,17 @@ class TestConnectionPool:
         from opensearchpy._async.http_aiohttp import AIOHttpConnection
 
         from config import settings
-        conn = AIOHttpConnection(host='localhost', port=9200,
-                                 maxsize=settings.opensearch_maxsize)
+
+        conn = AIOHttpConnection(host='localhost', port=9200, maxsize=settings.opensearch_maxsize)
         assert conn._limit == settings.opensearch_maxsize, (
-            f'커넥터 상한 {conn._limit} ≠ 설정 {settings.opensearch_maxsize}')
+            f'커넥터 상한 {conn._limit} ≠ 설정 {settings.opensearch_maxsize}'
+        )
 
     def test_maxsize를_빼면_10으로_떨어진다(self):
         """회귀 감지의 근거 — 우리가 막으려는 기본값이 실제로 10임을 라이브러리에서 확인한다.
         이 값이 바뀌면(라이브러리 업그레이드 등) 테스트가 알려준다."""
         from opensearchpy._async.http_aiohttp import AIOHttpConnection
+
         assert AIOHttpConnection(host='localhost', port=9200)._limit == 10
 
 
@@ -196,7 +217,7 @@ async def test_보관_필드가_이미_있으면_추가하지_않고_추가_실�
 
     monkeypatch.setattr(C, 'client', lambda: _Client({'text', *C.ADDITIVE_FIELDS}))
     await C.ensure_index()
-    assert calls == []                                   # 이미 있으면 put을 부르지 않는다
+    assert calls == []  # 이미 있으면 put을 부르지 않는다
     monkeypatch.setattr(C, 'client', lambda: _Client({'text'}, fail=True))
-    await C.ensure_index()                               # 실패해도 예외 없이 지나간다
+    await C.ensure_index()  # 실패해도 예외 없이 지나간다
     assert calls == ['put']

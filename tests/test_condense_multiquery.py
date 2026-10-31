@@ -5,6 +5,7 @@ LLM·DB 없이 검증한다. #43에서 출력이 JSON 스키마 강제로 바뀌
 - 남은 계약: 스키마가 강제 못 하는 후처리(중복 제거·빈 값 폴백·상한 슬라이스)와
   폴백 3갈래(비JSON·빈 standalone·예외 → [원본])
 """
+
 import json
 
 import pytest
@@ -31,11 +32,16 @@ def _multi(standalone: str, *variants: str) -> str:
 
 # ===== condense_to_queries ==========================================
 
+
 @pytest.mark.asyncio
 async def test_정상이면_standalone과_변형_2개():
-    llm = _FakeLlm(result=_multi('반품은 한 달 안에 아무 때나 가능한가요?',
-                                 '단순변심 반품 신청 기한이 한 달 이내인지 확인 부탁드립니다.',
-                                 '반품 접수 가능 기간이 한 달인지 알려주세요.'))
+    llm = _FakeLlm(
+        result=_multi(
+            '반품은 한 달 안에 아무 때나 가능한가요?',
+            '단순변심 반품 신청 기한이 한 달 이내인지 확인 부탁드립니다.',
+            '반품 접수 가능 기간이 한 달인지 알려주세요.',
+        )
+    )
     out = await condense_to_queries(llm, '반품은 한 달 안에 아무때나 되는거죠?', [])
     assert out[0] == '반품은 한 달 안에 아무 때나 가능한가요?'
     assert len(out) == 3
@@ -74,7 +80,7 @@ async def test_빈_standalone이면_원본_폴백():
     llm = _FakeLlm(result=_multi('  ', '변형1'))
     out = await condense_to_queries(llm, '원본', [])
     assert out[0] == '원본'
-    assert '변형1' in out                     # standalone만 폴백, 변형은 살아있다
+    assert '변형1' in out  # standalone만 폴백, 변형은 살아있다
 
 
 @pytest.mark.asyncio
@@ -82,7 +88,7 @@ async def test_비JSON_응답이면_판단실패():
     # 스키마 미지원 서버의 자유 생성이 형식을 안 지킨 경우 — 그럴듯한 복구도, 폴백도 없다.
     # #72로 "원본 단독 검색" 폴백을 걷어냈다: 재작성을 판단하지 못한 상태에서 원문으로
     # 검색을 밀어붙이는 건 근거 없는 추측이고, LLM이 그 지경이면 생성도 실패한다.
-    llm = _FakeLlm(result='재작성\n변형1\n변형2')   # 구 3줄 형식 — 이제 유효하지 않다
+    llm = _FakeLlm(result='재작성\n변형1\n변형2')  # 구 3줄 형식 — 이제 유효하지 않다
     with pytest.raises(LlmJudgmentFailed):
         await condense_to_queries(llm, '원본', [])
 
@@ -102,16 +108,19 @@ async def test_LLM_예외는_그대로_전파():
 
 # ===== condense_query (단일) ========================================
 
+
 @pytest.mark.asyncio
 async def test_단일_condense도_JSON_실값을_반환():
     """condense_query의 JSON 전환 실값 고정 — FakeLlm 잠복 버그(라벨 줄 반향)가
     '이 값을 검증하는 테스트가 없어' 살아남았던 전례의 재발 방지 (리뷰 지적)."""
     from rag.models import Message
     from rag.turn.conversation import condense_query
-    llm = _FakeLlm(result=json.dumps({'standalone': '하자 교환 배송비는 누가 부담하나요?'},
-                                     ensure_ascii=False))
-    history = [Message(role='user', content='하자 교환 조건 알려줘'),
-               Message(role='assistant', content='하자 교환은 …', status='done')]
+
+    llm = _FakeLlm(result=json.dumps({'standalone': '하자 교환 배송비는 누가 부담하나요?'}, ensure_ascii=False))
+    history = [
+        Message(role='user', content='하자 교환 조건 알려줘'),
+        Message(role='assistant', content='하자 교환은 …', status='done'),
+    ]
     out = await condense_query(llm, '그럼 배송비는?', history)
     assert out == '하자 교환 배송비는 누가 부담하나요?'
 
@@ -121,11 +130,14 @@ async def test_단일_condense_히스토리_없으면_LLM_미호출():
     class _Exploding:
         async def acomplete(self, *a, **kw):
             raise AssertionError('히스토리 게이트가 뚫렸다')
+
     from rag.turn.conversation import condense_query
+
     assert await condense_query(_Exploding(), '원본', []) == '원본'
 
 
 # ===== _rrf_fuse (N-way) ============================================
+
 
 def test_단일_리스트는_순서_보존():
     scores = _rrf_fuse([[10, 20, 30]])
@@ -137,7 +149,7 @@ def test_여러_리스트_모두_상위면_가점():
     scores = _rrf_fuse([[10, 20], [30, 20]])
     top = sorted(scores, key=lambda c: -scores[c])
     assert top[0] == 20
-    assert scores[10] == scores[30]          # 같은 rank 1끼리는 동점
+    assert scores[10] == scores[30]  # 같은 rank 1끼리는 동점
 
 
 def test_빈_리스트는_빈_결과():

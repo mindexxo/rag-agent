@@ -12,6 +12,7 @@
 FakeLlm.pause_after_tokens로 정지 지점을 잡는다 — 시간(sleep) 기반이면 CI에서 플레이크가
 난다. astream에 진짜 await가 없으면 취소가 전달될 지점 자체가 없다는 것도 여기서 전제한다.
 """
+
 import asyncio
 import contextlib
 
@@ -53,20 +54,20 @@ async def cancel_subscriber():
 
     clients.shared_redis = aioredis.from_url(settings.redis_url)
     task = asyncio.create_task(cancellation.subscribe_forever())
-    await asyncio.sleep(0.1)                  # 구독이 붙을 시간 — pub/sub은 늦게 붙으면 메시지를 놓친다
+    await asyncio.sleep(0.1)  # 구독이 붙을 시간 — pub/sub은 늦게 붙으면 메시지를 놓친다
     yield task
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
     await clients.shared_redis.aclose()
-    clients.shared_redis = aioredis.from_url(settings.redis_url)   # lazy — 다음 사용자를 위해 성한 것으로
+    clients.shared_redis = aioredis.from_url(settings.redis_url)  # lazy — 다음 사용자를 위해 성한 것으로
 
 
 async def _prepare_turn(tenant_id: str):
     """정상 경로로 prepare + 자리표시(generating)까지 만들고 그 뒤를 테스트가 조작한다."""
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
-        prepared = await svc.prepare('환불 기간 알려줘')   # 자리표시는 prepare가 커밋한다 (#72)
+        prepared = await svc.prepare('환불 기간 알려줘')  # 자리표시는 prepare가 커밋한다 (#72)
         return prepared
 
 
@@ -85,6 +86,7 @@ async def _wait_status(assistant_id: int, expected: str, tries: int = 100) -> st
 
 # ── 순수: 레지스트리 규약 ────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_pop_then_cancel은_두번_눌러도_한번만_취소한다():
     """따닥 두 번의 방어선. 두 번째 cancel()이 정리 중인 finally를 파괴하는 걸 막는다."""
@@ -98,19 +100,19 @@ async def test_pop_then_cancel은_두번_눌러도_한번만_취소한다():
             raise
 
     task = asyncio.create_task(dummy())
-    await asyncio.sleep(0)                            # 태스크가 await 지점까지 진행하게 —
+    await asyncio.sleep(0)  # 태스크가 await 지점까지 진행하게 —
     #                                                   시작 전에 취소하면 except 절에 못 들어간다
     cancellation.register(-1, task)
-    assert cancellation.cancel_local(-1) is True      # 첫 요청이 태스크를 가져간다
-    assert cancellation.cancel_local(-1) is False     # 두 번째는 대상이 없다
+    assert cancellation.cancel_local(-1) is True  # 첫 요청이 태스크를 가져간다
+    assert cancellation.cancel_local(-1) is False  # 두 번째는 대상이 없다
     with contextlib.suppress(asyncio.CancelledError):
         await task
-    assert cancels == [1]                             # cancel은 정확히 한 번만 전달됐다
+    assert cancels == [1]  # cancel은 정확히 한 번만 전달됐다
 
 
 @pytest.mark.asyncio
 async def test_unregister는_멱등():
-    cancellation.unregister(-999)                     # 없는 키도 예외 없이
+    cancellation.unregister(-999)  # 없는 키도 예외 없이
     task = asyncio.create_task(asyncio.sleep(0))
     cancellation.register(-2, task)
     cancellation.unregister(-2)
@@ -120,17 +122,18 @@ async def test_unregister는_멱등():
 
 
 def test_잘못된_payload는_무시된다():
-    cancellation._handle_signal(b'not-a-number')      # 예외 없이 통과해야 한다
+    cancellation._handle_signal(b'not-a-number')  # 예외 없이 통과해야 한다
     cancellation._handle_signal(None)
 
 
 # ── 단위: _run_generation 취소 분기 ─────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_취소하면_부분답변이_cancelled로_남고_정리가_끝난다(client, tenant_id, fake_llm, pass_gate):
     """이 기능의 정본 테스트 — 취소 분기가 없으면 generating으로 고착되고 스윕이 failed로 만든다."""
     await register_faq(client)
-    fake_llm.pause_after_tokens = 2                   # 2토큰 내보낸 뒤 정지
+    fake_llm.pause_after_tokens = 2  # 2토큰 내보낸 뒤 정지
     prepared = await _prepare_turn(tenant_id)
     assistant_id = prepared.assistant_message_id
 
@@ -141,7 +144,7 @@ async def test_취소하면_부분답변이_cancelled로_남고_정리가_끝난
     root_span, token = otel.start_turn()
     task = asyncio.create_task(_run_generation(prepared, queue, lease, 0.0, root_span))
     try:
-        await asyncio.wait_for(fake_llm.paused.wait(), timeout=5)   # 정지 지점 도달까지
+        await asyncio.wait_for(fake_llm.paused.wait(), timeout=5)  # 정지 지점 도달까지
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -151,16 +154,16 @@ async def test_취소하면_부분답변이_cancelled로_남고_정리가_끝난
     async with AsyncSessionLocal() as session:
         msg = await session.get(Message, assistant_id)
         assert msg.status == 'cancelled'
-        assert msg.content                            # 부분 답변이 남았다
-        assert msg.content in fake_llm.answer + ' '   # 실제로 생성된 접두부다
-        assert msg.sources == [] and msg.cited_docs == []   # done이 아니면 인용을 남기지 않는다
+        assert msg.content  # 부분 답변이 남았다
+        assert msg.content in fake_llm.answer + ' '  # 실제로 생성된 접두부다
+        assert msg.sources == [] and msg.cited_docs == []  # done이 아니면 인용을 남기지 않는다
 
-    assert await inflight_count(tenant_id) == 0      # 리미터 반납됨
+    assert await inflight_count(tenant_id) == 0  # 리미터 반납됨
     drained = []
     while not queue.empty():
         drained.append(queue.get_nowait())
-    assert drained[-1] is None                        # 큐 sentinel — FE 스트림이 done으로 끝난다
-    assert cancellation.cancel_local(assistant_id) is False   # 레지스트리에 잔재 없음
+    assert drained[-1] is None  # 큐 sentinel — FE 스트림이 done으로 끝난다
+    assert cancellation.cancel_local(assistant_id) is False  # 레지스트리에 잔재 없음
 
 
 @pytest.mark.asyncio
@@ -210,7 +213,7 @@ async def test_스윕이_failed로_바꿔도_살아있는_태스크는_취소된
     spawn_generation(prepared, asyncio.Queue(), lease, 0.0, root_span)
     await asyncio.wait_for(fake_llm.paused.wait(), timeout=5)
 
-    async with AsyncSessionLocal() as session:      # 스윕이 지나간 상황을 만든다
+    async with AsyncSessionLocal() as session:  # 스윕이 지나간 상황을 만든다
         msg = await session.get(Message, assistant_id)
         msg.status = 'failed'
         await session.commit()
@@ -224,10 +227,11 @@ async def test_스윕이_failed로_바꿔도_살아있는_태스크는_취소된
 async def test_발행_실패는_503(client, tenant_id, fake_llm, pass_gate, monkeypatch):
     """Redis 순단 시 202("접수했다")는 거짓이고 500은 원인을 감춘다 — 재시도 가능함을 알린다."""
     await register_faq(client)
-    prepared = await _prepare_turn(tenant_id)       # generating, 로컬 태스크 없음
+    prepared = await _prepare_turn(tenant_id)  # generating, 로컬 태스크 없음
 
     async def _boom(_mid):
         raise ConnectionError('redis down')
+
     monkeypatch.setattr(cancellation, 'request_cancel', _boom)
 
     res = await client.post(f'/kms/messages/{prepared.assistant_message_id}/cancel', headers=USER)
@@ -237,7 +241,7 @@ async def test_발행_실패는_503(client, tenant_id, fake_llm, pass_gate, monk
 @pytest.mark.asyncio
 async def test_첫_토큰_전에_취소하면_빈_답변으로_남는다(client, tenant_id, fake_llm, pass_gate):
     await register_faq(client)
-    fake_llm.pause_after_tokens = 0                   # 첫 토큰 전에 정지
+    fake_llm.pause_after_tokens = 0  # 첫 토큰 전에 정지
     prepared = await _prepare_turn(tenant_id)
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
 
@@ -267,7 +271,7 @@ async def test_정리_도중_취소요청은_대상을_못_찾는다(client, ten
 
     root_span, token = otel.start_turn()
     try:
-        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, root_span)   # 완주
+        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, root_span)  # 완주
     finally:
         otel.detach_turn(token)
 
@@ -275,10 +279,11 @@ async def test_정리_도중_취소요청은_대상을_못_찾는다(client, ten
     assert cancellation.cancel_local(prepared.assistant_message_id) is False
     async with AsyncSessionLocal() as session:
         assert (await session.get(Message, prepared.assistant_message_id)).status == 'done'
-    assert await inflight_count(tenant_id) == 0       # 정리가 온전했다
+    assert await inflight_count(tenant_id) == 0  # 정리가 온전했다
 
 
 # ── 통합: HTTP 엔드포인트 ───────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_생성_중_취소요청은_204이고_cancelled로_귀결(client, tenant_id, fake_llm, pass_gate):
@@ -295,17 +300,17 @@ async def test_생성_중_취소요청은_204이고_cancelled로_귀결(client, 
     prepared = await _prepare_turn(tenant_id)
     assistant_id = prepared.assistant_message_id
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
-    lease.handed_off = True                            # 반납 책임은 태스크가 진다 (kms 라우터와 동일)
+    lease.handed_off = True  # 반납 책임은 태스크가 진다 (kms 라우터와 동일)
 
     root_span, token = otel.start_turn()
-    otel.detach_turn(token)                            # 요청 컨텍스트가 아니므로 즉시 분리
+    otel.detach_turn(token)  # 요청 컨텍스트가 아니므로 즉시 분리
     spawn_generation(prepared, asyncio.Queue(), lease, 0.0, root_span)
     await asyncio.wait_for(fake_llm.paused.wait(), timeout=5)
 
     cancel = await client.post(f'/kms/messages/{assistant_id}/cancel', headers=USER)
     assert cancel.status_code == 204
     assert await _wait_status(assistant_id, 'cancelled') == 'cancelled'
-    assert await wait_inflight(tenant_id) == 0        # 취소 경로도 슬롯을 반납한다
+    assert await wait_inflight(tenant_id) == 0  # 취소 경로도 슬롯을 반납한다
 
     # 멱등 — 두 번째 클릭도 성공으로 (결과가 같다)
     again = await client.post(f'/kms/messages/{assistant_id}/cancel', headers=USER)
@@ -319,10 +324,10 @@ async def test_동시_상한이_가득_차도_취소는_동작한다(client, ten
     prepared = await _prepare_turn(tenant_id)
     leases = [await limiter.try_acquire(tenant_id, 1, 'agent-x', 1)]
     assert leases[0] is not None
-    assert await limiter.try_acquire(tenant_id, 1, 'agent-x', 1) is None   # 상한 포화 확인
+    assert await limiter.try_acquire(tenant_id, 1, 'agent-x', 1) is None  # 상한 포화 확인
 
     res = await client.post(f'/kms/messages/{prepared.assistant_message_id}/cancel', headers=USER)
-    assert res.status_code != 429                       # 슬롯을 요구하지 않는다
+    assert res.status_code != 429  # 슬롯을 요구하지 않는다
     await limiter.release(leases[0])
 
 
@@ -332,15 +337,15 @@ async def test_취소_대상이_아니면_404(client, tenant_id, fake_llm, pass_
     res = await client.post('/kms/query', headers=USER, json={'query': '환불 기간 알려줘'})
     assert res.status_code == 200
     from tests.conftest import sse_meta
+
     assistant_id = sse_meta(res)['assistant_message_id']
     assert await _wait_status(assistant_id, 'done') == 'done'
 
-    assert (await client.post(f'/kms/messages/{assistant_id}/cancel',
-                              headers=USER)).status_code == 404      # 이미 끝난 턴
-    assert (await client.post('/kms/messages/99999999/cancel',
-                              headers=USER)).status_code == 404      # 없는 메시지
-    assert (await client.post(f'/kms/messages/{assistant_id}/cancel',
-                              headers={'X-User-Id': 'agent-other'})).status_code == 404   # 남의 대화
+    assert (await client.post(f'/kms/messages/{assistant_id}/cancel', headers=USER)).status_code == 404  # 이미 끝난 턴
+    assert (await client.post('/kms/messages/99999999/cancel', headers=USER)).status_code == 404  # 없는 메시지
+    assert (
+        await client.post(f'/kms/messages/{assistant_id}/cancel', headers={'X-User-Id': 'agent-other'})
+    ).status_code == 404  # 남의 대화
 
 
 @pytest.mark.asyncio
@@ -364,20 +369,19 @@ async def test_진행_중인_남의_생성은_취소할_수_없다(client, tenan
     await asyncio.wait_for(fake_llm.paused.wait(), timeout=5)
 
     # ① 같은 테넌트의 다른 상담원
-    assert (await client.post(f'/kms/messages/{assistant_id}/cancel',
-                              headers=OTHER_USER)).status_code == 404
+    assert (await client.post(f'/kms/messages/{assistant_id}/cancel', headers=OTHER_USER)).status_code == 404
     # ② 다른 테넌트 (헤더만 바꿔 붙은 클라이언트)
     from main import app
-    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://testserver',
-                           headers={'X-Tenant-Id': other_tenant_id}) as other:
-        assert (await other.post(f'/kms/messages/{assistant_id}/cancel',
-                                 headers=USER)).status_code == 404
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url='http://testserver', headers={'X-Tenant-Id': other_tenant_id}
+    ) as other:
+        assert (await other.post(f'/kms/messages/{assistant_id}/cancel', headers=USER)).status_code == 404
 
     assert not task.cancelled() and not task.done(), '남의 요청이 생성을 죽였다 — 격리 위반'
 
     # 주인은 취소할 수 있다 (양성 대조)
-    assert (await client.post(f'/kms/messages/{assistant_id}/cancel',
-                              headers=USER)).status_code == 204
+    assert (await client.post(f'/kms/messages/{assistant_id}/cancel', headers=USER)).status_code == 204
     assert await _wait_status(assistant_id, 'cancelled') == 'cancelled'
 
 
@@ -385,10 +389,9 @@ async def test_진행_중인_남의_생성은_취소할_수_없다(client, tenan
 async def test_로컬에_없으면_발행하고_202(client, tenant_id, fake_llm, pass_gate, monkeypatch):
     """다른 인스턴스 소유로 추정되는 경우 — generating인데 내 레지스트리에 없다."""
     await register_faq(client)
-    prepared = await _prepare_turn(tenant_id)          # generating 상태, 태스크는 없음
+    prepared = await _prepare_turn(tenant_id)  # generating 상태, 태스크는 없음
     published = []
-    monkeypatch.setattr(cancellation, 'request_cancel',
-                        lambda mid: published.append(mid) or asyncio.sleep(0))
+    monkeypatch.setattr(cancellation, 'request_cancel', lambda mid: published.append(mid) or asyncio.sleep(0))
 
     res = await client.post(f'/kms/messages/{prepared.assistant_message_id}/cancel', headers=USER)
     assert res.status_code == 202
@@ -413,16 +416,17 @@ async def test_구독이_끊겨도_재연결해_계속_받는다(monkeypatch):
     def flaky_pubsub():
         attempts.append(1)
         if len(attempts) == 1:
-            raise ConnectionError('첫 연결 실패')     # 순단 재현
+            raise ConnectionError('첫 연결 실패')  # 순단 재현
         return real_pubsub()
+
     monkeypatch.setattr(clients.shared_redis, 'pubsub', flaky_pubsub)
 
     loop_task = asyncio.create_task(cancellation.subscribe_forever())
-    for _ in range(100):                              # 재연결로 구독이 붙을 때까지
+    for _ in range(100):  # 재연결로 구독이 붙을 때까지
         if len(attempts) >= 2:
             break
         await asyncio.sleep(0.05)
-    await asyncio.sleep(0.2)                          # 구독 확립 여유
+    await asyncio.sleep(0.2)  # 구독 확립 여유
 
     cancelled = []
 
@@ -467,7 +471,7 @@ async def test_원격_신호가_구독으로_전달돼_취소된다(cancel_subsc
             raise
 
     task = asyncio.create_task(dummy())
-    await asyncio.sleep(0)                            # 태스크가 await 지점까지 진행하게
+    await asyncio.sleep(0)  # 태스크가 await 지점까지 진행하게
     cancellation.register(-42, task)
     await cancellation.request_cancel(-42)
 

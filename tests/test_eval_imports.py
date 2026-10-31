@@ -1,15 +1,34 @@
 """eval 축 모듈이 전부 import되는지 — retrieval_mt가 8/24~10/9 사이 깨진 채 아무도 몰랐다(#209). 축을 추가하면 여기 넣는다."""
+
 import importlib
 
 import pytest
 
 
-@pytest.mark.parametrize("mod", ["eval.retrieval", "eval.retrieval_v2", "eval.retrieval_mt", "eval.generation",
-                                 "eval.run_all", "eval.reindex_documents", "eval.retrieval_article",
-                                 "eval.retrieval_keyword", "eval.hybrid_replay", "eval.hybrid_weights",
-                                 "eval.chunk_boundary", "eval.contextual_header", "eval.pdf_layout.run",
-                                 "eval.table_census", "eval.scale_noise.measure", "eval.scale_noise.build",
-                                 "eval.scale_noise.generate", "eval.scale_noise.filter", "eval.scale_noise.chunks"])
+@pytest.mark.parametrize(
+    "mod",
+    [
+        "eval.retrieval",
+        "eval.retrieval_v2",
+        "eval.retrieval_mt",
+        "eval.generation",
+        "eval.run_all",
+        "eval.reindex_documents",
+        "eval.retrieval_article",
+        "eval.retrieval_keyword",
+        "eval.hybrid_replay",
+        "eval.hybrid_weights",
+        "eval.chunk_boundary",
+        "eval.contextual_header",
+        "eval.pdf_layout.run",
+        "eval.table_census",
+        "eval.scale_noise.measure",
+        "eval.scale_noise.build",
+        "eval.scale_noise.generate",
+        "eval.scale_noise.filter",
+        "eval.scale_noise.chunks",
+    ],
+)
 def test_eval_module_imports(mod):
     importlib.import_module(mod)
 

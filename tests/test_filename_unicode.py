@@ -7,16 +7,16 @@ eval의 `citation_accuracy`는 이걸 원리적으로 못 잡는다 — gold(NFC
 비교하고 **DB filename이 개입하지 않기** 때문이다. 그래서 Cite 지표가 만점인데 운영은
 깨져 있었다. 이 파일이 그 구멍을 메운다: **NFD로 업로드해 DB를 거친 뒤** 인용이 잡히는지 본다.
 """
+
 import unicodedata
 
 import pytest
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from rag.turn.citation_labels import TAIL_END, TAIL_START, citation_tail
-from tests.conftest import ingest
 from rag.models import Document, Message
-from tests.conftest import sse_meta
+from rag.turn.citation_labels import citation_tail
+from tests.conftest import ingest, sse_meta
 
 # 분해형(NFD) 한글 파일명 — macOS 브라우저 업로드가 주는 형태.
 # 소스 파일 자체는 NFC로 저장되므로 리터럴을 쓰지 않고 런타임에 분해한다.
@@ -43,7 +43,7 @@ async def _upload(client, filename: str) -> dict:
 async def test_NFD_파일명_업로드는_NFC로_저장된다(client, tenant_id, fake_queue, blob_tmp):
     """경계 정규화 — 분해형으로 올려도 DB에는 조합형만 들어간다."""
     body = await _upload(client, FILENAME_NFD)
-    assert body['filename'] == FILENAME_NFC          # 응답도 정규화된 이름
+    assert body['filename'] == FILENAME_NFC  # 응답도 정규화된 이름
 
     async with AsyncSessionLocal() as session:
         doc = await session.get(Document, body['document_id'])
@@ -53,7 +53,8 @@ async def test_NFD_파일명_업로드는_NFC로_저장된다(client, tenant_id,
 
 @pytest.mark.asyncio
 async def test_NFD로_올린_문서의_인용은_NFC_파일명으로_잡힌다(
-        client, tenant_id, fake_llm, pass_gate, fake_queue, blob_tmp):
+    client, tenant_id, fake_llm, pass_gate, fake_queue, blob_tmp
+):
     """#34의 본질 — 업로드부터 DB를 거쳐 인용까지 관통 검증.
 
     꼬리가 번호가 되면서(#56 개정) 라벨 문자열 매칭 자체는 사라졌지만, cited_docs의
@@ -81,25 +82,23 @@ async def test_NFD로_올린_문서의_인용은_NFC_파일명으로_잡힌다(
 
 
 @pytest.mark.asyncio
-async def test_NFD와_NFC_동명_재업로드는_새_버전이_된다(
-        client, tenant_id, fake_queue, blob_tmp):
+async def test_NFD와_NFC_동명_재업로드는_새_버전이_된다(client, tenant_id, fake_queue, blob_tmp):
     """UNIQUE(tenant_id, filename, version)가 코드포인트 단위라, 정규화가 없으면 두 정규형이
     별개 문서로 통과해 시각적으로 같은 이름의 문서가 조용히 2건 생긴다."""
     first = await _upload(client, FILENAME_NFD)
-    second = await _upload(client, FILENAME_NFC)     # 같은 이름의 재업로드로 취급돼야 한다
+    second = await _upload(client, FILENAME_NFC)  # 같은 이름의 재업로드로 취급돼야 한다
 
     assert second['version'] == first['version'] + 1
 
     async with AsyncSessionLocal() as session:
-        names = (await session.execute(
-            select(Document.filename).where(Document.tenant_id == tenant_id)
-        )).scalars().all()
+        names = (
+            (await session.execute(select(Document.filename).where(Document.tenant_id == tenant_id))).scalars().all()
+        )
     assert set(names) == {FILENAME_NFC}, f'정규형이 섞여 문서가 갈렸다: {names!r}'
 
 
 @pytest.mark.asyncio
-async def test_exists_조회는_정규형과_무관하게_같은_문서를_찾는다(
-        client, tenant_id, fake_queue, blob_tmp):
+async def test_exists_조회는_정규형과_무관하게_같은_문서를_찾는다(client, tenant_id, fake_queue, blob_tmp):
     """exists는 '업로드 판정과 정확히 같아야' 하는 API — 여기가 어긋나면 FE가 중복 확인창을
     띄우지 않고 expect_version=0으로 올려 기존 문서를 별개로 만든다."""
     await _upload(client, FILENAME_NFC)
@@ -127,10 +126,13 @@ async def test_query_바디의_첨부_파일명도_정규화된다(client, tenan
     """스키마 validator를 두는 근거가 이 경로다 — FE는 extract 결과를 매 턴 /kms/query에
     재전송하므로, 실사용에서 반복 통과하는 건 extract가 아니라 여기다.
     라벨(`[첨부: 파일명]`)이 프롬프트에 들어가는 지점이라 문서 파일명과 같은 위험을 갖는다."""
-    res = await client.post('/kms/query', json={
-        'query': '첨부 요약해줘',
-        'attachments': [{'filename': FILENAME_NFD, 'text': '단순변심 반품은 14일 이내.'}],
-    })
+    res = await client.post(
+        '/kms/query',
+        json={
+            'query': '첨부 요약해줘',
+            'attachments': [{'filename': FILENAME_NFD, 'text': '단순변심 반품은 14일 이내.'}],
+        },
+    )
     assert res.status_code == 200
     assistant_id = sse_meta(res)['assistant_message_id']
 
@@ -139,9 +141,17 @@ async def test_query_바디의_첨부_파일명도_정규화된다(client, tenan
     assert generate_prompts, '생성 프롬프트가 없다 — 경로가 바뀌었다'
 
     async with AsyncSessionLocal() as session:
-        user_msg = (await session.execute(
-            select(Message).where(Message.tenant_id == tenant_id)
-            .where(Message.role == 'user').order_by(Message.id.desc())
-        )).scalars().first()
+        user_msg = (
+            (
+                await session.execute(
+                    select(Message)
+                    .where(Message.tenant_id == tenant_id)
+                    .where(Message.role == 'user')
+                    .order_by(Message.id.desc())
+                )
+            )
+            .scalars()
+            .first()
+        )
         assert user_msg.attachments[0]['filename'] == FILENAME_NFC
     assert assistant_id is not None

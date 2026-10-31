@@ -4,6 +4,7 @@
 F 엑셀 날짜)을 실제 파일 경로로 고정한다. #252 전 코드로는 DOCX·XLSX 6문항의 스니펫이 청크에 아예 없었다(빈 칸·깨진 행·
 `00:00:00`, 2026-10-17 실측). 문서 생성의 정본은 sample_docs/corpus_v2/_src/build_table_docs.py.
 """
+
 import json
 from pathlib import Path
 
@@ -27,7 +28,7 @@ def chunks():
     for g in GOLD:
         name = g['expected_docs'][0]
         if name not in out:
-            desc = name.rsplit('.', 1)[0].split('_', 2)[-1] if name.endswith('.xlsx') else ''   # 업로드와 같은 표 설명
+            desc = name.rsplit('.', 1)[0].split('_', 2)[-1] if name.endswith('.xlsx') else ''  # 업로드와 같은 표 설명
             out[name] = chunk_file(_doc(name), description=desc)
     return out
 
@@ -66,8 +67,11 @@ def test_그림_면적_하한_1퍼센트_경계(fake_vlm):
     캡처(1.2~4.6%)가 5% 하한에 걸려 빠졌다. 그림 생성의 정본은 sample_docs/corpus_v2/_src/build_picture_docs.py(P06·P07)."""
     from rag.chunking.docling_elements import PICTURE_PLACEHOLDER
     from tests.conftest import FAKE_CAPTION
+
     chunks = chunk_file(ROOT / 'sample_docs' / 'corpus_v2' / 'homeplus' / 'homeplus_15_매장운영지표안내.pdf')
     sec = next(c.text for c in chunks if '안전화는 매장 바닥 작업' in c.text)
     before, after = sec.split('안전화는 매장 바닥 작업', 1)
-    assert PICTURE_PLACEHOLDER in before and FAKE_CAPTION not in before.split('업무용 물품을 지급한다')[-1]   # 0.5%: 자리표시
-    assert FAKE_CAPTION in after                                                                         # 1.5%: 캡션
+    assert (
+        PICTURE_PLACEHOLDER in before and FAKE_CAPTION not in before.split('업무용 물품을 지급한다')[-1]
+    )  # 0.5%: 자리표시
+    assert FAKE_CAPTION in after  # 1.5%: 캡션

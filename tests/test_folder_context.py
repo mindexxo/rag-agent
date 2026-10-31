@@ -5,6 +5,7 @@
   이 전제가 깨지면 저장 벡터와 질의 벡터의 형태가 어긋나 검색이 조용히 나빠진다.
 - 리랭커 입력에만 들어간다 → 폴더 '사이' 순위에 개입.
 """
+
 import inspect
 
 import pytest
@@ -16,8 +17,15 @@ from tests.helpers_documents import MD, doc_data, upload
 
 
 def _chunk(**kw) -> RetrievedChunk:
-    base = dict(chunk_id=1, document_id=1, text='본문 내용', heading_path=['3. 배송비'],
-                page=None, filename='환불반품정책.pdf', version=1)
+    base = dict(
+        chunk_id=1,
+        document_id=1,
+        text='본문 내용',
+        heading_path=['3. 배송비'],
+        page=None,
+        filename='환불반품정책.pdf',
+        version=1,
+    )
     return RetrievedChunk(**{**base, **kw})
 
 
@@ -48,8 +56,7 @@ class TestBuildIndexText:
 
 class TestRerankText:
     def test_폴더명과_설명이_합쳐진다(self):
-        out = _rerank_text(_chunk(folder_name='환불·반품 규정',
-                                  folder_description='반품 조건·비용을 묻는 상황'))
+        out = _rerank_text(_chunk(folder_name='환불·반품 규정', folder_description='반품 조건·비용을 묻는 상황'))
         assert out.startswith('환불·반품 규정 — 반품 조건·비용을 묻는 상황 > 환불반품정책 > 3. 배송비')
 
     def test_설명만_없으면_폴더명만(self):
@@ -62,28 +69,26 @@ class TestRerankText:
 
     def test_FAQ_청크는_폴더도_안_붙는다(self):
         """FAQ는 본문이 자기설명적이라 prefix 자체를 안 붙인다 (인제스션과 형태 일치)."""
-        c = _chunk(faq_id=7, document_id=None, filename='FAQ',
-                   folder_name='있어도무시', folder_description='설명')
+        c = _chunk(faq_id=7, document_id=None, filename='FAQ', folder_name='있어도무시', folder_description='설명')
         assert _rerank_text(c) == '본문 내용'
 
 
 class TestFolderApi:
     @pytest.mark.asyncio
     async def test_설명_생성_조회_수정(self, client):
-        created = (await client.post('/kms/folders',
-                                     json={'name': '환불·반품', 'description': '반품 조건을 묻는 상황'})).json()
+        created = (
+            await client.post('/kms/folders', json={'name': '환불·반품', 'description': '반품 조건을 묻는 상황'})
+        ).json()
         assert created['description'] == '반품 조건을 묻는 상황'
 
         listed = (await client.get('/kms/folders')).json()
         assert any(f['id'] == created['id'] and f['description'] == '반품 조건을 묻는 상황' for f in listed)
 
-        patched = (await client.patch(f"/kms/folders/{created['id']}",
-                                      json={'description': '  바뀐 설명  '})).json()
-        assert patched['description'] == '바뀐 설명'          # 앞뒤 공백 정리
+        patched = (await client.patch(f"/kms/folders/{created['id']}", json={'description': '  바뀐 설명  '})).json()
+        assert patched['description'] == '바뀐 설명'  # 앞뒤 공백 정리
 
-        cleared = (await client.patch(f"/kms/folders/{created['id']}",
-                                      json={'description': '   '})).json()
-        assert cleared['description'] is None                 # 공백만 보내면 해제
+        cleared = (await client.patch(f"/kms/folders/{created['id']}", json={'description': '   '})).json()
+        assert cleared['description'] is None  # 공백만 보내면 해제
 
         await client.delete(f"/kms/folders/{created['id']}")
 
@@ -101,12 +106,11 @@ class TestFolderApi:
         그래서 빈 폴더만 지우게 막는다. 소프트 삭제된 문서는 세지 않는다.
         """
         folder = (await client.post('/kms/folders', json={'name': '비공개자료'})).json()
-        doc = await upload(client, '내부메모.md', MD,
-                           extra_parts=doc_data(folder_id=folder['id']))
+        doc = await upload(client, '내부메모.md', MD, extra_parts=doc_data(folder_id=folder['id']))
 
         res = await client.delete(f"/kms/folders/{folder['id']}")
         assert res.status_code == 409
-        assert '1개' in res.json()['detail']                  # 몇 건이 막고 있는지 알려준다
+        assert '1개' in res.json()['detail']  # 몇 건이 막고 있는지 알려준다
 
         # 문서를 지우면(소프트 삭제) 카운트에서 빠져 폴더를 지울 수 있다
         assert (await client.delete(f"/kms/documents/{doc['document_id']}")).status_code == 204
@@ -133,15 +137,27 @@ class TestFolderCacheInvalidation:
         folder = (await client.post('/kms/folders', json=body)).json()
 
         async with AsyncSessionLocal() as s:
-            doc = Document(tenant_id=tenant_id, filename='정책.pdf', mime='application/pdf',
-                           blob_path='blob://x.pdf', version=1, is_active=True, status='ready',
-                           folder_id=folder['id'])
+            doc = Document(
+                tenant_id=tenant_id,
+                filename='정책.pdf',
+                mime='application/pdf',
+                blob_path='blob://x.pdf',
+                version=1,
+                is_active=True,
+                status='ready',
+                folder_id=folder['id'],
+            )
             s.add(doc)
             await s.flush()
             doc_id = doc.id
-            await cache.save_answer(s, tenant_id, '배송비 얼마예요', '3천원입니다',
-                                    [SourceCitation(document_id=doc_id, filename='정책.pdf', version=1)],
-                                    [doc_id])
+            await cache.save_answer(
+                s,
+                tenant_id,
+                '배송비 얼마예요',
+                '3천원입니다',
+                [SourceCitation(document_id=doc_id, filename='정책.pdf', version=1)],
+                [doc_id],
+            )
             await s.commit()
         return folder, doc_id
 
@@ -151,9 +167,9 @@ class TestFolderCacheInvalidation:
 
         from database import AsyncSessionLocal
         from rag.models import AnswerCache as Row
+
         async with AsyncSessionLocal() as s:
-            return (await s.execute(
-                select(func.count()).select_from(Row).where(Row.tenant_id == tenant_id))).scalar()
+            return (await s.execute(select(func.count()).select_from(Row).where(Row.tenant_id == tenant_id))).scalar()
 
     @pytest.mark.asyncio
     async def test_참조_off로_바꾸면_캐시_무효화(self, client, tenant_id, fake_embed):
@@ -178,6 +194,5 @@ class TestFolderCacheInvalidation:
         folder, _ = await self._setup(client, tenant_id, desc='그대로')
         assert await self._cache_rows(tenant_id) == 1
 
-        await client.patch(f"/kms/folders/{folder['id']}",
-                           json={'name': '이름만변경', 'description': '그대로'})
+        await client.patch(f"/kms/folders/{folder['id']}", json={'name': '이름만변경', 'description': '그대로'})
         assert await self._cache_rows(tenant_id) == 1

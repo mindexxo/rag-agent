@@ -5,6 +5,7 @@
 (d) 호출 자체 실패→예외 전파(재시도 없음). 구 방어 파서(_as_bool)가 pydantic lax 파싱으로
 대체됐음도 여기서 회귀 고정한다. 스키마 거부 서버를 위한 무스키마 재시도는 #287에서 지웠다.
 """
+
 import pytest
 
 from rag.turn.llm_schemas import CondenseMultiResult, LlmJudgmentFailed, RouteDecision, acomplete_validated
@@ -15,7 +16,7 @@ class _StubLlm:
 
     def __init__(self, responses: list):
         self._responses = iter(responses)
-        self.calls: list = []          # 호출별 schema 의도
+        self.calls: list = []  # 호출별 schema 의도
 
     async def acomplete(self, messages, *, schema=None, citations=None, on_usage=None):
         self.calls.append(schema)
@@ -30,7 +31,7 @@ async def test_정상_스키마_경로():
     llm = _StubLlm(['{"safe": true, "intent": "KNOWLEDGE"}'])
     decision = await acomplete_validated(llm, [], RouteDecision)
     assert decision == RouteDecision(safe=True, intent='KNOWLEDGE')
-    assert llm.calls == [RouteDecision]   # 스키마가 의도로 실렸다 — 서버 문법은 공급자 구현이 만든다
+    assert llm.calls == [RouteDecision]  # 스키마가 의도로 실렸다 — 서버 문법은 공급자 구현이 만든다
 
 
 def test_RETRY는_스키마_화이트리스트에_있다():
@@ -64,10 +65,10 @@ async def test_비JSON_응답은_판단실패():
 async def test_스키마_위반은_판단실패_부분복구_없음():
     # #72로 None 반환이 예외가 됐다 — 판단하지 못한 상태에서 호출부가 기본값을 추측하던
     # 폴백을 없앴기 때문. 부분·퍼지 복구를 하지 않는다는 계약 자체는 그대로다.
-    llm = _StubLlm(['{"safe": true, "intent": "knowledge"}'])       # enum 밖 — 소문자 이탈
+    llm = _StubLlm(['{"safe": true, "intent": "knowledge"}'])  # enum 밖 — 소문자 이탈
     with pytest.raises(LlmJudgmentFailed):
         await acomplete_validated(llm, [], RouteDecision)
-    llm = _StubLlm(['{"intent": "KNOWLEDGE"}'])                     # 필수 필드 누락 — required 유지의 계약
+    llm = _StubLlm(['{"intent": "KNOWLEDGE"}'])  # 필수 필드 누락 — required 유지의 계약
     with pytest.raises(LlmJudgmentFailed):
         await acomplete_validated(llm, [], RouteDecision)
 
@@ -79,11 +80,12 @@ async def test_호출_실패는_재시도_없이_전파():
     with pytest.raises(TimeoutError):
         await acomplete_validated(llm, [], RouteDecision)
     assert len(llm.calls) == 1
-    rejected = Exception('unknown field structured_outputs'); rejected.status_code = 400
+    rejected = Exception('unknown field structured_outputs')
+    rejected.status_code = 400
     llm = _StubLlm([rejected])
     with pytest.raises(Exception, match='unknown field'):
         await acomplete_validated(llm, [], RouteDecision)
-    assert len(llm.calls) == 1                       # 제약 없이 다시 보내지 않는다
+    assert len(llm.calls) == 1  # 제약 없이 다시 보내지 않는다
 
 
 @pytest.mark.asyncio

@@ -2,22 +2,29 @@
 
 is_table·table_key·table_text meta와 표 설명 병합은 근거 준비(retriever.prepare_evidence)의 표 접기·확장과 검색 보강이 의존한다.
 """
+
+from io import BytesIO
 from pathlib import Path
 
 import openpyxl
 import pytest
 
-from io import BytesIO
-
-from rag.chunking import TABLE_MAX_TOKENS
-
-from rag.chunking import TABLE_BATCH_TOKENS, batch_table_rows, to_markdown_table
+from rag.chunking import TABLE_BATCH_TOKENS, TABLE_MAX_TOKENS, batch_table_rows, to_markdown_table
+from rag.chunking.xlsx import (
+    XlsxDescriptionRequired,
+    XlsxTableTooLarge,
+    XlsxUploadRejected,
+    _cell,
+    chunk_xlsx,
+    description_missing,
+    validate_xlsx_upload,
+    xlsx_plain_text,
+)
 from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN, estimate_tokens_conservative
-from rag.chunking.xlsx import (XlsxDescriptionRequired, XlsxTableTooLarge, XlsxUploadRejected, _cell, chunk_xlsx,
-                               description_missing, xlsx_plain_text, validate_xlsx_upload)
 
-CORPUS_XLSX = (Path(__file__).resolve().parent.parent
-               / 'sample_docs' / 'corpus_v2' / 'homeplus' / 'homeplus_10_멤버십혜택표.xlsx')
+CORPUS_XLSX = (
+    Path(__file__).resolve().parent.parent / 'sample_docs' / 'corpus_v2' / 'homeplus' / 'homeplus_10_멤버십혜택표.xlsx'
+)
 
 
 def _gap_xlsx(tmp_path):
@@ -57,7 +64,9 @@ class TestToMarkdown:
 def _max_rows_at_limit() -> int:
     """헤더 'col' + 숫자 1열 표에서 추정 토큰이 상한 이하인 최대 데이터 행 수 — 경계 테스트용(off-by-one 회귀 방지)."""
     n = 1
-    while estimate_tokens_conservative(to_markdown_table(['col'], [[str(i)] for i in range(n + 1)])) <= TABLE_MAX_TOKENS:
+    while (
+        estimate_tokens_conservative(to_markdown_table(['col'], [[str(i)] for i in range(n + 1)])) <= TABLE_MAX_TOKENS
+    ):
         n += 1
     return n
 
@@ -68,15 +77,18 @@ class TestChunkXlsx:
         # 실제 시트명 고정 — meta==heading_path 자기참조 비교는 둘이 같이 틀려도 통과한다
         assert [c.heading_path for c in chunks] == [['등급기준'], ['등급별쿠폰'], ['포인트정책']]
         assert [(c.meta['is_table'], c.meta['table_key']) for c in chunks] == [
-            (True, '등급기준'), (True, '등급별쿠폰'), (True, '포인트정책')]
-        assert all(c.meta['table_text'] == c.text for c in chunks)   # 한 묶음 = 시트 전체(#222 이전과 같은 모양)
+            (True, '등급기준'),
+            (True, '등급별쿠폰'),
+            (True, '포인트정책'),
+        ]
+        assert all(c.meta['table_text'] == c.text for c in chunks)  # 한 묶음 = 시트 전체(#222 이전과 같은 모양)
         assert [c.chunk_index for c in chunks] == [0, 1, 2]
 
     def test_표_설명_병합(self):
         with_desc = chunk_xlsx(CORPUS_XLSX, description='멤버십 기준표')
         assert with_desc[0].text.startswith('[멤버십 기준표]\n')
         without = chunk_xlsx(CORPUS_XLSX)
-        assert not without[0].text.startswith('[')              # 설명 없으면 표만
+        assert not without[0].text.startswith('[')  # 설명 없으면 표만
 
     def test_빈_시트_스킵(self, tmp_path):
         wb = openpyxl.Workbook()
@@ -84,7 +96,7 @@ class TestChunkXlsx:
         ws.title = '데이터'
         ws.append(['품목', '가격'])
         ws.append(['닭가슴살', 5900])
-        wb.create_sheet('빈시트')                                # 값 없는 시트
+        wb.create_sheet('빈시트')  # 값 없는 시트
         p = tmp_path / 't.xlsx'
         wb.save(p)
         chunks = chunk_xlsx(p)
@@ -112,36 +124,51 @@ class TestChunkXlsx:
             assert c.meta['table_key'] == '단가' and c.heading_path == ['단가']
         whole = chunks[0].meta['table_text']
         assert all(c.meta['table_text'] == whole for c in chunks)
-        assert whole.count('| 상품코드 |') == 1 and whole.count('[단가표]') == 1   # 완성본엔 헤더·설명 한 번
+        assert whole.count('| 상품코드 |') == 1 and whole.count('[단가표]') == 1  # 완성본엔 헤더·설명 한 번
         body = [l for c in chunks for l in c.text.splitlines()[3:]]
-        assert body == whole.splitlines()[3:]                     # 묶음을 이으면 행이 빠짐·중복 없이 완성본과 같다
+        assert body == whole.splitlines()[3:]  # 묶음을 이으면 행이 빠짐·중복 없이 완성본과 같다
         assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
 
-    @pytest.mark.parametrize('header, body', [
-        (['구분\n(원)', '단가'], [[f'항목{i}', str(1000 + i)] for i in range(120)]),            # 헤더 칸 줄바꿈
-        (['코드', '설명'], [[f'A{i}', f'첫줄\n| 둘째줄 {i}'] for i in range(120)]),             # 칸 줄바꿈 뒤 '|'로 시작
-        (['코드', '비고'], [[f'A{i}', '---\n--- | ---' if i % 7 == 0 else '정상'] for i in range(120)]),  # '---' 든 칸
-        (['a', 'b', 'c'], [['', str(i), ''] for i in range(120)]),                             # 빈 칸 많은 행
-    ], ids=['헤더_줄바꿈', '칸_줄바꿈_뒤_파이프', '대시_든_칸', '빈_칸'])
+    @pytest.mark.parametrize(
+        'header, body',
+        [
+            (['구분\n(원)', '단가'], [[f'항목{i}', str(1000 + i)] for i in range(120)]),  # 헤더 칸 줄바꿈
+            (['코드', '설명'], [[f'A{i}', f'첫줄\n| 둘째줄 {i}'] for i in range(120)]),  # 칸 줄바꿈 뒤 '|'로 시작
+            (
+                ['코드', '비고'],
+                [[f'A{i}', '---\n--- | ---' if i % 7 == 0 else '정상'] for i in range(120)],
+            ),  # '---' 든 칸
+            (['a', 'b', 'c'], [['', str(i), ''] for i in range(120)]),  # 빈 칸 많은 행
+        ],
+        ids=['헤더_줄바꿈', '칸_줄바꿈_뒤_파이프', '대시_든_칸', '빈_칸'],
+    )
     def test_행_묶음은_행_단계에서_나눠_헤더와_행이_깨지지_않는다(self, header, body):
         # #222 리뷰 — 렌더한 글을 줄 단위로 다시 해석하던 첫 구현은 앞의 두 경우에서 헤더가 깨지고 행이 중간에서 잘렸다
         batches = batch_table_rows(header, body, budget_chars=400)
         head = to_markdown_table(header, [])
-        assert len(batches) > 1 and all(b.startswith(head + '\n') for b in batches)   # 묶음마다 헤더 전체 + 구분선
-        rebuilt, i = [], 0                                                       # 묶음 = 원래 행을 순서대로 나눈 것
+        assert len(batches) > 1 and all(b.startswith(head + '\n') for b in batches)  # 묶음마다 헤더 전체 + 구분선
+        rebuilt, i = [], 0  # 묶음 = 원래 행을 순서대로 나눈 것
         for b in batches:
             k = 0
-            while i + k < len(body) and to_markdown_table(header, body[i:i + k + 1]) == b[:len(to_markdown_table(header, body[i:i + k + 1]))]:
+            while (
+                i + k < len(body)
+                and to_markdown_table(header, body[i : i + k + 1])
+                == b[: len(to_markdown_table(header, body[i : i + k + 1]))]
+            ):
                 k += 1
-            assert b == to_markdown_table(header, body[i:i + k])                       # 행 경계에서만 잘렸다
-            rebuilt += body[i:i + k]
+            assert b == to_markdown_table(header, body[i : i + k])  # 행 경계에서만 잘렸다
+            rebuilt += body[i : i + k]
             i += k
         assert rebuilt == body
         assert all(len(b) <= 400 for b in batches)
 
     def test_행_하나가_예산보다_길면_혼자_한_묶음이고_자르지_않는다(self):
         batches = batch_table_rows(['h'], [['짧음'], ['긴' * 500], ['짧음2']], budget_chars=50)
-        assert batches == [to_markdown_table(['h'], [['짧음']]), to_markdown_table(['h'], [['긴' * 500]]), to_markdown_table(['h'], [['짧음2']])]
+        assert batches == [
+            to_markdown_table(['h'], [['짧음']]),
+            to_markdown_table(['h'], [['긴' * 500]]),
+            to_markdown_table(['h'], [['짧음2']]),
+        ]
 
     def test_데이터_행이_없으면_헤더만(self):
         assert batch_table_rows(['h1', 'h2'], [], budget_chars=50) == [to_markdown_table(['h1', 'h2'], [])]
@@ -173,9 +200,9 @@ class TestChunkXlsx:
         # 잘못 읽어(실문서 2건 모두 해당) 기각했다. 이 테스트는 그 대가를 고정한다 — 바뀌면 결정을 다시 볼 것.
         p = _gap_xlsx(tmp_path)
         chunks = chunk_xlsx(p)
-        assert len(chunks) == 2                 # 표 두 개 → 묶음 두 개(#222), 같은 시트 완성본
+        assert len(chunks) == 2  # 표 두 개 → 묶음 두 개(#222), 같은 시트 완성본
         whole = chunks[0].meta['table_text'].splitlines()
-        assert whole[:3] == ['| col |', '| --- |', '| 1 |'] and '| 2 |' in whole   # 갈린 아랫부분 — 값 보존
+        assert whole[:3] == ['| col |', '| --- |', '| 1 |'] and '| 2 |' in whole  # 갈린 아랫부분 — 값 보존
 
     def test_정확히_상한이면_허용(self, tmp_path):
         # off-by-one(> → >=)으로 정상 상한 파일이 거절되는 회귀 방지
@@ -208,8 +235,8 @@ class TestChunkXlsx:
         p = tmp_path / 'big.xlsx'
         wb.save(p)
         with pytest.raises(XlsxTableTooLarge):
-            chunk_xlsx(p)                                    # 색인은 막고
-        assert xlsx_plain_text(p)                            # 첨부 추출은 통과(크기는 라우터의 6천 자 상한이 판단)
+            chunk_xlsx(p)  # 색인은 막고
+        assert xlsx_plain_text(p)  # 첨부 추출은 통과(크기는 라우터의 6천 자 상한이 판단)
 
 
 def _xlsx_bytes(n_rows: int, *, blank_in_middle: int = 0) -> bytes:
@@ -239,7 +266,7 @@ class TestValidateXlsxUpload:
             validate_xlsx_upload(_xlsx_bytes(1), '  \t ')
 
     def test_설명_있고_정확히_상한이면_통과(self):
-        validate_xlsx_upload(_xlsx_bytes(_max_rows_at_limit()), '멤버십 혜택표')     # off-by-one 회귀 방지
+        validate_xlsx_upload(_xlsx_bytes(_max_rows_at_limit()), '멤버십 혜택표')  # off-by-one 회귀 방지
 
     def test_상한_초과면_설명이_있어도_거절(self):
         n = _max_rows_at_limit() + 1
@@ -261,10 +288,10 @@ class TestValidateXlsxUpload:
     def test_크기_재는_기준이_chunk_xlsx와_같다(self, tmp_path):
         """중간 빈 행은 둘 다 세지 않는다 — 같은 _iter_sheets·렌더를 쓰므로 '검증 통과·색인 거절'이 없다."""
         content = _xlsx_bytes(_max_rows_at_limit(), blank_in_middle=3)
-        validate_xlsx_upload(content, '설명')                      # 사전검증 통과
+        validate_xlsx_upload(content, '설명')  # 사전검증 통과
         p = tmp_path / 'edge.xlsx'
         p.write_bytes(content)
-        assert chunk_xlsx(p, description='설명')                  # 색인도 통과
+        assert chunk_xlsx(p, description='설명')  # 색인도 통과
 
 
 class TestDescriptionMissing:

@@ -7,6 +7,7 @@ test_integration_documents*.py 다섯 파일이 이 모듈을 가져다 쓴다. 
 **conftest에 넣지 않은 이유**: 문서 축 전용이라 전 테스트에 노출할 이유가 없다. 공용 픽스처
 (client·tenant_id·ingest·indexed_chunk_texts)는 그대로 conftest가 정의점이다.
 """
+
 import json
 
 from database import AsyncSessionLocal
@@ -17,8 +18,7 @@ from tests.conftest import indexed_chunk_texts
 MD = '# 환불 정책\n\n## 1. 기간\n\n단순변심 반품은 14일 이내 신청한다.\n'.encode()
 
 
-async def upload(client, filename: str, content: bytes, mime='text/markdown', headers=None,
-                 extra_parts=None) -> dict:
+async def upload(client, filename: str, content: bytes, mime='text/markdown', headers=None, extra_parts=None) -> dict:
     files = {'file': (filename, content, mime), **(extra_parts or {})}
     res = await client.post('/kms/documents', files=files, headers=headers)
     assert res.status_code == 200, res.text
@@ -28,9 +28,7 @@ async def upload(client, filename: str, content: bytes, mime='text/markdown', he
 async def post_upload(client, filename: str, content: bytes, expect_version=None):
     """상태 코드를 직접 보는 업로드 — 409·400을 기대하는 테스트용(upload는 200을 단언한다)."""
     data = {} if expect_version is None else {'expect_version': str(expect_version)}
-    return await client.post('/kms/documents',
-                             files={'file': (filename, content, 'text/markdown')},
-                             data=data)
+    return await client.post('/kms/documents', files={'file': (filename, content, 'text/markdown')}, data=data)
 
 
 def doc_data(**fields) -> dict:
@@ -57,4 +55,4 @@ async def get_doc(doc_id: int) -> Document:
 
 
 async def chunk_texts(doc_id: int) -> list[str]:
-    return await indexed_chunk_texts(doc_id)        # 청크는 색인에만 있다(#139)
+    return await indexed_chunk_texts(doc_id)  # 청크는 색인에만 있다(#139)

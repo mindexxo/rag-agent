@@ -7,7 +7,7 @@
    (절대값 단언은 테스트 실행 순서에 따라 깨진다 — 이 파일의 모든 지표 단언 공통 규율).
 3. RagService.generate가 last_finish_reason을 채우는가 (콜백→보관 배선).
 """
-import asyncio
+
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +15,6 @@ from prometheus_client import REGISTRY
 
 from rag.llm.vllm import VllmClient
 from rag.metrics import FINISH_REASON_TOTAL, TTFT_SECONDS
-
 
 # ── 1. VllmClient.astream 콜백 배선 ─────────────────────────
 
@@ -41,8 +40,9 @@ class _FakeOpenAiStream:
 
 
 def _chunk(content: str | None, finish_reason: str | None = None):
-    return SimpleNamespace(choices=[SimpleNamespace(
-        delta=SimpleNamespace(content=content), finish_reason=finish_reason)])
+    return SimpleNamespace(
+        choices=[SimpleNamespace(delta=SimpleNamespace(content=content), finish_reason=finish_reason)]
+    )
 
 
 def _patch_stream(client: VllmClient, chunks) -> _FakeOpenAiStream:
@@ -51,23 +51,26 @@ def _patch_stream(client: VllmClient, chunks) -> _FakeOpenAiStream:
     async def _create(**kwargs):
         return fake
 
-    client._client = SimpleNamespace(
-        chat=SimpleNamespace(completions=SimpleNamespace(create=_create)))
+    client._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=_create)))
     return fake
 
 
 @pytest.mark.asyncio
 async def test_마지막_청크의_finish_reason이_콜백으로_나온다():
     client = VllmClient()
-    fake = _patch_stream(client, [
-        _chunk('안'), _chunk('녕'),
-        _chunk(None, finish_reason='length'),   # 예전 `if delta:` 가드가 삼키던 청크
-    ])
+    fake = _patch_stream(
+        client,
+        [
+            _chunk('안'),
+            _chunk('녕'),
+            _chunk(None, finish_reason='length'),  # 예전 `if delta:` 가드가 삼키던 청크
+        ],
+    )
     got: list[str] = []
     text = [t async for t in client.astream([], on_finish_reason=got.append)]
-    assert text == ['안', '녕']            # 동작 보존 — 텍스트는 그대로
-    assert got == ['length']               # 종료 사유가 유실되지 않는다
-    assert fake.closed                     # 기존 cleanup 동작 보존
+    assert text == ['안', '녕']  # 동작 보존 — 텍스트는 그대로
+    assert got == ['length']  # 종료 사유가 유실되지 않는다
+    assert fake.closed  # 기존 cleanup 동작 보존
 
 
 @pytest.mark.asyncio
@@ -102,8 +105,7 @@ def test_지표_기록_히스토그램과_카운터():
 
     before_c = _sample('kms_llm_finish_reason_total', {'route': '__test__', 'reason': 'length'})
     FINISH_REASON_TOTAL.labels(route='__test__', reason='length').inc()
-    assert _sample('kms_llm_finish_reason_total',
-                   {'route': '__test__', 'reason': 'length'}) == before_c + 1
+    assert _sample('kms_llm_finish_reason_total', {'route': '__test__', 'reason': 'length'}) == before_c + 1
 
 
 # ── 3. RagService 배선 — 완주 시 last_finish_reason 보관 ─
@@ -112,6 +114,7 @@ def test_지표_기록_히스토그램과_카운터():
 @pytest.mark.asyncio
 async def test_generate_완주시_finish_reason_보관():
     from test_service_pure import _prepared
+
     from rag.turn.service import RagService
 
     class _Llm:
@@ -130,6 +133,7 @@ async def test_generate_완주시_finish_reason_보관():
 @pytest.mark.asyncio
 async def test_스트림_중단시_finish_reason은_None():
     from test_service_pure import _prepared
+
     from rag.turn.service import RagService
 
     class _Llm:
@@ -143,4 +147,4 @@ async def test_스트림_중단시_finish_reason은_None():
     with pytest.raises(RuntimeError):
         async for _ in svc.generate(prepared):
             pass
-    assert svc.last_finish_reason is None   # 완주 아님 — 집계 대상에서 빠져야 한다
+    assert svc.last_finish_reason is None  # 완주 아님 — 집계 대상에서 빠져야 한다

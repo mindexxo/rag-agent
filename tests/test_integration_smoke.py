@@ -3,6 +3,7 @@
 FAQ 등록(API 경유) → 대기열 drain → 색인 청크 확인이 통과하면:
 ASGI 클라이언트, 가짜 임베딩 패치, OpenSearch 인덱스, tenant 격리·정리, 루프 위생이 전부 동작하는 것.
 """
+
 import pytest
 from sqlalchemy import select
 
@@ -13,21 +14,24 @@ from tests.conftest import faq_doc, sync_faq
 
 @pytest.mark.asyncio
 async def test_faq_등록이_API부터_청크까지_관통(client, tenant_id):
-    res = await client.post('/kms/faqs', json={
-        'question': '환불 기간은 어떻게 되나요?',
-        'variants': ['돈 언제 돌려받아요'],
-        'answer': '결제 수단에 따라 7일 이내 처리됩니다.',
-    })
+    res = await client.post(
+        '/kms/faqs',
+        json={
+            'question': '환불 기간은 어떻게 되나요?',
+            'variants': ['돈 언제 돌려받아요'],
+            'answer': '결제 수단에 따라 7일 이내 처리됩니다.',
+        },
+    )
     assert res.status_code == 200, res.text
     faq_id = res.json()['id']
 
-    assert await sync_faq(faq_id) == {'done': 1, 'failed': 0}   # INDEX_FAQ 행 하나가 처리됨
-    chunk = await faq_doc(faq_id)                                 # 항목당 정확히 1청크 (id 결정적)
+    assert await sync_faq(faq_id) == {'done': 1, 'failed': 0}  # INDEX_FAQ 행 하나가 처리됨
+    chunk = await faq_doc(faq_id)  # 항목당 정확히 1청크 (id 결정적)
     assert chunk is not None
     assert chunk['tenant_id'] == tenant_id
     assert chunk['text'].startswith('Q: 환불 기간은 어떻게 되나요?')
-    assert '(유사 질문: 돈 언제 돌려받아요)' in chunk['text']   # variants가 검색 텍스트에 실림 (FAQ 설계 핵심)
-    assert len(chunk['dense']) == 1024                           # 가짜 임베딩이 실제로 색인됨
+    assert '(유사 질문: 돈 언제 돌려받아요)' in chunk['text']  # variants가 검색 텍스트에 실림 (FAQ 설계 핵심)
+    assert len(chunk['dense']) == 1024  # 가짜 임베딩이 실제로 색인됨
 
 
 @pytest.mark.asyncio
@@ -37,8 +41,8 @@ async def test_테넌트_헤더_없으면_422(client):
     import httpx
 
     from main import app
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                 base_url='http://testserver') as bare:
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver') as bare:
         res = await bare.get('/kms/faqs')
     assert res.status_code == 422
 
@@ -52,7 +56,5 @@ async def test_정리_fixture가_실제로_지움(client, tenant_id):
     assert res.status_code == 200
 
     async with AsyncSessionLocal() as session:
-        n = len((await session.execute(
-            select(Faq).where(Faq.tenant_id == tenant_id)
-        )).scalars().all())
+        n = len((await session.execute(select(Faq).where(Faq.tenant_id == tenant_id))).scalars().all())
         assert n == 1

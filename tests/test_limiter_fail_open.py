@@ -7,6 +7,7 @@
   ① Redis가 죽어도 질문이 받아들여진다 (본 결정)
   ② 그 뒤 반납도 요청을 깨뜨리지 않는다 — 획득만 fail-open이면 반쪽이다
 """
+
 import pytest
 
 from rag import limiter
@@ -25,12 +26,14 @@ class _BrokenRedis:
             # 코루틴을 돌려주면 pipeline() 같은 비-await 호출부에서 모양이 달라진다.
             self.calls += 1
             raise ConnectionError('Error 61 connecting to redis. Connection refused.')
+
         return _boom
 
 
 @pytest.fixture
 def broken_redis(monkeypatch):
     from rag import clients
+
     broken = _BrokenRedis()
     monkeypatch.setattr(clients, 'shared_redis', broken)
     return broken
@@ -47,7 +50,7 @@ async def test_Redis가_죽으면_상한_없이_통과한다(broken_redis):
 
 @pytest.mark.asyncio
 async def test_상한이_1이어도_degraded면_계속_통과한다(broken_redis):
-    """"무제한 통과"가 말 그대로임을 못박는다 — 이 대가를 알고 고른 방침이다."""
+    """ "무제한 통과"가 말 그대로임을 못박는다 — 이 대가를 알고 고른 방침이다."""
     leases = [await limiter.try_acquire('t1', tenant_limit=1) for _ in range(5)]
 
     assert all(x is not None and x.degraded for x in leases)
@@ -72,9 +75,9 @@ async def test_획득_후_Redis가_죽어도_반납이_요청을_깨뜨리지_�
     _run_generation의 finally(root_span.end() 유실)에서 터진다 — 답변을 다 만들어 놓고
     뒷정리 실패로 요청을 깨는 셈이다. 유출된 토큰은 ZSET score 기반 prune이 회수한다.
     """
-    healthy_lease = Lease(tenant_id='t1', token='tok', user_id='u1')   # degraded 아님
+    healthy_lease = Lease(tenant_id='t1', token='tok', user_id='u1')  # degraded 아님
 
-    await limiter.release(healthy_lease)      # 예외가 새어나오면 실패
+    await limiter.release(healthy_lease)  # 예외가 새어나오면 실패
 
     assert broken_redis.calls > 0, '실제로 Redis를 시도하긴 해야 한다 (조용히 건너뛰면 안 됨)'
 

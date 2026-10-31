@@ -1,4 +1,5 @@
 import uuid
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
@@ -52,7 +53,6 @@ ex)
 """
 
 
-
 # @pytest_asyncio.fixture: async fixture 등록 데코레이터.
 #                         (일반 @pytest.fixture는 동기용이라 async에는 따로 필요)
 # fixture: 테스트가 의존하는 리소스를 만들어주는 함수.
@@ -89,21 +89,21 @@ async def test(session):
     try:
         # A로 INSERT
         # session.add(model_instance): ORM 모델을 세션에 추가 (아직 DB 반영 X).
-        session.add(Document(
-            tenant_id=tenant_a,
-            filename='iso_test.pdf',
-            mime='application/pdf',
-            blob_path='blob://test/iso_test.pdf',
-        ))
+        session.add(
+            Document(
+                tenant_id=tenant_a,
+                filename='iso_test.pdf',
+                mime='application/pdf',
+                blob_path='blob://test/iso_test.pdf',
+            )
+        )
         # await session.commit(): 트랜잭션 커밋. 이 시점에 실제 INSERT가 DB에 반영됨.
         #                         await로 I/O 끝까지 대기.
         await session.commit()
 
         # B 조회 — 격리 규약대로 tenant_id WHERE를 명시 (rag/models.py 규약 참조).
         # await session.execute(stmt): SELECT 실행, Result 객체 반환.
-        result_b = await session.execute(
-            select(Document).where(Document.tenant_id == tenant_b)
-        )
+        result_b = await session.execute(select(Document).where(Document.tenant_id == tenant_b))
         # result.scalars(): row 전체 대신 첫 컬럼(여기선 Document 객체)만 추출.
         # .all(): 결과를 리스트로 (지연된 iterator를 즉시 소비).
         rows_b = result_b.scalars().all()
@@ -113,9 +113,7 @@ async def test(session):
         # A 조회 — positive control.
         # SELECT 빌더는 .where()로 추가 조건 체이닝 가능.
         result_a = await session.execute(
-            select(Document)
-            .where(Document.tenant_id == tenant_a)
-            .where(Document.filename == 'iso_test.pdf')
+            select(Document).where(Document.tenant_id == tenant_a).where(Document.filename == 'iso_test.pdf')
         )
         rows_a = result_a.scalars().all()
         assert len(rows_a) == 1, f"테넌트 A로 조회했는데 row 못 봄: {rows_a}"

@@ -3,6 +3,7 @@
 사용: python3 -m eval.summarize_v2
 입력: eval/results/generation_oracle.jsonl, generation_retrieved.jsonl
 """
+
 import json
 from collections import defaultdict
 from pathlib import Path
@@ -28,10 +29,11 @@ def table(rows, group_fn, label):
     print(f'{label:<16}{"n":>5}{"EPCov":>8}{"Cite":>7}')
     for g in sorted(groups):
         rs = groups[g]
-        print(f'{g:<16}{len(rs):>5}{_avg(rs, "expected_points_coverage"):>8.3f}'
-              f'{_avg(rs, "citation_accuracy"):>7.3f}')
-    print(f'{"(전체)":<16}{len(rows):>5}{_avg(rows, "expected_points_coverage"):>8.3f}'
-          f'{_avg(rows, "citation_accuracy"):>7.3f}')
+        print(f'{g:<16}{len(rs):>5}{_avg(rs, "expected_points_coverage"):>8.3f}{_avg(rs, "citation_accuracy"):>7.3f}')
+    print(
+        f'{"(전체)":<16}{len(rows):>5}{_avg(rows, "expected_points_coverage"):>8.3f}'
+        f'{_avg(rows, "citation_accuracy"):>7.3f}'
+    )
 
 
 def main() -> None:
@@ -51,7 +53,7 @@ def main() -> None:
         for r in rows:
             if r['type'] in ('paraphrase', 'multi_turn'):
                 cross[(tenant_of(r['id']), r['type'])].append(r)
-        for (t, ty) in sorted(cross):
+        for t, ty in sorted(cross):
             rs = cross[(t, ty)]
             print(f'  {t:<12}{ty:<12}{_avg(rs, "expected_points_coverage"):>7.3f} (n={len(rs)})')
 

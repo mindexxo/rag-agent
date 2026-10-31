@@ -26,23 +26,26 @@
     python -m eval.scale_noise drop
 결과(eval/results/scale_noise/)는 gitignore — 생성 문서는 재현성이 없고(LLM 출력), 회귀 덤프에 실문서 조각이 들어간다.
 """
+
 from pathlib import Path
 
 from config import settings
 
-OUT = Path(__file__).resolve().parents[2] / 'eval' / 'results' / 'scale_noise'   # cwd 무관(워크트리에서도 그 트리의 results)
+OUT = (
+    Path(__file__).resolve().parents[2] / 'eval' / 'results' / 'scale_noise'
+)  # cwd 무관(워크트리에서도 그 트리의 results)
 DOCS = OUT / 'docs'
 MANIFEST = OUT / 'manifest.jsonl'
 FILTER = OUT / 'filter.json'
 CHUNKS = OUT / 'chunks.jsonl'
 
-TENANT = 'inticube'              # 측정 테넌트 — 실문서 골드가 있는 유일한 테넌트
-NOISE_TENANT = 'noise235'        # IDF 공유 실험에서 노이즈가 받는 tenant_id
-SCALES = {'x0': 0, 'x5': 5, 'x10': 10, 'x30': 30}   # 측정 테넌트 조각 수의 배수만큼 노이즈를 더한다
+TENANT = 'inticube'  # 측정 테넌트 — 실문서 골드가 있는 유일한 테넌트
+NOISE_TENANT = 'noise235'  # IDF 공유 실험에서 노이즈가 받는 tenant_id
+SCALES = {'x0': 0, 'x5': 5, 'x10': 10, 'x30': 30}  # 측정 테넌트 조각 수의 배수만큼 노이즈를 더한다
 CONDITIONS = [*SCALES, 'idf']
-NOISE_DOC_ID_BASE = 1_000_000_000   # 노이즈 document_id 시작 — PG 행이 없으므로 실제 id(수만 대)와 겹치지 않는 큰 값
+NOISE_DOC_ID_BASE = 1_000_000_000  # 노이즈 document_id 시작 — PG 행이 없으므로 실제 id(수만 대)와 겹치지 않는 큰 값
 
-_BASE_INDEX = settings.opensearch_index   # condition()이 settings를 바꿔 끼우므로 읽을 때 한 번 고정(#234와 같음)
+_BASE_INDEX = settings.opensearch_index  # condition()이 settings를 바꿔 끼우므로 읽을 때 한 번 고정(#234와 같음)
 
 
 def index_name(cond: str) -> str:

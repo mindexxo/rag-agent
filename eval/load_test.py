@@ -16,6 +16,7 @@
 의존: 로컬 백엔드(uvicorn) + vLLM + TEI + DB + Redis(limiter). 실행:
   python -m eval.load_test --base-url http://localhost:8877 --mode spread --steps 1,4,8,16,24,32
 """
+
 import argparse
 import asyncio
 import json
@@ -24,7 +25,7 @@ from pathlib import Path
 
 import httpx
 
-from eval.generation import GEN_TYPES, GOLD, row_tenant
+from eval.generation import GEN_TYPES, GOLD
 
 RESULT_DIR = Path("eval/results")
 OUT = RESULT_DIR / "load_test.jsonl"
@@ -43,15 +44,17 @@ async def _one_request(client: httpx.AsyncClient, base: str, tenant: str, query:
     t0 = time.monotonic()
     ttft = None
     try:
-        async with client.stream("POST", f"{base}/kms/query",
-                                 headers={"X-Tenant-Id": tenant},
-                                 json={"query": query}) as resp:
+        async with client.stream(
+            "POST", f"{base}/kms/query", headers={"X-Tenant-Id": tenant}, json={"query": query}
+        ) as resp:
             if resp.status_code == 429:
-                return {"status": "429_limited", "ttft_ms": None,
-                        "total_ms": (time.monotonic() - t0) * 1000}
+                return {"status": "429_limited", "ttft_ms": None, "total_ms": (time.monotonic() - t0) * 1000}
             if resp.status_code != 200:
-                return {"status": f"http_{resp.status_code}", "ttft_ms": None,
-                        "total_ms": (time.monotonic() - t0) * 1000}
+                return {
+                    "status": f"http_{resp.status_code}",
+                    "ttft_ms": None,
+                    "total_ms": (time.monotonic() - t0) * 1000,
+                }
             event = None
             async for line in resp.aiter_lines():
                 if line.startswith("event:"):
@@ -60,8 +63,7 @@ async def _one_request(client: httpx.AsyncClient, base: str, tenant: str, query:
                     ttft = (time.monotonic() - t0) * 1000
             return {"status": "ok", "ttft_ms": ttft, "total_ms": (time.monotonic() - t0) * 1000}
     except (httpx.TimeoutException, httpx.HTTPError) as exc:
-        return {"status": f"error_{type(exc).__name__}", "ttft_ms": None,
-                "total_ms": (time.monotonic() - t0) * 1000}
+        return {"status": f"error_{type(exc).__name__}", "ttft_ms": None, "total_ms": (time.monotonic() - t0) * 1000}
 
 
 def _assign(mode: str, n: int, idx: int) -> str:
@@ -72,38 +74,42 @@ def _assign(mode: str, n: int, idx: int) -> str:
 async def _step(client, base, mode: str, n: int, queries: list[str]) -> dict:
     """동시 N 요청을 한 번에 발사하고 지연 분포를 집계한다 (한 계단)."""
     t0 = time.monotonic()
-    results = await asyncio.gather(*(
-        _one_request(client, base, _assign(mode, n, i), queries[i]) for i in range(n)))
+    results = await asyncio.gather(*(_one_request(client, base, _assign(mode, n, i), queries[i]) for i in range(n)))
     wall = time.monotonic() - t0
     ok = [r for r in results if r["status"] == "ok"]
     limited = sum(1 for r in results if r["status"] == "429_limited")
     errors = sum(1 for r in results if r["status"].startswith(("error", "http")))
     ttft = [r["ttft_ms"] for r in ok if r["ttft_ms"] is not None]
     total = [r["total_ms"] for r in ok]
-    return {"mode": mode, "n": n, "wall_s": round(wall, 2),
-            "ok": len(ok), "limited_429": limited, "errors": errors,
-            "throughput_rps": round(len(ok) / wall, 2) if wall else 0.0,
-            "ttft_p50": _pct(ttft, .5), "ttft_p95": _pct(ttft, .95),
-            "total_p50": _pct(total, .5), "total_p95": _pct(total, .95)}
+    return {
+        "mode": mode,
+        "n": n,
+        "wall_s": round(wall, 2),
+        "ok": len(ok),
+        "limited_429": limited,
+        "errors": errors,
+        "throughput_rps": round(len(ok) / wall, 2) if wall else 0.0,
+        "ttft_p50": _pct(ttft, 0.5),
+        "ttft_p95": _pct(ttft, 0.95),
+        "total_p50": _pct(total, 0.5),
+        "total_p95": _pct(total, 0.95),
+    }
 
 
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base-url", default="http://localhost:8877")
     ap.add_argument("--mode", choices=["single", "spread"], default="spread")
-    ap.add_argument("--steps", default="1,4,8,16,24,32",
-                    help="쉼표로 구분한 동시 N 계단")
+    ap.add_argument("--steps", default="1,4,8,16,24,32", help="쉼표로 구분한 동시 N 계단")
     ap.add_argument("--rounds", type=int, default=1, help="계단당 반복(분포 안정화)")
     args = ap.parse_args()
     steps = [int(s) for s in args.steps.split(",")]
 
-    gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()
-            if json.loads(l)["type"] in GEN_TYPES]
+    gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip() if json.loads(l)["type"] in GEN_TYPES]
     # 유니크 질문 풀 — 필요 수만큼, 부족하면 접미 태그로 변형(캐시 히트 배제)
-    need = sum(steps) * args.rounds   # 계단마다 유니크를 누적 소비하므로 합계 (max 아님)
+    need = sum(steps) * args.rounds  # 계단마다 유니크를 누적 소비하므로 합계 (max 아님)
     pool = [g["query"] for g in gold]
-    queries = [(pool[i % len(pool)] if i < len(pool)
-                else f"{pool[i % len(pool)]} (문의 {i})") for i in range(need)]
+    queries = [(pool[i % len(pool)] if i < len(pool) else f"{pool[i % len(pool)]} (문의 {i})") for i in range(need)]
 
     RESULT_DIR.mkdir(exist_ok=True)
     rows = []
@@ -111,18 +117,21 @@ async def main() -> None:
     async with httpx.AsyncClient(timeout=httpx.Timeout(320.0, connect=5.0)) as client:
         qi = 0
         print(f"[부하 실측] mode={args.mode} steps={steps} rounds={args.rounds}\n")
-        print(f"{'N':>4}{'ok':>5}{'429':>5}{'err':>5}{'RPS':>8}"
-              f"{'TTFTp50':>9}{'TTFTp95':>9}{'완료p50':>9}{'완료p95':>9}")
+        print(
+            f"{'N':>4}{'ok':>5}{'429':>5}{'err':>5}{'RPS':>8}{'TTFTp50':>9}{'TTFTp95':>9}{'완료p50':>9}{'완료p95':>9}"
+        )
         for n in steps:
             for _ in range(args.rounds):
-                step = await _step(client, args.base_url, args.mode, n, queries[qi:qi + n])
+                step = await _step(client, args.base_url, args.mode, n, queries[qi : qi + n])
                 qi += n
                 rows.append(step)
-                print(f"{n:>4}{step['ok']:>5}{step['limited_429']:>5}{step['errors']:>5}"
-                      f"{step['throughput_rps']:>8.2f}"
-                      f"{step['ttft_p50']:>9.0f}{step['ttft_p95']:>9.0f}"
-                      f"{step['total_p50']:>9.0f}{step['total_p95']:>9.0f}")
-                await asyncio.sleep(3)   # 계단 사이 GPU KV 반납 여유
+                print(
+                    f"{n:>4}{step['ok']:>5}{step['limited_429']:>5}{step['errors']:>5}"
+                    f"{step['throughput_rps']:>8.2f}"
+                    f"{step['ttft_p50']:>9.0f}{step['ttft_p95']:>9.0f}"
+                    f"{step['total_p50']:>9.0f}{step['total_p95']:>9.0f}"
+                )
+                await asyncio.sleep(3)  # 계단 사이 GPU KV 반납 여유
 
     OUT.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n")
     print(f"\n→ {OUT}")

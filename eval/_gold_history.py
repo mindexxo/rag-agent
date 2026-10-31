@@ -41,9 +41,10 @@ gold가 값을 실었으면 그대로 통과시킨다 — 어댑터를 안 고�
 
 실행: python -m eval._gold_history        # 계약 스모크 (DB·LLM 불필요)
 """
+
 from rag.models import Message
 
-DEFAULT_STATUS = 'done'   # 운영 DB의 컬럼 기본값과 같다 (rag/models.py) — 위 docstring 참조
+DEFAULT_STATUS = 'done'  # 운영 DB의 컬럼 기본값과 같다 (rag/models.py) — 위 docstring 참조
 
 
 def messages_from_conversation(conversation: list[dict] | None) -> list[Message]:
@@ -53,19 +54,18 @@ def messages_from_conversation(conversation: list[dict] | None) -> list[Message]
     """
     if not conversation:
         return []
-    return [Message(role=m['role'], content=m['content'],
-                    status=m.get('status', DEFAULT_STATUS))
-            for m in conversation]
+    return [Message(role=m['role'], content=m['content'], status=m.get('status', DEFAULT_STATUS)) for m in conversation]
 
 
 if __name__ == '__main__':
     # 스모크 — 계약만 확인한다 (eval/ragas_adapter.py 선례)
-    msgs = messages_from_conversation([{'role': 'user', 'content': '질문'},
-                        {'role': 'assistant', 'content': '답변'}])
+    msgs = messages_from_conversation([{'role': 'user', 'content': '질문'}, {'role': 'assistant', 'content': '답변'}])
     assert [m.role for m in msgs] == ['user', 'assistant']
     assert msgs[1].status == DEFAULT_STATUS
     assert all(isinstance(m, Message) for m in msgs)
-    assert messages_from_conversation([{'role': 'assistant', 'content': '', 'status': 'cancelled'}])[0].status \
-        == 'cancelled', 'gold가 실은 status는 그대로 통과해야 한다'
+    assert (
+        messages_from_conversation([{'role': 'assistant', 'content': '', 'status': 'cancelled'}])[0].status
+        == 'cancelled'
+    ), 'gold가 실은 status는 그대로 통과해야 한다'
     assert messages_from_conversation(None) == [] and messages_from_conversation([]) == []
     print(f'ok — {len(msgs)}건, status={msgs[1].status!r}')

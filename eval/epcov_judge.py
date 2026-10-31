@@ -18,6 +18,7 @@
 판정 실패(LlmJudgmentFailed·한도·타임아웃)는 **미적중 유지**(fail-closed) — misinfo_judge·absence_judge와 같은 원칙.
 사유·오류는 감사 행으로 결과에 남는다.
 """
+
 import asyncio
 import os
 from typing import Literal
@@ -27,11 +28,12 @@ from pydantic import BaseModel
 from rag.turn.llm_schemas import acomplete_validated
 
 JUDGE_PROMPT_VERSION = "v1"
-DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5-20250929"   # 버전 고정 — 'sonnet' 별칭은 시점마다 모델이 바뀐다
+DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5-20250929"  # 버전 고정 — 'sonnet' 별칭은 시점마다 모델이 바뀐다
 
 
 class CoverageJudgment(BaseModel):
     """label에 기본값을 두지 않는다 — absence_judge.AbsenceJudgment와 같은 이유(스키마 required 보장)."""
+
     label: Literal["covered", "not_covered"]
     reason: str | None = None
 
@@ -50,6 +52,7 @@ def judge_spec() -> tuple[str, str]:
         return backend, os.getenv("EPCOV_JUDGE_MODEL", DEFAULT_CLAUDE_MODEL)
     if backend == "vllm":
         from config import settings
+
         return backend, settings.llm_model
     raise SystemExit(f"EPCOV_JUDGE={backend} — claude|vllm 만 지원")
 
@@ -65,19 +68,26 @@ def judge_llm():
     backend, model = judge_spec()
     if backend == "claude":
         import shutil
+
         if not shutil.which("claude"):
             # 조용히 규칙만으로 진행하지 않는다 — 다른 눈금의 수치가 '심판 반영'으로 착각되는 것을 막는다(#221 리뷰 결정)
-            raise SystemExit("EPCov 판정자가 claude(기본)인데 claude CLI가 PATH에 없다 — "
-                             "설치·로그인하거나 EPCOV_JUDGE=vllm으로 실행하라")
+            raise SystemExit(
+                "EPCov 판정자가 claude(기본)인데 claude CLI가 PATH에 없다 — "
+                "설치·로그인하거나 EPCOV_JUDGE=vllm으로 실행하라"
+            )
         from eval.claude_client import ClaudeCliClient
+
         return ClaudeCliClient(model=model)
     from rag.llm import create_llm
+
     return create_llm()
 
 
 def _build_messages(answer: str, point: str) -> list[dict]:
-    return [{"role": "system", "content": _JUDGE_SYSTEM},
-            {"role": "user", "content": f"기대 포인트: {point}\n\n답변:\n{answer}"}]
+    return [
+        {"role": "system", "content": _JUDGE_SYSTEM},
+        {"role": "user", "content": f"기대 포인트: {point}\n\n답변:\n{answer}"},
+    ]
 
 
 async def judge_point(llm, answer: str, point: str) -> CoverageJudgment:
@@ -85,8 +95,9 @@ async def judge_point(llm, answer: str, point: str) -> CoverageJudgment:
     return await acomplete_validated(llm, _build_messages(answer, point), CoverageJudgment)
 
 
-async def confirm_points(llm, answer: str, points: list[str], rule_hits: list[bool],
-                         targets: list[int], sem: asyncio.Semaphore) -> tuple[list[bool], list[dict]]:
+async def confirm_points(
+    llm, answer: str, points: list[str], rule_hits: list[bool], targets: list[int], sem: asyncio.Semaphore
+) -> tuple[list[bool], list[dict]]:
     """규칙 판정 → (최종 히트, 감사 행). targets(규칙 미적중 중 판정 대상 인덱스)만 LLM에 묻는다.
 
     감사 행: {"k", "label", "reason", "error"} — 판정한 포인트마다 하나. error가 있으면 label은 None이고 미적중 유지.
@@ -98,7 +109,7 @@ async def confirm_points(llm, answer: str, points: list[str], rule_hits: list[bo
         async with sem:
             try:
                 v = await judge_point(llm, answer, points[k])
-            except Exception as exc:   # LlmJudgmentFailed·한도·타임아웃 — 판정 불가는 미적중 유지
+            except Exception as exc:  # LlmJudgmentFailed·한도·타임아웃 — 판정 불가는 미적중 유지
                 return {"k": k, "label": None, "reason": None, "error": f"{type(exc).__name__}: {exc}"[:300]}
         return {"k": k, "label": v.label, "reason": v.reason, "error": None}
 
@@ -111,23 +122,38 @@ async def confirm_points(llm, answer: str, points: list[str], rule_hits: list[bo
 
 # 판정기 회귀 고정 — #221 1단계에서 사람 판정이 끝난 행(모의 테넌트만 — 저장소가 공개다).
 FIXTURES: list[dict] = [
-    {"id": "split_sentences", "expected": "covered",            # 규칙 위음성: 유사도 0.747
-     "point": "청바지로 인한 이염은 데님 소재의 특성으로 보고, 보상 대상이 아닙니다",
-     "answer": "해당 상황은 데님 상품의 특성으로 인한 이염으로 판단됩니다. 데님은 인디고 염료 특성상 젖거나 마찰될 때 "
-               "밝은 색 물품에 이염될 수 있습니다. 따라서 이염은 보상 대상이 아닙니다."},
-    {"id": "list_items", "expected": "covered",
-     "point": "예열 미실시, 음료량 부족, 뚜껑 불완전 체결, 패킹 마모",
-     "answer": "반품 접수 전에 확인할 사항입니다.\n- 예열 여부: 끓는 물로 1분간 예열했는지\n- 음료량: 병목 아래 1cm까지 "
-               "채웠는지\n- 뚜껑 체결 상태: 완전히 잠갔는지\n- 패킹 사용 기간: 6개월 이상 사용했는지"},
-    {"id": "condition_changed", "expected": "not_covered",       # 조건이 다른 진술
-     "point": "한 번 녹인 뒤 다시 얼리는 재냉동 금지입니다",
-     "answer": "치킨너겟은 냉동실(-18℃ 이하)에서 제조일로부터 18개월까지 보관할 수 있습니다. 개봉 후에는 재냉동이 금지되어 있습니다."},
-    {"id": "contradicted", "expected": "not_covered",            # 결론이 반대
-     "point": "한정판(래플) 상품은 재고 특성상 사이즈 교환 불가",
-     "answer": "불량이 아닌 단순 변심으로 인한 사이즈 교환은 고객 부담의 왕복 배송비 5,000원을 지불하시면 가능합니다."},
-    {"id": "condition_missing", "expected": "not_covered",       # 조건 누락 — vLLM이 관대하게 '담김'으로 본 유형
-     "point": "제휴카드: 5만원 이상 결제 시 2~6개월 무이자 할부",
-     "answer": "제휴카드 무이자 할부는 2~6개월까지 가능합니다. 일반 신용카드의 경우 2~3개월까지 가능합니다."},
+    {
+        "id": "split_sentences",
+        "expected": "covered",  # 규칙 위음성: 유사도 0.747
+        "point": "청바지로 인한 이염은 데님 소재의 특성으로 보고, 보상 대상이 아닙니다",
+        "answer": "해당 상황은 데님 상품의 특성으로 인한 이염으로 판단됩니다. 데님은 인디고 염료 특성상 젖거나 마찰될 때 "
+        "밝은 색 물품에 이염될 수 있습니다. 따라서 이염은 보상 대상이 아닙니다.",
+    },
+    {
+        "id": "list_items",
+        "expected": "covered",
+        "point": "예열 미실시, 음료량 부족, 뚜껑 불완전 체결, 패킹 마모",
+        "answer": "반품 접수 전에 확인할 사항입니다.\n- 예열 여부: 끓는 물로 1분간 예열했는지\n- 음료량: 병목 아래 1cm까지 "
+        "채웠는지\n- 뚜껑 체결 상태: 완전히 잠갔는지\n- 패킹 사용 기간: 6개월 이상 사용했는지",
+    },
+    {
+        "id": "condition_changed",
+        "expected": "not_covered",  # 조건이 다른 진술
+        "point": "한 번 녹인 뒤 다시 얼리는 재냉동 금지입니다",
+        "answer": "치킨너겟은 냉동실(-18℃ 이하)에서 제조일로부터 18개월까지 보관할 수 있습니다. 개봉 후에는 재냉동이 금지되어 있습니다.",
+    },
+    {
+        "id": "contradicted",
+        "expected": "not_covered",  # 결론이 반대
+        "point": "한정판(래플) 상품은 재고 특성상 사이즈 교환 불가",
+        "answer": "불량이 아닌 단순 변심으로 인한 사이즈 교환은 고객 부담의 왕복 배송비 5,000원을 지불하시면 가능합니다.",
+    },
+    {
+        "id": "condition_missing",
+        "expected": "not_covered",  # 조건 누락 — vLLM이 관대하게 '담김'으로 본 유형
+        "point": "제휴카드: 5만원 이상 결제 시 2~6개월 무이자 할부",
+        "answer": "제휴카드 무이자 할부는 2~6개월까지 가능합니다. 일반 신용카드의 경우 2~3개월까지 가능합니다.",
+    },
 ]
 
 
@@ -142,11 +168,13 @@ async def selftest(runs: int = 3) -> dict:
                 labels.append((await judge_point(llm, f["answer"], f["point"])).label)
             except Exception as exc:
                 labels.append(f"error:{type(exc).__name__}")
-        out.append({"id": f["id"], "expected": f["expected"], "labels": labels,
-                    "ok": all(l == f["expected"] for l in labels)})
+        out.append(
+            {"id": f["id"], "expected": f["expected"], "labels": labels, "ok": all(l == f["expected"] for l in labels)}
+        )
     return {"judge": judge_label(), "runs": runs, "fixtures": out, "all_ok": all(o["ok"] for o in out)}
 
 
 if __name__ == "__main__":
     import json
+
     print(json.dumps(asyncio.run(selftest()), ensure_ascii=False, indent=1))

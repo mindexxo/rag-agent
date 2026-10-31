@@ -1,3 +1,4 @@
 # git blame이 건너뛸 커밋 — 일괄 포맷처럼 동작 변경 없이 줄만 바꾼 것. 적용: git config blame.ignoreRevsFile .git-blame-ignore-revs
 3606e89  # style(#303): rag/ 포맷·import 정리
 18588252bc2f2a3d886c1d512fa10ce72ced6280  # style(#303): routers·schemas·main·config·database 포맷·import 정리
+42464e7bd051d791d388a53fc9c083f16a5f6458  # style(#303): eval 포맷·import 정리

@@ -12,6 +12,7 @@
 같은 흔한 값으로 전부 버려졌다(10/23) — 그건 상충이 아니라 같은 업종의 흔한 숫자다.
 산출: FILTER = {'kept': [...], 'dropped': [{'id','reason','gold_id','hit'}], 'stats': {...}}. 표본은 사람이 읽는다(docs/ 원문).
 """
+
 import json
 import re
 from collections import Counter
@@ -64,10 +65,16 @@ def run() -> None:
         v = check((DOCS / f"{r['id']}.md").read_text(encoding='utf-8'), gold)
         (dropped if v else kept).append({'id': r['id'], **v} if v else r['id'])
     kept_set = set(kept)
-    stats = {'total': len(rows), 'kept': len(kept), 'dropped': len(dropped),
-             'reasons': dict(Counter(d['reason'] for d in dropped)),
-             'by_kind': dict(Counter(r['kind'] for r in rows if r['id'] in kept_set))}
-    FILTER.write_text(json.dumps({'kept': kept, 'dropped': dropped, 'stats': stats}, ensure_ascii=False, indent=1), encoding='utf-8')
+    stats = {
+        'total': len(rows),
+        'kept': len(kept),
+        'dropped': len(dropped),
+        'reasons': dict(Counter(d['reason'] for d in dropped)),
+        'by_kind': dict(Counter(r['kind'] for r in rows if r['id'] in kept_set)),
+    }
+    FILTER.write_text(
+        json.dumps({'kept': kept, 'dropped': dropped, 'stats': stats}, ensure_ascii=False, indent=1), encoding='utf-8'
+    )
     print(stats)
     for d in dropped[:10]:
         print('  버림', d)

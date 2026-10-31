@@ -14,6 +14,7 @@ LLM 서버 필요: .env의 LLM_PROVIDER/LLM_BASE_URL/LLM_MODEL (기본 공급자
   — 생성 콜만 Claude CLI로 교체(condense·검색은 운영 그대로), 결과는 generation_{mode}_claude.jsonl.
   롱컨텍스트 비교군(#96b, 파이프라인 전체 제거)은 eval/longcontext_claude.py — 별개 축이다.
 """
+
 import asyncio
 import json
 import math
@@ -38,7 +39,7 @@ from rag.turn.citation_tail import TailSplitter, resolve_citations
 from rag.turn.conversation import build_prior_turns, condense_query, trim_messages_for_condense
 from rag.turn.prompts import build_citation_tail, build_knowledge_generation_prompt
 
-TENANT = "demo"                      # v1(단일 테넌트) 기본값 — v2 gold는 id 접두로 라우팅
+TENANT = "demo"  # v1(단일 테넌트) 기본값 — v2 gold는 id 접두로 라우팅
 V2_TENANTS = {"summers", "homeplus", "adererror", "aromanica", "goodpeople", "harim", "inticube"}
 GOLD = Path("eval/gold_set_v2.jsonl")
 GOLD_VERSION = "v2"
@@ -65,6 +66,8 @@ def row_tenant(g: dict) -> str:
     """gold 문항의 테넌트 — id 접두(summers_sf001 등), v1 형식이면 demo."""
     prefix = g["id"].split("_")[0]
     return prefix if prefix in V2_TENANTS else TENANT
+
+
 RESULT_DIR = Path("eval/results")
 # 생성 평가 본체. multi_turn은 gold의 conversation을 운영 condense_query에 태워
 # 독립 질문으로 재작성한 뒤 동일 경로로 평가 (E.1 운영 경로 그대로 측정)
@@ -82,13 +85,14 @@ RESULT_DIR = Path("eval/results")
 HARD_TYPES = {"multi_hop", "calc", "exception", "negation", "temporal", "conflict"}
 GEN_TYPES = {"single_fact", "paraphrase", "rare_lexical", "multi_doc", "multi_turn"} | HARD_TYPES
 TOP_K = 5
-USE_RERANK = False         # 추가 리랭크 여부. 주의: retrieve_candidates가 settings.rerank_enabled(현재 True)로
-                           # 이미 내부 리랭크 1회 수행 → retrieved 모드는 이미 '리랭커 포함'(=시스템 전체).
-                           # True로 켜면 이중 리랭크. 도입 확정이라 내부 1회로 충분 → False 유지.
-SMOKE = int(os.getenv("SMOKE", "0")) or None   # 스모크셋 크기 (0/미설정=전체) — 검증용 부분 실행 (#18)
+USE_RERANK = False  # 추가 리랭크 여부. 주의: retrieve_candidates가 settings.rerank_enabled(현재 True)로
+# 이미 내부 리랭크 1회 수행 → retrieved 모드는 이미 '리랭커 포함'(=시스템 전체).
+# True로 켜면 이중 리랭크. 도입 확정이라 내부 1회로 충분 → False 유지.
+SMOKE = int(os.getenv("SMOKE", "0")) or None  # 스모크셋 크기 (0/미설정=전체) — 검증용 부분 실행 (#18)
 
 
 # ===== 컨텍스트 구성 =================================================
+
 
 async def oracle_context(session, chunk_ids: list[int]) -> list[RetrievedChunk]:
     """gold 정답 청크 id들을 RetrievedChunk로 (LLM 컨텍스트 주입용).
@@ -99,6 +103,7 @@ async def oracle_context(session, chunk_ids: list[int]) -> list[RetrievedChunk]:
     if not chunk_ids:
         return []
     from rag.search import os_search
+
     chunk_map = await os_search.fetch_chunk_map(chunk_ids)
     chunks = [chunk_map[cid] for cid in chunk_ids if cid in chunk_map]
     # 운영과 같은 근거 준비(#222) — 정답 묶음도 시트 완성본으로 바꿔 넣는다(같은 시트 묶음이 여럿이면 하나로 접힌다)
@@ -111,15 +116,21 @@ async def retrieved_context(session, tenant: str, query: str) -> list[RetrievedC
     chunks = cands.chunks
     if USE_RERANK and chunks:
         from rag.search.reranker import rerank
+
         chunks = await rerank(query, chunks)
     return prepare_evidence(chunks, TOP_K)
 
 
 # ===== 생성 ==========================================================
 
-async def generate(llm: LlmClient, original_query: str, chunks: list[RetrievedChunk],
-                   standalone_query: str | None = None,
-                   prior_turns: list[dict] | None = None) -> str:
+
+async def generate(
+    llm: LlmClient,
+    original_query: str,
+    chunks: list[RetrievedChunk],
+    standalone_query: str | None = None,
+    prior_turns: list[dict] | None = None,
+) -> str:
     """RAG 프롬프트로 답변 1건 생성 (LLM 서버 필요).
 
     운영(rag/turn/service.py)과 같은 조립점을 쓴다 — 인자를 한쪽에서만 빼먹는 종류의 어긋남을
@@ -134,7 +145,8 @@ async def generate(llm: LlmClient, original_query: str, chunks: list[RetrievedCh
     떨어지는지가 검증 대상이다. 제약을 거부하는 서버를 위한 재시도는 #287에서 지웠다(운영과 동일).
     """
     prompt = build_knowledge_generation_prompt(
-        original_query, chunks, standalone_query=standalone_query, prior_turns=prior_turns)
+        original_query, chunks, standalone_query=standalone_query, prior_turns=prior_turns
+    )
     return await llm.acomplete(prompt, citations=build_citation_tail(sources_from_chunks(chunks), []))
 
 
@@ -150,11 +162,11 @@ EPCOV_SIM_THRESHOLD = 0.75
 _SENT_SPLIT = re.compile(r"\n+|(?<!\d)[.!?]+|[.!?]+(?!\d)")
 # 절 경계. 두 가지를 일부러 뺐다 — 숫자 사이 쉼표('3,000원')와 '·'(교육·보건·식수 같은 나열).
 _CLAUSE_SPLIT = re.compile(r"(?<!\d),(?!\d)|[;—]+")
-_MIN_CLAUSE = 6              # 이보다 짧은 조각은 의미를 못 실어 임베딩이 잡음이 된다
+_MIN_CLAUSE = 6  # 이보다 짧은 조각은 의미를 못 실어 임베딩이 잡음이 된다
 # 목록 항목 머리. 생성 프롬프트(rag/turn/prompt_texts.py 규칙 8)가 "항목이 2개 이상이면
 # '- ' 목록으로 나누라"고 **지시**하므로 이 형태는 예외가 아니라 정상 출력이다.
 _BULLET_HEAD = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
-_MAX_RUN_JOIN = 12           # 한 런에 이 개수를 넘으면 묶지 않는다 — 너무 길면 주제가 뭉개진다
+_MAX_RUN_JOIN = 12  # 한 런에 이 개수를 넘으면 묶지 않는다 — 너무 길면 주제가 뭉개진다
 # 마크다운 강조 표지. 생성기가 금액·결론을 '**240,000원**'처럼 굵게 쓰면 부분문자열 일치가 깨졌다 — 기대
 # "총 240,000원입니다"가 "총 … = **240,000원**입니다"를 놓쳐 미적중(#221 실측, 사람 판정 '담김'). 서식이지 내용이 아니다.
 _MD_EMPHASIS = re.compile(r"\*\*|__|`")
@@ -297,9 +309,9 @@ def expected_points_hits(answer: str, points: list[str]) -> list[bool]:
         if segments:
             remaining = [points[i] for i in gated_idx]
             embs = embed_texts_sync(remaining + segments)
-            p_vecs = [e.dense for e in embs[:len(remaining)]]
-            s_vecs = [e.dense for e in embs[len(remaining):]]
-            for i, pv in zip(gated_idx, p_vecs):     # index 직접 — 중복 포인트도 각자 갱신
+            p_vecs = [e.dense for e in embs[: len(remaining)]]
+            s_vecs = [e.dense for e in embs[len(remaining) :]]
+            for i, pv in zip(gated_idx, p_vecs):  # index 직접 — 중복 포인트도 각자 갱신
                 if max(_cosine(pv, sv) for sv in s_vecs) >= EPCOV_SIM_THRESHOLD:
                     hits[i] = True
     return hits
@@ -371,8 +383,7 @@ def must_not_contain_violations(answer: str, forbidden: list[str]) -> list[str] 
     if not forbidden:
         return None
     norm_answer = re.sub(r"\s+", "", answer)
-    return [f for f in forbidden
-            if _contains_point(norm_answer, re.sub(r"\s+", "", f))]
+    return [f for f in forbidden if _contains_point(norm_answer, re.sub(r"\s+", "", f))]
 
 
 def _citation_match(core: str, stem: str) -> bool:
@@ -440,8 +451,7 @@ def citation_accuracy(answer: str, expected_docs: list[str], chunks: list[Retrie
     cited = resolve_citations(splitter.tail_raw, sources_from_chunks(chunks), [])
     # 기대 stem과 같은 규칙으로 확장자 제거 — '공지.txt' vs '공지'는 4자 미만이라 포함 매칭도 못 탄다.
     # FAQ 인용은 항목 표시명('FAQ: 질문', #278)이 아니라 'FAQ'로 접는다 — 기대 'FAQ'와 정확 매칭되게.
-    cores = ['FAQ' if c.faq_id is not None else re.sub(r"\.(pdf|docx|xlsx|txt|md)$", "", c.filename)
-             for c in cited]
+    cores = ['FAQ' if c.faq_id is not None else re.sub(r"\.(pdf|docx|xlsx|txt|md)$", "", c.filename) for c in cited]
     # 원소가 리스트면 대체 출처 그룹 — 같은 정보가 여러 문서에 있을 때 하나만 인용해도 인정
     groups = [[d] if isinstance(d, str) else d for d in expected_docs]
     covered = 0
@@ -453,6 +463,7 @@ def citation_accuracy(answer: str, expected_docs: list[str], chunks: list[Retrie
 
 
 # ===== 채점 — LLM-judge (서버 + 심판모델, 현재 stub) =================
+
 
 async def judge_relevancy(query: str, answer: str) -> float | None:
     """Answer Relevancy (0/0.5/1). TODO: 심판 LLM 프롬프트로 채점."""
@@ -478,14 +489,22 @@ async def _misinfo_scores(judge, answer: str, forbidden: list[str]) -> dict:
     생성용 llm을 쓰면 두 축이 같은 지표를 다른 판정자로 재게 된다(리뷰 지적)."""
     candidates = must_not_contain_violations(answer, forbidden)
     if not candidates:
-        return {"must_not_contain_violations": candidates, "must_not_contain_candidates": candidates,
-                "must_not_contain_audit": []}
+        return {
+            "must_not_contain_violations": candidates,
+            "must_not_contain_candidates": candidates,
+            "must_not_contain_audit": [],
+        }
     confirmed, audit = await confirm_violations(judge, answer, candidates)
-    return {"must_not_contain_violations": confirmed, "must_not_contain_candidates": candidates,
-            "must_not_contain_audit": audit}
+    return {
+        "must_not_contain_violations": confirmed,
+        "must_not_contain_candidates": candidates,
+        "must_not_contain_audit": audit,
+    }
 
 
-EPCOV_JUDGE_WORKERS = int(os.getenv("EPCOV_JUDGE_WORKERS", "8"))   # 심판 동시 호출 — Claude는 호출=프로세스라 너무 올리면 한도에 빨리 닿는다
+EPCOV_JUDGE_WORKERS = int(
+    os.getenv("EPCOV_JUDGE_WORKERS", "8")
+)  # 심판 동시 호출 — Claude는 호출=프로세스라 너무 올리면 한도에 빨리 닿는다
 
 
 async def _epcov_scores(judge, sem, answer: str, points: list[str], rule_hits: list[bool]) -> dict:
@@ -495,17 +514,26 @@ async def _epcov_scores(judge, sem, answer: str, points: list[str], rule_hits: l
     포인트가 없으면 셋 다 기존처럼 None/빈 값. 금액이 빠진 미적중은 심판에 넘기지 않는다 — 판정자가 관대하면
     '9,600원 기대 / 9,000원 답'을 담김으로 보는 오판이 실측됐다(eval/epcov_judge.py docstring)."""
     if not points:
-        return {"expected_points_coverage": None, "expected_points_coverage_rule": None, "expected_points_audit": [],
-                "expected_points_judge_errors": 0}
-    targets = [] if judge is None else [k for k, h in enumerate(rule_hits)
-                                        if not h and point_amounts_present(answer, points[k])]
+        return {
+            "expected_points_coverage": None,
+            "expected_points_coverage_rule": None,
+            "expected_points_audit": [],
+            "expected_points_judge_errors": 0,
+        }
+    targets = (
+        []
+        if judge is None
+        else [k for k, h in enumerate(rule_hits) if not h and point_amounts_present(answer, points[k])]
+    )
     final, audit = await epcov_judge.confirm_points(judge, answer, points, rule_hits, targets, sem)
-    return {"expected_points_coverage": sum(final) / len(points),
-            "expected_points_coverage_rule": sum(rule_hits) / len(points),
-            "expected_points_audit": audit,
-            # 판정 실패 수 — fail-closed라 실패해도 점수는 규칙 값으로 조용히 남는다. 한도·로그인 만료로 전부 실패하면
-            # '심판 반영' 결과처럼 보이는 규칙 결과가 된다(10/10 RAGAS: 실패 268건이 사유 공란). summarize가 크게 찍는다.
-            "expected_points_judge_errors": sum(1 for a in audit if a["error"])}
+    return {
+        "expected_points_coverage": sum(final) / len(points),
+        "expected_points_coverage_rule": sum(rule_hits) / len(points),
+        "expected_points_audit": audit,
+        # 판정 실패 수 — fail-closed라 실패해도 점수는 규칙 값으로 조용히 남는다. 한도·로그인 만료로 전부 실패하면
+        # '심판 반영' 결과처럼 보이는 규칙 결과가 된다(10/10 RAGAS: 실패 268건이 사유 공란). summarize가 크게 찍는다.
+        "expected_points_judge_errors": sum(1 for a in audit if a["error"]),
+    }
 
 
 async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, epcov_judging: bool = True):
@@ -522,8 +550,10 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, e
     'rule-only'로 기록. 생성 일관성 축(eval/consistency.py)이 끈다: N×R 반복 생성마다 심판을 부르면 비용이 R배다.
     """
     gen_llm = gen_llm or llm
-    condense_llm = create_aux_llm() if aux_overridden() else llm   # 재작성은 운영처럼 보조 클라이언트(#297) — 설정이 비면 llm 그대로
-    misinfo_judge_llm = judge_llm()        # 오정보 2단계 판정자(#214) — 거절축과 동일, 모드당 1회 생성
+    condense_llm = (
+        create_aux_llm() if aux_overridden() else llm
+    )  # 재작성은 운영처럼 보조 클라이언트(#297) — 설정이 비면 llm 그대로
+    misinfo_judge_llm = judge_llm()  # 오정보 2단계 판정자(#214) — 거절축과 동일, 모드당 1회 생성
     # EPCov 2단계 판정자(#221) — 전용 스위치 EPCOV_JUDGE(기본 claude). 끄면 규칙만.
     epcov_llm = epcov_judge.judge_llm() if epcov_judging else None
     epcov_label = epcov_judge.judge_label() if epcov_judging else "rule-only"
@@ -544,8 +574,8 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, e
             # 이력을, 생성 맥락은 자르지 않은 원본을 받는다(build_prior_turns가 2000으로 자체
             # 트리밍한다). rag/turn/service.py가 같은 messages에서 두 경로를 독립으로 뽑는 구조다.
             standalone = await condense_query(
-                condense_llm, g["query"],
-                trim_messages_for_condense(history, settings.condense_history_budget_tokens))
+                condense_llm, g["query"], trim_messages_for_condense(history, settings.condense_history_budget_tokens)
+            )
         return g["id"], (standalone, build_prior_turns(history, settings.history_budget_tokens))
 
     # {문항 id: (재작성 질의 | None, 이력 턴)} — multi_turn만 값이 채워진다
@@ -554,10 +584,10 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, e
     # ② 컨텍스트 조회 — 세션 직렬. oracle에서 resolve 실패는 스킵(기존 동작)
     work: list[tuple[dict, list]] = []
     for g in gen_rows:
-        query = turn_ctx[g["id"]][0] or g["query"]     # 검색은 재작성 질의로 (없으면 원문)
+        query = turn_ctx[g["id"]][0] or g["query"]  # 검색은 재작성 질의로 (없으면 원문)
         if mode == "oracle":
             chunks = await oracle_context(session, resolved.chunk_ids.get(g["id"]) or [])
-            if not chunks:                       # 정답 청크 resolve 실패 → oracle 스킵
+            if not chunks:  # 정답 청크 resolve 실패 → oracle 스킵
                 continue
         else:
             chunks = await retrieved_context(session, row_tenant(g), query)
@@ -567,8 +597,7 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, e
     async def _generate(g, chunks):
         standalone, prior_turns = turn_ctx[g["id"]]
         async with sem:
-            return await generate(gen_llm, g["query"], chunks,
-                                  standalone_query=standalone, prior_turns=prior_turns)
+            return await generate(gen_llm, g["query"], chunks, standalone_query=standalone, prior_turns=prior_turns)
 
     answers = await asyncio.gather(*(_generate(g, c) for g, c in work))
 
@@ -576,35 +605,40 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, e
     # 행마다 순서대로 기다리면 Claude 판정자(호출=프로세스, 수 초)로 모드당 20분 가까이 걸린다.
     points_l = [g.get("expected_points", []) for g, _ in work]
     rule_l = [expected_points_hits(a, p) if p else [] for a, p in zip(answers, points_l)]
-    epcov_l = await asyncio.gather(*(_epcov_scores(epcov_llm, epcov_sem, a, p, h)
-                                     for a, p, h in zip(answers, points_l, rule_l)))
+    epcov_l = await asyncio.gather(
+        *(_epcov_scores(epcov_llm, epcov_sem, a, p, h) for a, p, h in zip(answers, points_l, rule_l))
+    )
 
     # ⑤ 채점·행 구성 — 직렬
     rows = []
     for (g, chunks), answer, epcov in zip(work, answers, epcov_l):
         standalone = turn_ctx[g["id"]][0]
 
-        rows.append({
-            "id": g["id"], "type": g["type"], "mode": mode,
-            "standalone_query": standalone,      # multi_turn만 값 있음 — condense 품질 분석용
-            "answer": answer,
-            # RAGAS retrieved_contexts용 — 생성기가 본 것과 동일하게 [파일명 vN] 헤더 포함
-            # (헤더 없이 text만 저장하면 답변의 인용 문장이 judge에게 근거없음 판정됨)
-            "retrieved_contexts": [
-                f"[{c.filename} v{c.version}] 섹션: "
-                f"{' > '.join(c.heading_path) if c.heading_path else ''} / 페이지: {c.page or '-'}\n{c.text}"
-                for c in chunks
-            ],
-            "scores": {
-                **epcov,
-                "citation_accuracy": citation_accuracy(answer, g.get("expected_docs", []), chunks),
-                **(await _misinfo_scores(misinfo_judge_llm, answer, g.get("must_not_contain", []))),
-                "answer_relevancy": await judge_relevancy(g["query"], answer),
-                "faithfulness": await judge_faithfulness(answer, chunks),
-            },
-            "gold_version": GOLD_VERSION,
-            "epcov_judge": epcov_label,          # 판정자·모델·프롬프트 버전 — 다르면 EPCov 수치를 비교하지 않는다
-        })
+        rows.append(
+            {
+                "id": g["id"],
+                "type": g["type"],
+                "mode": mode,
+                "standalone_query": standalone,  # multi_turn만 값 있음 — condense 품질 분석용
+                "answer": answer,
+                # RAGAS retrieved_contexts용 — 생성기가 본 것과 동일하게 [파일명 vN] 헤더 포함
+                # (헤더 없이 text만 저장하면 답변의 인용 문장이 judge에게 근거없음 판정됨)
+                "retrieved_contexts": [
+                    f"[{c.filename} v{c.version}] 섹션: "
+                    f"{' > '.join(c.heading_path) if c.heading_path else ''} / 페이지: {c.page or '-'}\n{c.text}"
+                    for c in chunks
+                ],
+                "scores": {
+                    **epcov,
+                    "citation_accuracy": citation_accuracy(answer, g.get("expected_docs", []), chunks),
+                    **(await _misinfo_scores(misinfo_judge_llm, answer, g.get("must_not_contain", []))),
+                    "answer_relevancy": await judge_relevancy(g["query"], answer),
+                    "faithfulness": await judge_faithfulness(answer, chunks),
+                },
+                "gold_version": GOLD_VERSION,
+                "epcov_judge": epcov_label,  # 판정자·모델·프롬프트 버전 — 다르면 EPCov 수치를 비교하지 않는다
+            }
+        )
     return rows
 
 
@@ -649,6 +683,7 @@ async def main():
     generator = os.getenv("GENERATOR", "vllm")
     if generator == "claude":
         from eval.claude_client import ClaudeCliClient
+
         gen_llm = ClaudeCliClient(model=os.getenv("CLAUDE_MODEL", "sonnet"))
         gen_label = f"claude:{gen_llm.model}"
     elif generator == "vllm":
@@ -660,6 +695,7 @@ async def main():
     async with AsyncSessionLocal() as session:
         # 테넌트별 resolve 후 병합 (chunk_ids는 문항 id 키라 충돌 없음)
         from eval.retrieval import Resolved
+
         resolved = Resolved()
         by_tenant = defaultdict(list)
         for g in gold:
@@ -677,10 +713,10 @@ async def main():
         for mode in ("oracle", "retrieved"):
             print(f"\n=== mode: {mode} ({len(gen_gold)}문항) ===")
             rows = await run_mode(session, llm, mode, gen_gold, resolved, gen_llm=gen_llm)
-            if not rows:   # 채점 0 = resolve 전멸 (빈/잘못된 DB) — 재료 파일 덮어쓰기 방지 (#18 실사고 가드)
+            if not rows:  # 채점 0 = resolve 전멸 (빈/잘못된 DB) — 재료 파일 덮어쓰기 방지 (#18 실사고 가드)
                 raise SystemExit(f"{mode}: 생성 0행 — DATABASE_URL이 코퍼스 있는 DB인지 확인. 결과 파일 미변경.")
             for r in rows:
-                r["generator"] = gen_label   # 어느 생성기의 수치인지 행 단위 자기서술 (#96)
+                r["generator"] = gen_label  # 어느 생성기의 수치인지 행 단위 자기서술 (#96)
             # vllm은 기존 파일명 유지(과거 결과와 diff 편의), 비교군은 접미로 분리 — 덮어쓰기 방지
             suffix = "" if generator == "vllm" else f"_{generator}"
             out = RESULT_DIR / f"generation_{mode}{suffix}.jsonl"
@@ -706,20 +742,22 @@ def summarize(rows):
         cite = [s["citation_accuracy"] for s in ss]
         mnc = [s.get("must_not_contain_violations") for s in ss]
         mnc = [v for v in mnc if v is not None]
-        misinfo = f"{sum(1 for v in mnc if v)/len(mnc):.2f}" if mnc else "   -"
+        misinfo = f"{sum(1 for v in mnc if v) / len(mnc):.2f}" if mnc else "   -"
         cov_avg = sum(cov) / len(cov) if cov else 0.0
         rule = [s.get("expected_points_coverage_rule") for s in ss]
         rule = [v for v in rule if v is not None]
-        rule_avg = f"{sum(rule)/len(rule):>9.2f}" if rule else f"{'-':>9}"   # #221 이전 결과 파일엔 없다
-        print(f"{label:<14}{n:>4}{cov_avg:>8.2f}{rule_avg}{sum(cite)/n:>7.2f}{misinfo:>9}")
+        rule_avg = f"{sum(rule) / len(rule):>9.2f}" if rule else f"{'-':>9}"  # #221 이전 결과 파일엔 없다
+        print(f"{label:<14}{n:>4}{cov_avg:>8.2f}{rule_avg}{sum(cite) / n:>7.2f}{misinfo:>9}")
 
     judges = {r.get("epcov_judge") for r in rows}
     print(f"EPCov 판정자: {', '.join(sorted(map(str, judges)))}  (EPCov=규칙+심판, EPCov규칙=규칙만)")
     calls = sum(len(r["scores"].get("expected_points_audit") or []) for r in rows)
     errors = sum(r["scores"].get("expected_points_judge_errors") or 0 for r in rows)
     if errors:
-        print(f"⚠⚠ EPCov 심판 실패 {errors}/{calls}건 — 그 포인트는 규칙 판정(미적중) 그대로다. "
-              f"전부 실패면 EPCov = EPCov규칙이다(한도·로그인 확인 후 재실행).")
+        print(
+            f"⚠⚠ EPCov 심판 실패 {errors}/{calls}건 — 그 포인트는 규칙 판정(미적중) 그대로다. "
+            f"전부 실패면 EPCov = EPCov규칙이다(한도·로그인 확인 후 재실행)."
+        )
     print(f"{'type':<14}{'n':>4}{'EPCov':>8}{'EPCov규칙':>9}{'Cite':>7}{'Misinfo':>9}")
     for t, ss in by_type.items():
         _line(t, ss)

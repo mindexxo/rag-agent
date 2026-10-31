@@ -28,26 +28,26 @@ eval/absence_judge.py 모듈 docstring이 정의점이다 — 여기서는 "인�
 
 실행: python -m eval.refusal
 """
+
 import asyncio
-import json
 from collections import defaultdict
 from pathlib import Path
 
 from database import AsyncSessionLocal
 from eval._turn_cleanup import discard_turn
-from rag.turn.conversation import ensure_conversation
+from eval.absence_judge import JUDGE_PROMPT_VERSION, judge_absence, judge_llm, save_audit
 from eval.generation import load_gold, must_not_contain_violations, row_tenant
-from eval.misinfo_judge import JUDGE_PROMPT_VERSION as MISINFO_JUDGE_VERSION, confirm_violations
-from eval.absence_judge import (JUDGE_PROMPT_VERSION, judge_absence, judge_llm,
-                                save_audit)
+from eval.misinfo_judge import JUDGE_PROMPT_VERSION as MISINFO_JUDGE_VERSION
+from eval.misinfo_judge import confirm_violations
 from rag.turn.citation_tail import TailSplitter, resolve_citations
+from rag.turn.conversation import ensure_conversation
 from rag.turn.prepared import PreparedRag
 from rag.turn.service import RagService
 
 GOLD = Path(__file__).resolve().parent / "gold_set_v2.jsonl"
 CONCURRENCY = 4
-SHOULD_REFUSE = {"no_evidence"}          # 거절이 정답
-SHOULD_ANSWER = {"trap"}                 # 답변이 정답 (근거 있는 유도)
+SHOULD_REFUSE = {"no_evidence"}  # 거절이 정답
+SHOULD_ANSWER = {"trap"}  # 답변이 정답 (근거 있는 유도)
 
 
 def _citations(prepared: PreparedRag, answer: str) -> list:
@@ -129,25 +129,34 @@ async def compute() -> dict:
         # 오답단정 (#95) — trap이 "답했는가"만 재던 공백을 메운다: 낚인 값(must_not_contain)이
         # 답변에 실렸는지. route 게이트는 부재단정과 같은 이유(OTHER는 규칙 3 밖) —
         # 그래서 라우팅 정확도가 이 지표의 분모를 조용히 줄일 수 있다(의도된 설계).
-        misinfo_candidates = (must_not_contain_violations(answer, g.get("must_not_contain", []))
-                              if route == "knowledge" else None)
+        misinfo_candidates = (
+            must_not_contain_violations(answer, g.get("must_not_contain", [])) if route == "knowledge" else None
+        )
         # 2단계(#214): 문자열 후보가 있을 때만 LLM이 '단정'인지 '부정·정정'인지 가른다 — 실측 오탐 3/4.
         # 같은 세마포어 안에서 돈다(LLM 동시 상한). 판정 실패는 위반 유지(fail-closed, misinfo_judge docstring).
         misinfo, misinfo_audit = misinfo_candidates, []
         if misinfo_candidates:
             async with sem:
                 misinfo, misinfo_audit = await confirm_violations(llm, answer, misinfo_candidates)
-        return {"id": g["id"], "type": g["type"], "query": g["query"], "answer": answer,
-                "route": route, "refused": refused, "ok": refused == should_refuse,
-                "misinfo": misinfo,                        # 2단계 확정 위반
-                "misinfo_candidates": misinfo_candidates,  # 1단계 문자열 후보 — 둘의 차이가 오탐 수
-                "misinfo_audit": misinfo_audit,            # 판정 사유·오류(감사용)
-                "absence": absence, "absence_reason": absence_reason,
-                "absence_error": absence_error}
+        return {
+            "id": g["id"],
+            "type": g["type"],
+            "query": g["query"],
+            "answer": answer,
+            "route": route,
+            "refused": refused,
+            "ok": refused == should_refuse,
+            "misinfo": misinfo,  # 2단계 확정 위반
+            "misinfo_candidates": misinfo_candidates,  # 1단계 문자열 후보 — 둘의 차이가 오탐 수
+            "misinfo_audit": misinfo_audit,  # 판정 사유·오류(감사용)
+            "absence": absence,
+            "absence_reason": absence_reason,
+            "absence_error": absence_error,
+        }
 
     rows = await asyncio.gather(*(_one(g) for g in target))
 
-    by_type = defaultdict(lambda: [0, 0])   # type -> [ok, total]
+    by_type = defaultdict(lambda: [0, 0])  # type -> [ok, total]
     for r in rows:
         by_type[r["type"]][0] += r["ok"]
         by_type[r["type"]][1] += 1
@@ -155,8 +164,8 @@ async def compute() -> dict:
     # 방향별 오류율
     ne = [r for r in rows if r["type"] in SHOULD_REFUSE]
     tr = [r for r in rows if r["type"] in SHOULD_ANSWER]
-    false_answer = sum(1 for r in ne if not r["refused"])     # 거절해야 하는데 답함
-    false_refusal = sum(1 for r in tr if r["refused"])        # 답해야 하는데 거절함
+    false_answer = sum(1 for r in ne if not r["refused"])  # 거절해야 하는데 답함
+    false_refusal = sum(1 for r in tr if r["refused"])  # 답해야 하는데 거절함
 
     # 부재단정 (#76) — 인용 0건 답변 중 부재를 사실로 단정한 비율.
     # 이 축의 accuracy와 독립이다: 부재단정은 no_evidence에서 "거절 성공"으로 집계되므로
@@ -177,15 +186,26 @@ async def compute() -> dict:
             if again.label != "absence_assertion":
                 flaky.append(r["id"])
         except Exception:
-            flaky.append(r["id"])       # 재판정 실패도 신뢰할 수 없다는 신호다
+            flaky.append(r["id"])  # 재판정 실패도 신뢰할 수 없다는 신호다
 
-    audit = save_audit([
-        {"id": r["id"], "type": r["type"], "route": r["route"], "query": r["query"],
-         "answer": r["answer"], "absence": r["absence"], "reason": r["absence_reason"],
-         "error": r["absence_error"], "flaky": r["id"] in flaky,
-         "judge_prompt_version": JUDGE_PROMPT_VERSION}
-        for r in rows if r["absence"] is not None or r["absence_error"] is not None
-    ])
+    audit = save_audit(
+        [
+            {
+                "id": r["id"],
+                "type": r["type"],
+                "route": r["route"],
+                "query": r["query"],
+                "answer": r["answer"],
+                "absence": r["absence"],
+                "reason": r["absence_reason"],
+                "error": r["absence_error"],
+                "flaky": r["id"] in flaky,
+                "judge_prompt_version": JUDGE_PROMPT_VERSION,
+            }
+            for r in rows
+            if r["absence"] is not None or r["absence_error"] is not None
+        ]
+    )
 
     # 오답단정 (#95) — misinfo가 None이 아닌 행(=must_not_contain 보유 + knowledge 라우팅)만 분모.
     misinfo_target = [r for r in rows if r["misinfo"] is not None]
@@ -201,12 +221,13 @@ async def compute() -> dict:
         "misinfo_rate": len(misinfo_violated) / len(misinfo_target) if misinfo_target else None,
         "misinfo_n": len(misinfo_target),
         "misinfo_violated_n": len(misinfo_violated),
-        "misinfo_candidate_n": sum(1 for r in misinfo_target if r["misinfo_candidates"]),   # 1단계 후보 행 수(#214)
+        "misinfo_candidate_n": sum(1 for r in misinfo_target if r["misinfo_candidates"]),  # 1단계 후보 행 수(#214)
         "misinfo_judge_version": MISINFO_JUDGE_VERSION,
-        "misinfo_misses": [{"id": r["id"], "query": r["query"], "violated": r["misinfo"]}
-                           for r in misinfo_violated],
-        "false_answer": false_answer, "false_answer_n": len(ne),
-        "false_refusal": false_refusal, "false_refusal_n": len(tr),
+        "misinfo_misses": [{"id": r["id"], "query": r["query"], "violated": r["misinfo"]} for r in misinfo_violated],
+        "false_answer": false_answer,
+        "false_answer_n": len(ne),
+        "false_refusal": false_refusal,
+        "false_refusal_n": len(tr),
         "by_type": {k: v for k, v in by_type.items()},
         "misses": [r for r in rows if not r["ok"]],
         "absence_rate": len(assertions) / len(judged) if judged else None,
@@ -214,11 +235,18 @@ async def compute() -> dict:
         "absence_assertion_n": len(assertions),
         "absence_judge_errors": errors,
         "absence_flaky": len(flaky),
-        "judge_prompt_version": JUDGE_PROMPT_VERSION,   # 감사 로그와 같은 키 이름 — 조인 가능하게
+        "judge_prompt_version": JUDGE_PROMPT_VERSION,  # 감사 로그와 같은 키 이름 — 조인 가능하게
         "absence_audit": str(audit),
-        "absence_misses": [{"id": r["id"], "type": r["type"], "query": r["query"],
-                            "reason": r["absence_reason"], "flaky": r["id"] in flaky}
-                           for r in assertions],
+        "absence_misses": [
+            {
+                "id": r["id"],
+                "type": r["type"],
+                "query": r["query"],
+                "reason": r["absence_reason"],
+                "flaky": r["id"] in flaky,
+            }
+            for r in assertions
+        ],
     }
 
 
@@ -233,9 +261,11 @@ async def main() -> None:
     print(f"  오거부(근거O인데 거절) : {r['false_refusal']}/{r['false_refusal_n']}  ← 유용성 손해")
 
     rate, n = r["absence_rate"], r["absence_judged_n"]
-    print(f"\n[부재단정 {r['judge_prompt_version']}]  KNOWLEDGE·인용 0건 {n}건 중 "
-          f"{r['absence_assertion_n']}건 = {'―' if rate is None else f'{rate:.1%}'}"
-          f"  ← 위 정확도에는 안 잡히는 축")
+    print(
+        f"\n[부재단정 {r['judge_prompt_version']}]  KNOWLEDGE·인용 0건 {n}건 중 "
+        f"{r['absence_assertion_n']}건 = {'―' if rate is None else f'{rate:.1%}'}"
+        f"  ← 위 정확도에는 안 잡히는 축"
+    )
     # 분모를 같이 찍는 이유: n이 작아 1건이 곧 1.7%다(회귀 임계 0.01보다 크다).
     # 비율만 보면 한 건 흔들림을 추세로 오독한다.
     if n:
@@ -250,9 +280,13 @@ async def main() -> None:
     print(f"  감사 로그: {r['absence_audit']}")
 
     if r["misinfo_n"]:
-        print(f"\n[오답단정 (#95)]  1단계 문자열 후보 {r['misinfo_candidate_n']}건 → LLM 확인({MISINFO_JUDGE_VERSION}, #214)")
-        print(f"  must_not_contain 보유·knowledge 라우팅 {r['misinfo_n']}건 중 "
-              f"{r['misinfo_violated_n']}건 = {r['misinfo_rate']:.1%}  ← 낚인 값이 답변에 실림")
+        print(
+            f"\n[오답단정 (#95)]  1단계 문자열 후보 {r['misinfo_candidate_n']}건 → LLM 확인({MISINFO_JUDGE_VERSION}, #214)"
+        )
+        print(
+            f"  must_not_contain 보유·knowledge 라우팅 {r['misinfo_n']}건 중 "
+            f"{r['misinfo_violated_n']}건 = {r['misinfo_rate']:.1%}  ← 낚인 값이 답변에 실림"
+        )
         for m in r["misinfo_misses"][:20]:
             print(f"  {m['query'][:44]!r} — 검출: {m['violated']}")
 

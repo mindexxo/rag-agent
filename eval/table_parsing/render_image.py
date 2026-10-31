@@ -3,7 +3,9 @@
 폰트는 맥 기본 한글 폰트(AppleSDGothicNeo). 리눅스에서 돌리려면 FONT_PATH를 나눔고딕 등으로 바꾼다 —
 글꼴이 바뀌면 OCR 결과도 바뀌므로 측정 보고에 글꼴을 적는다.
 """
+
 import io
+
 from PIL import Image, ImageDraw, ImageFont
 
 FONT_PATH = '/System/Library/Fonts/AppleSDGothicNeo.ttc'
@@ -116,8 +118,9 @@ def render_spec(spec) -> Image.Image:
             im.paste(p, (x, 20))
             x += p.width + 40
         return im
-    table = render_table(spec['rows'], font_size=fs, style=spec.get('style', 'grid'),
-                         row_header=spec.get('row_header', False))
+    table = render_table(
+        spec['rows'], font_size=fs, style=spec.get('style', 'grid'), row_header=spec.get('row_header', False)
+    )
     title, note = spec.get('title'), spec.get('note')
     extra = (fs * 2 if title else 0) + (fs * 2 if note else 0)
     tmp = ImageDraw.Draw(Image.new('RGB', (10, 10)))

@@ -9,6 +9,7 @@
 문서별 행(파일명 포함)은 --out 파일에만 쓴다 — 실문서 파일명이라 저장소에 올리지 않는다(eval/results는 gitignore).
 화면에는 코퍼스(inticube/그 외) × 형식 집계만 낸다.
 """
+
 import argparse
 import asyncio
 import json
@@ -17,9 +18,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 
+from config import settings
 from eval.axis_common import TABLE_SEP, commit, is_table_chunk
 from eval.generation import V2_TENANTS
-from config import settings
 from rag.search.os_client import client
 from rag.search.os_search import tenant_filter
 
@@ -29,14 +30,18 @@ _ROW = re.compile(r"^\|.*\|\s*$", re.M)
 async def _chunks(tenant: str) -> list[dict]:
     """조각 전부 — axis_common.load_chunks는 is_table·table_key를 안 읽어 여기서 따로 읽는다."""
     os_ = client()
-    body = {"size": 1000, "_source": ["filename", "text", "is_table", "table_key"], "query": tenant_filter(tenant),
-            "sort": [{"_doc": "asc"}]}
+    body = {
+        "size": 1000,
+        "_source": ["filename", "text", "is_table", "table_key"],
+        "query": tenant_filter(tenant),
+        "sort": [{"_doc": "asc"}],
+    }
     resp = await os_.search(index=settings.opensearch_index, body=body, scroll="2m")
     out = []
     while resp["hits"]["hits"]:
         out += [h["_source"] for h in resp["hits"]["hits"]]
         resp = await os_.scroll(scroll_id=resp["_scroll_id"], scroll="2m")
-    return [s for s in out if s.get("filename")]          # FAQ 제외
+    return [s for s in out if s.get("filename")]  # FAQ 제외
 
 
 def census(tenant: str, chunks: list[dict]) -> list[dict]:
@@ -55,9 +60,19 @@ def census(tenant: str, chunks: list[dict]) -> list[dict]:
             d["big"].add(s.get("table_key"))
         else:
             d["small"] += seps
-    return [{"tenant": tenant, "file": fn, "ext": fn.rsplit(".", 1)[-1].lower(), "chunks": d["chunks"],
-             "table_chunks": d["table_chunks"], "big": len(d["big"]), "small": d["small"], "rows": d["rows"]}
-            for fn, d in sorted(docs.items())]
+    return [
+        {
+            "tenant": tenant,
+            "file": fn,
+            "ext": fn.rsplit(".", 1)[-1].lower(),
+            "chunks": d["chunks"],
+            "table_chunks": d["table_chunks"],
+            "big": len(d["big"]),
+            "small": d["small"],
+            "rows": d["rows"],
+        }
+        for fn, d in sorted(docs.items())
+    ]
 
 
 def summary(rows: list[dict]) -> str:
@@ -68,10 +83,15 @@ def summary(rows: list[dict]) -> str:
         a["with_table"] += o["table_chunks"] > 0
         for k in ("big", "small", "table_chunks", "chunks", "rows"):
             a[k] += o[k]
-    out = ["| 코퍼스 | 형식 | 문서 | 표 있는 문서 | 큰 표 | 작은 표 | 표 조각 | 조각 | 표 행 |", "|---|---|---|---|---|---|---|---|---|"]
+    out = [
+        "| 코퍼스 | 형식 | 문서 | 표 있는 문서 | 큰 표 | 작은 표 | 표 조각 | 조각 | 표 행 |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
     for (corpus, ext), a in sorted(agg.items()):
-        out.append(f"| {corpus} | {ext} | {a['docs']} | {a['with_table']} | {a['big']} | {a['small']} | {a['table_chunks']} | "
-                   f"{a['chunks']} | {a['rows']} |")
+        out.append(
+            f"| {corpus} | {ext} | {a['docs']} | {a['with_table']} | {a['big']} | {a['small']} | {a['table_chunks']} | "
+            f"{a['chunks']} | {a['rows']} |"
+        )
     return "\n".join(out)
 
 
@@ -92,10 +112,13 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+
     async def _run():
         try:
             await main()
         finally:
             from rag.search import os_client
+
             await os_client.close_client()
+
     asyncio.run(_run())

@@ -8,6 +8,7 @@ gold_set_v2.jsonl을 사람이 읽기 좋은 markdown으로 테넌트별로 뽑�
 
 실행: python -m eval.make_review_sheet
 """
+
 import json
 from collections import defaultdict
 from pathlib import Path
@@ -20,8 +21,17 @@ V2_TENANTS = {"summers", "homeplus", "adererror", "aromanica", "goodpeople", "ha
 
 # type 출력 순서 (검수 우선순위: 거절/트랩 먼저 = 지점3, 그다음 검색류)
 TYPE_ORDER = [
-    "no_evidence", "trap", "single_fact", "paraphrase", "rare_lexical",
-    "multi_doc", "multi_turn", "smalltalk", "safety", "prompt_injection", "pii",
+    "no_evidence",
+    "trap",
+    "single_fact",
+    "paraphrase",
+    "rare_lexical",
+    "multi_doc",
+    "multi_turn",
+    "smalltalk",
+    "safety",
+    "prompt_injection",
+    "pii",
 ]
 
 CHECK_GUIDE = """> **검수 4항목** (각 케이스마다):
@@ -54,7 +64,7 @@ def _fmt_case(c: dict) -> str:
     if chunks:
         lines.append("- 기대청크:")
         for ch in chunks:
-            lines.append(f"    - `{ch.get('filename','')}` → \"{ch.get('snippet','')}\"")
+            lines.append(f"    - `{ch.get('filename', '')}` → \"{ch.get('snippet', '')}\"")
     pts = c.get("expected_points") or []
     if pts:
         lines.append(f"- 기대포인트: {', '.join(f'`{p}`' for p in pts)}")

@@ -11,6 +11,7 @@ LLM 의존이라 이 축에서 제외 — 멀티턴 검색축은 eval.retrieval_
 표 조각의 파일 형식(`table_fmt`)을 행에 적고 [표 문항]·[표 형식별]로 따로 평균을 낸다 — 골드 type에 표 구분이 없어
 "표 셀 값 질문의 검색 성적"이 유형 평균에 묻혀 있었다.
 """
+
 import argparse
 import asyncio
 import json
@@ -56,9 +57,11 @@ def _overall(rows) -> dict:
 # 구성이 조용히 바뀌면 다음 실행의 하락이 회귀인지 구성 변경인지 못 가른다
 # (citation_accuracy가 판정 변경 때마다 겪은 문제와 같은 패턴).
 DIFFICULTY = {
-    'single_fact': 'easy', 'rare_lexical': 'easy',
+    'single_fact': 'easy',
+    'rare_lexical': 'easy',
     'paraphrase': 'medium',
-    'multi_doc': 'hard', 'multi_turn': 'hard',
+    'multi_doc': 'hard',
+    'multi_turn': 'hard',
     **{t: 'hard_new' for t in HARD_TYPES},
 }
 
@@ -87,7 +90,7 @@ async def compute(expand: bool = False, tenants: set[str] | None = None) -> dict
     바뀐 첫 실행을 '회귀'가 아니라 '비교 불가'로 처리한다 (#95에서 고난도 90행이 전체
     평균에 편입되며 필요해짐 — absence_rate의 judge_prompt_version과 같은 메커니즘).
     """
-    gold = load_gold()          # 정본 + eval/gold_private (인티큐브 실문서 골드 — gitignore)
+    gold = load_gold()  # 정본 + eval/gold_private (인티큐브 실문서 골드 — gitignore)
     target = [g for g in gold if g['type'] in TYPES and (tenants is None or row_tenant(g) in tenants)]
 
     # 1단계(expand만): LLM 선병렬 — vLLM 연속 배칭 활용 (#18). DB 접근 없어 gather 안전
@@ -95,12 +98,14 @@ async def compute(expand: bool = False, tenants: set[str] | None = None) -> dict
     if expand:
         from rag.llm import create_aux_llm
         from rag.turn.conversation import condense_to_queries
-        llm = create_aux_llm()   # 재작성은 운영과 같은 보조 클라이언트(#297)
-        sem = asyncio.Semaphore(6)   # worker15 공유 장비 — RAGAS와 동일 안전선
+
+        llm = create_aux_llm()  # 재작성은 운영과 같은 보조 클라이언트(#297)
+        sem = asyncio.Semaphore(6)  # worker15 공유 장비 — RAGAS와 동일 안전선
 
         async def _expand(g):
             async with sem:
                 return g['id'], await condense_to_queries(llm, g['query'], [])
+
         queries_map = dict(await asyncio.gather(*(_expand(g) for g in target)))
 
     by_tenant = defaultdict(list)
@@ -117,43 +122,61 @@ async def compute(expand: bool = False, tenants: set[str] | None = None) -> dict
             # 정답 조각의 표 여부(#232) — 테넌트당 한 번 읽는다
             gold_chunks = await fetch_chunk_map(sorted({c for s in resolved.scoring_ids.values() for c in s}))
             for g in items:
-                gold_ids = sorted(resolved.scoring_ids.get(g['id']) or [])   # 스니펫 포함 청크 전부 (#209)
+                gold_ids = sorted(resolved.scoring_ids.get(g['id']) or [])  # 스니펫 포함 청크 전부 (#209)
                 if not gold_ids:
                     skipped += 1
                     continue
                 table_chunks = [gold_chunks[c] for c in gold_ids if c in gold_chunks]
                 table = table_kind(table_chunks)
-                table_fmt = '+'.join(sorted({c.filename.rsplit('.', 1)[-1].lower() for c in table_chunks
-                                             if table_kind([c])})) if table else ''
+                table_fmt = (
+                    '+'.join(sorted({c.filename.rsplit('.', 1)[-1].lower() for c in table_chunks if table_kind([c])}))
+                    if table
+                    else ''
+                )
                 if expand:
                     queries = queries_map[g['id']]
-                    cands = await retrieve_candidates(session, tenant, queries[0], top_n=20,
-                                                      expanded_queries=queries[1:])
+                    cands = await retrieve_candidates(
+                        session, tenant, queries[0], top_n=20, expanded_queries=queries[1:]
+                    )
                 else:
                     queries = [g['query']]
                     cands = await retrieve_candidates(session, tenant, g['query'], top_n=20)
                 scores = score_one([c.chunk_id for c in cands.chunks], gold_ids)
-                row = {'id': g['id'], 'type': g['type'], 'tenant': tenant, 'table': table, 'table_fmt': table_fmt,
-                       'scores': scores}
+                row = {
+                    'id': g['id'],
+                    'type': g['type'],
+                    'tenant': tenant,
+                    'table': table,
+                    'table_fmt': table_fmt,
+                    'scores': scores,
+                }
                 if expand:
                     row['queries'] = queries
                 rows.append(row)
 
-    return {'rows': rows, 'skipped': skipped, 'overall': _overall(rows),
-            'by_difficulty': _by_difficulty(rows), 'stale': stale,
-            # 구성 버전 (#95) — TYPES 구성이 바뀔 때마다 갱신할 것 (docstring 참조)
-            'gold_composition': 'v2+hard95'}
+    return {
+        'rows': rows,
+        'skipped': skipped,
+        'overall': _overall(rows),
+        'by_difficulty': _by_difficulty(rows),
+        'stale': stale,
+        # 구성 버전 (#95) — TYPES 구성이 바뀔 때마다 갱신할 것 (docstring 참조)
+        'gold_composition': 'v2+hard95',
+    }
 
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--expand', action='store_true',
-                        help='멀티쿼리 통합(#5) on으로 측정 — 결과는 retrieval_v2_expand.jsonl에 별도 저장 (A/B)')
+    parser.add_argument(
+        '--expand',
+        action='store_true',
+        help='멀티쿼리 통합(#5) on으로 측정 — 결과는 retrieval_v2_expand.jsonl에 별도 저장 (A/B)',
+    )
     args = parser.parse_args()
 
     result = await compute(expand=args.expand)
     rows, skipped = result['rows'], result['skipped']
-    if not rows:   # 채점 0 = gold resolve 전멸 (빈/잘못된 DB) — 결과 덮어쓰기 전에 중단 (#18 실사고 가드)
+    if not rows:  # 채점 0 = gold resolve 전멸 (빈/잘못된 DB) — 결과 덮어쓰기 전에 중단 (#18 실사고 가드)
         raise SystemExit(f"채점 0문항 (스킵 {skipped}) — DATABASE_URL이 코퍼스 있는 DB인지 확인. 결과 파일 미변경.")
     for tenant, n in result['stale'].items():
         print(f'⚠ {tenant} 라벨 노후 {n}건')
@@ -161,7 +184,7 @@ async def main() -> None:
     # off 기본 결과를 덮어쓰지 않게 expand는 별도 파일 — 두 파일을 나란히 비교
     name = 'retrieval_v2_expand.jsonl' if args.expand else 'retrieval_v2.jsonl'
     out = Path(__file__).resolve().parent / 'results' / name
-    out.parent.mkdir(exist_ok=True)      # 워크트리엔 results/가 없다(gitignore) — generation.py와 같은 처리
+    out.parent.mkdir(exist_ok=True)  # 워크트리엔 results/가 없다(gitignore) — generation.py와 같은 처리
     out.write_text('\n'.join(json.dumps(r, ensure_ascii=False) for r in rows) + '\n')
     print(f'\n채점 {len(rows)}문항 (resolve 불가 스킵 {skipped})  →  {out}\n')
     print('[타입별]')
@@ -175,10 +198,13 @@ async def main() -> None:
 
 
 if __name__ == '__main__':
+
     async def _run():
         try:
             await main()
         finally:
             from rag.search import os_client
-            await os_client.close_client()      # aiohttp 세션 미종료 경고 방지
+
+            await os_client.close_client()  # aiohttp 세션 미종료 경고 방지
+
     asyncio.run(_run())

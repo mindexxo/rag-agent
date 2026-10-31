@@ -21,10 +21,10 @@ FAQ 내용은 문서와 **다르게** 만들었다(사용자 결정 7) — 겹�
 '전' 측정은 #278 전 커밋의 워크트리에 이 파일과 세트를 복사해 같은 명령으로 돌린다(load는 한 번이면 된다 —
 청크 텍스트 조립 규약 rag/search/faq_indexing.build_faq_chunk_text가 같다). 결과를 인용할 때는 커밋을 함께 적는다(AGENTS.md).
 """
+
 import argparse
 import asyncio
 import json
-from collections import defaultdict
 from pathlib import Path
 
 from sqlalchemy import delete, select
@@ -38,7 +38,9 @@ from rag.search import os_index
 from rag.turn.citation_labels import sources_from_chunks
 from rag.turn.citation_tail import TailSplitter, resolve_citations
 
-FAQ_EVAL_TENANT = "faq_eval"          # 전용 테넌트 — 다른 축의 측정 테넌트에 FAQ를 섞지 않는다(eval/axis_common.load_chunks 전제)
+FAQ_EVAL_TENANT = (
+    "faq_eval"  # 전용 테넌트 — 다른 축의 측정 테넌트에 FAQ를 섞지 않는다(eval/axis_common.load_chunks 전제)
+)
 SET = Path("eval/faq_set.jsonl")
 
 
@@ -53,7 +55,9 @@ async def load(session) -> None:
         await os_index.drop_faqs_now(old_ids)
         await session.execute(delete(Faq).where(Faq.tenant_id == FAQ_EVAL_TENANT))
     rows = load_set()
-    faqs = [Faq(tenant_id=FAQ_EVAL_TENANT, question=r["question"], variants=r["variants"], answer=r["answer"]) for r in rows]
+    faqs = [
+        Faq(tenant_id=FAQ_EVAL_TENANT, question=r["question"], variants=r["variants"], answer=r["answer"]) for r in rows
+    ]
     session.add_all(faqs)
     await session.flush()
     for f in faqs:
@@ -71,8 +75,10 @@ def _cited(answer: str, chunks) -> list:
 
 async def measure(session, llm: LlmClient, label: str) -> list[dict]:
     rows = load_set()
-    by_question = {q: i for q, i in (await session.execute(
-        select(Faq.question, Faq.id).where(Faq.tenant_id == FAQ_EVAL_TENANT))).all()}
+    by_question = {
+        q: i
+        for q, i in (await session.execute(select(Faq.question, Faq.id).where(Faq.tenant_id == FAQ_EVAL_TENANT))).all()
+    }
     missing = [r["key"] for r in rows if r["question"] not in by_question]
     if missing:
         raise SystemExit(f"테넌트에 없는 FAQ {len(missing)}건 — 먼저 load: {missing[:5]}")
@@ -80,7 +86,7 @@ async def measure(session, llm: LlmClient, label: str) -> list[dict]:
     work = []
     for r in rows:
         for q in r["queries"]:
-            chunks = await retrieved_context(session, FAQ_EVAL_TENANT, q["text"])   # 세션 직렬
+            chunks = await retrieved_context(session, FAQ_EVAL_TENANT, q["text"])  # 세션 직렬
             work.append((r, q, chunks))
 
     sem = asyncio.Semaphore(CONCURRENCY)
@@ -96,21 +102,29 @@ async def measure(session, llm: LlmClient, label: str) -> list[dict]:
         expected = by_question[r["question"]]
         cited = _cited(answer, chunks)
         cited_faq_ids = [getattr(c, "faq_id", None) for c in cited]
-        per_item = any(getattr(c, "faq_id", None) is not None for c in sources_from_chunks(chunks))   # #278 후 코드인가
+        per_item = any(getattr(c, "faq_id", None) is not None for c in sources_from_chunks(chunks))  # #278 후 코드인가
         ranks = [i + 1 for i, c in enumerate(chunks) if c.faq_id == expected]
-        out.append({
-            "key": r["key"], "cluster": r["cluster"], "kind": q["kind"], "query": q["text"],
-            "expected_faq_id": expected, "expected_question": r["question"],
-            "answer": answer,
-            "cited": [c.filename for c in cited],
-            "cited_faq_ids": [i for i in cited_faq_ids if i is not None],
-            "faq_cited": any(i is not None or c.filename == "FAQ" for i, c in zip(cited_faq_ids, cited)),
-            "correct": (expected in cited_faq_ids) if per_item else None,
-            "retrieved": bool(ranks), "rank": ranks[0] if ranks else None,
-            "n_candidates": len(sources_from_chunks(chunks)),
-            "n_cited": len(cited),
-            "label": label, "commit": commit(),
-        })
+        out.append(
+            {
+                "key": r["key"],
+                "cluster": r["cluster"],
+                "kind": q["kind"],
+                "query": q["text"],
+                "expected_faq_id": expected,
+                "expected_question": r["question"],
+                "answer": answer,
+                "cited": [c.filename for c in cited],
+                "cited_faq_ids": [i for i in cited_faq_ids if i is not None],
+                "faq_cited": any(i is not None or c.filename == "FAQ" for i, c in zip(cited_faq_ids, cited)),
+                "correct": (expected in cited_faq_ids) if per_item else None,
+                "retrieved": bool(ranks),
+                "rank": ranks[0] if ranks else None,
+                "n_candidates": len(sources_from_chunks(chunks)),
+                "n_cited": len(cited),
+                "label": label,
+                "commit": commit(),
+            }
+        )
     return out
 
 
@@ -118,16 +132,24 @@ def summarize(rows: list[dict]) -> None:
     def _rate(rs, key):
         vals = [r[key] for r in rs if r[key] is not None]
         return f"{sum(vals) / len(vals):.3f}" if vals else "-"
+
     print(f"\n== FAQ 항목 인용 ({rows[0]['label']}, {rows[0]['commit']}, {len(rows)}문항) ==")
-    print(f"{'구분':<10}{'n':>4}  {'faq_cited':>9}  {'correct':>8}  {'retrieved':>9}  {'top1':>6}  {'cand':>5}  {'cited/행':>8}")
-    groups = [("전체", rows)] + [(k, [r for r in rows if r["kind"] == k]) for k in ("direct", "para")] \
+    print(
+        f"{'구분':<10}{'n':>4}  {'faq_cited':>9}  {'correct':>8}  {'retrieved':>9}  {'top1':>6}  {'cand':>5}  {'cited/행':>8}"
+    )
+    groups = (
+        [("전체", rows)]
+        + [(k, [r for r in rows if r["kind"] == k]) for k in ("direct", "para")]
         + [(c, [r for r in rows if r["cluster"] == c]) for c in dict.fromkeys(r["cluster"] for r in rows)]
+    )
     for name, rs in groups:
         top1 = sum(1 for r in rs if r["rank"] == 1) / len(rs)
         cand = sum(r["n_candidates"] for r in rs) / len(rs)
         ncited = sum(r["n_cited"] for r in rs) / len(rs)
-        print(f"{name:<10}{len(rs):>4}  {_rate(rs, 'faq_cited'):>9}  {_rate(rs, 'correct'):>8}  "
-              f"{_rate(rs, 'retrieved'):>9}  {top1:>6.3f}  {cand:>5.1f}  {ncited:>8.2f}")
+        print(
+            f"{name:<10}{len(rs):>4}  {_rate(rs, 'faq_cited'):>9}  {_rate(rs, 'correct'):>8}  "
+            f"{_rate(rs, 'retrieved'):>9}  {top1:>6.3f}  {cand:>5.1f}  {ncited:>8.2f}"
+        )
 
 
 async def main() -> None:

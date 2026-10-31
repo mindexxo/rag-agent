@@ -21,6 +21,7 @@
 
 의존: DB + LLM + TEI. 실행: python -m eval.scenario
 """
+
 import asyncio
 import json
 import re
@@ -69,14 +70,27 @@ async def _seed_turn(tenant_id: str, conversation_id: int, turn: dict) -> None:
         # 포함)을 그대로 검색해 실제 동작과 어긋난다 — 시드가 실상태를 정확히 모사하도록 강제.
         raise ValueError(f"cancelled 시드는 seed_standalone 필수: {turn.get('say')!r}")
     async with AsyncSessionLocal() as session:
-        user = Message(tenant_id=tenant_id, conversation_id=conversation_id, role="user",
-                       content=turn["say"], standalone_query=turn.get("seed_standalone"),
-                       attachments=turn.get("seed_attach"))
+        user = Message(
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
+            role="user",
+            content=turn["say"],
+            standalone_query=turn.get("seed_standalone"),
+            attachments=turn.get("seed_attach"),
+        )
         session.add(user)
         await session.flush()
-        session.add(Message(tenant_id=tenant_id, conversation_id=conversation_id, role="assistant",
-                            content=turn.get("seed_answer", ""), status=status,
-                            question_message_id=user.id, intent=turn.get("seed_intent")))
+        session.add(
+            Message(
+                tenant_id=tenant_id,
+                conversation_id=conversation_id,
+                role="assistant",
+                content=turn.get("seed_answer", ""),
+                status=status,
+                question_message_id=user.id,
+                intent=turn.get("seed_intent"),
+            )
+        )
         await session.commit()
 
 
@@ -86,25 +100,33 @@ async def _run_turn(tenant_id: str, conversation_id: int, turn: dict) -> dict:
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant_id, session=session)
         try:
-            prepared = await svc.prepare(turn["say"], conversation_id=conversation_id,
-                                         attachments=_to_attachments(turn.get("attach")))
+            prepared = await svc.prepare(
+                turn["say"], conversation_id=conversation_id, attachments=_to_attachments(turn.get("attach"))
+            )
             answer = "".join([tok async for tok in svc.generate(prepared)])
             citations = _citations(prepared, answer)
             # terminal_status 사용 — 인젝션 턴은 실시간 blocked라 DB에도 blocked로 저장돼야
             # 다음 턴의 이력 격리(#22)가 성립한다. DONE 하드코딩 금지.
-            await svc.finalize(prepared, answer, citations,
-                               status=prepared.terminal_status,
-                               latency_ms=int((time.monotonic() - t0) * 1000))
+            await svc.finalize(
+                prepared,
+                answer,
+                citations,
+                status=prepared.terminal_status,
+                latency_ms=int((time.monotonic() - t0) * 1000),
+            )
             await session.commit()
         except Exception as exc:
             return {"error": f"{type(exc).__name__}: {exc}"}
-    return {"route": _display_route(prepared),
-            "citations": [c.filename for c in citations],
-            # 프롬프트에 실제로 주입된 첨부 파일명 — 차단 첨부 격리(#63)를 코드 레벨로
-            # 검증하기 위해서다. 답변 텍스트만 보면 규칙1(인젝션 방어)이 누출을 막아
-            # 격리 서브쿼리 고장을 못 잡는다(리뷰 발견) — 주입 목록을 직접 관측한다.
-            "attachment_files": [a["filename"] for a in (prepared.attachments or [])],
-            "answer": answer, "cache_hit": prepared.is_cache_hit}
+    return {
+        "route": _display_route(prepared),
+        "citations": [c.filename for c in citations],
+        # 프롬프트에 실제로 주입된 첨부 파일명 — 차단 첨부 격리(#63)를 코드 레벨로
+        # 검증하기 위해서다. 답변 텍스트만 보면 규칙1(인젝션 방어)이 누출을 막아
+        # 격리 서브쿼리 고장을 못 잡는다(리뷰 발견) — 주입 목록을 직접 관측한다.
+        "attachment_files": [a["filename"] for a in (prepared.attachments or [])],
+        "answer": answer,
+        "cache_hit": prepared.is_cache_hit,
+    }
 
 
 def _check(turn: dict, obs: dict) -> list[str]:
@@ -115,14 +137,13 @@ def _check(turn: dict, obs: dict) -> list[str]:
     if (want := turn.get("expect_route")) is not None and obs["route"] != want:
         fails.append(f"route {obs['route']!r} != {want!r}")
     if (want := turn.get("expect_refuse")) is not None:
-        refused = not obs["citations"]        # 실인용 0건 = 거절 (eval.refusal과 같은 정의)
+        refused = not obs["citations"]  # 실인용 0건 = 거절 (eval.refusal과 같은 정의)
         if refused != want:
             fails.append(f"refuse {refused} != {want}")
     if want := turn.get("expect_docs"):
         cores = [_EXT_RE.sub("", c) for c in obs["citations"]]
         groups = [[d] if isinstance(d, str) else d for d in want]
-        missing = [g for g in groups
-                   if not any(_citation_match(c, _EXT_RE.sub("", s)) for s in g for c in cores)]
+        missing = [g for g in groups if not any(_citation_match(c, _EXT_RE.sub("", s)) for s in g for c in cores)]
         if missing:
             fails.append(f"인용 누락: {missing} (실제 {obs['citations']})")
     # _contains_point 재사용 — 공백만 지우는 substring은 "5만원"이 "15만원"에 오탐된다
@@ -134,7 +155,7 @@ def _check(turn: dict, obs: dict) -> list[str]:
     for s in turn.get("expect_not_contains", []):
         if _contains_point(norm_answer, s.replace(" ", "")):
             fails.append(f"금지 문구 존재: {s!r}")
-    for fn in turn.get("expect_not_attached", []):     # 차단 첨부 격리 코드 레벨 검증 (#63)
+    for fn in turn.get("expect_not_attached", []):  # 차단 첨부 격리 코드 레벨 검증 (#63)
         if any(fn in af for af in obs.get("attachment_files", [])):
             fails.append(f"차단 첨부 주입됨: {fn!r} (실제 {obs.get('attachment_files')})")
     return fails
@@ -157,10 +178,15 @@ async def run_scenario(sc: dict) -> dict:
                 turn_results.append({"turn": i, "seeded": turn["seed_status"], "fails": []})
                 continue
             obs = await _run_turn(tenant, conv_id, turn)
-            turn_results.append({"turn": i, "route": obs.get("route"),
-                                 "cache_hit": obs.get("cache_hit", False),
-                                 "answer": obs.get("answer", "")[:120],
-                                 "fails": _check(turn, obs)})
+            turn_results.append(
+                {
+                    "turn": i,
+                    "route": obs.get("route"),
+                    "cache_hit": obs.get("cache_hit", False),
+                    "answer": obs.get("answer", "")[:120],
+                    "fails": _check(turn, obs),
+                }
+            )
     finally:
         async with AsyncSessionLocal() as session:
             await discard_turn(session, tenant, conv_id)
@@ -172,12 +198,19 @@ async def run_scenario(sc: dict) -> dict:
 async def compute() -> list[dict]:
     scenarios = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
     results = []
-    for sc in scenarios:      # 순차 — 멀티턴 순서를 로그로 따라가야 하는 리허설 도구라 순서 고정 우선
+    for sc in scenarios:  # 순차 — 멀티턴 순서를 로그로 따라가야 하는 리허설 도구라 순서 고정 우선
         try:
             results.append(await run_scenario(sc))
         except Exception as exc:
-            results.append({"id": sc["id"], "name": sc.get("name", ""), "passed": False,
-                            "turns": [], "error": f"{type(exc).__name__}: {exc}"})
+            results.append(
+                {
+                    "id": sc["id"],
+                    "name": sc.get("name", ""),
+                    "passed": False,
+                    "turns": [],
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
     return results
 
 

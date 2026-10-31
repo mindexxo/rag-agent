@@ -20,6 +20,7 @@
 
 주의: 임베딩 TEI 서버(사내망)가 필요하다. 로컬에서는 ConnectTimeout으로 실패한다.
 """
+
 import argparse
 import asyncio
 from pathlib import Path
@@ -53,8 +54,11 @@ async def _targets(tenant_id: str | None) -> list[tuple[int, str, str, int]]:
 
         out = []
         for doc in docs:
-            n = (await os_client.client().count(index=settings.opensearch_index, body={
-                "query": {"term": {"document_id": doc.id}}}))["count"]
+            n = (
+                await os_client.client().count(
+                    index=settings.opensearch_index, body={"query": {"term": {"document_id": doc.id}}}
+                )
+            )["count"]
             out.append((doc.id, doc.tenant_id, doc.filename, n))
         return out
 
@@ -75,12 +79,12 @@ async def reindex_one(document_id: int) -> None:
             raise FileNotFoundError(f'원본 없음: {doc.blob_path}')
 
         await cache.invalidate_source(session, doc.tenant_id, doc.id)
-        doc.status = 'pending'          # 워커 로직의 진입 조건
+        doc.status = 'pending'  # 워커 로직의 진입 조건
         row = outbox.enqueue(session, doc.tenant_id, outbox.INDEX_DOCUMENT, document_id=doc.id)
         await session.commit()
 
     # 이 문서의 행만 처리 — 공유 DB의 다른 pending 업로드를 건드리지 않게 row_ids로 한정 (#139)
-    await outbox.drain_once(row_ids=[row.id])   # 청킹 + 임베딩 + 색인 + ready 승격
+    await outbox.drain_once(row_ids=[row.id])  # 청킹 + 임베딩 + 색인 + ready 승격
 
     async with AsyncSessionLocal() as session:  # 승격 확인 — 실패면 status가 failed로 남는다
         doc = await session.get(Document, document_id)

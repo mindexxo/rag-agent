@@ -12,6 +12,7 @@ condense가 확률적이므로 off/on 모두 LLM 경유 — 같은 조건에서 
 사용: python3 -m eval.retrieval_mt           # off (condense 단일 쿼리)
      python3 -m eval.retrieval_mt --multi   # on  (멀티쿼리 융합)
 """
+
 import argparse
 import asyncio
 import json
@@ -23,11 +24,9 @@ from eval._gold_history import messages_from_conversation
 from eval.generation import load_gold, row_tenant
 from eval.retrieval import resolve_gold, score_one
 from eval.retrieval_v2 import METRICS
-from rag.turn.conversation import (condense_query, condense_to_queries,
-                              trim_messages_for_condense)
 from rag.llm import create_aux_llm
 from rag.search.retriever import retrieve_candidates
-
+from rag.turn.conversation import condense_query, condense_to_queries, trim_messages_for_condense
 
 TYPES = {'multi_turn', 'multi_turn_long'}
 # multi_turn      : 1턴 히스토리 (기존 90문항 — 수치 비교 연속성 유지)
@@ -35,7 +34,7 @@ TYPES = {'multi_turn', 'multi_turn_long'}
 #                   장거리 참조·히스토리 예산 트리밍. 실서버 대화를 재료로 라벨링)
 
 
-CONCURRENCY = 6   # worker15 공유 장비 — RAGAS max_workers와 동일 안전선 (#18)
+CONCURRENCY = 6  # worker15 공유 장비 — RAGAS max_workers와 동일 안전선 (#18)
 
 
 async def compute(multi: bool = False) -> dict:
@@ -44,18 +43,19 @@ async def compute(multi: bool = False) -> dict:
     LLM(condense)은 선병렬(vLLM 연속 배칭 활용, #18), 검색·채점은 세션 직렬 —
     AsyncSession은 동시 실행 불가라 gather에 태우지 않는다.
     """
-    gold = load_gold()      # 정본 + gold_private(실문서 multi_turn 15행) — #199와 같은 이전. GOLD 상수는 8/24에 사라졌는데 이 축만 남아 import가 깨져 있었다(#209)
+    gold = load_gold()  # 정본 + gold_private(실문서 multi_turn 15행) — #199와 같은 이전. GOLD 상수는 8/24에 사라졌는데 이 축만 남아 import가 깨져 있었다(#209)
     target = [g for g in gold if g['type'] in TYPES]
 
-    llm = create_aux_llm()   # 재작성은 운영과 같은 보조 클라이언트(#297) — LLM_AUX_*가 비면 생성 설정 그대로
+    llm = create_aux_llm()  # 재작성은 운영과 같은 보조 클라이언트(#297) — LLM_AUX_*가 비면 생성 설정 그대로
     sem = asyncio.Semaphore(CONCURRENCY)
 
     async def _condense(g: dict) -> tuple[str, list[str]]:
         # 운영과 같은 예산으로 자른다 — #81. 이 축의 multi_turn_long 8문항 중 5문항이 실제로
         # 걸린다(600 예산, 원래 12~16메시지 → 8~12). 그 5문항이 이 축의 존재 이유(긴 이력)라
         # 트리밍을 안 하면 docstring이 말하는 "히스토리 예산 트리밍"을 한 번도 안 태우게 된다.
-        msgs = trim_messages_for_condense(messages_from_conversation(g.get('conversation')),
-                                          settings.condense_history_budget_tokens)
+        msgs = trim_messages_for_condense(
+            messages_from_conversation(g.get('conversation')), settings.condense_history_budget_tokens
+        )
         async with sem:
             if multi:
                 return g['id'], await condense_to_queries(llm, g['query'], msgs)
@@ -75,16 +75,14 @@ async def compute(multi: bool = False) -> dict:
             if resolved.stale:
                 stale[tenant] = len(resolved.stale)
             for g in items:
-                gold_ids = sorted(resolved.scoring_ids.get(g['id']) or [])   # 스니펫 포함 청크 전부 (#209)
+                gold_ids = sorted(resolved.scoring_ids.get(g['id']) or [])  # 스니펫 포함 청크 전부 (#209)
                 if not gold_ids:
                     skipped += 1
                     continue
                 queries = queries_map[g['id']]
-                cands = await retrieve_candidates(session, tenant, queries[0], top_n=20,
-                                                  expanded_queries=queries[1:])
+                cands = await retrieve_candidates(session, tenant, queries[0], top_n=20, expanded_queries=queries[1:])
                 scores = score_one([c.chunk_id for c in cands.chunks], gold_ids)
-                rows.append({'id': g['id'], 'type': g['type'], 'tenant': tenant,
-                             'scores': scores, 'queries': queries})
+                rows.append({'id': g['id'], 'type': g['type'], 'tenant': tenant, 'scores': scores, 'queries': queries})
 
     overall = {m: (sum(r['scores'][m] for r in rows) / len(rows) if rows else 0.0) for m in METRICS}
     return {'rows': rows, 'skipped': skipped, 'overall': overall, 'stale': stale}
@@ -92,14 +90,19 @@ async def compute(multi: bool = False) -> dict:
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--multi', action='store_true',
-                        help='멀티쿼리 통합(#5) on으로 측정 — 결과는 retrieval_mt_multi.jsonl에 별도 저장')
+    parser.add_argument(
+        '--multi',
+        action='store_true',
+        help='멀티쿼리 통합(#5) on으로 측정 — 결과는 retrieval_mt_multi.jsonl에 별도 저장',
+    )
     args = parser.parse_args()
 
     result = await compute(multi=args.multi)
     rows = result['rows']
-    if not rows:   # 채점 0 = gold resolve 전멸 (빈/잘못된 DB) — 결과 덮어쓰기 전에 중단 (#18 실사고 가드)
-        raise SystemExit(f"채점 0문항 (스킵 {result['skipped']}) — DATABASE_URL이 코퍼스 있는 DB인지 확인. 결과 파일 미변경.")
+    if not rows:  # 채점 0 = gold resolve 전멸 (빈/잘못된 DB) — 결과 덮어쓰기 전에 중단 (#18 실사고 가드)
+        raise SystemExit(
+            f"채점 0문항 (스킵 {result['skipped']}) — DATABASE_URL이 코퍼스 있는 DB인지 확인. 결과 파일 미변경."
+        )
     for tenant, n in result['stale'].items():
         print(f'⚠ {tenant} 라벨 노후 {n}건')
 
@@ -118,10 +121,13 @@ async def main() -> None:
 
 
 if __name__ == '__main__':
+
     async def _run():
         try:
             await main()
         finally:
             from rag.search import os_client
-            await os_client.close_client()      # aiohttp 세션 미종료 경고 방지 — retrieval_v2와 같은 처리
+
+            await os_client.close_client()  # aiohttp 세션 미종료 경고 방지 — retrieval_v2와 같은 처리
+
     asyncio.run(_run())

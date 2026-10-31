@@ -10,6 +10,7 @@ L2 규칙은 코드의 현재 **설계**를 옮긴 것이다 — 정답이 아�
 - (#252 전: PDF는 export_to_dataframe 경로라 2단 헤더를 '.'로 잇고 column_header가 없으면 열 이름이 0,1,2…였다 — 실문서
   PDF 표 55%가 숫자 헤더로 색인되던 결함 A의 원인. 그 규칙은 지웠다.)
 """
+
 import re
 from dataclasses import dataclass
 
@@ -58,16 +59,25 @@ def flatten_nested(rows) -> list[list]:
     넓어지고, 안쪽 표가 든 행은 안쪽 행 수만큼 늘어난다. 그 행의 다른 칸은 세로 병합(안쪽 행 수), 다른 행의 그 열 칸은
     가로 병합(안쪽 열 수). 예: 3×2(안쪽 3×2) → 5×3 — '평가 항목'이 안쪽 3행에 반복, '세부'·'매년 12월'이 2열에 걸침.
     값은 전부 보존되고 바깥 칸 글자가 안쪽 행마다 붙는다 — 따로 떼는 것보다 검색에 낫다(수정 대상 아님)."""
-    nested = [(r, c, cell['nested']) for r, row in enumerate(rows) for c, cell in enumerate(row)
-              if isinstance(cell, dict) and cell.get('nested')]
+    nested = [
+        (r, c, cell['nested'])
+        for r, row in enumerate(rows)
+        for c, cell in enumerate(row)
+        if isinstance(cell, dict) and cell.get('nested')
+    ]
     if not nested:
         return rows
-    r0, c0, inner = nested[0]                      # 중첩 하나만 지원(축 15)
+    r0, c0, inner = nested[0]  # 중첩 하나만 지원(축 15)
     R, C = len(inner), max(len(x) for x in inner)
     out = []
     for r, row in enumerate(rows):
         if r != r0:
-            new = list(row[:c0]) + [dict(t=cell_text(row[c0]), cs=C) if row[c0] is not None else None] + [None] * (C - 1) + list(row[c0 + 1:])
+            new = (
+                list(row[:c0])
+                + [dict(t=cell_text(row[c0]), cs=C) if row[c0] is not None else None]
+                + [None] * (C - 1)
+                + list(row[c0 + 1 :])
+            )
             out.append(new)
             continue
         for i, irow in enumerate(inner):
@@ -94,7 +104,9 @@ def expected_tables(spec, path: str | None = None, layer: str = 'l2') -> list[li
     if not has_nested:
         return [spec['rows']]
     if layer == 'l1' and path == 'docx':
-        return [spec['rows']] + [cell['nested'] for row in spec['rows'] for cell in row if isinstance(cell, dict) and cell.get('nested')]
+        return [spec['rows']] + [
+            cell['nested'] for row in spec['rows'] for cell in row if isinstance(cell, dict) and cell.get('nested')
+        ]
     return [flatten_nested(spec['rows'])]
 
 
@@ -117,7 +129,7 @@ def expected_rows(spec, rows, path: str) -> list[list[str]]:
         line = []
         for c, cell in enumerate(row):
             if cell is None:
-                line.append(g[r][c])          # 덮인 자리: 가로·세로 병합 모두 원점 글자 반복(#252 결정 9)
+                line.append(g[r][c])  # 덮인 자리: 가로·세로 병합 모두 원점 글자 반복(#252 결정 9)
             else:
                 line.append(norm('' if isinstance(cell, dict) and cell.get('nested') else cell_text(cell)))
         if any(line):

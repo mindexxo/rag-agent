@@ -7,6 +7,7 @@ document_id는 NOISE_DOC_ID_BASE부터 문서마다 하나(PG 행 없음 — 검
 규모 n은 "측정 테넌트 조각 수 × 배수"를 문서 단위로 채운다(같은 시드로 섞어 x5 ⊂ x10 ⊂ x30).
 산출: OUT/indices.json(조건별 조각 수·세그먼트).
 """
+
 import json
 import random
 from collections import defaultdict
@@ -15,13 +16,25 @@ from datetime import datetime
 from opensearchpy.helpers import async_bulk
 
 from config import settings
+from eval.scale_noise import (
+    CHUNKS,
+    CONDITIONS,
+    FILTER,
+    NOISE_DOC_ID_BASE,
+    NOISE_TENANT,
+    OUT,
+    SCALES,
+    TENANT,
+    index_name,
+)
 from rag.search.os_client import MAPPING, client
 from rag.search.os_index import ParsedChunk, build_doc, chunk_os_id
-from eval.scale_noise import CHUNKS, CONDITIONS, FILTER, NOISE_DOC_ID_BASE, NOISE_TENANT, OUT, SCALES, TENANT, index_name
 
 
 async def _all_docs(index: str) -> list[dict]:
-    resp = await client().search(index=index, body={'size': 10000, 'track_total_hits': True, 'query': {'match_all': {}}})
+    resp = await client().search(
+        index=index, body={'size': 10000, 'track_total_hits': True, 'query': {'match_all': {}}}
+    )
     if resp['hits']['total']['value'] > 10000:
         raise RuntimeError('조각 10,000개 초과 — scroll 필요')
     return [{'_id': h['_id'], **h['_source']} for h in resp['hits']['hits']]
@@ -45,9 +58,17 @@ def _noise_docs(limit: int, tenant: str) -> tuple[list[dict], int]:
             break
         document_id = NOISE_DOC_ID_BASE + k
         for c in by_doc[doc]:
-            pc = ParsedChunk(id=chunk_os_id(document_id=document_id, chunk_index=c['chunk_index']), tenant_id=tenant,
-                              document_id=document_id, faq_id=None, text=c['text'], heading_path=c['heading_path'],
-                              page=c['page'], meta=c['meta'], dense=c['dense'])
+            pc = ParsedChunk(
+                id=chunk_os_id(document_id=document_id, chunk_index=c['chunk_index']),
+                tenant_id=tenant,
+                document_id=document_id,
+                faq_id=None,
+                text=c['text'],
+                heading_path=c['heading_path'],
+                page=c['page'],
+                meta=c['meta'],
+                dense=c['dense'],
+            )
             out.append({'_id': str(pc.id), **build_doc(pc, c['filename'], 1)})
         n_docs += 1
     if len(out) < limit:
@@ -61,7 +82,9 @@ async def build(conds: list[str]) -> None:
         raise SystemExit(f'모르는 조건 {bad} — 가능: {CONDITIONS}')
     base = await _all_docs(settings.opensearch_index)
     # 배수의 기준 = 측정 테넌트의 **검색 가능한** 문서 조각(kNN 풀이 searchable 필터를 걸므로 같은 모집단, 리뷰 지적 10)
-    n_tenant = sum(1 for d in base if d.get('tenant_id') == TENANT and d.get('document_id') is not None and d.get('searchable'))
+    n_tenant = sum(
+        1 for d in base if d.get('tenant_id') == TENANT and d.get('document_id') is not None and d.get('searchable')
+    )
     info = json.loads((OUT / 'indices.json').read_text(encoding='utf-8')) if (OUT / 'indices.json').exists() else {}
     print(f'운영 복사 {len(base)}건 · {TENANT} 검색 가능 문서 조각 {n_tenant}', flush=True)
     for cond in conds:
@@ -71,16 +94,29 @@ async def build(conds: list[str]) -> None:
         if await client().indices.exists(name):
             await client().indices.delete(name)
         await client().indices.create(name, body=MAPPING)
-        actions = [{'_index': name, '_id': d['_id'], '_source': {k: v for k, v in d.items() if k != '_id'}} for d in base]
-        actions += [{'_index': name, '_id': d['_id'], '_source': {k: v for k, v in d.items() if k != '_id'}} for d in noise]
+        actions = [
+            {'_index': name, '_id': d['_id'], '_source': {k: v for k, v in d.items() if k != '_id'}} for d in base
+        ]
+        actions += [
+            {'_index': name, '_id': d['_id'], '_source': {k: v for k, v in d.items() if k != '_id'}} for d in noise
+        ]
         await async_bulk(client(), actions, chunk_size=500, refresh=True)
-        await client().indices.forcemerge(index=name, max_num_segments=1)   # 세그먼트 수가 HNSW 탐색 조건을 바꾼다 — 조건 간 통일
+        await client().indices.forcemerge(
+            index=name, max_num_segments=1
+        )  # 세그먼트 수가 HNSW 탐색 조건을 바꾼다 — 조건 간 통일
         await client().indices.refresh(index=name)
         total = (await client().count(index=name))['count']
         seg = await client().cat.segments(index=name, format='json')
-        info[cond] = {'index': name, 'base': len(base), 'noise_chunks': len(noise), 'noise_docs': n_docs, 'total': total,
-                      'tenant_chunks': n_tenant + (len(noise) if cond != 'idf' else 0), 'segments': len(seg),
-                      'built': datetime.now().isoformat(timespec='seconds')}   # measure가 이 서명으로 낡은 결과를 가린다
+        info[cond] = {
+            'index': name,
+            'base': len(base),
+            'noise_chunks': len(noise),
+            'noise_docs': n_docs,
+            'total': total,
+            'tenant_chunks': n_tenant + (len(noise) if cond != 'idf' else 0),
+            'segments': len(seg),
+            'built': datetime.now().isoformat(timespec='seconds'),
+        }  # measure가 이 서명으로 낡은 결과를 가린다
         print(f'  {name}: 전체 {total} · 노이즈 {len(noise)}조각/{n_docs}문서 · 세그먼트 {len(seg)}', flush=True)
         (OUT / 'indices.json').write_text(json.dumps(info, ensure_ascii=False, indent=1), encoding='utf-8')
 

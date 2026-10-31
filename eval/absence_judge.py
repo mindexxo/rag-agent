@@ -60,6 +60,7 @@ eval/generation.py::citation_accuracy의 v2~v5 규약과 같다.
 
 실행: python -m eval.absence_judge        # FIXTURES 자체검증 (판정기를 고칠 때마다)
 """
+
 import asyncio
 import json
 import os
@@ -75,13 +76,14 @@ from rag.turn.prompt_texts import NO_EVIDENCE_ANSWER
 
 JUDGE_PROMPT_VERSION = "v1"
 RESULTS = Path(__file__).resolve().parent / "results"
-SELFTEST_RUNS = 3          # 판정 흔들림 관측 — eval/other_eval.py·condense.py와 같은 idiom
+SELFTEST_RUNS = 3  # 판정 흔들림 관측 — eval/other_eval.py·condense.py와 같은 idiom
 
 
 class AbsenceJudgment(BaseModel):
     """label에 기본값을 주지 않는다 — 구조를 결정하는 필드에 기본값이 있으면 json 스키마에서
     required가 빠져 모델이 생략해도 합법이 된다(사유는 rag/turn/llm_schemas.py 모듈 docstring).
     reason은 원래 없을 수 있는 값이라 옵셔널이 맞다."""
+
     label: Literal["absence_assertion", "refusal_ok"]
     reason: str | None = None
 
@@ -130,9 +132,12 @@ def judge_llm() -> LlmClient:
     judge = os.getenv("ABSENCE_JUDGE", "vllm")
     if judge == "claude":
         from eval.claude_client import ClaudeCliClient
+
         return ClaudeCliClient(model=os.getenv("CLAUDE_MODEL", "sonnet"))
-    if judge != "vllm":   # #290: 외부 judge는 별도 값이 아니라 설정 공급자(LLM_PROVIDER)로 — 값 이름 'vllm'은 호환 유지
-        raise SystemExit(f"ABSENCE_JUDGE={judge} — vllm(설정 공급자)|claude 만 지원. 외부 judge는 LLM_PROVIDER를 바꾼다(#290)")
+    if judge != "vllm":  # #290: 외부 judge는 별도 값이 아니라 설정 공급자(LLM_PROVIDER)로 — 값 이름 'vllm'은 호환 유지
+        raise SystemExit(
+            f"ABSENCE_JUDGE={judge} — vllm(설정 공급자)|claude 만 지원. 외부 judge는 LLM_PROVIDER를 바꾼다(#290)"
+        )
     return create_llm()
 
 
@@ -149,38 +154,61 @@ async def judge_absence(llm: LlmClient, query: str, answer: str) -> AbsenceJudgm
 # 근거 있는 부정을 넣지 않는 이유는 모듈 docstring(판정 범위) 참조.
 FIXTURES: list[dict] = [
     # ── 정규식이 놓쳤던 것 (미검출) ──
-    {"id": "apology_then_assert", "expected": "absence_assertion",
-     "query": "새벽배송으로 보내줄 수 있어요?",
-     "answer": "죄송합니다. 새벽배송 서비스는 제공되지 않습니다.\n««[]»»",
-     "defect": "첫 문장이 사과라 첫문장 규약이 놓쳤다"},
-    {"id": "hard_word_missing", "expected": "absence_assertion",
-     "query": "오프라인 매장에서 반품되나요?",
-     "answer": "오프라인 매장에서의 반품은 어렵습니다.\n««[]»»",
-     "defect": "'어렵습니다'가 패턴에 없었다"},
+    {
+        "id": "apology_then_assert",
+        "expected": "absence_assertion",
+        "query": "새벽배송으로 보내줄 수 있어요?",
+        "answer": "죄송합니다. 새벽배송 서비스는 제공되지 않습니다.\n««[]»»",
+        "defect": "첫 문장이 사과라 첫문장 규약이 놓쳤다",
+    },
+    {
+        "id": "hard_word_missing",
+        "expected": "absence_assertion",
+        "query": "오프라인 매장에서 반품되나요?",
+        "answer": "오프라인 매장에서의 반품은 어렵습니다.\n««[]»»",
+        "defect": "'어렵습니다'가 패턴에 없었다",
+    },
     # ── 정규식이 잘못 잡았던 것 (오탐) ──
-    {"id": "doc_state_myungsi", "expected": "refusal_ok",
-     "query": "대량 구매 할인 있나요?",
-     "answer": "대량 구매 할인에 대해 명시된 바가 없습니다.\n««[]»»",
-     "defect": "문서 상태 서술인데 단정으로 잡혔다"},
-    {"id": "doc_state_regulation", "expected": "refusal_ok",
-     "query": "매장 픽업 가능한가요?",
-     "answer": "매장 픽업에 대한 명시적인 규정은 제공된 문서에 없습니다.\n««[]»»",
-     "defect": "같은 오탐"},
-    {"id": "doc_state_josa", "expected": "refusal_ok",
-     "query": "적립금을 현금으로 받을 수 있어요?",
-     "answer": "적립금의 현금 출금에 대한 명시는 없습니다.\n««[]»»",
-     "defect": "조사 뒤 바로 '없'이 와서 오탐"},
+    {
+        "id": "doc_state_myungsi",
+        "expected": "refusal_ok",
+        "query": "대량 구매 할인 있나요?",
+        "answer": "대량 구매 할인에 대해 명시된 바가 없습니다.\n««[]»»",
+        "defect": "문서 상태 서술인데 단정으로 잡혔다",
+    },
+    {
+        "id": "doc_state_regulation",
+        "expected": "refusal_ok",
+        "query": "매장 픽업 가능한가요?",
+        "answer": "매장 픽업에 대한 명시적인 규정은 제공된 문서에 없습니다.\n««[]»»",
+        "defect": "같은 오탐",
+    },
+    {
+        "id": "doc_state_josa",
+        "expected": "refusal_ok",
+        "query": "적립금을 현금으로 받을 수 있어요?",
+        "answer": "적립금의 현금 출금에 대한 명시는 없습니다.\n««[]»»",
+        "defect": "조사 뒤 바로 '없'이 와서 오탐",
+    },
     # ── 정상형 (경계의 기준점) ──
-    {"id": "canonical", "expected": "refusal_ok",
-     "query": "북한 지원 사업도 하나요?",
-     "answer": f"{NO_EVIDENCE_ANSWER}\n««[]»»",
-     "defect": "고정 문구 — 이걸 틀리면 판정기가 쓸 수 없다"},
+    {
+        "id": "canonical",
+        "expected": "refusal_ok",
+        "query": "북한 지원 사업도 하나요?",
+        "answer": f"{NO_EVIDENCE_ANSWER}\n««[]»»",
+        "defect": "고정 문구 — 이걸 틀리면 판정기가 쓸 수 없다",
+    },
     # ── 완화가 뒤에 붙어도 핵심 문장이 단정인 경우 ──
-    {"id": "assert_then_hedge", "expected": "absence_assertion",
-     "query": "해외로도 배송되나요?",
-     "answer": ("해외 배송 서비스는 제공되지 않습니다. 다만 정확한 내용은 고객센터로 "
-                "문의해 주시면 확인이 필요합니다.\n««[]»»"),
-     "defect": "뒤 완화에 가려 정상으로 보일 수 있다"},
+    {
+        "id": "assert_then_hedge",
+        "expected": "absence_assertion",
+        "query": "해외로도 배송되나요?",
+        "answer": (
+            "해외 배송 서비스는 제공되지 않습니다. 다만 정확한 내용은 고객센터로 "
+            "문의해 주시면 확인이 필요합니다.\n««[]»»"
+        ),
+        "defect": "뒤 완화에 가려 정상으로 보일 수 있다",
+    },
 ]
 
 
@@ -198,16 +226,20 @@ async def selftest(runs: int = SELFTEST_RUNS) -> dict:
             try:
                 v = await judge_absence(llm, f["query"], f["answer"])
                 per[f["id"]].append(v.label)
-            except Exception as exc:                       # 판정 불가도 관측 대상이다
+            except Exception as exc:  # 판정 불가도 관측 대상이다
                 per[f["id"]].append(f"error:{type(exc).__name__}")
     ok = sum(1 for f in FIXTURES if all(l == f["expected"] for l in per[f["id"]]))
     flaky = [f["id"] for f in FIXTURES if len(set(per[f["id"]])) > 1]
     return {
-        "runs": runs, "n": len(FIXTURES), "accuracy": ok / len(FIXTURES) if FIXTURES else 0.0,
+        "runs": runs,
+        "n": len(FIXTURES),
+        "accuracy": ok / len(FIXTURES) if FIXTURES else 0.0,
         "flaky": flaky,
-        "misses": [{"id": f["id"], "expected": f["expected"], "got": per[f["id"]],
-                    "defect": f["defect"]}
-                   for f in FIXTURES if any(l != f["expected"] for l in per[f["id"]])],
+        "misses": [
+            {"id": f["id"], "expected": f["expected"], "got": per[f["id"]], "defect": f["defect"]}
+            for f in FIXTURES
+            if any(l != f["expected"] for l in per[f["id"]])
+        ],
     }
 
 
@@ -228,8 +260,10 @@ def save_audit(rows: list[dict], stamp: str | None = None) -> Path:
 
 async def main() -> None:
     r = await selftest()
-    print(f"[부재단정 판정기 자체검증 {JUDGE_PROMPT_VERSION}]  "
-          f"{r['n']}케이스 × {r['runs']}회 → 전회 일치 {r['accuracy']:.0%}")
+    print(
+        f"[부재단정 판정기 자체검증 {JUDGE_PROMPT_VERSION}]  "
+        f"{r['n']}케이스 × {r['runs']}회 → 전회 일치 {r['accuracy']:.0%}"
+    )
     if r["flaky"]:
         print(f"  흔들림: {', '.join(r['flaky'])}")
     for m in r["misses"]:

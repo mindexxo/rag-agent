@@ -19,15 +19,14 @@
 **GPU가 한가할 때 돌릴 것** — N×R 생성 콜(기본 250)이라 eval 풀런과 겹치면 서로 느려진다.
 의존: DB + vLLM + TEI. 실행: python -m eval.consistency  [N=50 RUNS=5 환경변수]
 """
+
 import asyncio
 import json
 import os
 from collections import defaultdict
-from pathlib import Path
 
 from database import AsyncSessionLocal
-from eval.generation import (GEN_TYPES, RESULT_DIR, _smoke_sample,
-                             expected_points_hits, load_gold, run_mode)
+from eval.generation import GEN_TYPES, RESULT_DIR, _smoke_sample, expected_points_hits, load_gold, run_mode
 from eval.retrieval import Resolved
 from rag.llm import create_llm
 
@@ -67,7 +66,7 @@ async def main() -> None:
     stable = flaky = 0
     flaky_detail: list[str] = []
     for qid, runs_hits in by_id.items():
-        if len(runs_hits) < RUNS:      # 일부 런에서 스킵된 문항은 일치율 분모에서 제외
+        if len(runs_hits) < RUNS:  # 일부 런에서 스킵된 문항은 일치율 분모에서 제외
             continue
         for pi, outcomes in enumerate(zip(*runs_hits)):
             if len(set(outcomes)) == 1:
@@ -75,8 +74,8 @@ async def main() -> None:
             else:
                 flaky += 1
                 flaky_detail.append(
-                    f"{qid} 포인트[{pi}] {''.join('O' if o else 'X' for o in outcomes)}"
-                    f" — {points_by_id[qid][pi][:60]}")
+                    f"{qid} 포인트[{pi}] {''.join('O' if o else 'X' for o in outcomes)} — {points_by_id[qid][pi][:60]}"
+                )
 
     total = stable + flaky
     ep_by_run = defaultdict(list)
@@ -84,10 +83,11 @@ async def main() -> None:
         if r["point_hits"]:
             ep_by_run[r["run"]].append(sum(r["point_hits"]) / len(r["point_hits"]))
 
-    print(f"\n포인트 일치율 {stable}/{total} = {stable/total:.3f} · flaky 포인트율 {flaky/total:.3f}"
-          f"  (문항 {len(by_id)} × {RUNS}런)")
-    print("런별 EPCov 평균:", " ".join(
-        f"r{k}={sum(v)/len(v):.3f}" for k, v in sorted(ep_by_run.items())))
+    print(
+        f"\n포인트 일치율 {stable}/{total} = {stable / total:.3f} · flaky 포인트율 {flaky / total:.3f}"
+        f"  (문항 {len(by_id)} × {RUNS}런)"
+    )
+    print("런별 EPCov 평균:", " ".join(f"r{k}={sum(v) / len(v):.3f}" for k, v in sorted(ep_by_run.items())))
     if flaky_detail:
         print("\nflaky 상세 (사람이 원문을 읽을 것 — 수치만 보고 끝내지 않는다):")
         for d in flaky_detail:

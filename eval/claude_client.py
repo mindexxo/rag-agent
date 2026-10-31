@@ -27,15 +27,15 @@ LlmClient(rag/llm)와 acomplete 시그니처를 맞춰 eval/generation.py에 주
 
 스모크: python -m eval.claude_client   (LLM 서버·DB 불필요, claude CLI 로그인만 필요)
 """
+
 import asyncio
 import shutil
 import tempfile
-from pathlib import Path
 
 # 콜당 상한. 생성 프롬프트는 1~2분이면 족하지만 롱컨텍스트(수십만 자)는 읽기만으로도
 # 오래 걸린다 — vLLM 쪽 300s(rag/llm/openai_compat.py)보다 넉넉히 잡되 무한 대기는 막는다.
 TIMEOUT_SECONDS = 600
-_MINIMAL_SYSTEM = "요청한 작업만 지정된 형식으로 수행한다."   # 시스템 메시지 없는 호출(RAGAS 판정 등)의 기본값
+_MINIMAL_SYSTEM = "요청한 작업만 지정된 형식으로 수행한다."  # 시스템 메시지 없는 호출(RAGAS 판정 등)의 기본값
 
 
 class ClaudeCliClient:
@@ -59,20 +59,32 @@ class ClaudeCliClient:
         # assistant 턴이 섞인 형태가 오면 순서대로 이어붙인다 — 정보 소실보다 낫다.
         prompt = "\n\n".join(m["content"] for m in messages if m["role"] != "system")
 
-        cmd = [self._exe, "-p", "--model", self.model, "--tools", "",
-               "--output-format", "text",
-               "--strict-mcp-config", "--disable-slash-commands", "--setting-sources", "",
-               "--system-prompt", system or _MINIMAL_SYSTEM]
+        cmd = [
+            self._exe,
+            "-p",
+            "--model",
+            self.model,
+            "--tools",
+            "",
+            "--output-format",
+            "text",
+            "--strict-mcp-config",
+            "--disable-slash-commands",
+            "--setting-sources",
+            "",
+            "--system-prompt",
+            system or _MINIMAL_SYSTEM,
+        ]
 
         proc = await asyncio.create_subprocess_exec(
-            *cmd, cwd=self._workdir,
+            *cmd,
+            cwd=self._workdir,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            out, err = await asyncio.wait_for(
-                proc.communicate(prompt.encode()), timeout=TIMEOUT_SECONDS)
+            out, err = await asyncio.wait_for(proc.communicate(prompt.encode()), timeout=TIMEOUT_SECONDS)
         except asyncio.TimeoutError:
             proc.kill()
             raise RuntimeError(f"claude -p 타임아웃 ({TIMEOUT_SECONDS}s, model={self.model})")
@@ -82,7 +94,8 @@ class ClaudeCliClient:
             # 사유는 stdout으로 오는 경우가 많다(한도·요청 제한 메시지) — stderr만 보면 빈 문자열이라 원인 불명이었다
             # (10/10 A 실행 실패 268건 전부 사유 공란). 둘 다 싣는다.
             raise RuntimeError(
-                f"claude -p 실패 (exit {proc.returncode}): stdout={out.decode()[:200]!r} stderr={err.decode()[:200]!r}")
+                f"claude -p 실패 (exit {proc.returncode}): stdout={out.decode()[:200]!r} stderr={err.decode()[:200]!r}"
+            )
         return out.decode().strip()
 
     async def acomplete_image(self, prompt: str, image_png: bytes, system: str | None = None) -> str:
@@ -95,20 +108,54 @@ class ClaudeCliClient:
         """
         import base64
         import json
-        msg = {"type": "user", "message": {"role": "user", "content": [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/png",
-                                         "data": base64.b64encode(image_png).decode()}},
-            {"type": "text", "text": prompt}]}}
-        cmd = [self._exe, "-p", "--model", self.model, "--tools", "",
-               "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-               "--strict-mcp-config", "--disable-slash-commands", "--setting-sources", "",
-               "--system-prompt", system or _MINIMAL_SYSTEM]
+
+        msg = {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": base64.b64encode(image_png).decode(),
+                        },
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            },
+        }
+        cmd = [
+            self._exe,
+            "-p",
+            "--model",
+            self.model,
+            "--tools",
+            "",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--strict-mcp-config",
+            "--disable-slash-commands",
+            "--setting-sources",
+            "",
+            "--system-prompt",
+            system or _MINIMAL_SYSTEM,
+        ]
         proc = await asyncio.create_subprocess_exec(
-            *cmd, cwd=self._workdir, stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            *cmd,
+            cwd=self._workdir,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
         try:
             out, err = await asyncio.wait_for(
-                proc.communicate((json.dumps(msg, ensure_ascii=False) + "\n").encode()), timeout=TIMEOUT_SECONDS)
+                proc.communicate((json.dumps(msg, ensure_ascii=False) + "\n").encode()), timeout=TIMEOUT_SECONDS
+            )
         except asyncio.TimeoutError:
             proc.kill()
             raise RuntimeError(f"claude -p(이미지) 타임아웃 ({TIMEOUT_SECONDS}s, model={self.model})")
@@ -121,17 +168,21 @@ class ClaudeCliClient:
             if event.get("type") == "result":
                 result = event
         if proc.returncode != 0 or result is None or result.get("is_error"):
-            raise RuntimeError(f"claude -p(이미지) 실패 (exit {proc.returncode}): "
-                               f"result={str(result)[:200]!r} stderr={err.decode()[:200]!r}")
+            raise RuntimeError(
+                f"claude -p(이미지) 실패 (exit {proc.returncode}): "
+                f"result={str(result)[:200]!r} stderr={err.decode()[:200]!r}"
+            )
         return str(result.get("result") or "").strip()
 
 
 async def _smoke():
     client = ClaudeCliClient()
-    answer = await client.acomplete([
-        {"role": "system", "content": "설명 없이 값만 출력한다."},
-        {"role": "user", "content": "1+1은?"},
-    ])
+    answer = await client.acomplete(
+        [
+            {"role": "system", "content": "설명 없이 값만 출력한다."},
+            {"role": "user", "content": "1+1은?"},
+        ]
+    )
     print(f"model={client.model} → {answer!r}")
     assert answer, "빈 응답"
 

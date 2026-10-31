@@ -24,6 +24,7 @@ PG만 바꾸면 검색은 옛 폴더로 동작한다. 배정·원복은 **같은
     python -m eval.assign_folders --apply --tenant summers
     python -m eval.assign_folders --clear         # 배정·폴더 원복
 """
+
 import argparse
 import asyncio
 from collections import defaultdict
@@ -40,9 +41,9 @@ V2_TENANTS = ["adererror", "aromanica", "goodpeople", "harim", "homeplus", "summ
 # (폴더명, 참조 설명) — 설명은 30~50자를 목표로. 리랭커 입력에 매 후보마다 붙는다.
 FOLDERS = {
     "policy": ("정책·규정", "환불·반품·교환·배송·품질 보증의 공식 기준과 조건"),
-    "guide":  ("제품·이용 안내", "제품 사용법과 서비스 이용 절차 안내"),
+    "guide": ("제품·이용 안내", "제품 사용법과 서비스 이용 절차 안내"),
     "script": ("상담 응대 스크립트", "상담원 응대 화법 예시 — 정책의 근거 문서가 아님"),
-    "table":  ("요금·기준표", "금액·품목·일정 등 수치를 정리한 표"),
+    "table": ("요금·기준표", "금액·품목·일정 등 수치를 정리한 표"),
 }
 
 # 파일명 키워드 → 폴더 키. 위에서부터 먼저 걸리는 것을 채택한다.
@@ -70,7 +71,7 @@ def classify(filename: str, title: str = "") -> str:
         return "script"
     if filename.lower().endswith(".xlsx"):
         return "table"
-    if "정책" in filename:                       # 파일명이 '...정책'이면 안내 낱말이 섞여도 정책
+    if "정책" in filename:  # 파일명이 '...정책'이면 안내 낱말이 섞여도 정책
         return "policy"
     if any(w in hay for w in GUIDE_WORDS):
         return "guide"
@@ -99,21 +100,32 @@ async def main() -> None:
     tenants = [args.tenant] if args.tenant else V2_TENANTS
     names = {name for name, _ in FOLDERS.values()}
 
-    meta_rows = []          # 같은 커밋에 얹은 META_DOCUMENTS 행 — 커밋 뒤 이 행들만 drain한다
+    meta_rows = []  # 같은 커밋에 얹은 META_DOCUMENTS 행 — 커밋 뒤 이 행들만 drain한다
     async with AsyncSessionLocal() as session:
         if args.clear:
             for t in tenants:
-                ids = (await session.execute(
-                    select(Folder.id).where(Folder.tenant_id == t).where(Folder.name.in_(names))
-                )).scalars().all()
+                ids = (
+                    (
+                        await session.execute(
+                            select(Folder.id).where(Folder.tenant_id == t).where(Folder.name.in_(names))
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
                 if not ids:
                     continue
                 # 해제 대상은 UPDATE 전에 뽑는다 — 엔진 청크의 옛 폴더명·설명(·off였다면 searchable)을 지워야 한다
-                doc_ids = (await session.execute(
-                    select(Document.id).where(Document.tenant_id == t).where(Document.folder_id.in_(ids))
-                )).scalars().all()
-                await session.execute(
-                    update(Document).where(Document.id.in_(doc_ids)).values(folder_id=None))
+                doc_ids = (
+                    (
+                        await session.execute(
+                            select(Document.id).where(Document.tenant_id == t).where(Document.folder_id.in_(ids))
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                await session.execute(update(Document).where(Document.id.in_(doc_ids)).values(folder_id=None))
                 await session.execute(delete(Folder).where(Folder.id.in_(ids)))
                 if doc_ids:
                     meta_rows.append(outbox.enqueue(session, t, outbox.META_DOCUMENTS, document_ids=list(doc_ids)))
@@ -128,19 +140,27 @@ async def main() -> None:
 
         plan: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
         for t in tenants:
-            docs = (await session.execute(
-                select(Document)
-                .where(Document.tenant_id == t)
-                .where(Document.is_active.is_(True))
-                .where(Document.status == "ready")
-                .order_by(Document.filename)
-            )).scalars().all()
+            docs = (
+                (
+                    await session.execute(
+                        select(Document)
+                        .where(Document.tenant_id == t)
+                        .where(Document.is_active.is_(True))
+                        .where(Document.status == "ready")
+                        .order_by(Document.filename)
+                    )
+                )
+                .scalars()
+                .all()
+            )
             if not docs:
                 continue
             # 첫 청크(chunk_index 0)의 헤딩·본문 — 청크는 색인에만 있다(#139). 없으면 None.
             from rag.search import os_index, os_search
+
             first = await os_search.fetch_chunk_map(
-                [os_index.chunk_os_id(document_id=d.id, chunk_index=0) for d in docs])
+                [os_index.chunk_os_id(document_id=d.id, chunk_index=0) for d in docs]
+            )
             rows = []
             for d in docs:
                 c = first.get(os_index.chunk_os_id(document_id=d.id, chunk_index=0))
@@ -148,16 +168,18 @@ async def main() -> None:
 
             folder_ids = {}
             for key, (name, desc) in FOLDERS.items():
-                f = (await session.execute(
-                    select(Folder).where(Folder.tenant_id == t).where(Folder.name == name)
-                )).scalars().first()
+                f = (
+                    (await session.execute(select(Folder).where(Folder.tenant_id == t).where(Folder.name == name)))
+                    .scalars()
+                    .first()
+                )
                 if f is None:
                     f = Folder(tenant_id=t, name=name, description=desc, is_searchable=True)
                     session.add(f)
                     await session.flush()
                 else:
                     f.description = desc
-                    f.is_searchable = True        # 배정 후 off면 문서가 검색에서 통째로 빠진다
+                    f.is_searchable = True  # 배정 후 off면 문서가 검색에서 통째로 빠진다
                 folder_ids[key] = f.id
 
             for d, heading, text in rows:
@@ -166,8 +188,7 @@ async def main() -> None:
                 plan[t][FOLDERS[key][0]].append(f"{d.filename}   〔{title[:34]}〕")
                 d.folder_id = folder_ids[key]
             # 배정한 문서 전부에 fan-out — 폴더 설명·검색토글이 바뀐 경우까지 한 행으로 덮는다
-            meta_rows.append(outbox.enqueue(session, t, outbox.META_DOCUMENTS,
-                                            document_ids=[d.id for d, _, _ in rows]))
+            meta_rows.append(outbox.enqueue(session, t, outbox.META_DOCUMENTS, document_ids=[d.id for d, _, _ in rows]))
 
         for t, groups in plan.items():
             print(f"\n[{t}]")

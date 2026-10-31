@@ -36,20 +36,23 @@
   python -m eval.run_all --ragas   # 그 답변을 채점
 러너는 답변 파일이 오래됐으면 경고만 하고 자동 재생성은 하지 않는다.
 """
+
 import argparse
 import asyncio
 import json
-from datetime import datetime
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 HISTORY = Path(__file__).resolve().parent / "results" / "history"
+
 
 @dataclass(frozen=True)
 class Row:
     """리포트 행 정의. higher_better를 여기 두는 이유: 방향을 별 집합으로 빼면 행을 추가할 때
     두 곳을 봐야 하고, 한쪽을 잊으면 **그 지표의 회귀가 조용히 감시에서 빠진다**.
     기존 행은 전부 기본값(True)이라 이 필드 도입 전과 동작이 같다."""
+
     axis: str
     key: str
     label: str
@@ -57,12 +60,12 @@ class Row:
     # 이 키(들)가 직전과 다르면 비교하지 않는다 (기준이 바뀐 것). 튜플이면 **하나라도** 다르면
     # 비교 불가 — 거절 부재단정률처럼 judge 버전과 골드 구성이 **동시에** 기준인 행이 있다 (#199).
     version_key: str | tuple[str, ...] | None = None
-    eps: float | None = None         # 이 행만의 회귀 임계. None이면 REGRESSION_EPS
+    eps: float | None = None  # 이 행만의 회귀 임계. None이면 REGRESSION_EPS
 
 
 ROWS = [
     Row("intent", "accuracy", "인텐트 정확도"),
-    Row("intent", "safe_accuracy", "가드 차단 정확도"),   # 안전성 분리 축 (#22) — 합산에 묻히면 회귀를 못 잡는다
+    Row("intent", "safe_accuracy", "가드 차단 정확도"),  # 안전성 분리 축 (#22) — 합산에 묻히면 회귀를 못 잡는다
     Row("condense", "accuracy", "질의재작성 정확도"),
     # 실문서 편입(#199)으로 분모가 바뀐다(no_evidence 58→68·trap 50→58) — 구성 변경이
     # 회귀로 찍히지 않게 version_key를 건다. #198의 RAGAS n과 같은 조치.
@@ -100,16 +103,28 @@ ROWS = [
     # 한 건 흔들림이 매번 회귀 경고가 되어 ⚠ 자체를 아무도 믿지 않게 된다.
     # 0.04 = 2건 이상 차이일 때만 반응한다. 1건 차이는 감사 로그(문항별 판정)로 본다.
     # 기준이 둘이다 — judge 프롬프트 버전과 골드 구성. 하나만 걸면 다른 쪽 변경이 회귀로 샌다.
-    Row("refusal", "absence_rate", "거절  부재단정률", higher_better=False,
-        version_key=("judge_prompt_version", "gold_composition"), eps=0.04),
+    Row(
+        "refusal",
+        "absence_rate",
+        "거절  부재단정률",
+        higher_better=False,
+        version_key=("judge_prompt_version", "gold_composition"),
+        eps=0.04,
+    ),
     # 오답단정률 (#95) — trap에서 낚인 값(must_not_contain)이 답변에 실린 비율. 낮을수록 좋다.
     # 순수 문자열 매칭이라 judge 버전 개념이 없다 — 매칭 규칙을 바꾸면 그 커밋에서
     # citation_accuracy 전례대로 "vN 이전과 비교 불가" 주석을 여기 남길 것.
     # eps=0.04: absence_rate와 같은 이유 — 분모 50 내외라 1건이 2%다.
-    Row("refusal", "misinfo_rate", "거절  오답단정률(trap)", higher_better=False,
-        version_key="gold_composition", eps=0.04),
+    Row(
+        "refusal",
+        "misinfo_rate",
+        "거절  오답단정률(trap)",
+        higher_better=False,
+        version_key="gold_composition",
+        eps=0.04,
+    ),
 ]
-REGRESSION_EPS = 0.01   # 이보다 크게 떨어지면 회귀 경고
+REGRESSION_EPS = 0.01  # 이보다 크게 떨어지면 회귀 경고
 
 
 def _warn_stale_generation() -> None:
@@ -174,7 +189,7 @@ def _history_view() -> None:
     print(header)
     print("─" * len(header))
     for s in summaries:
-        stamp = (s.get("stamp") or "")[5:]   # 'MM-DD HH:MM' (연도 생략)
+        stamp = (s.get("stamp") or "")[5:]  # 'MM-DD HH:MM' (연도 생략)
         label = (s.get("label") or "")[:20]
         cells = ""
         for axis, key, _ in HIST_COLS:
@@ -216,8 +231,9 @@ def _report(cur: dict, prev: dict | None) -> None:
         # 이게 없으면 v2로 올린 첫 실행에서 기준 변경이 회귀 경고로 찍힌다.
         if row.version_key and pv is not None:
             keys = (row.version_key,) if isinstance(row.version_key, str) else row.version_key
-            changed = [(k, _get(prev, axis, k), axis_data.get(k))
-                       for k in keys if axis_data.get(k) != _get(prev, axis, k)]
+            changed = [
+                (k, _get(prev, axis, k), axis_data.get(k)) for k in keys if axis_data.get(k) != _get(prev, axis, k)
+            ]
             if changed:
                 what = ", ".join(f"{k} {o}→{n}" for k, o, n in changed)
                 print(f"{label:<20}{v:>8.3f}   (기준 {what} — 비교 불가)")
@@ -246,52 +262,72 @@ async def _run_async(name: str):
     """async compute() 축(retrieval·intent)을 실행."""
     if name == "retrieval":
         from eval.retrieval_v2 import compute
+
         r = await compute()
         # 전체 평균 + 난이도 층화(easy/medium/hard의 R@5).
         # 문항 없는 난이도 그룹은 키를 아예 넣지 않는다 → _report가 '해당 없음'으로 행 생략
         # (None으로 넣으면 '측정 실패'로 오인돼 가짜 회귀가 뜸).
         d = r["by_difficulty"]
         out = dict(r["overall"])
-        out["gold_composition"] = r["gold_composition"]   # version_key 재료 (#95)
-        for grp, key in (("easy", "r5_easy"), ("medium", "r5_medium"), ("hard", "r5_hard"),
-                         ("hard_new", "r5_hard_new")):
+        out["gold_composition"] = r["gold_composition"]  # version_key 재료 (#95)
+        for grp, key in (
+            ("easy", "r5_easy"),
+            ("medium", "r5_medium"),
+            ("hard", "r5_hard"),
+            ("hard_new", "r5_hard_new"),
+        ):
             if grp in d:
                 out[key] = d[grp]
         return out
     if name == "intent":
         from eval.intent import compute
+
         r = await compute()
-        return {"accuracy": r["accuracy"], "safe_accuracy": r["safe_accuracy"],
-                "intent_accuracy": r["intent_accuracy"], "n_unsafe": r["n_unsafe"]}
+        return {
+            "accuracy": r["accuracy"],
+            "safe_accuracy": r["safe_accuracy"],
+            "intent_accuracy": r["intent_accuracy"],
+            "n_unsafe": r["n_unsafe"],
+        }
     if name == "condense":
         from eval.condense import compute
+
         r = await compute()
         return {"accuracy": r["accuracy"], "flaky": r["flaky"]}
     if name == "refusal":
         from eval.refusal import compute
+
         r = await compute()
-        return {"accuracy": r["accuracy"],
-                "false_answer": r["false_answer"], "false_refusal": r["false_refusal"],
-                # 부재단정 축 (#76). 판정 버전을 같이 실어 "기준이 바뀐 것"과 "실제 회귀"를 가른다.
-                "absence_rate": r["absence_rate"],
-                # 분모·분자·흔들림을 같이 싣는다 — 비율만 보면 1건 차이(≈1.7%)를 추세로 오독한다.
-                "absence_judged_n": r["absence_judged_n"],
-                "absence_assertion_n": r["absence_assertion_n"],
-                "absence_judge_errors": r["absence_judge_errors"],
-                "absence_flaky": r["absence_flaky"],
-                "judge_prompt_version": r["judge_prompt_version"],
-                # 오답단정 축 (#95) — 분모·분자 동반 (absence와 같은 이유)
-                "misinfo_rate": r["misinfo_rate"],
-                "misinfo_n": r["misinfo_n"],
-                "misinfo_violated_n": r["misinfo_violated_n"]}
+        return {
+            "accuracy": r["accuracy"],
+            "false_answer": r["false_answer"],
+            "false_refusal": r["false_refusal"],
+            # 부재단정 축 (#76). 판정 버전을 같이 실어 "기준이 바뀐 것"과 "실제 회귀"를 가른다.
+            "absence_rate": r["absence_rate"],
+            # 분모·분자·흔들림을 같이 싣는다 — 비율만 보면 1건 차이(≈1.7%)를 추세로 오독한다.
+            "absence_judged_n": r["absence_judged_n"],
+            "absence_assertion_n": r["absence_assertion_n"],
+            "absence_judge_errors": r["absence_judge_errors"],
+            "absence_flaky": r["absence_flaky"],
+            "judge_prompt_version": r["judge_prompt_version"],
+            # 오답단정 축 (#95) — 분모·분자 동반 (absence와 같은 이유)
+            "misinfo_rate": r["misinfo_rate"],
+            "misinfo_n": r["misinfo_n"],
+            "misinfo_violated_n": r["misinfo_violated_n"],
+        }
     if name == "cache":
         from eval.cache_eval import compute
+
         r = await compute()
-        return {"accuracy": r["accuracy"],
-                "false_hit": r["false_hit"], "false_miss": r["false_miss"],
-                "cache_composition": r["composition"]}   # version_key 재료 (#113)
+        return {
+            "accuracy": r["accuracy"],
+            "false_hit": r["false_hit"],
+            "false_miss": r["false_miss"],
+            "cache_composition": r["composition"],
+        }  # version_key 재료 (#113)
     if name == "other":
         from eval.other_eval import compute
+
         r = await compute()
         return {"accuracy": r["accuracy"], "flaky": r["flaky"]}
     raise ValueError(name)
@@ -317,7 +353,9 @@ def main() -> None:
         return
 
     # 아무 플래그도 없으면 전 축
-    run_all = not (args.retrieval or args.ragas or args.intent or args.condense or args.refusal or args.cache or args.other)
+    run_all = not (
+        args.retrieval or args.ragas or args.intent or args.condense or args.refusal or args.cache or args.other
+    )
     do = {
         "retrieval": run_all or args.retrieval,
         "ragas": run_all or args.ragas,
@@ -354,14 +392,20 @@ def main() -> None:
         _warn_stale_generation()
         print("▶ 생성축(RAGAS) 채점 중… (느림)")
         from eval.ragas_eval import compute as ragas_compute
-        r = ragas_compute(smoke=args.smoke)
-        summary["ragas"] = {"faithfulness": r["faithfulness"],
-                            "answer_relevancy": r["answer_relevancy"], "n": r["n"],
-                            # 정답 대조 2축(#216) — 분모가 모범답안 보유 문항(n_ref)이라 따로 싣는다
-                            "context_recall": r["context_recall"], "answer_correctness": r["answer_correctness"],
-                            "n_ref": r["n_ref"], "missing": r["missing"]}
 
-    prev = _prev_summary()   # 이번 저장 전에 읽어야 '직전'이 맞음
+        r = ragas_compute(smoke=args.smoke)
+        summary["ragas"] = {
+            "faithfulness": r["faithfulness"],
+            "answer_relevancy": r["answer_relevancy"],
+            "n": r["n"],
+            # 정답 대조 2축(#216) — 분모가 모범답안 보유 문항(n_ref)이라 따로 싣는다
+            "context_recall": r["context_recall"],
+            "answer_correctness": r["answer_correctness"],
+            "n_ref": r["n_ref"],
+            "missing": r["missing"],
+        }
+
+    prev = _prev_summary()  # 이번 저장 전에 읽어야 '직전'이 맞음
     HISTORY.mkdir(parents=True, exist_ok=True)
     # 초 단위까지 — 같은 분 재실행 시 파일명 충돌로 history가 덮어써지는 것 방지
     fname = HISTORY / f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"

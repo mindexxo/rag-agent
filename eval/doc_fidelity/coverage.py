@@ -13,6 +13,7 @@
 유실 후보만 판정자(Claude)가 원문 맥락과 가장 비슷한 청크를 보고 유실/변형/추출 잡음으로 가른다.
 MIN_CHARS 미만 단위(쪽 번호·'-'·단독 숫자)는 세지 않는다 — 정보가 없고 어디에나 부분 일치한다.
 """
+
 import re
 from collections import Counter
 from dataclasses import asdict, dataclass
@@ -28,8 +29,9 @@ def norm(text: str) -> str:
     헤딩의 '(3)임직원…', '• 결과조치'와 '결과조치'를 다르게 봐 25건 중 12건을 유실 후보로 잘못 올렸다(10/18 1차 정리)."""
     return _PUNCT.sub('', _norm(text))
 
-MIN_CHARS = 4                  # 정규화 후 글자 수 하한
-PARTIAL_RATIO = 0.8            # 바이그램 겹침 하한 — 이 이상이면 '부분'(변형 존재)
+
+MIN_CHARS = 4  # 정규화 후 글자 수 하한
+PARTIAL_RATIO = 0.8  # 바이그램 겹침 하한 — 이 이상이면 '부분'(변형 존재)
 _SENT_END = re.compile(r'(?<=[다요음함됨임\.\?!])\s+')
 
 
@@ -37,7 +39,7 @@ _SENT_END = re.compile(r'(?<=[다요음함됨임\.\?!])\s+')
 class Unit:
     document_id: int
     fmt: str
-    element: str               # '본문' | '표'
+    element: str  # '본문' | '표'
     page: int | None
     text: str
 
@@ -51,6 +53,7 @@ def _sentences(line_block: str) -> list[str]:
 
 def pdf_units(document_id: int, path: Path) -> list[Unit]:
     import pdfplumber
+
     units: list[Unit] = []
     with pdfplumber.open(str(path)) as pdf:
         for pno, page in enumerate(pdf.pages, start=1):
@@ -67,12 +70,15 @@ def pdf_units(document_id: int, path: Path) -> list[Unit]:
                 for row in t.extract() or []:
                     # 칸 글자도 줄·문장으로 나눈다 — 테두리 친 쪽(사내 포털 인쇄본)은 find_tables가 쪽 전체를 칸 하나짜리 표로 잡아
                     # 조문 여러 개가 한 단위가 됐고, 그런 덩어리는 어느 청크와도 안 맞아 전부 유실 후보로 떴다(급여 표준 16/30, 10/18)
-                    units += [Unit(document_id, 'pdf', '표', pno, s) for c in row if c and c.strip() for s in _sentences(c)]
+                    units += [
+                        Unit(document_id, 'pdf', '표', pno, s) for c in row if c and c.strip() for s in _sentences(c)
+                    ]
     return units
 
 
 def docx_units(document_id: int, path: Path) -> list[Unit]:
     from docx import Document
+
     d = Document(str(path))
     units = [Unit(document_id, 'docx', '본문', None, s) for p in d.paragraphs for s in _sentences(p.text)]
 
@@ -80,7 +86,7 @@ def docx_units(document_id: int, path: Path) -> list[Unit]:
         seen = set()
         for row in table.rows:
             for cell in row.cells:
-                if id(cell._tc) in seen:          # 병합 칸은 python-docx가 같은 칸을 여러 번 준다
+                if id(cell._tc) in seen:  # 병합 칸은 python-docx가 같은 칸을 여러 번 준다
                     continue
                 seen.add(id(cell._tc))
                 own = '\n'.join(p.text for p in cell.paragraphs).strip()
@@ -96,14 +102,18 @@ def docx_units(document_id: int, path: Path) -> list[Unit]:
 
 def xlsx_units(document_id: int, path: Path) -> list[Unit]:
     import openpyxl
+
     wb = openpyxl.load_workbook(str(path), data_only=True)
     units = []
     for ws in wb.worksheets:
-        if ws.sheet_state != 'visible':           # 숨긴 시트는 색인하지 않는다(#220 결정)
+        if ws.sheet_state != 'visible':  # 숨긴 시트는 색인하지 않는다(#220 결정)
             continue
         for row in ws.iter_rows(values_only=True):
-            units += [Unit(document_id, 'xlsx', '표', None, str(v).replace('\n', ' ')) for v in row
-                      if v is not None and str(v).strip()]
+            units += [
+                Unit(document_id, 'xlsx', '표', None, str(v).replace('\n', ' '))
+                for v in row
+                if v is not None and str(v).strip()
+            ]
     return units
 
 
@@ -111,7 +121,7 @@ EXTRACTORS = {'pdf': pdf_units, 'docx': docx_units, 'xlsx': xlsx_units}
 
 
 def _bigrams(s: str) -> Counter:
-    return Counter(s[i:i + 2] for i in range(len(s) - 1))
+    return Counter(s[i : i + 2] for i in range(len(s) - 1))
 
 
 def best_chunk(unit_norm: str, chunks_norm: list[str]) -> tuple[int, float]:
@@ -137,7 +147,7 @@ def classify(units: list[Unit], chunks: list[dict]) -> list[dict]:
     seen = set()
     for u in units:
         n = norm(u.text)
-        if len(n) < MIN_CHARS or n in seen:          # 쪽마다 반복되는 머리글·바닥글(인쇄 시각·URL)은 문서당 한 번만 센다
+        if len(n) < MIN_CHARS or n in seen:  # 쪽마다 반복되는 머리글·바닥글(인쇄 시각·URL)은 문서당 한 번만 센다
             continue
         seen.add(n)
         if n in body:

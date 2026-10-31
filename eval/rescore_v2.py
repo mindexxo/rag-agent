@@ -3,14 +3,14 @@
 답변 재생성 없이 결과 jsonl의 answer + 최신 gold로 인용 점수만 다시 계산한다.
 사용: python3 -m eval.rescore_v2
 """
+
 import json
 from pathlib import Path
 
 from eval.generation import citation_accuracy, expected_points_coverage, expected_points_hits
 
 ROOT = Path(__file__).resolve().parent
-GOLD = {json.loads(l)['id']: json.loads(l)
-        for l in (ROOT / 'gold_set_v2.jsonl').read_text().splitlines() if l.strip()}
+GOLD = {json.loads(l)['id']: json.loads(l) for l in (ROOT / 'gold_set_v2.jsonl').read_text().splitlines() if l.strip()}
 
 
 def main() -> None:
@@ -29,9 +29,13 @@ def main() -> None:
             before = (r['scores']['citation_accuracy'], r['scores'].get('expected_points_coverage'))
             if judged and points:
                 rule = expected_points_hits(r['answer'], points)
-                covered = {a['k'] for a in r['scores'].get('expected_points_audit') or [] if a.get('label') == 'covered'}
+                covered = {
+                    a['k'] for a in r['scores'].get('expected_points_audit') or [] if a.get('label') == 'covered'
+                }
                 r['scores']['expected_points_coverage_rule'] = sum(rule) / len(points)
-                r['scores']['expected_points_coverage'] = sum(h or k in covered for k, h in enumerate(rule)) / len(points)
+                r['scores']['expected_points_coverage'] = sum(h or k in covered for k, h in enumerate(rule)) / len(
+                    points
+                )
             else:
                 r['scores']['expected_points_coverage'] = expected_points_coverage(r['answer'], points)
             r['scores']['citation_accuracy'] = new_cite

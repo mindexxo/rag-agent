@@ -5,6 +5,7 @@
 
 사용: python -m eval.scan_quality.scans   → eval/results/scan224/<원본 stem>.scan.pdf
 """
+
 import io
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,10 +22,10 @@ class ScanSpec:
     tenant: str
     filename: str
     dpi: int
-    rotate: float = 0.0     # 도(반시계)
-    noise: float = 0.0      # 가우시안 잡음 표준편차(0~255) — 0이 아니면 점 잡음·번짐도 더한다
-    jpeg: int = 0           # JPEG 품질(0 = 압축 안 함)
-    uneven: float = 0.0     # 조명 얼룩 세기(0 = 없음)
+    rotate: float = 0.0  # 도(반시계)
+    noise: float = 0.0  # 가우시안 잡음 표준편차(0~255) — 0이 아니면 점 잡음·번짐도 더한다
+    jpeg: int = 0  # JPEG 품질(0 = 압축 안 함)
+    uneven: float = 0.0  # 조명 얼룩 세기(0 = 없음)
     note: str = ''
 
     @property
@@ -50,7 +51,7 @@ def degrade(img: Image.Image, spec: ScanSpec, rng: np.random.Generator) -> Image
     if spec.rotate:
         im = im.rotate(spec.rotate, resample=Image.BICUBIC, expand=False, fillcolor=255)
     a = np.asarray(im).astype(np.float32)
-    if spec.uneven:                                   # 왼쪽 위가 최대 60 어둡고 오른쪽 아래로 갈수록 밝다
+    if spec.uneven:  # 왼쪽 위가 최대 60 어둡고 오른쪽 아래로 갈수록 밝다
         h, w = a.shape
         g = (np.linspace(0, 1, w)[None, :] + np.linspace(0, 1, h)[:, None]) / 2
         a = a - 60 * spec.uneven * (1 - g)
@@ -69,6 +70,7 @@ def degrade(img: Image.Image, spec: ScanSpec, rng: np.random.Generator) -> Image
 
 def build(spec: ScanSpec) -> Path:
     import pypdfium2
+
     rng = np.random.default_rng(7)
     pages = [degrade(p.render(scale=spec.dpi / 72).to_pil(), spec, rng) for p in pypdfium2.PdfDocument(str(spec.src))]
     spec.out.parent.mkdir(parents=True, exist_ok=True)

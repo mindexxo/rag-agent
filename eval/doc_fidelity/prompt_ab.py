@@ -9,6 +9,7 @@ V13(결정 15, 10/18)이고 지금 rag/chunking/document_converter.PICTURE_CAPTI
   '→'가 든 한 줄에 함께 있나) + 영문 유지(P05의 영문 메뉴).
 실문서는 정답이 없어 캡션만 남기고 Claude 판정(judge.judge_one)·사람 확인으로 본다.
 """
+
 import base64
 import io
 import json
@@ -55,8 +56,15 @@ VARIANTS = {
     'V1_한국어로_제거': _join(['이미지 안의 글자와 내용을 글로 옮겨라.'] + BASE_LINES[1:]),
     'V2_위치나열_제거': _join(BASE_LINES[:3] + BASE_LINES[4:]),
     'V3_빈칸_추가': _join(BASE_LINES[:5] + [BLANK] + BASE_LINES[5:]),
-    'V4_기본수정': _join(['이미지 안의 글자와 내용을 글로 옮겨라.'] + BASE_LINES[1:3] + [BASE_LINES[4], BLANK, BASE_LINES[5]]),
-    'V5_기본수정+조건부': _join(['이미지 안의 글자와 내용을 글로 옮겨라.'] + BASE_LINES[1:3] + CONDITIONAL + [BASE_LINES[4], BLANK, BASE_LINES[5]]),
+    'V4_기본수정': _join(
+        ['이미지 안의 글자와 내용을 글로 옮겨라.'] + BASE_LINES[1:3] + [BASE_LINES[4], BLANK, BASE_LINES[5]]
+    ),
+    'V5_기본수정+조건부': _join(
+        ['이미지 안의 글자와 내용을 글로 옮겨라.']
+        + BASE_LINES[1:3]
+        + CONDITIONAL
+        + [BASE_LINES[4], BLANK, BASE_LINES[5]]
+    ),
     # V1·V2·V4에서 현행 첫 줄·넷째 줄은 빼면 나빠지거나 효과가 없었다(10/18) — 현행을 그대로 두고 더하기만 한다
     'V6_현행+빈칸+조건부': _join(BASE_LINES[:4] + CONDITIONAL + [BASE_LINES[4], BLANK, BASE_LINES[5]]),
     'V7_V6-위치나열': _join(BASE_LINES[:3] + CONDITIONAL + [BASE_LINES[4], BLANK, BASE_LINES[5]]),
@@ -68,21 +76,40 @@ VARIANTS = {
     # 흐름도 지시는 화살표 연결만 요구한다
     'V10_현행+빈칸+화살표+차트': _join(BASE_LINES[:4] + CONDITIONAL_V3 + [BASE_LINES[4], BLANK, BASE_LINES[5]]),
     # V10의 차트 자리표시자('<가로축 항목>')는 세로축 제목을 항목 자리에 넣게 했다(D01 '문의건수(건): 120') — 차트는 V6 문구를 쓴다
-    'V11_현행+빈칸+화살표+차트V6': _join(BASE_LINES[:4] + [CONDITIONAL_V3[0], CONDITIONAL[1]] + [BASE_LINES[4], BLANK, BASE_LINES[5]]),
+    'V11_현행+빈칸+화살표+차트V6': _join(
+        BASE_LINES[:4] + [CONDITIONAL_V3[0], CONDITIONAL[1]] + [BASE_LINES[4], BLANK, BASE_LINES[5]]
+    ),
     # V11은 실문서 화면 캡처에서 토·일 빈 칸에 근무를 지어내고(15736-008), 표형 화면을 마크다운 표로 바꾸며 열을 뒤바꿨다(15736-023) —
     # 어느 지시 탓인지 가르려고 차트 지시를 뺀다
     'V12_현행+빈칸+화살표': _join(BASE_LINES[:4] + [CONDITIONAL_V3[0]] + [BASE_LINES[4], BLANK, BASE_LINES[5]]),
     # 홀드아웃 조직도에서 V11이 계층 묶음을 잃었다(현행은 '영업본부' 아래를 묶었다, 10/18) — 사용자 요청으로 계층형 지시를 더한다.
     # 홀드아웃을 보고 고친 것이라 검증은 새 홀드아웃(HOLDOUT2)으로 한다
-    'V13_V11+계층': _join(BASE_LINES[:4] + [CONDITIONAL_V3[0], HIERARCHY, CONDITIONAL[1]] + [BASE_LINES[4], BLANK, BASE_LINES[5]]),
+    'V13_V11+계층': _join(
+        BASE_LINES[:4] + [CONDITIONAL_V3[0], HIERARCHY, CONDITIONAL[1]] + [BASE_LINES[4], BLANK, BASE_LINES[5]]
+    ),
 }
 
 # 흐름도 화살표 정답 — (출발, 도착): 캡션의 '→'가 든 한 줄(또는 연속된 '→' 사슬)에 둘이 이 순서로 있어야 한다
 EDGES = {
-    'P03_flow': [('고장 신고', '원격 점검'), ('원격 점검', '원격 해결'), ('원격 해결', '처리 종료'), ('원격 해결', '보증 기간'),
-                 ('보증 기간', '무상 수리'), ('보증 기간', '유상 견적'), ('무상 수리', '수리 검수')],
-    'D03_flow': [('재고 이동 요청', '점장 확인'), ('점장 확인', '재고 충분'), ('재고 충분', '출고'), ('재고 충분', '인근 매장'),
-                 ('인근 매장', '매장 간 이동'), ('인근 매장', '본사 발주'), ('출고', '입고 확인'), ('입고 확인', '점장 확인')],
+    'P03_flow': [
+        ('고장 신고', '원격 점검'),
+        ('원격 점검', '원격 해결'),
+        ('원격 해결', '처리 종료'),
+        ('원격 해결', '보증 기간'),
+        ('보증 기간', '무상 수리'),
+        ('보증 기간', '유상 견적'),
+        ('무상 수리', '수리 검수'),
+    ],
+    'D03_flow': [
+        ('재고 이동 요청', '점장 확인'),
+        ('점장 확인', '재고 충분'),
+        ('재고 충분', '출고'),
+        ('재고 충분', '인근 매장'),
+        ('인근 매장', '매장 간 이동'),
+        ('인근 매장', '본사 발주'),
+        ('출고', '입고 확인'),
+        ('입고 확인', '점장 확인'),
+    ],
 }
 ENGLISH = {'P05_screen': ['Store Ops Console', 'Dashboard', 'Payroll', 'Shift Code', 'Break Time', 'Submit']}
 
@@ -112,9 +139,23 @@ def blank_hallucinated(caption: str) -> bool:
 
 def ask(url: str, model: str, image_png: bytes, prompt: str, timeout: float = 180) -> str:
     import httpx
-    body = {'model': model, 'temperature': 0, 'messages': [{'role': 'user', 'content': [
-        {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + base64.b64encode(image_png).decode()}},
-        {'type': 'text', 'text': prompt}]}]}
+
+    body = {
+        'model': model,
+        'temperature': 0,
+        'messages': [
+            {
+                'role': 'user',
+                'content': [
+                    {
+                        'type': 'image_url',
+                        'image_url': {'url': 'data:image/png;base64,' + base64.b64encode(image_png).decode()},
+                    },
+                    {'type': 'text', 'text': prompt},
+                ],
+            }
+        ],
+    }
     r = httpx.post(url, json=body, timeout=timeout)
     r.raise_for_status()
     return r.json()['choices'][0]['message']['content'].strip()
@@ -123,6 +164,7 @@ def ask(url: str, model: str, image_png: bytes, prompt: str, timeout: float = 18
 def run(targets: list[tuple[str, Path]], variants: dict[str, str], out: Path) -> list[dict]:
     """targets = [(picture_id, crop 경로)] → 변형마다 캡션. 이미 만든 (id, 변형)은 다시 부르지 않는다(중간 재개)."""
     from config import settings
+
     done = {}
     if out.exists():
         for line in out.read_text().splitlines():
@@ -133,6 +175,7 @@ def run(targets: list[tuple[str, Path]], variants: dict[str, str], out: Path) ->
         for pid, crop in targets:
             buf = io.BytesIO()
             from PIL import Image
+
             Image.open(crop).convert('RGB').save(buf, format='PNG')
             for name, prompt in variants.items():
                 if (pid, name) in done:
@@ -148,6 +191,7 @@ def run(targets: list[tuple[str, Path]], variants: dict[str, str], out: Path) ->
 
 def score_variant(spec_id: str, spec: dict, caption: str) -> dict:
     from eval.doc_fidelity.synthetic import score_picture
+
     s = score_picture(spec, caption)
     if spec_id in EDGES:
         s['edges'], s['edges_hit'] = len(EDGES[spec_id]), edge_hits(caption, EDGES[spec_id])

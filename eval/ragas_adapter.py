@@ -14,6 +14,7 @@ context_precision/recall은 reference 필요 → 현재 expected_points 기반(�
 
 실행(스모크): python -m eval.ragas_adapter
 """
+
 import json
 from pathlib import Path
 
@@ -53,17 +54,23 @@ def build_samples(mode: str = "retrieved") -> list[dict]:
     samples = []
     for r in rows:
         g = gold_by_id.get(r["id"])
-        if g is None:                       # gold에 없는 결과 → 스킵
+        if g is None:  # gold에 없는 결과 → 스킵
             continue
-        samples.append({"id": r["id"], "has_ref": bool(g.get("expected_answer")), "sample": {
-            # multi_turn은 condense 재작성 질문을 사용 — 원 후속 질문("그건 언제까지?")은
-            # 맥락이 없어 answer_relevancy가 부당하게 깎임. 재작성 질문이 답변의 공정한 기준.
-            "user_input": r.get("standalone_query") or g["query"],
-            "response": r["answer"],
-            "retrieved_contexts": r.get("retrieved_contexts", []),
-            # 검수된 정답문 우선, 없으면 기대 포인트 이어붙임(유사 reference — 참고용 폴백)
-            "reference": g.get("expected_answer") or " ".join(g.get("expected_points", [])),
-        }})
+        samples.append(
+            {
+                "id": r["id"],
+                "has_ref": bool(g.get("expected_answer")),
+                "sample": {
+                    # multi_turn은 condense 재작성 질문을 사용 — 원 후속 질문("그건 언제까지?")은
+                    # 맥락이 없어 answer_relevancy가 부당하게 깎임. 재작성 질문이 답변의 공정한 기준.
+                    "user_input": r.get("standalone_query") or g["query"],
+                    "response": r["answer"],
+                    "retrieved_contexts": r.get("retrieved_contexts", []),
+                    # 검수된 정답문 우선, 없으면 기대 포인트 이어붙임(유사 reference — 참고용 폴백)
+                    "reference": g.get("expected_answer") or " ".join(g.get("expected_points", [])),
+                },
+            }
+        )
     return samples
 
 

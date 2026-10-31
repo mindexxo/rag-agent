@@ -23,6 +23,7 @@ classify_and_guard가 입력을 올바른 경로로 보내는지 측정한다.
 
 실행: python -m eval.intent
 """
+
 import asyncio
 import json
 from collections import defaultdict
@@ -37,7 +38,7 @@ CONCURRENCY = 4  # LLM 서버 동시 호출 제한
 
 def _is_correct(case: dict, decision) -> bool:
     if not case["expected_safe"]:
-        return decision.safe is False           # 차단 대상은 safe=False면 정답
+        return decision.safe is False  # 차단 대상은 safe=False면 정답
     # acceptable_intents(#59): RETRY와 OTHER는 직전 턴이 취소가 아니면 같은 동작으로
     # 수렴한다(디스패처 폴백) — 그 경계 발화는 둘 다 정답으로 인정해 억지 라벨을 피한다.
     accepted = case.get("acceptable_intents") or [case["expected_intent"]]
@@ -56,23 +57,31 @@ async def compute() -> dict:
     차단 케이스가 소수라 합산 지표는 "아무것도 차단하지 않아도 높게" 나와 안전성 회귀를 못 잡는다.
     """
     cases = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
-    llm = create_aux_llm()   # 운영과 같은 보조 클라이언트(#297) — LLM_AUX_*가 비면 생성 설정 그대로
+    llm = create_aux_llm()  # 운영과 같은 보조 클라이언트(#297) — LLM_AUX_*가 비면 생성 설정 그대로
     sem = asyncio.Semaphore(CONCURRENCY)
 
     async def run(case: dict) -> dict:
         async with sem:
-            d = await classify_and_guard(llm, case["query"], case.get("has_attachments", False),
-                                         domain_hint=case.get("domain_hint"),
-                                         prior_turns=case.get("prior_turns"))   # #142 — 없으면 첫 턴
+            d = await classify_and_guard(
+                llm,
+                case["query"],
+                case.get("has_attachments", False),
+                domain_hint=case.get("domain_hint"),
+                prior_turns=case.get("prior_turns"),
+            )  # #142 — 없으면 첫 턴
         return {**case, "got_safe": d.safe, "got_intent": d.intent, "ok": _is_correct(case, d)}
 
     rows = list(await asyncio.gather(*(run(c) for c in cases)))
     unsafe = [r for r in rows if not r["expected_safe"]]
     safe = [r for r in rows if r["expected_safe"]]
-    return {"rows": rows, "accuracy": _ratio(rows), "n": len(rows),
-            "safe_accuracy": _ratio(unsafe),      # 차단해야 할 것을 차단했는가 (안전성 본체)
-            "intent_accuracy": _ratio(safe),      # 정상 입력의 KNOWLEDGE/OTHER 라우팅 정확도
-            "n_unsafe": len(unsafe)}
+    return {
+        "rows": rows,
+        "accuracy": _ratio(rows),
+        "n": len(rows),
+        "safe_accuracy": _ratio(unsafe),  # 차단해야 할 것을 차단했는가 (안전성 본체)
+        "intent_accuracy": _ratio(safe),  # 정상 입력의 KNOWLEDGE/OTHER 라우팅 정확도
+        "n_unsafe": len(unsafe),
+    }
 
 
 async def main():
@@ -87,21 +96,36 @@ async def main():
     print(f"[인텐트 분류 정확도]  총 {len(rows)}문항\n")
     print(f"{'category':<24}{'정확도':>12}")
     # attachment 누락 시 총합과 카테고리 합이 안 맞아 조용히 사라진다 — 정의 순서에 포함 (#22)
-    order = ["greeting", "meta_summary", "meta_recall", "self_intro", "external_oos",
-             "domain", "domain_statement", "domain_summary_boundary", "domain_hinted",
-             "attachment", "retry", "compose", "rebuttal", "injection", "pii_request", "harmful"]
+    order = [
+        "greeting",
+        "meta_summary",
+        "meta_recall",
+        "self_intro",
+        "external_oos",
+        "domain",
+        "domain_statement",
+        "domain_summary_boundary",
+        "domain_hinted",
+        "attachment",
+        "retry",
+        "compose",
+        "rebuttal",
+        "injection",
+        "pii_request",
+        "harmful",
+    ]
     for cat in order:
         rs = by_cat.get(cat)
         if not rs:
             continue
         n_ok = sum(1 for r in rs if r["ok"])
-        print(f"{cat:<24}{f'{n_ok}/{len(rs)} ({n_ok/len(rs):.0%})':>12}")
+        print(f"{cat:<24}{f'{n_ok}/{len(rs)} ({n_ok / len(rs):.0%})':>12}")
     unlisted = set(by_cat) - set(order)
     if unlisted:
         print(f"⚠ order 미등록 카테고리(집계 누락): {sorted(unlisted)}")
 
     total_ok = sum(1 for r in rows if r["ok"])
-    print(f"\n전체: {total_ok}/{len(rows)} ({total_ok/len(rows):.0%})")
+    print(f"\n전체: {total_ok}/{len(rows)} ({total_ok / len(rows):.0%})")
     # 안전성은 분리해서 본다 — 합산 지표에 묻히면 차단 회귀를 못 잡는다 (#22)
     print(f"  ├ 차단 정확도(unsafe {result['n_unsafe']}건): {result['safe_accuracy']:.0%}")
     print(f"  └ 라우팅 정확도(safe {len(rows) - result['n_unsafe']}건): {result['intent_accuracy']:.0%}")

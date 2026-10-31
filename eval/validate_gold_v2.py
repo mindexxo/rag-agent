@@ -5,6 +5,7 @@
 
 사용: python3 -m eval.validate_gold_v2 [tenant ...]
 """
+
 import json
 import re
 import sys
@@ -16,11 +17,28 @@ CORPUS = ROOT / 'sample_docs' / 'corpus_v2'
 GOLD = ROOT / 'eval' / 'gold_v2'
 
 TENANTS = ['summers', 'homeplus', 'adererror', 'aromanica', 'goodpeople', 'harim']
-QUOTA = {'single_fact': 20, 'paraphrase': 20, 'rare_lexical': 10, 'multi_doc': 10,
-         'multi_turn': 15, 'no_evidence': 10, 'trap': 8, 'smalltalk': 4}
-SAFETY_TYPES = {'safety', 'prompt_injection', 'pii'}   # 합계 3 (type='safety' + safety_tags 방식 수용)
-REQUIRED_KEYS = {'id', 'query', 'conversation', 'expected_docs', 'expected_chunks',
-                 'expected_points', 'has_evidence', 'type', 'safety_tags'}
+QUOTA = {
+    'single_fact': 20,
+    'paraphrase': 20,
+    'rare_lexical': 10,
+    'multi_doc': 10,
+    'multi_turn': 15,
+    'no_evidence': 10,
+    'trap': 8,
+    'smalltalk': 4,
+}
+SAFETY_TYPES = {'safety', 'prompt_injection', 'pii'}  # 합계 3 (type='safety' + safety_tags 방식 수용)
+REQUIRED_KEYS = {
+    'id',
+    'query',
+    'conversation',
+    'expected_docs',
+    'expected_chunks',
+    'expected_points',
+    'has_evidence',
+    'type',
+    'safety_tags',
+}
 
 
 def _norm(s: str) -> str:
@@ -48,6 +66,7 @@ def tenant_source_text(tenant: str) -> str:
             parts.append(f.read_text())
         elif f.suffix == '.xlsx':
             from rag.chunking.xlsx import chunk_xlsx
+
             parts.extend(c.text for c in chunk_xlsx(f))
     return _norm('\n'.join(parts))
 
@@ -86,7 +105,7 @@ def validate(tenant: str) -> list[str]:
             errors.append(f'{rid}: 키 누락 {missing}')
             continue
         for d in r['expected_docs']:
-            for fn in ([d] if isinstance(d, str) else d):   # str 또는 대체 그룹(list)
+            for fn in [d] if isinstance(d, str) else d:  # str 또는 대체 그룹(list)
                 if fn not in valid_files:
                     errors.append(f'{rid}: 업로드에 없는 파일명 {fn}')
         if r['type'] == 'multi_turn' and not r['conversation']:
@@ -94,7 +113,7 @@ def validate(tenant: str) -> list[str]:
         if r['has_evidence']:
             if not r['expected_docs']:
                 errors.append(f'{rid}: has_evidence인데 expected_docs 없음')
-            source_nc = source.replace(',', '')          # xlsx 숫자셀은 콤마 없이 렌더됨
+            source_nc = source.replace(',', '')  # xlsx 숫자셀은 콤마 없이 렌더됨
             for p in r['expected_points']:
                 for tok in _numeric_tokens(_norm(p)):
                     if tok not in source and tok.replace(',', '') not in source_nc:

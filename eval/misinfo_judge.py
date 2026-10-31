@@ -12,6 +12,7 @@
 판정 실패(LlmJudgmentFailed·예외)는 **위반 유지**(fail-closed)다 — 판정 못 한 것을 '정상'으로 추측하면 지표가
 실패를 숨긴다(absence_judge와 같은 원칙). 사유·오류는 호출부가 결과 행에 그대로 남긴다(감사용).
 """
+
 from typing import Literal
 
 from pydantic import BaseModel
@@ -24,6 +25,7 @@ JUDGE_PROMPT_VERSION = "v1"
 
 class MisinfoJudgment(BaseModel):
     """label에 기본값을 두지 않는다 — absence_judge.AbsenceJudgment와 같은 이유(스키마 required 보장)."""
+
     label: Literal["asserted", "negated_or_corrected"]
     reason: str | None = None
 
@@ -43,8 +45,10 @@ JSON 한 줄로만 답하십시오: {"label": "...", "reason": "판정 근거 �
 
 
 def _build_messages(answer: str, phrase: str) -> list[dict]:
-    return [{"role": "system", "content": _JUDGE_SYSTEM},
-            {"role": "user", "content": f"금지 주장: {phrase}\n\n답변:\n{answer}"}]
+    return [
+        {"role": "system", "content": _JUDGE_SYSTEM},
+        {"role": "user", "content": f"금지 주장: {phrase}\n\n답변:\n{answer}"},
+    ]
 
 
 async def judge_misinfo(llm: LlmClient, answer: str, phrase: str) -> MisinfoJudgment:
@@ -65,7 +69,7 @@ async def confirm_violations(llm: LlmClient, answer: str, candidates: list[str])
             audit.append({"phrase": phrase, "label": v.label, "reason": v.reason, "error": None})
             if v.label == "asserted":
                 confirmed.append(phrase)
-        except Exception as exc:   # LlmJudgmentFailed·네트워크 — 판정 불가는 위반 유지
+        except Exception as exc:  # LlmJudgmentFailed·네트워크 — 판정 불가는 위반 유지
             audit.append({"phrase": phrase, "label": None, "reason": None, "error": f"{type(exc).__name__}: {exc}"})
             confirmed.append(phrase)
     return confirmed, audit
@@ -73,24 +77,41 @@ async def confirm_violations(llm: LlmClient, answer: str, candidates: list[str])
 
 # 판정기 회귀 고정 — 거절축 실측에서 1단계가 틀린 케이스 전수(2026-10-09) + 진짜 오정보 1건.
 FIXTURES: list[dict] = [
-    {"id": "negated", "expected": "negated_or_corrected", "phrase": "4만원 이상 주문에만 사용",
-     "answer": "등급 쿠폰은 주문금액 2만원 이상인 주문에만 적용할 수 있으며, 무료배송 기준(4만원)과는 별도로 적용됩니다. "
-               "따라서 등급 쿠폰은 4만원 이상 주문에만 사용할 수 있는 것은 아닙니다."},
-    {"id": "contrast", "expected": "negated_or_corrected", "phrase": "결연 후원은 만원부터",
-     "answer": "해외아동결연 후원은 월 45,000원 정액으로 하며, 금액 변경이 불가능합니다. "
-               "따라서 결연 후원은 만원부터 시작하는 일반 정기후원과 달리, 최소 금액이 월 45,000원으로 고정되어 있습니다."},
-    {"id": "assert_then_correct", "expected": "negated_or_corrected", "phrase": "60℃ 이상이어야 정상",
-     "answer": "예, ST-350 데일리 모델의 경우 6시간 후 온도가 60℃ 이상이어야 정상 판정이 됩니다. "
-               "다만, 이는 500ml 기준이며, ST-350 데일리는 350ml 이하 제품에 해당하므로 55℃ 이상이면 정상으로 판정됩니다."},
-    {"id": "asserted_true_positive", "expected": "asserted", "phrase": "근로시간으로 인정되지 않",
-     "answer": "예, 연차를 사용한 날은 근로시간에서 빠집니다. - 연차 사용일은 근로시간으로 인정되지 않으며, "
-               "주/월 단위 근로시간 합산 시 제외됩니다."},
+    {
+        "id": "negated",
+        "expected": "negated_or_corrected",
+        "phrase": "4만원 이상 주문에만 사용",
+        "answer": "등급 쿠폰은 주문금액 2만원 이상인 주문에만 적용할 수 있으며, 무료배송 기준(4만원)과는 별도로 적용됩니다. "
+        "따라서 등급 쿠폰은 4만원 이상 주문에만 사용할 수 있는 것은 아닙니다.",
+    },
+    {
+        "id": "contrast",
+        "expected": "negated_or_corrected",
+        "phrase": "결연 후원은 만원부터",
+        "answer": "해외아동결연 후원은 월 45,000원 정액으로 하며, 금액 변경이 불가능합니다. "
+        "따라서 결연 후원은 만원부터 시작하는 일반 정기후원과 달리, 최소 금액이 월 45,000원으로 고정되어 있습니다.",
+    },
+    {
+        "id": "assert_then_correct",
+        "expected": "negated_or_corrected",
+        "phrase": "60℃ 이상이어야 정상",
+        "answer": "예, ST-350 데일리 모델의 경우 6시간 후 온도가 60℃ 이상이어야 정상 판정이 됩니다. "
+        "다만, 이는 500ml 기준이며, ST-350 데일리는 350ml 이하 제품에 해당하므로 55℃ 이상이면 정상으로 판정됩니다.",
+    },
+    {
+        "id": "asserted_true_positive",
+        "expected": "asserted",
+        "phrase": "근로시간으로 인정되지 않",
+        "answer": "예, 연차를 사용한 날은 근로시간에서 빠집니다. - 연차 사용일은 근로시간으로 인정되지 않으며, "
+        "주/월 단위 근로시간 합산 시 제외됩니다.",
+    },
 ]
 
 
 async def selftest(runs: int = 3) -> dict:
     """FIXTURES를 runs회 판정해 기대와 비교 — 판정기 흔들림 관측(absence_judge.selftest와 같은 idiom)."""
     from eval.absence_judge import judge_llm
+
     llm = judge_llm()
     out = []
     for f in FIXTURES:
@@ -100,11 +121,14 @@ async def selftest(runs: int = 3) -> dict:
                 labels.append((await judge_misinfo(llm, f["answer"], f["phrase"])).label)
             except Exception as exc:
                 labels.append(f"error:{type(exc).__name__}")
-        out.append({"id": f["id"], "expected": f["expected"], "labels": labels,
-                    "ok": all(l == f["expected"] for l in labels)})
+        out.append(
+            {"id": f["id"], "expected": f["expected"], "labels": labels, "ok": all(l == f["expected"] for l in labels)}
+        )
     return {"runs": runs, "fixtures": out, "all_ok": all(o["ok"] for o in out)}
 
 
 if __name__ == "__main__":
-    import asyncio, json
+    import asyncio
+    import json
+
     print(json.dumps(asyncio.run(selftest()), ensure_ascii=False, indent=1))

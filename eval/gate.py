@@ -10,20 +10,21 @@ threshold(max_dense_distance)별 트레이드오프를 출력해 최적값을 �
 
 실행: python -m eval.gate
 """
+
 import asyncio
 import json
 from collections import defaultdict
 from pathlib import Path
 
 from database import AsyncSessionLocal
-from rag.search.retriever import retrieve_candidates, apply_gate
+from rag.search.retriever import apply_gate, retrieve_candidates
 
 TENANT = "demo"
 GOLD = Path("eval/gold_set_v1.jsonl")
 SWEEP = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
 
 SHOULD_PASS = {"single_fact", "paraphrase", "rare_lexical", "multi_doc"}  # 통과가 정답
-SHOULD_REJECT = {"no_evidence", "trap"}                                  # 거절이 정답
+SHOULD_REJECT = {"no_evidence", "trap"}  # 거절이 정답
 # 그 외(smalltalk·prompt_injection·pii·tenant_leak·multi_turn)는 참고용으로만 표시
 
 
@@ -47,15 +48,28 @@ async def main():
     for th in SWEEP:
         false_rej = sum(1 for r in rows if r["type"] in SHOULD_PASS and r["rejects"][th])
         correct_rej = sum(1 for r in rows if r["type"] in SHOULD_REJECT and r["rejects"][th])
-        print(f"{th:>5}{f'{false_rej}/{n_pass} ({false_rej/n_pass:.0%})':>22}"
-              f"{f'{correct_rej}/{n_rej} ({correct_rej/n_rej:.0%})':>24}")
+        print(
+            f"{th:>5}{f'{false_rej}/{n_pass} ({false_rej / n_pass:.0%})':>22}"
+            f"{f'{correct_rej}/{n_rej} ({correct_rej / n_rej:.0%})':>24}"
+        )
 
     # ----- type별 거절률 (참고) -----
     by_type = defaultdict(list)
     for r in rows:
         by_type[r["type"]].append(r["rejects"])
-    order = ["no_evidence", "trap", "smalltalk", "prompt_injection", "pii", "tenant_leak",
-             "single_fact", "paraphrase", "rare_lexical", "multi_doc", "multi_turn"]
+    order = [
+        "no_evidence",
+        "trap",
+        "smalltalk",
+        "prompt_injection",
+        "pii",
+        "tenant_leak",
+        "single_fact",
+        "paraphrase",
+        "rare_lexical",
+        "multi_doc",
+        "multi_turn",
+    ]
     print("\n[type별 거절률 (각 threshold)]")
     print(f"{'type':<16}" + "".join(f"{th:>7}" for th in SWEEP))
     for t in order:

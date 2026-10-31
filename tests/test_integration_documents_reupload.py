@@ -16,6 +16,7 @@
 인용 단언의 뜻: FakeLlm은 항상 1번 후보를 인용하므로 `citations == [(v2, 2)]`는 "후보 집합에 v1이
 없다"의 귀결이다. 신판 인용의 실제 증거는 구판 청크 0건(DROP)과 캐시 miss 쪽이다.
 """
+
 import pytest
 from sqlalchemy import select
 
@@ -29,8 +30,9 @@ Q = '반품 기간은?'
 
 async def _cache_rows(tenant_id: str) -> list[AnswerCacheRow]:
     async with AsyncSessionLocal() as session:
-        return (await session.execute(
-            select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id))).scalars().all()
+        return (
+            (await session.execute(select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id))).scalars().all()
+        )
 
 
 def _cited(res) -> list[tuple[int, int]]:
@@ -40,7 +42,8 @@ def _cited(res) -> list[tuple[int, int]]:
 
 @pytest.mark.asyncio
 async def test_재업로드_뒤_같은_질문은_캐시를_재생하지_않고_신판을_인용한다(
-        client, tenant_id, fake_queue, blob_tmp, fake_embed, fake_llm, pass_gate, relaxed_quota):
+    client, tenant_id, fake_queue, blob_tmp, fake_embed, fake_llm, pass_gate, relaxed_quota
+):
     v1 = await upload(client, '환불정책.md', MD)
     assert await ingest(v1['document_id']) == {'done': 1, 'failed': 0}
 
@@ -62,7 +65,7 @@ async def test_재업로드_뒤_같은_질문은_캐시를_재생하지_않고_�
     assert await chunk_texts(v1['document_id']) != []
     window = await client.post('/kms/query', json={'query': Q})
     assert sse_meta(window)['cached'] is False
-    assert set(_cited(window)) <= {(v1['document_id'], 1), (v2['document_id'], 2)}   # 후보 순서는 비결정
+    assert set(_cited(window)) <= {(v1['document_id'], 1), (v2['document_id'], 2)}  # 후보 순서는 비결정
     (row,) = await _cache_rows(tenant_id)
     assert set(row.source_doc_ids) == {v1['document_id'], v2['document_id']}
 

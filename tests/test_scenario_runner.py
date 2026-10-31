@@ -4,14 +4,18 @@
 가드(_seed_turn의 cancelled 제약)는 순수 로직이라 여기서 값싸게 고정한다. 리뷰에서
 숫자 경계 오탐("5만원"이 "15만원"에 걸림)이 지적됐으므로 그 회귀를 특히 래칫한다.
 """
-import pytest
 
 from eval.scenario import _check
 
 
 def _obs(route="knowledge", citations=None, answer="", attachment_files=None):
-    return {"route": route, "citations": citations or [], "answer": answer,
-            "attachment_files": attachment_files or [], "cache_hit": False}
+    return {
+        "route": route,
+        "citations": citations or [],
+        "answer": answer,
+        "attachment_files": attachment_files or [],
+        "cache_hit": False,
+    }
 
 
 class TestCheckContains:
@@ -45,16 +49,13 @@ class TestCheckStructure:
         assert _check({"expect_refuse": True}, _obs(citations=["doc.pdf"]))
 
     def test_인용_파일명_부분일치(self):
-        assert _check({"expect_docs": ["환불반품정책"]},
-                      _obs(citations=["summers_01_환불반품정책.pdf"])) == []
+        assert _check({"expect_docs": ["환불반품정책"]}, _obs(citations=["summers_01_환불반품정책.pdf"])) == []
 
     def test_차단_첨부_주입되면_실패(self):
         # 격리 회귀 탐지 — 차단 턴 첨부가 다음 턴 주입 목록에 있으면 실패 (#63 코드 레벨)
-        fails = _check({"expect_not_attached": ["인젝션.txt"]},
-                       _obs(attachment_files=["인젝션.txt"]))
+        fails = _check({"expect_not_attached": ["인젝션.txt"]}, _obs(attachment_files=["인젝션.txt"]))
         assert fails
-        assert _check({"expect_not_attached": ["인젝션.txt"]},
-                      _obs(attachment_files=["정상.pdf"])) == []
+        assert _check({"expect_not_attached": ["인젝션.txt"]}, _obs(attachment_files=["정상.pdf"])) == []
 
     def test_예외_턴은_즉시_실패(self):
         assert _check({"expect_route": "knowledge"}, {"error": "ValueError: x"})

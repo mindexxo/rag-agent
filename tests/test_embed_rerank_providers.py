@@ -8,12 +8,11 @@
 5. 설정: 상용 공급자인데 모델명이 비면 기동 시 ValueError.
 실제 벤더 요청 모양은 로컬 스텁 캡처로 확인했다 — 품질·눈금은 라이브 측정 몫.
 """
+
 from types import SimpleNamespace
 
 import pytest
 
-import rag.search.embeddings as emb
-import rag.search.reranker as rr
 from config import settings
 from rag.search.embeddings import EMBED_DIM, MAX_CLIENT_BATCH, Embedding, embed_query, embed_texts, embed_texts_sync
 from rag.search.reranker import rerank_scores
@@ -46,12 +45,15 @@ class _Litellm:
         if self.fail:
             raise RuntimeError("429")
         # 배치 안 index 기준, 뒤 문서일수록 점수 높게 — 환산을 안 하면 순서가 틀어진다
-        return SimpleNamespace(results=[{"index": i, "relevance_score": 0.1 * (i + 1)} for i in range(len(kw["documents"]))][::-1])
+        return SimpleNamespace(
+            results=[{"index": i, "relevance_score": 0.1 * (i + 1)} for i in range(len(kw["documents"]))][::-1]
+        )
 
 
 @pytest.fixture
 def fake_litellm(monkeypatch):
     import sys
+
     fake = _Litellm()
     monkeypatch.setitem(sys.modules, "litellm", fake)
     return fake
@@ -68,12 +70,14 @@ def vendor(monkeypatch):
             monkeypatch.setattr(settings, "rerank_provider", rerank)
             monkeypatch.setattr(settings, "rerank_model", "m-rerank")
             monkeypatch.setattr(settings, "rerank_api_key", "k-rerank")
+
     return _set
 
 
 def test_dim_matches_storage():
     """상용에 요청하는 차원 = OpenSearch 매핑 차원. 어긋나면 색인이 조용히 실패한다."""
     from rag.search.os_client import DIM
+
     assert EMBED_DIM == DIM == 1024
 
 
@@ -83,6 +87,7 @@ class TestTeiUnchanged:
     @pytest.mark.anyio
     async def test_async_body_and_kind_ignored(self, monkeypatch):
         import rag.clients
+
         sent = []
 
         async def _post(url, json, timeout):
@@ -93,10 +98,11 @@ class TestTeiUnchanged:
         assert settings.embed_provider == "tei"
         out = await embed_texts(["a", "b"], kind="query")
         assert [e.dense for e in out] == [_vec(1)] * 2
-        assert sent == [(f"{settings.embed_base_url}/embed", {"inputs": ["a", "b"]})]   # kind 흔적 없음
+        assert sent == [(f"{settings.embed_base_url}/embed", {"inputs": ["a", "b"]})]  # kind 흔적 없음
 
     def test_sync_body(self, monkeypatch):
         import httpx
+
         sent = []
 
         def _post(url, json, timeout):
@@ -111,6 +117,7 @@ class TestTeiUnchanged:
     async def test_async_batch_split_and_order(self, monkeypatch):
         monkeypatch.setattr(settings, "embed_provider", "tei")
         import rag.clients
+
         sent = []
 
         async def _post(url, json, timeout):
@@ -126,6 +133,7 @@ class TestTeiUnchanged:
     def test_sync_batch_split_and_order(self, monkeypatch):
         monkeypatch.setattr(settings, "embed_provider", "tei")
         import httpx
+
         sent = []
 
         def _post(url, json, timeout):
@@ -140,12 +148,15 @@ class TestTeiUnchanged:
     @pytest.mark.anyio
     async def test_rerank_body_and_index_offset(self, monkeypatch):
         import rag.clients
+
         sent = []
 
         async def _post(url, json, timeout):
             sent.append(json)
             n = len(json["texts"])
-            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: [{"index": i, "score": 0.5} for i in range(n)])
+            return SimpleNamespace(
+                raise_for_status=lambda: None, json=lambda: [{"index": i, "score": 0.5} for i in range(n)]
+            )
 
         monkeypatch.setattr(rag.clients.http_async, "post", _post)
         chunks = [SimpleNamespace(faq_id=1, text=f"t{i}") for i in range(MAX_CLIENT_BATCH + 1)]
@@ -156,15 +167,18 @@ class TestTeiUnchanged:
 
 class TestVendorEmbedding:
     @pytest.mark.anyio
-    @pytest.mark.parametrize("provider,prefix,kind_arg", [
-        ("openai", "openai", None),
-        ("gemini", "gemini", ("input_type", "RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY")),
-        ("voyage", "voyage", ("input_type", "document", "query")),
-    ])
+    @pytest.mark.parametrize(
+        "provider,prefix,kind_arg",
+        [
+            ("openai", "openai", None),
+            ("gemini", "gemini", ("input_type", "RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY")),
+            ("voyage", "voyage", ("input_type", "document", "query")),
+        ],
+    )
     async def test_request_shape_per_vendor(self, fake_litellm, vendor, provider, prefix, kind_arg):
         vendor(embed=provider)
-        await embed_texts(["a"])                 # 기본 kind = document
-        await embed_query("q")                   # 편의 함수 = query
+        await embed_texts(["a"])  # 기본 kind = document
+        await embed_query("q")  # 편의 함수 = query
         doc, qry = fake_litellm.calls
         for call in (doc, qry):
             assert call["model"] == f"{prefix}/m-embed" and call["api_key"] == "k-embed"
@@ -189,7 +203,7 @@ class TestVendorEmbedding:
     @pytest.mark.anyio
     async def test_wrong_dimension_raises(self, fake_litellm, vendor):
         vendor(embed="gemini")
-        fake_litellm.dim = 3072                  # 벤더 기본 차원 — dimensions가 안 먹은 상황
+        fake_litellm.dim = 3072  # 벤더 기본 차원 — dimensions가 안 먹은 상황
         with pytest.raises(ValueError, match="차원 불일치"):
             await embed_texts(["a"])
 
@@ -199,6 +213,7 @@ class TestVendorEmbedding:
 
         async def _short(**kw):
             return SimpleNamespace(data=[{"index": 0, "embedding": _vec(1)}])
+
         fake_litellm.aembedding = _short
         with pytest.raises(ValueError, match="개수 불일치"):
             await embed_texts(["a", "b"])
@@ -234,7 +249,10 @@ class TestVendorRerank:
         c0, c1 = fake_litellm.calls
         assert c0["model"] == f"{prefix}/m-rerank" and c0["api_key"] == "k-rerank" and c0["query"] == "q"
         assert c0["return_documents"] is False and c0["timeout"] == settings.rerank_timeout
-        assert c0["documents"] == [f"t{i}" for i in range(MAX_CLIENT_BATCH)] and c1["documents"] == [f"t{MAX_CLIENT_BATCH}", f"t{MAX_CLIENT_BATCH + 1}"]
+        assert c0["documents"] == [f"t{i}" for i in range(MAX_CLIENT_BATCH)] and c1["documents"] == [
+            f"t{MAX_CLIENT_BATCH}",
+            f"t{MAX_CLIENT_BATCH + 1}",
+        ]
 
     @pytest.mark.anyio
     async def test_failure_degrades_to_none(self, fake_litellm, vendor):
@@ -247,6 +265,7 @@ class TestSettings:
     @pytest.mark.parametrize("field", ["embed", "rerank"])
     def test_vendor_requires_model(self, monkeypatch, field):
         from config import Settings
+
         monkeypatch.delenv(f"{field.upper()}_MODEL", raising=False)
         vendor_name = "openai" if field == "embed" else "cohere"
         with pytest.raises(ValueError, match=f"{field.upper()}_MODEL"):
@@ -254,4 +273,8 @@ class TestSettings:
 
     def test_tei_needs_no_model(self):
         from config import Settings
-        assert Settings(embed_provider="tei", embed_model="", rerank_provider="tei", rerank_model="").embed_provider == "tei"
+
+        assert (
+            Settings(embed_provider="tei", embed_model="", rerank_provider="tei", rerank_model="").embed_provider
+            == "tei"
+        )

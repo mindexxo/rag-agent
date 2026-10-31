@@ -5,6 +5,7 @@
   2. 게이트 신호 환산이 실측값과 같다                 (틀리면 no_evidence 판정이 조용히 어긋난다)
   3. 필터가 엔진에서 걸린다                           (검색 후 걸러내면 post-filter가 되어 후보가 깎인다)
 """
+
 from rag.search import os_client as C
 from rag.search import os_search as S
 
@@ -25,9 +26,13 @@ def test_게이트_신호_환산이_실측과_같다():
 
     허용오차 2e-6: 표의 두 값이 각각 소수점 6자리로 반올림된 기록이라 각 5e-7까지 어긋날 수
     있고, distance는 score에 2를 곱하므로 그만큼 증폭된다. 실제 환산은 정확하다."""
-    for score, pg_distance in ((0.862583, 0.274834), (0.849968, 0.300063),
-                               (0.842895, 0.314211), (0.842461, 0.315078),
-                               (0.830557, 0.338887)):
+    for score, pg_distance in (
+        (0.862583, 0.274834),
+        (0.849968, 0.300063),
+        (0.842895, 0.314211),
+        (0.842461, 0.315078),
+        (0.830557, 0.338887),
+    ):
         assert abs(S.score_to_cosine_distance(score) - pg_distance) < 2e-6, score
 
 
@@ -44,4 +49,4 @@ def test_필터는_엔진에서_걸린다():
     # 매핑에도 필드가 있어야 실제로 걸린다
     props = C.MAPPING['mappings']['properties']
     assert props['searchable']['type'] == 'boolean'
-    assert props['folder_id']['type'] == 'long'    # 폴더 단위 fan-out update의 필터 키
+    assert props['folder_id']['type'] == 'long'  # 폴더 단위 fan-out update의 필터 키

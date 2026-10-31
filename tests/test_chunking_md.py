@@ -5,6 +5,7 @@ docling(2.126) MD 백엔드를 그대로 쓰면 표 칸 '\\|'의 내용을 버�
 운영에는 원문 소실 가드를 두지 않았다(#267 결정 4) — 대신 여기서 저장소의 MD 문서 전부에 "원문 소실 0"을 건다. docling이 또 모르는
 데서 내용을 버리면 이 테스트가 먼저 깨진다. 합성 문서 생성의 정본은 sample_docs/corpus_v2/_src/build_md_docs.py.
 """
+
 import json
 import re
 from pathlib import Path
@@ -20,7 +21,11 @@ pytest.importorskip('docling')
 ROOT = Path(__file__).resolve().parent.parent
 CORPUS = ROOT / 'sample_docs' / 'corpus_v2'
 MD_DOCS = sorted(p for p in CORPUS.glob('*/*.md'))
-GOLD = [json.loads(line) for line in (ROOT / 'eval' / 'gold_set_v2.jsonl').read_text(encoding='utf-8').splitlines() if '_mk0' in line]
+GOLD = [
+    json.loads(line)
+    for line in (ROOT / 'eval' / 'gold_set_v2.jsonl').read_text(encoding='utf-8').splitlines()
+    if '_mk0' in line
+]
 
 
 def _md(tmp_path, text: str) -> Path:
@@ -35,9 +40,13 @@ def _body(tmp_path, text: str) -> str:
 
 # ── 보정 ─────────────────────────────────────────────────────────────────────
 
+
 def test_표_칸_안_이스케이프_세로선은_칸을_버리지_않는다(tmp_path):
     # docling 그대로면 '| AE | Mono 재킷 | 모노랩 |' — 셋째 칸('홀로그램 확인')이 출력 어디에도 없었다
-    body = _body(tmp_path, '# 제목\n\n| 모델 | 브랜드 | 추가 항목 |\n| --- | --- | --- |\n| AE\\|Mono | 모노랩 | 홀로그램 확인 |\n')
+    body = _body(
+        tmp_path,
+        '# 제목\n\n| 모델 | 브랜드 | 추가 항목 |\n| --- | --- | --- |\n| AE\\|Mono | 모노랩 | 홀로그램 확인 |\n',
+    )
     assert '| AE\\|Mono | 모노랩 | 홀로그램 확인 |' in body
 
 
@@ -54,11 +63,17 @@ def test_링크는_글_뒤에_주소를_붙인다(tmp_path):
     assert body == '신청서는 양식(https://example.invalid/form)에서 받는다.'
 
 
-@pytest.mark.parametrize('src, want', [
-    ('요청은 **이메일 접수**로만 받는다.', '요청은 이메일 접수로만 받는다.'),       # 서식 뒤 조사는 붙인다(원문에 공백 없음)
-    ('요청은 **이메일** 접수로만 받는다.', '요청은 이메일 접수로만 받는다.'),       # 원문에 공백이 있으면 띄운다
-    ('**주의** 미성년자는 동의서가 필요하다.', '주의 미성년자는 동의서가 필요하다.'),
-])
+@pytest.mark.parametrize(
+    'src, want',
+    [
+        (
+            '요청은 **이메일 접수**로만 받는다.',
+            '요청은 이메일 접수로만 받는다.',
+        ),  # 서식 뒤 조사는 붙인다(원문에 공백 없음)
+        ('요청은 **이메일** 접수로만 받는다.', '요청은 이메일 접수로만 받는다.'),  # 원문에 공백이 있으면 띄운다
+        ('**주의** 미성년자는 동의서가 필요하다.', '주의 미성년자는 동의서가 필요하다.'),
+    ],
+)
 def test_인라인_서식으로_쪼개진_문장은_원문_띄어쓰기대로_한_줄(tmp_path, src, want):
     assert _body(tmp_path, f'# 제목\n\n{src}\n') == want
 
@@ -69,6 +84,7 @@ def test_코드_블록은_들여쓰기를_지킨다(tmp_path):
 
 
 # ── 구조 인식(정규식 파서가 못 하던 것) ──────────────────────────────────────────
+
 
 def test_밑줄식_헤딩도_헤딩이다(tmp_path):
     secs = md_sections(_md(tmp_path, '안내\n====\n\n머리말.\n\n해지 응대\n--------\n\n본문.\n'))
@@ -96,14 +112,16 @@ def test_큰_MD_표는_행_단위로_나뉘고_묶음마다_열_이름이_있다
     assert len(batches) >= 2
     header = '| 원료 코드 | 원료명 | 산지 | 최소 순도 | 보관 온도 | 입고 검사 |'
     assert all(header in c.text for c in batches)
-    assert all(line.endswith('|') for c in batches for line in c.text.split('\n') if line.startswith('|'))   # 행 중간에서 안 잘림
-    assert {(c.meta or {}).get('table_key') for c in batches} != {None}                                      # #257 표 전체 확장 대상
+    assert all(
+        line.endswith('|') for c in batches for line in c.text.split('\n') if line.startswith('|')
+    )  # 행 중간에서 안 잘림
+    assert {(c.meta or {}).get('table_key') for c in batches} != {None}  # #257 표 전체 확장 대상
 
 
 # ── 원문 소실 0 — 저장소의 MD 전부 ───────────────────────────────────────────────
 
 _FENCE = re.compile(r'^(`{3,}|~{3,})')
-_RULE = re.compile(r'^(=+|-+|\*{3,}|\|?[\s:|-]*-{3,}[\s:|-]*\|?)$')     # 밑줄식 헤딩 밑줄·가로줄·표 구분 행·앞머리 경계
+_RULE = re.compile(r'^(=+|-+|\*{3,}|\|?[\s:|-]*-{3,}[\s:|-]*\|?)$')  # 밑줄식 헤딩 밑줄·가로줄·표 구분 행·앞머리 경계
 _HTML_TAG = re.compile(r'</?(details|summary)>')
 _MARK = re.compile(r'^\s*(#{1,6}\s+|>\s*|[-*+]\s+|\d+[.)]\s+)')
 
@@ -127,6 +145,7 @@ def test_원문_글자는_조각_어딘가에_남는다(path):
 
 
 # ── 합성 골드 ────────────────────────────────────────────────────────────────
+
 
 def test_골드는_합성_MD_세_문서를_덮는다():
     assert len(GOLD) == 27

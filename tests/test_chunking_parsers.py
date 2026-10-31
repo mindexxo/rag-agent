@@ -7,6 +7,7 @@ tests/test_chunking_docling.py·tests/test_chunking_office_docling.py.
 입력은 corpus_v2 합성 문서 실물. heading_path는 pdf·docx·md 모두 채워진다
 (txt만 헤딩 개념이 없어 빈다).
 """
+
 import importlib.util
 from pathlib import Path
 
@@ -32,28 +33,28 @@ class TestPdfPages:
         assert [n for n, _ in pages] == list(range(1, len(pages) + 1))
         assert '환불' in pages[0][1]
 
-
-    @_needs_docling                                  # 뒤 절반의 chunk_file이 docling 변환을 탄다
+    @_needs_docling  # 뒤 절반의 chunk_file이 docling 변환을 탄다
     def test_빈_페이지는_빈_문자열_그리고_청킹_무해(self, tmp_path):
         # 스캔/빈 페이지에서 extract_text()가 None — '' 폴백이 없으면 split_text(None) 크래시
         from reportlab.pdfgen import canvas
+
         p = tmp_path / 'two.pdf'
         c = canvas.Canvas(str(p))
         c.drawString(100, 700, 'page one text')
         c.showPage()
-        c.showPage()          # 내용 없는 2페이지
+        c.showPage()  # 내용 없는 2페이지
         c.save()
         pages = pdf_pages(p)
         assert pages[1] == (2, '')
-        chunks = chunk_file(p)                       # 빈 페이지가 있어도 크래시 없이
-        assert all(c.page == 1 for c in chunks)      # 빈 페이지는 청크를 만들지 않음
+        chunks = chunk_file(p)  # 빈 페이지가 있어도 크래시 없이
+        assert all(c.page == 1 for c in chunks)  # 빈 페이지는 청크를 만들지 않음
 
 
 class TestDocxText:
     def test_문단과_표_셀_포함(self):
         text = docx_text(DOCX)
         assert '정기후원' in text
-        assert ' | ' in text          # 표 행은 셀을 ' | '로 조인 — 표 누락 방지
+        assert ' | ' in text  # 표 행은 셀을 ' | '로 조인 — 표 누락 방지
 
 
 class TestChunkTxt:
@@ -67,7 +68,7 @@ class TestChunkTxt:
 
     def test_긴_텍스트는_분할되고_index_순차(self, tmp_path):
         p = tmp_path / 'b.txt'
-        p.write_text('문장입니다. ' * 200, encoding='utf-8')   # 512자 초과
+        p.write_text('문장입니다. ' * 200, encoding='utf-8')  # 512자 초과
         chunks = chunk_file(p)
         assert len(chunks) > 1
         assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
@@ -84,17 +85,17 @@ class TestChunkFile:
     def test_pdf_page_보존_heading_채움(self):
         chunks = chunk_file(PDF)
         assert chunks, 'PDF에서 청크 0개'
-        assert all(c.heading_path for c in chunks)         # docling 제목 층(레이아웃 모델 + 번호 체계 복원)
+        assert all(c.heading_path for c in chunks)  # docling 제목 층(레이아웃 모델 + 번호 체계 복원)
         assert all(c.page is not None and c.page >= 1 for c in chunks)
-        assert len({c.page for c in chunks}) >= 2          # 다중 페이지 문서여야 아래 연속성 검증이 유효
+        assert len({c.page for c in chunks}) >= 2  # 다중 페이지 문서여야 아래 연속성 검증이 유효
         # chunk_index는 섹션·페이지 경계를 넘어 문서 전체에서 연속 (리셋 회귀 방지)
         assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
 
     def test_docx_heading_path_채움_page_없음(self):
         chunks = chunk_file(DOCX)
         assert chunks
-        assert all(c.page is None for c in chunks)         # Word는 페이지를 파일에 저장하지 않음
-        assert all(c.heading_path for c in chunks)         # Heading 스타일 → 섹션 경로
+        assert all(c.page is None for c in chunks)  # Word는 페이지를 파일에 저장하지 않음
+        assert all(c.heading_path for c in chunks)  # Heading 스타일 → 섹션 경로
         assert any('해지' in h for c in chunks for h in c.heading_path)
 
     def test_docx_헤딩만_있는_청크_없음(self):
@@ -112,7 +113,7 @@ class TestChunkFile:
 
     def test_md는_heading_path_채움(self):
         chunks = chunk_file(MD)
-        assert any(c.heading_path for c in chunks)         # md만 헤딩 구조 보존
+        assert any(c.heading_path for c in chunks)  # md만 헤딩 구조 보존
         heads = [h for c in chunks for h in c.heading_path]
         assert any('대량주문' in h for h in heads)
 
@@ -121,7 +122,7 @@ class TestChunkFile:
         assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
 
     def test_긴_문서는_여러_청크로(self):
-        assert len(chunk_file(MD)) > 1                     # 3,600자 문서 — 512자 분할
+        assert len(chunk_file(MD)) > 1  # 3,600자 문서 — 512자 분할
 
 
 @_needs_docling
@@ -216,19 +217,32 @@ class TestDocxFallbackHeadings:
 
     def test_스타일_헤딩이_하나라도_있으면_무변경(self):
         from rag.chunking.docx import docx_fallback_headings
+
         items = [(True, 1, '제목', False), (False, 0, '제1조(목적) 본문', False)]
         assert docx_fallback_headings(items) == items
 
     def test_제목_장_조_3단(self):
         from rag.chunking.docx import docx_fallback_headings
-        items = [(False, 0, '장애관리 지침서\n< 컨택센터 사업부문 >', False), (False, 0, '제 1 장 총칙', False),
-                 (False, 0, '제1조(목적)', False), (False, 0, '이 지침은 …', False), (False, 0, '제2조(적용 범위)', False)]
+
+        items = [
+            (False, 0, '장애관리 지침서\n< 컨택센터 사업부문 >', False),
+            (False, 0, '제 1 장 총칙', False),
+            (False, 0, '제1조(목적)', False),
+            (False, 0, '이 지침은 …', False),
+            (False, 0, '제2조(적용 범위)', False),
+        ]
         assert docx_fallback_headings(items) == [
-            (True, 1, '장애관리 지침서', False), (False, 0, '< 컨택센터 사업부문 >', False), (True, 2, '제 1 장 총칙', False),
-            (True, 3, '제1조(목적)', False), (False, 0, '이 지침은 …', False), (True, 3, '제2조(적용 범위)', False)]
+            (True, 1, '장애관리 지침서', False),
+            (False, 0, '< 컨택센터 사업부문 >', False),
+            (True, 2, '제 1 장 총칙', False),
+            (True, 3, '제1조(목적)', False),
+            (False, 0, '이 지침은 …', False),
+            (True, 3, '제2조(적용 범위)', False),
+        ]
 
     def test_장이_없으면_조는_L2_제목_없으면_한_단계_위(self):
         from rag.chunking.docx import docx_fallback_headings
+
         with_title = [(False, 0, '지침서', False), (False, 0, '제1조(목적)', False), (False, 0, '본문', False)]
         assert [lv for h, lv, _, _ in docx_fallback_headings(with_title) if h] == [1, 2]
         no_title = [(False, 0, '제1조(목적)', False), (False, 0, '본문', False)]
@@ -236,50 +250,84 @@ class TestDocxFallbackHeadings:
 
     def test_번호_목록과_표_행과_장애_같은_낱말은_승격하지_않는다(self):
         from rag.chunking.docx import docx_fallback_headings
-        items = [(False, 0, '제목', False), (False, 0, '1. 출근시간 선택', False), (False, 0, '제3조(장애) | 설명', True),
-                 (False, 0, '제3조의 장애 등급', False), (False, 0, '<표 1. 장애의 분류>', False)]
+
+        items = [
+            (False, 0, '제목', False),
+            (False, 0, '1. 출근시간 선택', False),
+            (False, 0, '제3조(장애) | 설명', True),
+            (False, 0, '제3조의 장애 등급', False),
+            (False, 0, '<표 1. 장애의 분류>', False),
+        ]
         assert [h for h, _, _, _ in docx_fallback_headings(items)] == [True, False, False, False, False]
 
     def test_같은_문단에_이어진_본문은_헤딩에서_분리된다(self):
         from rag.chunking.docx import docx_fallback_headings
-        items = [(False, 0, '제목', False), (False, 0, '제8조(역할과 책임) ① 운영관리자는 장애를 접수한다.\n② 복구는 담당자가 한다.', False)]
+
+        items = [
+            (False, 0, '제목', False),
+            (False, 0, '제8조(역할과 책임) ① 운영관리자는 장애를 접수한다.\n② 복구는 담당자가 한다.', False),
+        ]
         assert docx_fallback_headings(items)[1:] == [
-            (True, 2, '제8조(역할과 책임)', False), (False, 0, '① 운영관리자는 장애를 접수한다.\n② 복구는 담당자가 한다.', False)]
+            (True, 2, '제8조(역할과 책임)', False),
+            (False, 0, '① 운영관리자는 장애를 접수한다.\n② 복구는 담당자가 한다.', False),
+        ]
         # 괄호 제목이 없는 장은 첫 줄 전체가 머리
-        assert docx_fallback_headings([(False, 0, '제 1 장 총칙\n이 장은 …', False)])[0] == (True, 1, '제 1 장 총칙', False)
+        assert docx_fallback_headings([(False, 0, '제 1 장 총칙\n이 장은 …', False)])[0] == (
+            True,
+            1,
+            '제 1 장 총칙',
+            False,
+        )
 
     def test_가지_조문과_전각_괄호(self):
         from rag.chunking.docx import docx_fallback_headings
+
         items = [(False, 0, '제목', False), (False, 0, '제3조의2（특례）', False), (False, 0, '제1장(총칙)', False)]
         assert [(h, lv, txt) for h, lv, txt, _ in docx_fallback_headings(items)] == [
-            (True, 1, '제목'), (True, 2, '제3조의2（특례）'), (True, 2, '제1장(총칙)')]
+            (True, 1, '제목'),
+            (True, 2, '제3조의2（특례）'),
+            (True, 2, '제1장(총칙)'),
+        ]
 
     def test_인용_문단은_승격하지_않는다(self):
         # #233: 예전 _ARTICLE_RE(조 번호 뒤 공백·괄호·줄끝)가 이 꼴을 전부 제목으로 올려, 뒤에 다른 제목이 오면 문장이 사라졌다
         from rag.chunking.docx import docx_fallback_headings
-        cites = ['제98조 및 제99조에 따라 처리한다.', '제98조 제2항의 규정에 의한다.',
-                 '제98조(이하 "보상조항"이라 한다)에 따라 지급한다.', '제98조(보상)에 따라 지급한다.']
+
+        cites = [
+            '제98조 및 제99조에 따라 처리한다.',
+            '제98조 제2항의 규정에 의한다.',
+            '제98조(이하 "보상조항"이라 한다)에 따라 지급한다.',
+            '제98조(보상)에 따라 지급한다.',
+        ]
         items = [(False, 0, '제목', False), *((False, 0, c, False) for c in cites), (False, 0, '제2조(정의)', False)]
         assert [(h, txt) for h, _, txt, _ in docx_fallback_headings(items)[1:]] == [
-            *((False, c) for c in cites), (True, '제2조(정의)')]
+            *((False, c) for c in cites),
+            (True, '제2조(정의)'),
+        ]
 
     def test_괄호_중첩_제목은_짝까지가_머리(self):
         # #233: 예전 머리 정규식은 안쪽 닫는 괄호에서 잘라 '제2조(시향 예약(단체)'와 본문 ')'로 갈랐다
         from rag.chunking.docx import docx_fallback_headings
+
         items = [(False, 0, '제목', False), (False, 0, '제2조(시향 예약(단체)) 예약은 전화로 받는다.', False)]
         assert docx_fallback_headings(items)[1:] == [
-            (True, 2, '제2조(시향 예약(단체))', False), (False, 0, '예약은 전화로 받는다.', False)]
+            (True, 2, '제2조(시향 예약(단체))', False),
+            (False, 0, '예약은 전화로 받는다.', False),
+        ]
 
     def test_첫_문단이_길면_제목이_없고_한_단계_위로(self):
         from rag.chunking.docx import docx_fallback_headings
+
         items = [(False, 0, '가' * 61, False), (False, 0, '제1조(목적)', False), (False, 0, '본문', False)]
         out = docx_fallback_headings(items)
         assert out[0] == (False, 0, '가' * 61, False) and out[1] == (True, 1, '제1조(목적)', False)
 
     def test_Heading_스타일_문서는_폴백을_타지_않고_첨부_평문도_불변(self):
-        from rag.chunking.docx import docx_fallback_headings, docx_items
         from docx import Document as _Doc
-        items = list(docx_items(DOCX))                         # corpus 합성 docx — Heading 스타일 있음
+
+        from rag.chunking.docx import docx_fallback_headings, docx_items
+
+        items = list(docx_items(DOCX))  # corpus 합성 docx — Heading 스타일 있음
         assert docx_fallback_headings(items) is items
         d = _Doc(str(DOCX))
         expected = [p.text.strip() for p in d.paragraphs if p.text.strip()]
@@ -288,23 +336,38 @@ class TestDocxFallbackHeadings:
     @_needs_docling
     def test_생성한_docx_제목_장_조_3단_경로(self, tmp_path):
         from docx import Document as _Doc
+
         d = _Doc()
-        d.add_paragraph('지침서'); d.add_paragraph('제 1 장 총칙'); d.add_paragraph('제1조(목적) 이 지침은 절차를 정한다.')
-        p = tmp_path / 'three_levels.docx'; d.save(str(p))
+        d.add_paragraph('지침서')
+        d.add_paragraph('제 1 장 총칙')
+        d.add_paragraph('제1조(목적) 이 지침은 절차를 정한다.')
+        p = tmp_path / 'three_levels.docx'
+        d.save(str(p))
         chunks = chunk_file(p)
-        assert chunks[0].heading_path == ['지침서', '제 1 장 총칙', '제1조(목적)'] and '이 지침은 절차를 정한다.' in chunks[0].text
+        assert (
+            chunks[0].heading_path == ['지침서', '제 1 장 총칙', '제1조(목적)']
+            and '이 지침은 절차를 정한다.' in chunks[0].text
+        )
 
     @_needs_docling
     def test_생성한_docx에서_조문별_heading_path가_채워지고_표_행이_한_청크에_남는다(self, tmp_path):
         from docx import Document as _Doc
+
         d = _Doc()
         d.add_paragraph('장애관리 지침서')
-        d.add_paragraph('제1조(목적)'); d.add_paragraph('이 지침은 장애 대응 절차를 정한다.')
+        d.add_paragraph('제1조(목적)')
+        d.add_paragraph('이 지침은 장애 대응 절차를 정한다.')
         d.add_paragraph('제8조(역할과 책임)')
         tbl = d.add_table(rows=2, cols=2)
-        tbl.cell(0, 0).text = '역할'; tbl.cell(0, 1).text = '책임'
-        tbl.cell(1, 0).text = '운영관리'; tbl.cell(1, 1).text = '장애 발생 시 1차 대응하며,\n대응 불가 시 복구 담당자를 지정함'
-        p = tmp_path / 'no_heading_style.docx'; d.save(str(p))
+        tbl.cell(0, 0).text = '역할'
+        tbl.cell(0, 1).text = '책임'
+        tbl.cell(1, 0).text = '운영관리'
+        tbl.cell(1, 1).text = '장애 발생 시 1차 대응하며,\n대응 불가 시 복구 담당자를 지정함'
+        p = tmp_path / 'no_heading_style.docx'
+        d.save(str(p))
         chunks = chunk_file(p)
         assert all(c.heading_path for c in chunks)
-        assert any(c.heading_path[-1] == '제8조(역할과 책임)' and '1차 대응하며' in c.text and '복구 담당자를 지정함' in c.text for c in chunks)
+        assert any(
+            c.heading_path[-1] == '제8조(역할과 책임)' and '1차 대응하며' in c.text and '복구 담당자를 지정함' in c.text
+            for c in chunks
+        )

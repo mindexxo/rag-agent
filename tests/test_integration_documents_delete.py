@@ -4,13 +4,16 @@
 그리고 "이미 삭제된 문서는 통과"라는 멱등 규칙을 고정한다.
 공용 헬퍼는 tests/helpers_documents.py.
 """
+
 import pytest
-from sqlalchemy import delete as sql_delete, select
+from sqlalchemy import delete as sql_delete
+from sqlalchemy import select
 
 from database import AsyncSessionLocal
 from rag import outbox
+from rag.models import AnswerCache as AnswerCacheRow
+from rag.models import SearchIndexOutbox
 from rag.turn import cache
-from rag.models import AnswerCache as AnswerCacheRow, SearchIndexOutbox
 from tests.conftest import ingest
 from tests.helpers_documents import MD, chunk_texts, get_doc, upload
 
@@ -27,19 +30,20 @@ async def test_소프트_삭제_청크와_캐시_제거_row_보존(client, tenan
     assert res.status_code == 204
 
     doc = await get_doc(body['document_id'])
-    assert doc is not None                                       # row 보존 (과거 인용 다운로드용)
+    assert doc is not None  # row 보존 (과거 인용 다운로드용)
     assert doc.status == 'deleted' and doc.is_active is False
-    assert await chunk_texts(body['document_id']) != []                  # drain 전 — 가이드대로 아직 색인에 있다 (E2E #4)
-    await ingest(body['document_id'])                                     # DROP_DOCUMENTS 행 처리
-    assert await chunk_texts(body['document_id']) == []                  # 검색 인덱스에서 제거
+    assert await chunk_texts(body['document_id']) != []  # drain 전 — 가이드대로 아직 색인에 있다 (E2E #4)
+    await ingest(body['document_id'])  # DROP_DOCUMENTS 행 처리
+    assert await chunk_texts(body['document_id']) == []  # 검색 인덱스에서 제거
     async with AsyncSessionLocal() as session:
-        rows = (await session.execute(
-            select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
-        )).scalars().all()
-        assert rows == []                                        # 근거 캐시 무효화
+        rows = (
+            (await session.execute(select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id))).scalars().all()
+        )
+        assert rows == []  # 근거 캐시 무효화
 
 
 # ── #174 문서 일괄 삭제 (DELETE /kms/documents?ids=) ──────────
+
 
 async def _bulk_delete(client, ids, tenant=None):
     headers = {'X-Tenant-Id': tenant} if tenant else None
@@ -50,7 +54,7 @@ async def _bulk_delete(client, ids, tenant=None):
 async def test_일괄_삭제는_목록에서_사라지고_전_버전을_함께_내린다(client, tenant_id, fake_queue, blob_tmp):
     a_v1 = await upload(client, '환불정책.md', MD)
     await ingest(a_v1['document_id'])
-    a_v2 = await upload(client, '환불정책.md', MD)          # 같은 이름 재업로드 → v2
+    a_v2 = await upload(client, '환불정책.md', MD)  # 같은 이름 재업로드 → v2
     b = await upload(client, '배송정책.md', MD)
 
     assert (await _bulk_delete(client, [a_v2['document_id'], b['document_id']])).status_code == 204
@@ -75,11 +79,11 @@ async def test_일괄_삭제는_이미_삭제된_문서를_통과시킨다(clien
 
 
 @pytest.mark.asyncio
-async def test_일괄_삭제_대상이_어긋나면_아무것도_안_지운다(client, tenant_id, other_tenant_id,
-                                                        fake_queue, blob_tmp):
+async def test_일괄_삭제_대상이_어긋나면_아무것도_안_지운다(client, tenant_id, other_tenant_id, fake_queue, blob_tmp):
     mine = await upload(client, '환불정책.md', MD)
-    other = await client.post('/kms/documents', files={'file': ('남의문서.md', MD, 'text/markdown')},
-                              headers={'X-Tenant-Id': other_tenant_id})
+    other = await client.post(
+        '/kms/documents', files={'file': ('남의문서.md', MD, 'text/markdown')}, headers={'X-Tenant-Id': other_tenant_id}
+    )
 
     for label, bad in (('없는 id', 999999), ('다른 테넌트', other.json()['document_id'])):
         res = await _bulk_delete(client, [mine['document_id'], bad])
@@ -106,24 +110,28 @@ async def test_일괄_삭제_캐시_무효화와_색인_제거(client, tenant_id
     assert (await _bulk_delete(client, [a['document_id'], b['document_id']])).status_code == 204
 
     async with AsyncSessionLocal() as s:
-        remain = (await s.execute(select(AnswerCacheRow.answer)
-                                  .where(AnswerCacheRow.tenant_id == tenant_id))).scalars().all()
-        rows = (await s.execute(select(SearchIndexOutbox)
-                                .where(SearchIndexOutbox.tenant_id == tenant_id))).scalars().all()
-    assert remain == []                                  # 둘 다 근거가 사라졌다
+        remain = (
+            (await s.execute(select(AnswerCacheRow.answer).where(AnswerCacheRow.tenant_id == tenant_id)))
+            .scalars()
+            .all()
+        )
+        rows = (
+            (await s.execute(select(SearchIndexOutbox).where(SearchIndexOutbox.tenant_id == tenant_id))).scalars().all()
+        )
+    assert remain == []  # 둘 다 근거가 사라졌다
     assert len(rows) == 1 and rows[0].op == outbox.DROP_DOCUMENTS
     assert sorted(rows[0].payload['document_ids']) == sorted([a['document_id'], b['document_id']])
 
-    await ingest(a['document_id'])                       # 한 행에 둘 다 담겨 있다
+    await ingest(a['document_id'])  # 한 행에 둘 다 담겨 있다
     assert await chunk_texts(a['document_id']) == []
     assert await chunk_texts(b['document_id']) == []
 
 
 @pytest.mark.asyncio
 async def test_일괄_삭제_상한과_빈_요청(client, tenant_id, fake_queue, blob_tmp):
-    assert (await _bulk_delete(client, list(range(1, 201)))).status_code == 404   # 스키마는 통과
+    assert (await _bulk_delete(client, list(range(1, 201)))).status_code == 404  # 스키마는 통과
     assert (await _bulk_delete(client, list(range(1, 202)))).status_code == 422
-    assert (await _bulk_delete(client, [])).status_code == 204                   # 무동작
+    assert (await _bulk_delete(client, [])).status_code == 204  # 무동작
 
 
 @pytest.mark.asyncio

@@ -6,11 +6,12 @@
   3. build_doc는 청크에 실린 벡터로 색인하고, 없으면 크게 실패한다
   4. chunk_os_id는 결정적이고 문서·청크 간 충돌이 없으며 20비트 상한을 강제한다
 """
+
 import pytest
 
+from rag.search import lexical
 from rag.search import os_client as C
 from rag.search import os_index as I
-from rag.search import lexical
 from rag.search.index_text import build_index_text
 
 
@@ -18,7 +19,7 @@ def test_어휘_입력_조립이_운영과_같다():
     """문서는 '파일명>헤딩' 프리픽스, FAQ는 원문 — 인제스션·운영 어휘 채널과 동일 비대칭."""
     text, fn, hp = "반품은 7일 이내", "환불반품정책.pdf", ["2. 반품", "2.1 기한"]
     assert I.lex_text(text, fn, hp) == build_index_text(text, fn, hp)
-    assert I.lex_text(text, None, None) == text          # FAQ — 프리픽스 없음
+    assert I.lex_text(text, None, None) == text  # FAQ — 프리픽스 없음
     # 폴더 설명은 들어가지 않는다 (리랭커 전용, rag/search/index_text.py docstring)
     assert "폴더" not in I.lex_text(text, fn, hp)
 
@@ -27,7 +28,7 @@ def test_searchable_판정이_조건표대로다():
     """검색 가능 판정의 정의점(effective_searchable) — 문서: 활성+ready+검색토글+(미분류 or 폴더 on),
     FAQ: 활성. 색인 시 계산해 넣는 플래그라 조건이 바뀌면 전량 META 갱신이 따라야 한다."""
     ok = dict(is_faq=False, doc_is_active=True, doc_status='ready', doc_is_searchable=True)
-    assert I.effective_searchable(**ok, folder_is_searchable=None) is True   # 미분류 문서
+    assert I.effective_searchable(**ok, folder_is_searchable=None) is True  # 미분류 문서
     assert I.effective_searchable(**ok, folder_is_searchable=True) is True
     assert I.effective_searchable(**ok, folder_is_searchable=False) is False  # 폴더 off
     assert I.effective_searchable(**{**ok, 'doc_is_active': False}) is False
@@ -75,11 +76,13 @@ def test_식별자_필드는_제목_경로와_기록_헤딩에서_만든다():
     """식별자 채널(#238) — identifiers는 rag.identifiers.chunk_identifiers와 같고, headings는 meta['headings'] 원문."""
     ch = _Chunk(dense=[0.5] * 1024)
     ch.heading_path, ch.meta = ['가나 규칙', '제 2 장 인 사'], {'headings': ['제 9 조(고용)', '제 11 조(인계)']}
-    ch.text = "제 9 조(고용)\n본문\n제 10 조(발령)\n본문\n제 11 조(인계)\n본문"     # 제10조는 기록에 없는 본문 헤딩 꼴(15-3)
+    ch.text = (
+        "제 9 조(고용)\n본문\n제 10 조(발령)\n본문\n제 11 조(인계)\n본문"  # 제10조는 기록에 없는 본문 헤딩 꼴(15-3)
+    )
     doc = I.build_doc(ch, '규칙.pdf', 1)
     assert doc['headings'] == ['제 9 조(고용)', '제 10 조(발령)', '제 11 조(인계)']
     assert doc['identifiers'] == ['2장', '9조', '10조', '11조']
-    assert I.build_doc(_Chunk(dense=[0.5] * 1024), '정책.pdf', 2)['identifiers'] == []   # 번호 헤딩 없음
+    assert I.build_doc(_Chunk(dense=[0.5] * 1024), '정책.pdf', 2)['identifiers'] == []  # 번호 헤딩 없음
 
 
 def test_chunk_os_id는_결정적이고_충돌이_없다():

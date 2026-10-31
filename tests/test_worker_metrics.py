@@ -4,6 +4,7 @@ arq 워커에는 HTTP 서버가 없어 웹의 /metrics(main.py)가 워커를 덮
 워커 메모리를 보는 유일한 창이고, 그래서 "언제 뜨고 언제 안 뜨는지"가 계약이다.
 실제 포트를 바인딩해 확인한다 — start_http_server를 모킹하면 시그니처 변경을 못 잡는다.
 """
+
 import socket
 import urllib.request
 
@@ -67,7 +68,7 @@ async def test_포트를_주면_루프백에_지표를_연다(monkeypatch, index
     await worker.startup({})
 
     body = urllib.request.urlopen(f'http://127.0.0.1:{port}/metrics', timeout=5).read().decode()
-    assert 'python_info' in body          # 기본 레지스트리가 실제로 실려 나온다
+    assert 'python_info' in body  # 기본 레지스트리가 실제로 실려 나온다
     assert index_calls == [1]
     # process_resident_memory_bytes는 Linux에서만 나온다(ProcessCollector가 /proc를 읽는다).
     # 그래서 여기서 단언하지 않는다 — macOS 개발 머신에서 조용히 빨개지는 테스트가 된다.
@@ -81,6 +82,6 @@ async def test_포트가_점유돼도_색인은_계속한다(monkeypatch, index_
         blocker.listen(1)
         monkeypatch.setattr(settings, 'worker_metrics_port', blocker.getsockname()[1])
 
-        await worker.startup({})          # 예외가 올라오면 실패
+        await worker.startup({})  # 예외가 올라오면 실패
 
     assert index_calls == [1]

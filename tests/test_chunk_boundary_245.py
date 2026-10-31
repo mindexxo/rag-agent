@@ -8,6 +8,7 @@
   4. **알려진 결함 재현** — 운영 청킹이 지금 이 맥락을 뒤 조각에서 떨어뜨린다는 사실. 고치는 PR(후속 이슈)은 해당 단언을 뒤집는다.
 문서 생성의 정본은 sample_docs/corpus_v2/_src/build_boundary_docs.py.
 """
+
 import json
 from pathlib import Path
 
@@ -27,23 +28,34 @@ def _c(text: str, path=('문서', '절')) -> dict:
 
 # ── 1. 진단 규칙 ─────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize('a, b, kind', [
-    ('첫 문장이다.\n둘째 문장이다.', '셋째 문장이다.', 'sentence'),
-    ('목록 머리는 다음과 같다\n1. 첫 항목', '2. 둘째 항목', 'next_item'),
-    ('출입은 밤 10시로 하며, 마감 뒤 외출은', '하며, 마감 뒤 외출은 문자로 알린다', 'mid_overlap'),
-    ('⑧ 화기를 소홀히 하거나 점화,', '흡연을 자행한 자', 'mid_cut'),
-    ('숙소 출입은 밤 10시로 하며, 외출은', '은 문자로 알린다', 'mid_cut'),          # 우연한 짧은 일치(1자)는 오버랩이 아니다
-    ('보관 온도는 섭씨로 재고 무게는', '3.5kg 이하로 담는다', 'mid_cut'),           # 소수로 시작하는 본문은 항목이 아니다
-    ('| A-1 | 오일 | 90.', '1 | 14 | 표본 검사 |\n| A-2 | 오일 | 93.0 | 12 | 전수 검사 |', 'table_mid_row'),
-    ('| A-1 | 오일 | 90.1 |', '| A-2 | 오일 | 93.0 |', 'table_row'),
-    ('| A-1 | 오일 | 90.1 |', '다음 절 본문이다', 'table_text'),
-])
+
+@pytest.mark.parametrize(
+    'a, b, kind',
+    [
+        ('첫 문장이다.\n둘째 문장이다.', '셋째 문장이다.', 'sentence'),
+        ('목록 머리는 다음과 같다\n1. 첫 항목', '2. 둘째 항목', 'next_item'),
+        ('출입은 밤 10시로 하며, 마감 뒤 외출은', '하며, 마감 뒤 외출은 문자로 알린다', 'mid_overlap'),
+        ('⑧ 화기를 소홀히 하거나 점화,', '흡연을 자행한 자', 'mid_cut'),
+        (
+            '숙소 출입은 밤 10시로 하며, 외출은',
+            '은 문자로 알린다',
+            'mid_cut',
+        ),  # 우연한 짧은 일치(1자)는 오버랩이 아니다
+        ('보관 온도는 섭씨로 재고 무게는', '3.5kg 이하로 담는다', 'mid_cut'),  # 소수로 시작하는 본문은 항목이 아니다
+        ('| A-1 | 오일 | 90.', '1 | 14 | 표본 검사 |\n| A-2 | 오일 | 93.0 | 12 | 전수 검사 |', 'table_mid_row'),
+        ('| A-1 | 오일 | 90.1 |', '| A-2 | 오일 | 93.0 |', 'table_row'),
+        ('| A-1 | 오일 | 90.1 |', '다음 절 본문이다', 'table_text'),
+    ],
+)
 def test_경계_분류(a, b, kind):
     assert classify_boundary(a, b) == kind
 
 
 def test_목록_머리가_앞_조각에만_있으면_list_head():
-    cs = [_c('다음 각 호의 어느 하나에 해당하면 즉시 귀국 조치한다.\n1. 무단 이탈\n2. 음주'), _c('3. 금품 수수\n4. 폭언')]
+    cs = [
+        _c('다음 각 호의 어느 하나에 해당하면 즉시 귀국 조치한다.\n1. 무단 이탈\n2. 음주'),
+        _c('3. 금품 수수\n4. 폭언'),
+    ]
     assert [(x['kind'], x['at']) for x in context_losses(cs)] == [('list_head', 1)]
 
 
@@ -67,13 +79,18 @@ _HDR = '| 코드 | 단가 |'
 
 
 def test_표_묶음의_앞_설명_주석_머리행_손실():
-    cs = [_c('단가는 2027년분부터 적용한다.\n단위는 kg당 원이다.'),
-          _c(f'단위는 kg당 원이다.\n{_HDR}\n| A-1 | 100 |'),
-          _c(f'단위는 kg당 원이다.\n{_HDR}\n| A-2 | 200 |\n※ 부가세 별도'),
-          _c('다음 절')]
+    cs = [
+        _c('단가는 2027년분부터 적용한다.\n단위는 kg당 원이다.'),
+        _c(f'단위는 kg당 원이다.\n{_HDR}\n| A-1 | 100 |'),
+        _c(f'단위는 kg당 원이다.\n{_HDR}\n| A-2 | 200 |\n※ 부가세 별도'),
+        _c('다음 절'),
+    ]
     got = sorted((x['kind'], x['at'], x['line']) for x in context_losses(cs))
-    assert got == [('table_lead', 1, '단가는 2027년분부터 적용한다.'), ('table_lead', 2, '단가는 2027년분부터 적용한다.'),
-                   ('table_note', 1, '※ 부가세 별도')]
+    assert got == [
+        ('table_lead', 1, '단가는 2027년분부터 적용한다.'),
+        ('table_lead', 2, '단가는 2027년분부터 적용한다.'),
+        ('table_note', 1, '※ 부가세 별도'),
+    ]
 
 
 def test_MD_표_뒤_조각은_머리행을_잃는다():
@@ -94,19 +111,27 @@ def test_머리_행이_다른_이웃_표가_바로_이어져도_한_표로_묶�
 
 
 def test_표_뒤_다른_섹션의_주석은_표_주석이_아니다():
-    cs = [_c(f'설명\n{_HDR}\n| A-1 | 100 |'), _c(f'설명\n{_HDR}\n| A-2 | 200 |'), _c('※ 다른 절의 주석', path=('문서', '다른 절'))]
+    cs = [
+        _c(f'설명\n{_HDR}\n| A-1 | 100 |'),
+        _c(f'설명\n{_HDR}\n| A-2 | 200 |'),
+        _c('※ 다른 절의 주석', path=('문서', '다른 절')),
+    ]
     assert context_losses(cs) == []
 
 
 def test_census는_XLSX를_세지_않고_같은_손실을_한_건으로_센다():
-    cs = [_c('단가는 2027년분부터 적용한다.\n단위는 원이다.'),
-          _c(f'단위는 원이다.\n{_HDR}\n| A-1 | 100 |'), _c(f'단위는 원이다.\n{_HDR}\n| A-2 | 200 |')]
+    cs = [
+        _c('단가는 2027년분부터 적용한다.\n단위는 원이다.'),
+        _c(f'단위는 원이다.\n{_HDR}\n| A-1 | 100 |'),
+        _c(f'단위는 원이다.\n{_HDR}\n| A-2 | 200 |'),
+    ]
     res = census({'t/표.pdf': cs, 't/시트.xlsx': cs})
-    assert res['context_losses'] == {'table_lead': 1}        # 묶음 둘에서 빠진 같은 줄 = 1건, XLSX는 0건
-    assert res['boundaries'] == {'sentence': 1, 'table_text': 1}   # XLSX 경계도 세지 않는다(PDF 쪽 둘만)
+    assert res['context_losses'] == {'table_lead': 1}  # 묶음 둘에서 빠진 같은 줄 = 1건, XLSX는 0건
+    assert res['boundaries'] == {'sentence': 1, 'table_text': 1}  # XLSX 경계도 세지 않는다(PDF 쪽 둘만)
 
 
 # ── 2~4. 합성 문서 ───────────────────────────────────────────────────────────
+
 
 def _path(name: str) -> Path:
     return CORPUS / name.split('_')[0] / name
@@ -114,10 +139,12 @@ def _path(name: str) -> Path:
 
 class _Chunked(dict):
     """문서별 지연 청킹 — docling은 PDF·DOCX에만 필요하다. TXT·MD 테스트가 docling 없는 환경에서 같이 스킵되지 않게."""
+
     def __missing__(self, name):
         if not name.endswith(('.txt', '.md')):
             pytest.importorskip('docling')
         from rag.chunking import chunk_file
+
         self[name] = chunk_file(_path(name))
         return self[name]
 
@@ -128,12 +155,20 @@ def chunked():
 
 
 def _dicts(chunks) -> list[dict]:
-    return [{'heading_path': c.heading_path, 'text': c.text, 'table_text': (c.meta or {}).get('table_text')} for c in chunks]
+    return [
+        {'heading_path': c.heading_path, 'text': c.text, 'table_text': (c.meta or {}).get('table_text')} for c in chunks
+    ]
 
 
 def test_골드는_합성_다섯_문서를_덮는다():
     assert len(GOLD) == 13
-    assert {g['expected_docs'][0].split('_')[0] for g in GOLD} == {'goodpeople', 'summers', 'harim', 'homeplus', 'aromanica'}
+    assert {g['expected_docs'][0].split('_')[0] for g in GOLD} == {
+        'goodpeople',
+        'summers',
+        'harim',
+        'homeplus',
+        'aromanica',
+    }
 
 
 @pytest.mark.parametrize('g', GOLD, ids=[g['id'] for g in GOLD])
@@ -144,7 +179,9 @@ def test_정답_스니펫은_스니펫마다_조각_하나_안에_있다(g, chun
 
 @pytest.mark.parametrize('name', ['goodpeople_18_해외봉사단복무지침.txt', 'aromanica_18_향료원료입고기준.md'])
 def test_글자_소실_0(name, chunked):
-    lines = [l.lstrip('#').strip() for l in _path(name).read_text(encoding='utf-8').split('\n')]   # MD 헤딩 표지는 제목 경로에서 빠진다
+    lines = [
+        l.lstrip('#').strip() for l in _path(name).read_text(encoding='utf-8').split('\n')
+    ]  # MD 헤딩 표지는 제목 경로에서 빠진다
     assert chunks_lost(lines, chunked[name]) == []
 
 
@@ -152,20 +189,26 @@ def _kinds(chunked, name) -> set[str]:
     return {x['kind'] for x in context_losses(_dicts(chunked[name]))}
 
 
-@pytest.mark.parametrize('name, kind, case', [
-    ('goodpeople_18_해외봉사단복무지침.txt', 'list_head', 'T6 목록 머리와 뒤 항목 분리'),
-    ('summers_18_매장운영매뉴얼.docx', 'reference', "T5 '이 경우' 문장만 따로"),
-])
+@pytest.mark.parametrize(
+    'name, kind, case',
+    [
+        ('goodpeople_18_해외봉사단복무지침.txt', 'list_head', 'T6 목록 머리와 뒤 항목 분리'),
+        ('summers_18_매장운영매뉴얼.docx', 'reference', "T5 '이 경우' 문장만 따로"),
+    ],
+)
 def test_알려진_결함_재현(name, kind, case, chunked):
     """운영 청킹의 현재 동작 — 후속 이슈가 고치면 이 단언을 뒤집는다(eval/report_chunk_boundary.md '후속')."""
     assert kind in _kinds(chunked, name), case
 
 
-@pytest.mark.parametrize('name, kind, case', [
-    ('harim_18_협력농가납품단가표.pdf', 'table_lead', 'B1 세 줄 설명 중 마지막만 묶음에'),
-    ('homeplus_18_PB품질검사기준표.docx', 'table_lead', 'B2 150자 넘는 설명은 묶음에 안 붙음'),
-    ('homeplus_18_PB품질검사기준표.docx', 'table_note', 'B3 표 아래 단위 주석이 묶음 밖'),
-])
+@pytest.mark.parametrize(
+    'name, kind, case',
+    [
+        ('harim_18_협력농가납품단가표.pdf', 'table_lead', 'B1 세 줄 설명 중 마지막만 묶음에'),
+        ('homeplus_18_PB품질검사기준표.docx', 'table_lead', 'B2 150자 넘는 설명은 묶음에 안 붙음'),
+        ('homeplus_18_PB품질검사기준표.docx', 'table_note', 'B3 표 아래 단위 주석이 묶음 밖'),
+    ],
+)
 def test_표_설명과_주석은_모델이_받는_표_전체에_있다(name, kind, case, chunked):
     # #268 — 큰 표 묶음은 근거 준비에서 표 전체(table_text)로 바뀐다(#257). 그 표 전체에 앞 설명 여러 줄·아래 주석을 싣는다
     assert kind not in _kinds(chunked, name), case

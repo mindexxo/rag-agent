@@ -3,6 +3,7 @@
 hit/miss 판정(유사도·doc집합), 테넌트 격리, 거절 답변 캐시 제외, 무효화 정확성.
 exact(Redis) 계층은 제거됨 — semantic(PG) 단일 계층 기준.
 """
+
 import pytest
 from sqlalchemy import select
 
@@ -25,16 +26,15 @@ async def test_같은_질의_같은_근거집합이면_hit(tenant_id, fake_embed
         await cache.save_answer(session, tenant_id, '배송비 얼마예요', '3천원입니다', src, [5])
         await session.commit()
 
-        hit = await cache.get_semantic(session, tenant_id, '배송비 얼마예요', [5],
-                                       llm=FakeLlm())   # 판정 승인 없이는 히트 없음 (#113)
+        hit = await cache.get_semantic(
+            session, tenant_id, '배송비 얼마예요', [5], llm=FakeLlm()
+        )  # 판정 승인 없이는 히트 없음 (#113)
         assert hit is not None
         assert hit.answer == '3천원입니다'
         assert hit.sources == src
         await session.commit()
-        row = (await session.execute(
-            select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
-        )).scalar_one()
-        assert row.hit_count == 1                            # 운영 관측 카운터 갱신
+        row = (await session.execute(select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id))).scalar_one()
+        assert row.hit_count == 1  # 운영 관측 카운터 갱신
 
 
 @pytest.mark.asyncio
@@ -59,6 +59,7 @@ async def test_근거_집합이_다르면_miss(tenant_id, fake_embed):
 @pytest.mark.asyncio
 async def test_테넌트_간_캐시_격리(tenant_id, fake_embed):
     import uuid
+
     other = str(uuid.uuid4())
     async with AsyncSessionLocal() as session:
         await cache.save_answer(session, tenant_id, '배송비 얼마예요', 'A사 3천원', [], [5])
@@ -77,7 +78,7 @@ async def _prepared_with_conversation(session, tenant_id: str) -> PreparedRag:
     await session.flush()
     return PreparedRag(
         conversation_id=conv.id,
-        assistant_message_id=1,   # __post_init__ 불변식 (#72)
+        assistant_message_id=1,  # __post_init__ 불변식 (#72)
         original_query='배송비 얼마예요',
         standalone_query='배송비 얼마예요',
         prior_turns=[],
@@ -96,10 +97,10 @@ async def test_정상_답변은_캐시_저장(tenant_id, fake_embed):
         await svc.maybe_cache(prepared, '배송비는 3천원입니다.', list(prepared.sources))
         await session.commit()
 
-        rows = (await session.execute(
-            select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
-        )).scalars().all()
-        assert len(rows) == 1                                # 양성 대조
+        rows = (
+            (await session.execute(select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id))).scalars().all()
+        )
+        assert len(rows) == 1  # 양성 대조
 
 
 @pytest.mark.asyncio
@@ -113,10 +114,10 @@ async def test_근거없는_답변은_캐시_제외(tenant_id, fake_embed):
         await svc.maybe_cache(prepared, f'죄송합니다. {NO_EVIDENCE_ANSWER} 다른 질문을 주세요.', [])
         await session.commit()
 
-        rows = (await session.execute(
-            select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
-        )).scalars().all()
-        assert rows == []                                    # 문서 추가되면 답이 바뀌어야 하므로
+        rows = (
+            (await session.execute(select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id))).scalars().all()
+        )
+        assert rows == []  # 문서 추가되면 답이 바뀌어야 하므로
 
 
 @pytest.mark.asyncio
@@ -129,9 +130,9 @@ async def test_첨부_대화_답변은_공용_캐시_유출_금지(tenant_id, fa
         await svc.maybe_cache(prepared, '첨부 기준으로 답변드립니다.', [])
         await session.commit()
 
-        rows = (await session.execute(
-            select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
-        )).scalars().all()
+        rows = (
+            (await session.execute(select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id))).scalars().all()
+        )
         assert rows == []
 
 
@@ -144,9 +145,9 @@ async def test_같은_질의_재저장은_upsert(tenant_id, fake_embed):
         await cache.save_answer(session, tenant_id, '배송비 얼마예요', '새 답', [], [5, 7])
         await session.commit()
 
-        row = (await session.execute(
-            select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
-        )).scalar_one()                                      # 1행 유지
+        row = (
+            await session.execute(select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id))
+        ).scalar_one()  # 1행 유지
         assert row.answer == '새 답'
         assert sorted(row.source_doc_ids) == [5, 7]
 
@@ -162,13 +163,16 @@ async def test_무효화는_해당_문서_참조_행만(tenant_id, fake_embed):
         await cache.invalidate_source(session, tenant_id, 7)
         await session.commit()
 
-        remain = (await session.execute(
-            select(AnswerCacheRow.answer).where(AnswerCacheRow.tenant_id == tenant_id)
-        )).scalars().all()
-        assert remain == ['답3']                             # 7을 참조한 두 행만 제거
+        remain = (
+            (await session.execute(select(AnswerCacheRow.answer).where(AnswerCacheRow.tenant_id == tenant_id)))
+            .scalars()
+            .all()
+        )
+        assert remain == ['답3']  # 7을 참조한 두 행만 제거
 
 
 # ── #16 캐시 경화: FAQ 낙관적 검증 + fail-open ──────────────────
+
 
 @pytest.mark.asyncio
 async def test_생성_중_FAQ_수정되면_캐시_저장_스킵(tenant_id, fake_embed):
@@ -176,13 +180,14 @@ async def test_생성_중_FAQ_수정되면_캐시_저장_스킵(tenant_id, fake_
     FAQ는 id 불변이라 doc집합 비교가 자가치유 못 하는 유일한 출처 — 이 검증이 마지막 방어선."""
     from rag.models import Faq
     from rag.turn.cache import snapshot_faq_versions
+
     async with AsyncSessionLocal() as session:
         faq = Faq(tenant_id=tenant_id, question='반품 기간?', answer='14일')
         session.add(faq)
         await session.commit()
 
         snap = await snapshot_faq_versions(session, tenant_id, [-faq.id])
-        assert snap                                          # 스냅샷에 FAQ 잡힘
+        assert snap  # 스냅샷에 FAQ 잡힘
 
         # 생성 구간에 끼어든 FAQ 수정 (별도 세션 = 별도 트랜잭션의 커밋)
         async with AsyncSessionLocal() as s2:
@@ -190,31 +195,28 @@ async def test_생성_중_FAQ_수정되면_캐시_저장_스킵(tenant_id, fake_
             row.answer = '7일'
             await s2.commit()
 
-        await cache.save_answer(session, tenant_id, '반품 기간 알려줘', '14일입니다', [], [-faq.id],
-                                faq_versions=snap)
+        await cache.save_answer(session, tenant_id, '반품 기간 알려줘', '14일입니다', [], [-faq.id], faq_versions=snap)
         await session.commit()
-        rows = (await session.execute(
-            select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
-        )).scalars().all()
-        assert rows == []                                    # 옛 내용 기반 답변 저장 안 됨
+        rows = (
+            (await session.execute(select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id))).scalars().all()
+        )
+        assert rows == []  # 옛 내용 기반 답변 저장 안 됨
 
 
 @pytest.mark.asyncio
 async def test_FAQ_변경_없으면_스냅샷_검증_통과_저장(tenant_id, fake_embed):
     from rag.models import Faq
     from rag.turn.cache import snapshot_faq_versions
+
     async with AsyncSessionLocal() as session:
         faq = Faq(tenant_id=tenant_id, question='반품 기간?', answer='14일')
         session.add(faq)
         await session.commit()
 
         snap = await snapshot_faq_versions(session, tenant_id, [-faq.id])
-        await cache.save_answer(session, tenant_id, '반품 기간 알려줘', '14일입니다', [], [-faq.id],
-                                faq_versions=snap)
+        await cache.save_answer(session, tenant_id, '반품 기간 알려줘', '14일입니다', [], [-faq.id], faq_versions=snap)
         await session.commit()
-        row = (await session.execute(
-            select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
-        )).scalar_one()
+        row = (await session.execute(select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id))).scalar_one()
         assert row.answer == '14일입니다'
 
 
@@ -226,7 +228,7 @@ async def test_캐시_조회_저장_실패는_요청을_죽이지_않는다(tena
     쓰므로 캐시 안에서 embed_query를 타지 않는다 — 임베딩 실패를 주입하면 운영에서
     도달하지 않는 폴백 경로만 검증하는 셈이다. 남은 실질 실패 모드가 DB 쪽이다.
     """
-    vec = [0.0] * 1024      # 값은 무관 — 넘겨주는 것 자체가 embed_query 폴백을 비켜가게 한다
+    vec = [0.0] * 1024  # 값은 무관 — 넘겨주는 것 자체가 embed_query 폴백을 비켜가게 한다
 
     async def boom(*args, **kwargs):
         raise RuntimeError('DB down')
@@ -235,15 +237,15 @@ async def test_캐시_조회_저장_실패는_요청을_죽이지_않는다(tena
         # 이 세션 인스턴스의 execute만 깨뜨린다 — get_semantic의 SELECT와
         # save_answer의 upsert INSERT 양쪽이 같은 방식으로 터진다.
         monkeypatch.setattr(session, 'execute', boom)
-        assert await cache.get_semantic(
-            session, tenant_id, '배송비 얼마예요', [5], query_embedding=vec) is None
-        await cache.save_answer(                                           # 예외 없이 통과
-            session, tenant_id, '배송비 얼마예요', '3천원', [], [5], query_embedding=vec)
+        assert await cache.get_semantic(session, tenant_id, '배송비 얼마예요', [5], query_embedding=vec) is None
+        await cache.save_answer(  # 예외 없이 통과
+            session, tenant_id, '배송비 얼마예요', '3천원', [], [5], query_embedding=vec
+        )
 
-    async with AsyncSessionLocal() as verify:      # 패치 안 된 새 세션으로 확인
-        rows = (await verify.execute(
-            select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
-        )).scalars().all()
+    async with AsyncSessionLocal() as verify:  # 패치 안 된 새 세션으로 확인
+        rows = (
+            (await verify.execute(select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id))).scalars().all()
+        )
         assert rows == []
 
 
@@ -254,19 +256,19 @@ async def test_벡터를_넘기면_임베딩을_다시_하지_않는다(tenant_i
     embed_query를 터지게 두고도 조회·저장이 정상 동작하는 것으로 증명한다 — 호출하면
     RuntimeError가 fail-open에 삼켜져 miss/스킵이 되므로, 성공했다는 것 자체가 미호출의 증거다.
     """
+
     async def boom(text):
         raise RuntimeError('불려선 안 된다')
+
     monkeypatch.setattr('rag.turn.cache.embed_query', boom)
 
-    vec = fake_vector('배송비 얼마예요')     # 검색이 넘겨줬을 벡터를 손으로 재현
+    vec = fake_vector('배송비 얼마예요')  # 검색이 넘겨줬을 벡터를 손으로 재현
     src = [SourceCitation(document_id=5, filename='정책.pdf', version=1)]
     async with AsyncSessionLocal() as session:
-        await cache.save_answer(session, tenant_id, '배송비 얼마예요', '3천원입니다',
-                                src, [5], query_embedding=vec)
+        await cache.save_answer(session, tenant_id, '배송비 얼마예요', '3천원입니다', src, [5], query_embedding=vec)
         await session.commit()
 
-        hit = await cache.get_semantic(session, tenant_id, '배송비 얼마예요', [5],
-                                       query_embedding=vec, llm=FakeLlm())
+        hit = await cache.get_semantic(session, tenant_id, '배송비 얼마예요', [5], query_embedding=vec, llm=FakeLlm())
         assert hit is not None and hit.answer == '3천원입니다'
 
 
@@ -283,18 +285,18 @@ async def test_턴당_임베딩_왕복은_1회(client, tenant_id, fake_llm, pass
     """
     from tests.conftest import sse_meta
 
-    await register_faq(client)          # FAQ 색인 임베딩은 턴 바깥 — 리셋으로 배제한다
+    await register_faq(client)  # FAQ 색인 임베딩은 턴 바깥 — 리셋으로 배제한다
     fake_embed.embed_calls = 0
 
     first = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
-    assert sse_meta(first)['cache_kind'] is None                  # 미스 턴임을 먼저 확정
+    assert sse_meta(first)['cache_kind'] is None  # 미스 턴임을 먼저 확정
     assert fake_embed.embed_calls == 1, (
-        '미스 턴 임베딩 왕복이 1회가 아니다 — get_semantic/save_answer가 재계산하고 있다')
+        '미스 턴 임베딩 왕복이 1회가 아니다 — get_semantic/save_answer가 재계산하고 있다'
+    )
 
     second = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
-    assert sse_meta(second)['cache_kind'] == 'semantic'            # 히트 턴임을 확정
-    assert fake_embed.embed_calls == 2, (
-        '히트 턴 임베딩 왕복이 1회가 아니다 — get_semantic이 재계산하고 있다')
+    assert sse_meta(second)['cache_kind'] == 'semantic'  # 히트 턴임을 확정
+    assert fake_embed.embed_calls == 2, '히트 턴 임베딩 왕복이 1회가 아니다 — get_semantic이 재계산하고 있다'
 
 
 @pytest.mark.asyncio
@@ -302,6 +304,7 @@ async def test_보존기간_지난_미히트_캐시만_청소(tenant_id, fake_em
     """sweep_stale(#16): last_hit_at이 cache_retention_days를 넘긴 row만 삭제."""
     from sqlalchemy import func
     from sqlalchemy import update as sa_update
+
     async with AsyncSessionLocal() as session:
         await cache.save_answer(session, tenant_id, '오래된 질문', '옛 답', [], [5])
         await cache.save_answer(session, tenant_id, '최근 질문', '새 답', [], [7])
@@ -311,16 +314,19 @@ async def test_보존기간_지난_미히트_캐시만_청소(tenant_id, fake_em
             sa_update(AnswerCacheRow)
             .where(AnswerCacheRow.tenant_id == tenant_id)
             .where(AnswerCacheRow.query_text == '오래된 질문')
-            .values(last_hit_at=func.now() - func.make_interval(0, 0, 0, 91)))
+            .values(last_hit_at=func.now() - func.make_interval(0, 0, 0, 91))
+        )
 
         deleted = await cache.sweep_stale(session)
         await session.commit()
 
-        assert deleted >= 1                                  # 전 테넌트 일괄이라 정확 수 대신 하한
-        remain = (await session.execute(
-            select(AnswerCacheRow.answer).where(AnswerCacheRow.tenant_id == tenant_id)
-        )).scalars().all()
-        assert remain == ['새 답']                            # 이 테넌트에선 미히트 옛 행만 제거
+        assert deleted >= 1  # 전 테넌트 일괄이라 정확 수 대신 하한
+        remain = (
+            (await session.execute(select(AnswerCacheRow.answer).where(AnswerCacheRow.tenant_id == tenant_id)))
+            .scalars()
+            .all()
+        )
+        assert remain == ['새 답']  # 이 테넌트에선 미히트 옛 행만 제거
 
 
 @pytest.mark.asyncio
@@ -329,6 +335,7 @@ async def test_FAQ_스냅샷_검증도_테넌트_격리(tenant_id, other_tenant_
     (WHERE-clause 격리 전략 — 새 테넌트 스코프 쿼리 경로마다 통합 테스트가 계약)."""
     from rag.models import Faq
     from rag.turn.cache import snapshot_faq_versions
+
     async with AsyncSessionLocal() as session:
         faq = Faq(tenant_id=other_tenant_id, question='반품 기간?', answer='14일')
         session.add(faq)
@@ -338,18 +345,16 @@ async def test_FAQ_스냅샷_검증도_테넌트_격리(tenant_id, other_tenant_
         assert await snapshot_faq_versions(session, tenant_id, [-faq.id]) == {}
 
         # 빈 스냅샷을 기준으로 한 검증은 '변경됨' 판정 → 저장 스킵 (보수적 안전)
-        await cache.save_answer(session, tenant_id, '반품 기간 알려줘', '14일입니다', [], [-faq.id],
-                                faq_versions={})
+        await cache.save_answer(session, tenant_id, '반품 기간 알려줘', '14일입니다', [], [-faq.id], faq_versions={})
         await session.commit()
-        rows = (await session.execute(
-            select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id)
-        )).scalars().all()
+        rows = (
+            (await session.execute(select(AnswerCacheRow).where(AnswerCacheRow.tenant_id == tenant_id))).scalars().all()
+        )
         assert rows == []
 
 
 @pytest.mark.asyncio
-async def test_주입상한0이어도_신규첨부가_있으면_캐시를_우회한다(
-        client, tenant_id, fake_llm, pass_gate, monkeypatch):
+async def test_주입상한0이어도_신규첨부가_있으면_캐시를_우회한다(client, tenant_id, fake_llm, pass_gate, monkeypatch):
     """#36 버그 수정 — 캐시 가드는 주입용·신규분 첨부를 **둘 다** 봐야 한다.
 
     max_attachments<=0이면 주입용(attachment_dicts)이 강제로 비므로, 신규분을 함께 보지 않으면
@@ -368,19 +373,30 @@ async def test_주입상한0이어도_신규첨부가_있으면_캐시를_우회
     first = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
     assert sse_meta(first)['cache_kind'] is None
 
-    monkeypatch.setattr(settings, 'max_attachments', 0)   # 주입 상한 0 — 주입용은 항상 빈다
+    monkeypatch.setattr(settings, 'max_attachments', 0)  # 주입 상한 0 — 주입용은 항상 빈다
 
     # 2턴: 같은 질의 + 이번 턴 첨부 → 캐시를 타면 첨부가 사라진다
-    second = await client.post('/kms/query', json={
-        'query': '환불 기간 알려줘',
-        'attachments': [{'filename': '계약서.txt', 'text': '특약: 환불 30일'}],
-    })
+    second = await client.post(
+        '/kms/query',
+        json={
+            'query': '환불 기간 알려줘',
+            'attachments': [{'filename': '계약서.txt', 'text': '특약: 환불 30일'}],
+        },
+    )
     assert sse_meta(second)['cache_kind'] is None, '첨부가 있는데 캐시가 히트했다 (#36)'
 
     async with AsyncSessionLocal() as session:
-        user_msg = (await session.execute(
-            select(Message).where(Message.tenant_id == tenant_id)
-            .where(Message.role == 'user').order_by(Message.id.desc())
-        )).scalars().first()
+        user_msg = (
+            (
+                await session.execute(
+                    select(Message)
+                    .where(Message.tenant_id == tenant_id)
+                    .where(Message.role == 'user')
+                    .order_by(Message.id.desc())
+                )
+            )
+            .scalars()
+            .first()
+        )
     assert user_msg.attachments, '이번 턴 첨부가 저장되지 않았다 — 데이터 유실 (#36)'
     assert user_msg.attachments[0]['filename'] == '계약서.txt'

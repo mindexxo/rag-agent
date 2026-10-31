@@ -9,6 +9,7 @@
 
 문서는 sample_docs/corpus_v2의 합성 문서(정본 생성기 _src/build_citation_docs.py) — 내용은 전부 지어낸 것이다.
 """
+
 from pathlib import Path
 
 import pytest
@@ -35,11 +36,13 @@ async def _ingest_file(client, path: Path, mime: str) -> int:
 async def test_스타일_없는_워드_인용은_본문_없는_조는_이름표(client, tenant_id, fake_queue, blob_tmp):
     doc_id = await _ingest_file(client, CORPUS / 'aromanica' / 'aromanica_16_시향관운영지침.docx', DOCX_MIME)
     text = '\n'.join(await chunk_texts(doc_id))
-    assert '제4조 및 제5조에 따라 대여한 시향 도구의 반납 기한은 대여일로부터 10일로 한다.' in text   # 예전: 제목으로 올라가 소실
+    assert (
+        '제4조 및 제5조에 따라 대여한 시향 도구의 반납 기한은 대여일로부터 10일로 한다.' in text
+    )  # 예전: 제목으로 올라가 소실
     assert '제6조 제2항의 휴관일은 매월 첫째 월요일로 한다.' in text
-    assert await os_search.search_identifiers(tenant_id, ['12조'], 10) == []        # 예전: "(이하 …)에 따른" 줄이 이름표
-    assert await os_search.search_identifiers(tenant_id, ['7조'], 10)               # 본문 없는 '제7조(삭제)'
-    assert await os_search.search_identifiers(tenant_id, ['5조의1'], 10)            # '제 5 조1(분실 신고)' (#250)
+    assert await os_search.search_identifiers(tenant_id, ['12조'], 10) == []  # 예전: "(이하 …)에 따른" 줄이 이름표
+    assert await os_search.search_identifiers(tenant_id, ['7조'], 10)  # 본문 없는 '제7조(삭제)'
+    assert await os_search.search_identifiers(tenant_id, ['5조의1'], 10)  # '제 5 조1(분실 신고)' (#250)
 
 
 @pytest.mark.asyncio
@@ -47,7 +50,7 @@ async def test_PDF_이하_인용은_이름표가_아니고_문서_끝_조는_색
     doc_id = await _ingest_file(client, CORPUS / 'goodpeople' / 'goodpeople_16_후원물품보관규정.pdf', 'application/pdf')
     assert await os_search.search_identifiers(tenant_id, ['15조'], 10) == []
     assert await os_search.search_identifiers(tenant_id, ['7조'], 10)
-    assert any('제 7 조(삭제)' in t for t in await chunk_texts(doc_id))             # 예전: 문서 끝 헤딩은 버려졌다
+    assert any('제 7 조(삭제)' in t for t in await chunk_texts(doc_id))  # 예전: 문서 끝 헤딩은 버려졌다
 
 
 @pytest.mark.asyncio

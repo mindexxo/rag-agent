@@ -10,6 +10,7 @@ ASGITransport는 응답 본문이 끝날 때까지 `client.stream()`을 반환�
 쓴다 — `_run_generation`을 직접 기동하고 재접속 리더를 별도 코루틴으로 붙인다.
 실서버 배선(uvicorn·프록시)의 최종 확인은 실기동 몫이다.
 """
+
 import asyncio
 import json
 
@@ -33,8 +34,7 @@ def _events(chunks: list[str]) -> list[tuple[str, dict]]:
             lines = block.splitlines()
             if len(lines) < 2:
                 continue
-            out.append((lines[0].removeprefix('event: '),
-                        json.loads(lines[1].removeprefix('data: '))))
+            out.append((lines[0].removeprefix('event: '), json.loads(lines[1].removeprefix('data: '))))
     return out
 
 
@@ -69,12 +69,11 @@ async def test_끝난_턴은_전체를_재생하고_닫힌다(client, tenant_id,
     finally:
         otel.detach_turn(token)
 
-    evs = _events(await _drain(
-        stream_resume.reconnect_reader(tenant_id, prepared.assistant_message_id)))
+    evs = _events(await _drain(stream_resume.reconnect_reader(tenant_id, prepared.assistant_message_id)))
     names = [e for e, _ in evs]
 
-    assert names[0] == 'meta'                       # 재접속도 meta로 시작 (원 리더와 동일)
-    assert names[-1] == 'done'                      # 마지막은 done — 마커는 안 나온다
+    assert names[0] == 'meta'  # 재접속도 meta로 시작 (원 리더와 동일)
+    assert names[-1] == 'done'  # 마지막은 done — 마커는 안 나온다
     assert stream_resume.EVENT_END not in names
     assert 'delta' in names
     assert evs[-1][1]['finish_reason'] == 'done'
@@ -104,11 +103,11 @@ async def test_생성_중_재접속은_밀린분과_실시간을_이어붙인다
         reader = stream_resume.reconnect_reader(tenant_id, prepared.assistant_message_id)
         agen = reader.__aiter__()
         mid = _events([await asyncio.wait_for(agen.__anext__(), timeout=5) for _ in range(2)])
-        assert [e for e, _ in mid] == ['meta', 'delta']      # 밀린 분량이 먼저 재생된다
+        assert [e for e, _ in mid] == ['meta', 'delta']  # 밀린 분량이 먼저 재생된다
 
-        fake_llm.resume.set()                                # 나머지 생성 재개
+        fake_llm.resume.set()  # 나머지 생성 재개
         rest = _events(await _drain(agen))
-        assert [e for e, _ in rest][-1] == 'done'            # 실시간분까지 이어받아 done으로 닫힘
+        assert [e for e, _ in rest][-1] == 'done'  # 실시간분까지 이어받아 done으로 닫힘
     finally:
         fake_llm.resume.set()
         await task
@@ -132,7 +131,7 @@ async def fresh_redis():
     clients.shared_redis = aioredis.from_url(settings.redis_url)
     yield
     await clients.shared_redis.aclose()
-    clients.shared_redis = aioredis.from_url(settings.redis_url)   # lazy — 다음 사용자를 위해
+    clients.shared_redis = aioredis.from_url(settings.redis_url)  # lazy — 다음 사용자를 위해
 
 
 @pytest.mark.asyncio
@@ -155,7 +154,7 @@ async def test_여러_구독자가_각자_전체를_받는다(client, tenant_id,
         _drain(stream_resume.reconnect_reader(tenant_id, mid)),
         _drain(stream_resume.reconnect_reader(tenant_id, mid)),
     )
-    assert _events(a) == _events(b)          # 둘 다 완전한 같은 스트림
+    assert _events(a) == _events(b)  # 둘 다 완전한 같은 스트림
     assert [e for e, _ in _events(a)][-1] == 'done'
 
 
@@ -169,6 +168,7 @@ async def test_Redis_쓰기가_실패해도_생성은_완주한다(client, tenan
 
     def boom(*a, **kw):
         raise RuntimeError('Redis 순단 재현')
+
     monkeypatch.setattr(stream_resume, '_redis', boom)
 
     prepared = await _prepared_turn(tenant_id)
@@ -183,13 +183,14 @@ async def test_Redis_쓰기가_실패해도_생성은_완주한다(client, tenan
     drained = []
     while not queue.empty():
         drained.append(queue.get_nowait())
-    assert drained[-1] is None                                  # 인메모리 경로는 정상 종료
-    assert any(i and i[0] == 'done' for i in drained)            # done도 정상 전달
+    assert drained[-1] is None  # 인메모리 경로는 정상 종료
+    assert any(i and i[0] == 'done' for i in drained)  # done도 정상 전달
 
     async with AsyncSessionLocal() as s:
         from rag.models import Message
+
         msg = await s.get(Message, prepared.assistant_message_id)
-        assert msg.status == 'done'                              # 턴 자체가 오염되지 않는다
+        assert msg.status == 'done'  # 턴 자체가 오염되지 않는다
 
 
 @pytest.mark.asyncio
@@ -211,6 +212,7 @@ async def test_종료마커가_없어도_턴이_끝났으면_닫힌다(client, t
 
     # 마커만 지우고 나머지 엔트리는 남긴다 = 부분 실패 상황 재현
     from rag import clients
+
     key = stream_resume.stream_key(tenant_id, mid)
     entries = await clients.shared_redis.xrange(key, '-', '+')
     marker_ids = [eid for eid, f in entries if f[b'event'].decode() == stream_resume.EVENT_END]
@@ -218,8 +220,7 @@ async def test_종료마커가_없어도_턴이_끝났으면_닫힌다(client, t
     await clients.shared_redis.xdel(key, *marker_ids)
 
     # 턴은 이미 done이므로 _turn_finished 폴백이 리더를 닫아야 한다
-    evs = _events(await asyncio.wait_for(
-        _drain(stream_resume.reconnect_reader(tenant_id, mid)), timeout=30))
+    evs = _events(await asyncio.wait_for(_drain(stream_resume.reconnect_reader(tenant_id, mid)), timeout=30))
     assert [e for e, _ in evs][-1] == 'done'
 
 
@@ -240,6 +241,7 @@ async def test_타_테넌트는_스트림을_못_읽는다(client, tenant_id, ot
         otel.detach_turn(token)
 
     from rag import clients
+
     mine = stream_resume.stream_key(tenant_id, prepared.assistant_message_id)
     theirs = stream_resume.stream_key(other_tenant_id, prepared.assistant_message_id)
     assert mine != theirs
@@ -261,17 +263,17 @@ async def test_남의_턴에는_재접속할_수_없다(client, tenant_id, fake_
 
     mid = prepared.assistant_message_id
     res = await client.get(f'/kms/messages/{mid}/events', headers={'X-User-Id': 'agent-x'})
-    assert res.status_code == 200                     # 주인은 된다
+    assert res.status_code == 200  # 주인은 된다
 
     res = await client.get(f'/kms/messages/{mid}/events', headers={'X-User-Id': 'agent-intruder'})
-    assert res.status_code == 404                     # 남은 존재 여부도 모른다
+    assert res.status_code == 404  # 남은 존재 여부도 모른다
 
 
 @pytest.mark.asyncio
 async def test_스트림이_없으면_404(client, tenant_id, fake_llm, pass_gate):
     """TTL 만료·즉시 경로·쓰기 실패 — FE는 이력 재조회(폴링)로 강등하면 된다."""
     await register_faq(client)
-    prepared = await _prepared_turn(tenant_id)      # 생성을 돌리지 않아 스트림이 없다
+    prepared = await _prepared_turn(tenant_id)  # 생성을 돌리지 않아 스트림이 없다
     res = await client.get(f'/kms/messages/{prepared.assistant_message_id}/events')
     assert res.status_code == 404
 
@@ -290,8 +292,8 @@ async def test_TTL이_걸려_자체_소멸한다(client, tenant_id, fake_llm, pa
 
     from config import settings
     from rag import clients
-    ttl = await clients.shared_redis.ttl(
-        stream_resume.stream_key(tenant_id, prepared.assistant_message_id))
+
+    ttl = await clients.shared_redis.ttl(stream_resume.stream_key(tenant_id, prepared.assistant_message_id))
     assert 0 < ttl <= settings.stream_resume_ttl_seconds
 
 
@@ -311,9 +313,16 @@ async def test_flush_중_들어온_이벤트도_유실되지_않는다(tenant_id
 
     class _SlowPipe:
         """execute()에서 한 번 멈춰, 그 사이 도착한 이벤트가 버퍼에 쌓이게 만든다."""
-        def __init__(self, inner): self._inner = inner
-        def xadd(self, *a, **kw): return self._inner.xadd(*a, **kw)
-        def expire(self, *a, **kw): return self._inner.expire(*a, **kw)
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        def xadd(self, *a, **kw):
+            return self._inner.xadd(*a, **kw)
+
+        def expire(self, *a, **kw):
+            return self._inner.expire(*a, **kw)
+
         async def execute(self):
             await gate.wait()
             return await self._inner.execute()
@@ -329,19 +338,19 @@ async def test_flush_중_들어온_이벤트도_유실되지_않는다(tenant_id
 
     clients.shared_redis.pipeline = pipeline
     try:
-        writer.add('delta', {'text': '앞부분'})       # 첫 flush를 유발 (창 없이 즉시)
-        await asyncio.sleep(0.05)                      # _flush가 execute()에서 멈출 때까지
+        writer.add('delta', {'text': '앞부분'})  # 첫 flush를 유발 (창 없이 즉시)
+        await asyncio.sleep(0.05)  # _flush가 execute()에서 멈출 때까지
         writer.add('done', {'finish_reason': 'done'})  # ← flush 진행 중 도착
-        close = asyncio.create_task(writer.aclose())   # ← 마커까지 추가하고 _closing 세움
+        close = asyncio.create_task(writer.aclose())  # ← 마커까지 추가하고 _closing 세움
         await asyncio.sleep(0.05)
-        gate.set()                                      # 멈춰 있던 execute() 해제
+        gate.set()  # 멈춰 있던 execute() 해제
         await asyncio.wait_for(close, timeout=10)
     finally:
         clients.shared_redis.pipeline = real_pipeline
 
     entries = await clients.shared_redis.xrange(stream_resume.stream_key(tenant_id, 999_999), '-', '+')
     names = [f[b'event'].decode() for _, f in entries]
-    assert names == ['delta', 'done', stream_resume.EVENT_END]   # 하나도 안 빠졌다
+    assert names == ['delta', 'done', stream_resume.EVENT_END]  # 하나도 안 빠졌다
 
 
 @pytest.mark.asyncio
@@ -360,7 +369,7 @@ async def test_순단_후_복구되면_스트림을_포기한다(client, tenant_
 
     def flaky(*a, **kw):
         calls['n'] += 1
-        if calls['n'] == 1:          # 첫 배치만 실패시키고 이후는 정상 = 순단 후 복구
+        if calls['n'] == 1:  # 첫 배치만 실패시키고 이후는 정상 = 순단 후 복구
             raise RuntimeError('Redis 순단 재현')
         return real_pipeline(*a, **kw)
 
@@ -377,13 +386,12 @@ async def test_순단_후_복구되면_스트림을_포기한다(client, tenant_
     # 턴 자체는 멀쩡하다 — 미러링 실패가 생성을 막지 않는다
     async with AsyncSessionLocal() as s:
         from rag.models import Message
+
         assert (await s.get(Message, prepared.assistant_message_id)).status == 'done'
 
     # 손상된 스트림은 남기지 않는다 → 재접속은 404 → FE가 이력 재조회로 완전한 답을 받는다
-    assert not await clients.shared_redis.exists(
-        stream_resume.stream_key(tenant_id, prepared.assistant_message_id))
-    res = await client.get(f'/kms/messages/{prepared.assistant_message_id}/events',
-                           headers={'X-User-Id': 'agent-x'})
+    assert not await clients.shared_redis.exists(stream_resume.stream_key(tenant_id, prepared.assistant_message_id))
+    res = await client.get(f'/kms/messages/{prepared.assistant_message_id}/events', headers={'X-User-Id': 'agent-x'})
     assert res.status_code == 404
 
 
@@ -441,13 +449,17 @@ async def test_OTHER_턴도_재접속으로_재생된다(client, tenant_id, fake
     await register_faq(client)
     fake_llm.intent_json = '{"safe": true, "intent": "OTHER"}'
     async with AsyncSessionLocal() as session:
-        prepared = await RagService(tenant_id=tenant_id, session=session,
-                                    user_id='agent-x').prepare('파이썬으로 정렬 코드 짜줘')
+        prepared = await RagService(tenant_id=tenant_id, session=session, user_id='agent-x').prepare(
+            '파이썬으로 정렬 코드 짜줘'
+        )
     assert prepared.route == 'other'
     await _run_to_end(tenant_id, prepared)
 
-    evs = _events(await asyncio.wait_for(
-        _drain(stream_resume.reconnect_reader(tenant_id, prepared.assistant_message_id)), timeout=30))
+    evs = _events(
+        await asyncio.wait_for(
+            _drain(stream_resume.reconnect_reader(tenant_id, prepared.assistant_message_id)), timeout=30
+        )
+    )
     kinds = [e for e, _ in evs]
     assert kinds[0] == 'meta' and kinds[-1] == 'done'
     assert 'delta' in kinds
@@ -461,11 +473,15 @@ async def test_첨부_턴도_재접속으로_재생된다(client, tenant_id, fak
     async with AsyncSessionLocal() as session:
         prepared = await RagService(tenant_id=tenant_id, session=session, user_id='agent-x').prepare(
             '첨부 내용을 정리해줘',
-            attachments=[QueryAttachment(filename='특약.txt', text='해외배송 상품은 30일 이내 반품 가능하다.')])
+            attachments=[QueryAttachment(filename='특약.txt', text='해외배송 상품은 30일 이내 반품 가능하다.')],
+        )
     await _run_to_end(tenant_id, prepared)
 
-    evs = _events(await asyncio.wait_for(
-        _drain(stream_resume.reconnect_reader(tenant_id, prepared.assistant_message_id)), timeout=30))
+    evs = _events(
+        await asyncio.wait_for(
+            _drain(stream_resume.reconnect_reader(tenant_id, prepared.assistant_message_id)), timeout=30
+        )
+    )
     kinds = [e for e, _ in evs]
     assert kinds[0] == 'meta' and kinds[-1] == 'done' and 'delta' in kinds
 
@@ -481,8 +497,11 @@ async def test_생성_실패의_error와_done도_재생된다(client, tenant_id,
     prepared = await _prepared_turn(tenant_id)
     await _run_to_end(tenant_id, prepared)
 
-    evs = _events(await asyncio.wait_for(
-        _drain(stream_resume.reconnect_reader(tenant_id, prepared.assistant_message_id)), timeout=30))
+    evs = _events(
+        await asyncio.wait_for(
+            _drain(stream_resume.reconnect_reader(tenant_id, prepared.assistant_message_id)), timeout=30
+        )
+    )
     kinds = [e for e, _ in evs]
     assert 'delta' in kinds, '끊기기 전 부분 답변도 재생돼야 한다'
     assert 'error' in kinds
@@ -505,15 +524,14 @@ async def test_마커도_done도_없는_반쪽_스트림은_done_없이_닫힌�
 
     # degraded 상황 재현 — delta 몇 개만 남기고 done·마커를 걷어낸다
     from rag import clients
+
     key = stream_resume.stream_key(tenant_id, mid)
     entries = await clients.shared_redis.xrange(key, '-', '+')
-    doomed = [eid for eid, f in entries
-              if f[b'event'].decode() in ('done', stream_resume.EVENT_END)]
+    doomed = [eid for eid, f in entries if f[b'event'].decode() in ('done', stream_resume.EVENT_END)]
     assert doomed
     await clients.shared_redis.xdel(key, *doomed)
 
-    evs = _events(await asyncio.wait_for(_drain(stream_resume.reconnect_reader(tenant_id, mid)),
-                                         timeout=30))
+    evs = _events(await asyncio.wait_for(_drain(stream_resume.reconnect_reader(tenant_id, mid)), timeout=30))
     kinds = [e for e, _ in evs]
     assert 'delta' in kinds, '남아 있던 부분은 재생된다'
     assert 'done' not in kinds, 'done을 지어내면 안 된다 — 비정상 종료로 알려야 한다'

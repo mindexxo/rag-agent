@@ -4,6 +4,7 @@ _source_doc_ids의 음수 네임스페이스는 FAQ 캐시 무효화 키와 짝 
 needs_generation은 SSE 백그라운드 생성 분기와 정확히 일치해야 한다 — #36부터 resolved_answer
 한 곳에서 파생되므로, 그 파생 관계와 생성자 불변식(route ↔ retrieval)을 여기서 고정한다.
 """
+
 import pytest
 
 from rag.search.retrieval_types import RetrievalResult, RetrievedChunk
@@ -12,14 +13,29 @@ from rag.turn.service import _source_doc_ids
 
 
 def _chunk(document_id=None, faq_id=None) -> RetrievedChunk:
-    return RetrievedChunk(chunk_id=1, document_id=document_id, text='x', heading_path=[],
-                          page=None, filename='f.pdf', version=1, faq_id=faq_id)
+    return RetrievedChunk(
+        chunk_id=1,
+        document_id=document_id,
+        text='x',
+        heading_path=[],
+        page=None,
+        filename='f.pdf',
+        version=1,
+        faq_id=faq_id,
+    )
 
 
 def _prepared(**kw) -> PreparedRag:
-    base = dict(conversation_id=1, assistant_message_id=1, original_query='q', standalone_query='q',
-                prior_turns=[], retrieval=RetrievalResult(chunks=[], no_evidence=False, reason=None),
-                sources=[], source_doc_ids=[])   # assistant_message_id는 __post_init__ 불변식 (#72)
+    base = dict(
+        conversation_id=1,
+        assistant_message_id=1,
+        original_query='q',
+        standalone_query='q',
+        prior_turns=[],
+        retrieval=RetrievalResult(chunks=[], no_evidence=False, reason=None),
+        sources=[],
+        source_doc_ids=[],
+    )  # assistant_message_id는 __post_init__ 불변식 (#72)
     return PreparedRag(**{**base, **kw})
 
 
@@ -93,7 +109,7 @@ class TestRouteRetrievalInvariant:
 
     def test_blocked인데_retrieval이_있으면_거부(self):
         with pytest.raises(ValueError, match='불변식 위반'):
-            _prepared(route='blocked')          # base의 retrieval이 채워진 채로
+            _prepared(route='blocked')  # base의 retrieval이 채워진 채로
 
     def test_other인데_retrieval이_있으면_거부(self):
         with pytest.raises(ValueError, match='불변식 위반'):
@@ -101,7 +117,7 @@ class TestRouteRetrievalInvariant:
 
     def test_knowledge인데_retrieval이_없으면_거부(self):
         with pytest.raises(ValueError, match='불변식 위반'):
-            _prepared(retrieval=None)           # route 기본값 knowledge
+            _prepared(retrieval=None)  # route 기본값 knowledge
 
     def test_올바른_짝은_통과(self):
         assert _prepared(route='blocked', retrieval=None).route == 'blocked'
@@ -113,6 +129,7 @@ class TestResolvedAnswer:
 
     def test_blocked는_고정문구(self):
         from rag.turn.prompt_texts import BLOCKED_INPUT_ANSWER
+
         assert _prepared(route='blocked', retrieval=None).resolved_answer == BLOCKED_INPUT_ANSWER
 
     def test_other는_생성_필요(self):
@@ -124,6 +141,7 @@ class TestResolvedAnswer:
 
     def test_근거없음은_고정문구(self):
         from rag.turn.prompt_texts import NO_EVIDENCE_ANSWER
+
         r = RetrievalResult(chunks=[], no_evidence=True, reason='no_results')
         assert _prepared(retrieval=r).resolved_answer == NO_EVIDENCE_ANSWER
 
@@ -131,9 +149,13 @@ class TestResolvedAnswer:
         assert _prepared().resolved_answer is None
 
     def test_needs_generation은_resolved_answer의_파생값(self):
-        for p in (_prepared(route='blocked', retrieval=None), _prepared(cached_answer='x'),
-                  _prepared(retrieval=RetrievalResult(chunks=[], no_evidence=True, reason='no_results')),
-                  _prepared(route='other', retrieval=None), _prepared()):
+        for p in (
+            _prepared(route='blocked', retrieval=None),
+            _prepared(cached_answer='x'),
+            _prepared(retrieval=RetrievalResult(chunks=[], no_evidence=True, reason='no_results')),
+            _prepared(route='other', retrieval=None),
+            _prepared(),
+        ):
             assert p.needs_generation == (p.resolved_answer is None)
 
 
@@ -148,10 +170,15 @@ class TestGenerateQuerySlot:
     async def test_원질문과_재작성질의를_각각_넘긴다(self, monkeypatch):
         captured = {}
 
-        def fake_build(original_query, chunks, *, standalone_query=None, prior_turns=None,
-                       attachments=None, domain_hint=None):
-            captured.update(original_query=original_query, standalone_query=standalone_query,
-                            prior_turns=prior_turns, domain_hint=domain_hint)
+        def fake_build(
+            original_query, chunks, *, standalone_query=None, prior_turns=None, attachments=None, domain_hint=None
+        ):
+            captured.update(
+                original_query=original_query,
+                standalone_query=standalone_query,
+                prior_turns=prior_turns,
+                domain_hint=domain_hint,
+            )
             return [{'role': 'system', 'content': 's'}, {'role': 'user', 'content': 'u'}]
 
         monkeypatch.setattr('rag.turn.service.build_knowledge_generation_prompt', fake_build)
@@ -163,12 +190,15 @@ class TestGenerateQuerySlot:
                     on_finish_reason('stop')
 
         from rag.turn.service import RagService
+
         svc = RagService(tenant_id='t', session=None)
         svc._llm = _Llm()
-        prepared = _prepared(original_query='그건 한 마리에 얼마예요?',
-                             standalone_query='냉장 생닭 한 마리 가격은?',
-                             prior_turns=[{'q': '유통기한?', 'a': '5일입니다'}],
-                             domain_hint='식품 상담')
+        prepared = _prepared(
+            original_query='그건 한 마리에 얼마예요?',
+            standalone_query='냉장 생닭 한 마리 가격은?',
+            prior_turns=[{'q': '유통기한?', 'a': '5일입니다'}],
+            domain_hint='식품 상담',
+        )
 
         assert ''.join([t async for t in svc.generate(prepared)]) == 'ok'
         assert captured['original_query'] == '그건 한 마리에 얼마예요?'

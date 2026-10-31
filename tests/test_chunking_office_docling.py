@@ -4,6 +4,7 @@ Word·Excel은 SimplePipeline이라 레이아웃 모델이 없어 변환이 빠�
 (conftest.fake_vlm)이 고정 문장을 준다 — 외부 서비스 없이 결정적이다. #223 전에는 VLM을 죽인 채 '캡션 실패 = 자리표시'를
 고정했지만, 이제 캡션 실패는 문서 재시도(CaptionFailedError)라 그 경로는 따로 단언한다.
 """
+
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -11,15 +12,23 @@ import openpyxl
 import pytest
 
 from config import settings
-from rag.chunking import CaptionFailedError, PictureLimitError, chunk_file, count_picture_placeholders, docling_grid_markdown
+from rag.chunking import (
+    CaptionFailedError,
+    PictureLimitError,
+    chunk_file,
+    count_picture_placeholders,
+    docling_grid_markdown,
+)
 from rag.chunking.docx import docx_sections
 from tests.conftest import FAKE_CAPTION
 
 pytest.importorskip('docling')
 
+
 def _png(size=(120, 80)) -> bytes:
     # 1×1은 안 된다 — docling Word 백엔드가 아주 작은 그림을 여백(ContentLayer.INVISIBLE)으로 분류해 iterate_items에서 빠진다
     from PIL import Image
+
     buf = BytesIO()
     Image.new('RGB', size, (200, 30, 30)).save(buf, format='PNG')
     return buf.getvalue()
@@ -33,6 +42,7 @@ def _vlm(fake_vlm, monkeypatch):
 
 # ── 표 그리기 (docling_grid_markdown) — 가짜 grid ─────────────────────────────────
 
+
 def _cell(text, r, c):
     return SimpleNamespace(text=text, start_row_offset_idx=r, start_col_offset_idx=c)
 
@@ -45,16 +55,28 @@ class TestGridMarkdown:
     def test_가로_병합은_칸마다_반복한다(self):
         # #252 결정 9 — 첫 열에만 두면 '7년 이상·7년 미만'에 걸친 `1 년`이 7년 미만 칸에서 빈칸으로 읽혔다(휴직 안내 3행)
         span = _cell('1 년', 1, 1)
-        md = docling_grid_markdown(_table([[_cell('구분', 0, 0), _cell('7년 이상', 0, 1), _cell('7년 미만', 0, 2)],
-                                           [_cell('육아휴직', 1, 0), span, span]]))
+        md = docling_grid_markdown(
+            _table(
+                [
+                    [_cell('구분', 0, 0), _cell('7년 이상', 0, 1), _cell('7년 미만', 0, 2)],
+                    [_cell('육아휴직', 1, 0), span, span],
+                ]
+            )
+        )
         assert md.splitlines()[2] == '| 육아휴직 | 1 년 | 1 년 |'
 
     def test_세로_병합은_행마다_반복한다(self):
         # #220 결정 10 — 첫 행에만 두면 표가 청크 경계에서 잘릴 때 아래 행이 분류어를 잃는다(실문서 37행 중 7행)
         cat = _cell('발생원인', 1, 0)
-        md = docling_grid_markdown(_table([[_cell('구분', 0, 0), _cell('유형', 0, 1)],
-                                           [cat, _cell('기반구조 장애', 1, 1)],
-                                           [cat, _cell('기술적 장애', 2, 1)]]))
+        md = docling_grid_markdown(
+            _table(
+                [
+                    [_cell('구분', 0, 0), _cell('유형', 0, 1)],
+                    [cat, _cell('기반구조 장애', 1, 1)],
+                    [cat, _cell('기술적 장애', 2, 1)],
+                ]
+            )
+        )
         assert md.splitlines()[2:] == ['| 발생원인 | 기반구조 장애 |', '| 발생원인 | 기술적 장애 |']
 
     def test_값이_하나도_없는_행은_빠진다(self):
@@ -68,8 +90,10 @@ class TestGridMarkdown:
 
 # ── DOCX ─────────────────────────────────────────────────────────────────────────
 
+
 def _docx(tmp_path, build, name='t.docx'):
     from docx import Document
+
     doc = Document()
     build(doc)
     p = tmp_path / name
@@ -88,8 +112,11 @@ class TestDocxDocling:
             doc.add_paragraph('일반 배송은 결제 후 2영업일 이내 출고한다.')
             doc.add_heading('1.2 새벽 배송', level=3)
             doc.add_paragraph('새벽 배송은 전날 23시까지 주문분이다.')
+
         p = _docx(tmp_path, build)
-        new = [s.heading_path for s in docx_sections(p)]     # 섹션 단위로 본다 — 청크는 형제 섹션을 묶어 공통 조상만 남긴다
+        new = [
+            s.heading_path for s in docx_sections(p)
+        ]  # 섹션 단위로 본다 — 청크는 형제 섹션을 묶어 공통 조상만 남긴다
         assert new == [['배송 정책', '1. 배송 유형', '1.1 일반 배송'], ['배송 정책', '1. 배송 유형', '1.2 새벽 배송']]
 
     def test_표_셀은_한_번만_들어가고_굵게_표시가_없다(self, tmp_path):
@@ -103,6 +130,7 @@ class TestDocxDocling:
             t.cell(0, 1).text = '요금'
             t.cell(1, 0).paragraphs[0].add_run('제주고유지역').bold = True
             t.cell(1, 1).text = '5000원'
+
         chunks = chunk_file(_docx(tmp_path, build))
         text = '\n'.join(c.text for c in chunks)
         assert text.count('제주고유지역') == 1
@@ -117,6 +145,7 @@ class TestDocxDocling:
             inner = outer.cell(0, 0).add_table(rows=1, cols=2)
             inner.cell(0, 0).text = '중첩셀고유문구'
             inner.cell(0, 1).text = 'CL2'
+
         assert '중첩셀고유문구' in '\n'.join(c.text for c in chunk_file(_docx(tmp_path, build)))
 
     def test_스타일_없는_문서는_조문_폴백이_docling_경로에서도_돈다(self, tmp_path):
@@ -126,8 +155,11 @@ class TestDocxDocling:
             doc.add_paragraph('제1장 총칙')
             doc.add_paragraph('제1조(목적) 이 지침은 장애 대응 절차를 정한다.')
             doc.add_paragraph('제2조(적용) 전 시스템에 적용한다.')
+
         assert [s.heading_path for s in docx_sections(_docx(tmp_path, build))] == [
-            ['장애관리 지침서', '제1장 총칙', '제1조(목적)'], ['장애관리 지침서', '제1장 총칙', '제2조(적용)']]
+            ['장애관리 지침서', '제1장 총칙', '제1조(목적)'],
+            ['장애관리 지침서', '제1장 총칙', '제2조(적용)'],
+        ]
 
     def test_표_칸_안의_그림은_그_칸에_설명이_붙는다(self, tmp_path):
         # #220 리뷰 — 표 안 요소를 건너뛰는 규칙에 칸 안 그림까지 걸려 캡션이 버려졌다(자리표시도 없이). 이제 그 칸에 붙는다.
@@ -136,6 +168,7 @@ class TestDocxDocling:
             t = doc.add_table(rows=1, cols=2)
             t.cell(0, 0).text = '1. 로그인 화면'
             t.cell(0, 1).paragraphs[0].add_run().add_picture(BytesIO(_png()))
+
         chunks = chunk_file(_docx(tmp_path, build))
         assert f'| 1. 로그인 화면 | {FAKE_CAPTION} |' in chunks[0].text
         assert count_picture_placeholders(chunks) == 0
@@ -153,6 +186,7 @@ class TestDocxDocling:
             doc.add_paragraph('제1조(목적) 본문.')
             doc.add_picture(BytesIO(_png()))
             doc.add_paragraph('제2조(범위) 본문.')
+
         with pytest.raises(CaptionFailedError):
             chunk_file(_docx(tmp_path, build))
 
@@ -163,6 +197,7 @@ class TestDocxDocling:
 
         def build(doc):
             doc.add_picture(BytesIO(_png()))
+
         with pytest.raises(CaptionFailedError):
             chunk_file(_docx(tmp_path, build))
 
@@ -170,6 +205,7 @@ class TestDocxDocling:
         def build(doc):
             doc.add_paragraph('제1조(목적) 본문.')
             doc.add_picture(BytesIO(_png()))
+
         chunks = chunk_file(_docx(tmp_path, build))
         assert FAKE_CAPTION in chunks[0].text and count_picture_placeholders(chunks) == 0
 
@@ -181,6 +217,7 @@ class TestDocxDocling:
         def build(doc):
             for _ in range(3):
                 doc.add_picture(BytesIO(_png()))
+
         with pytest.raises(PictureLimitError, match='그림 3장'):
             chunk_file(_docx(tmp_path, build))
         assert fake_vlm.calls == 0
@@ -191,23 +228,29 @@ class TestDocxDocling:
         def build(doc):
             for _ in range(2):
                 doc.add_picture(BytesIO(_png()))
+
         assert chunk_file(_docx(tmp_path, build))
         assert fake_vlm.calls == 2
 
     def test_조문처럼_시작하는_그림_캡션은_헤딩이_되지_않는다(self, tmp_path, monkeypatch):
         # 그림은 from_table=True로 #205 폴백 승격에서 빠진다. 자리표시는 원래 조문 패턴에 안 걸리므로 캡션을 바꿔 끼워 본다
         import rag.chunking as ch
-        monkeypatch.setattr(ch.docling_elements, 'docling_picture_text', lambda element: '제9조(그림 속 조문) 캡처 내용')
+
+        monkeypatch.setattr(
+            ch.docling_elements, 'docling_picture_text', lambda element: '제9조(그림 속 조문) 캡처 내용'
+        )
 
         def build(doc):
             doc.add_paragraph('제1조(목적) 본문.')
             doc.add_picture(BytesIO(_png()))
+
         sections = docx_sections(_docx(tmp_path, build))
         assert all('제9조(그림 속 조문)' not in ' '.join(sec.heading_path) for sec in sections)
         assert any('제9조(그림 속 조문) 캡처 내용' in sec.body for sec in sections)
 
 
 # ── XLSX ─────────────────────────────────────────────────────────────────────────
+
 
 def _xlsx(tmp_path, build, name='t.xlsx'):
     wb = openpyxl.Workbook()
@@ -228,14 +271,15 @@ class TestXlsxDocling:
             ws.append(['교통', '버스', 1500])
             ws.append([None, '택시', 29100])
             ws.merge_cells('A3:A4')
+
         chunks = chunk_file(_xlsx(tmp_path, build), description='교통비 양식')
-        assert {c.heading_path[0] for c in chunks} == {'양식'}          # 묶음(#222)이 여럿이어도 한 시트
-        text = chunks[0].meta['table_text']                              # 시트 완성본 — 모델이 보는 본문
+        assert {c.heading_path[0] for c in chunks} == {'양식'}  # 묶음(#222)이 여럿이어도 한 시트
+        text = chunks[0].meta['table_text']  # 시트 완성본 — 모델이 보는 본문
         # 표 폭 전체에 걸친 첫 행 제목은 docling이 표 밖 글로 뺀다(실측) — 가로 병합 반복(#252 결정 9)과 무관하게 한 번
         assert text.count('업무 교통비 청구서') == 1 and '\n업무 교통비 청구서\n' in text
         assert '| 교통 | 버스 | 1500 |' in text and '| 교통 | 택시 | 29100 |' in text
         assert text.startswith('[교통비 양식]\n') and text.count('[교통비 양식]') == 1
-        assert all(c.text.startswith('[교통비 양식]\n') for c in chunks)   # 묶음마다 설명 반복(검색 보강)
+        assert all(c.text.startswith('[교통비 양식]\n') for c in chunks)  # 묶음마다 설명 반복(검색 보강)
         assert all(c.meta['is_table'] and c.meta['table_key'] == '양식' for c in chunks)
 
     def test_시트_위_그림은_그_시트_청크에_들어간다(self, tmp_path):
@@ -250,24 +294,27 @@ class TestXlsxDocling:
             ws2 = wb.create_sheet('둘째')
             ws2.append(['항목', '값'])
             ws2.append(['x', '1'])
+
         chunks = chunk_file(_xlsx(tmp_path, build))
         by_sheet = {c.heading_path[0]: c.meta['table_text'] for c in chunks}
-        assert list(by_sheet) == ['첫시트', '둘째']                          # 시트 순서 유지(#222: 시트당 묶음 여럿 가능)
+        assert list(by_sheet) == ['첫시트', '둘째']  # 시트 순서 유지(#222: 시트당 묶음 여럿 가능)
         assert FAKE_CAPTION in by_sheet['첫시트'] and FAKE_CAPTION not in by_sheet['둘째']
 
     def test_긴_시트의_그림도_캡션이_붙는다(self, tmp_path):
         # #249 — docling은 시트를 칸 단위로 재고 OneCellAnchor 그림을 1×1칸으로 잡아, 칸이 100개만 넘어도 면적 비율이 하한(1%)
         # 아래로 떨어져 큰 그림도 캡션 없이 자리표시로 남았다(#223 실측: 41행+그림 10장 전부). XLSX는 하한 0으로 전부 캡션한다
         from openpyxl.drawing.image import Image as XlImage
+
         from rag.chunking.docling_elements import PICTURE_PLACEHOLDER
 
         def build(wb):
             ws = wb.active
             ws.title = '긴시트'
             ws.append(['번호', '품목', '단가'])
-            for i in range(1, 121):                                    # 3열 × 121행 = 363칸 → 1칸 그림은 0.28%
+            for i in range(1, 121):  # 3열 × 121행 = 363칸 → 1칸 그림은 0.28%
                 ws.append([i, f'품목-{i:03d}', i * 100])
             ws.add_image(XlImage(BytesIO(_png())), 'E60')
+
         chunks = chunk_file(_xlsx(tmp_path, build), description='긴 시트')
         text = chunks[0].meta['table_text']
         assert FAKE_CAPTION in text and PICTURE_PLACEHOLDER not in text
@@ -275,6 +322,7 @@ class TestXlsxDocling:
     def test_XLSX_그림도_장수_상한에_걸린다(self, tmp_path, monkeypatch):
         # #249 범위 — 하한 0이라 엑셀 그림은 전부 캡션 대상이고, #223 그림 장수 상한도 전부를 센다
         from openpyxl.drawing.image import Image as XlImage
+
         monkeypatch.setattr(settings, 'docling_max_pictures', 2)
 
         def build(wb):
@@ -284,6 +332,7 @@ class TestXlsxDocling:
                 ws.append([f'항목{i}', i])
             for cell in ('D2', 'D20', 'D40'):
                 ws.add_image(XlImage(BytesIO(_png())), cell)
+
         with pytest.raises(PictureLimitError, match='그림 3장'):
             chunk_file(_xlsx(tmp_path, build), description='그림 많은 시트')
 
@@ -297,7 +346,7 @@ class TestXlsxDocling:
             wb.active.append(['v1'])
             hidden = wb.create_sheet('참조')
             hidden.append(['k'])
-            for i in range(5000):                   # 크기 상한 초과 — 숨겼으니 거절 사유가 아니다
+            for i in range(5000):  # 크기 상한 초과 — 숨겼으니 거절 사유가 아니다
                 hidden.append([i])
             hidden.sheet_state = 'hidden'
             very = wb.create_sheet('내부')
@@ -306,9 +355,10 @@ class TestXlsxDocling:
             very.sheet_state = 'veryHidden'
             wb.create_sheet('보임2').append(['col'])
             wb['보임2'].append(['v2'])
+
         p = _xlsx(tmp_path, build)
         assert list(dict.fromkeys(c.heading_path[0] for c in chunk_file(p))) == ['보임1', '보임2']
-        validate_xlsx_upload(p.read_bytes(), '설명')        # 예외 없음
+        validate_xlsx_upload(p.read_bytes(), '설명')  # 예외 없음
 
     def test_공백만_든_시트는_빈_시트로_건너뛴다(self, tmp_path):
         # docling은 공백 칸을 내용으로 보지 않는다 — openpyxl만 세면 '시트를 비워 냈다'로 문서 전체가 실패했다
@@ -318,6 +368,7 @@ class TestXlsxDocling:
             blank = wb.create_sheet('공백')
             blank['A1'] = ' '
             blank['B2'] = ''
+
         assert len(chunk_file(_xlsx(tmp_path, build))) == 1
 
     def test_셀_없이_그림만_있는_시트와_차트_시트는_보이는_시트_뒤에_붙는다(self, tmp_path):
@@ -334,6 +385,7 @@ class TestXlsxDocling:
             chart = BarChart()
             chart.add_data(Reference(ws, min_col=2, min_row=1, max_row=3), titles_from_data=True)
             wb.create_chartsheet('차트').add_chart(chart)
+
         chunks = chunk_file(_xlsx(tmp_path, build))
         assert chunks[0].heading_path == ['데이터']
         assert {c.heading_path[0] for c in chunks[1:]} == {'그림만', '차트'}
@@ -349,6 +401,7 @@ class TestXlsxDocling:
         def build(wb):
             wb.active.append(['col'])
             wb.active.append(['1'])
+
         monkeypatch.setattr(xc, '_docling_sheet_blocks', lambda doc: {})
         with pytest.raises(RuntimeError, match='비워 냈다'):
             chunk_file(_xlsx(tmp_path, build))
@@ -359,17 +412,19 @@ class TestXlsxDocling:
 
         def build(wb):
             wb.active.append(['col'])
-            for i in range(5000):                   # 추정 ≈ 1만 토큰 이상 — 상한(6,000) 초과
+            for i in range(5000):  # 추정 ≈ 1만 토큰 이상 — 상한(6,000) 초과
                 wb.active.append([i])
 
         def boom(*a, **k):
             raise AssertionError('크기 상한 위반인데 docling 변환까지 갔다')
+
         monkeypatch.setattr(convert_process, 'docling_convert', boom)
         with pytest.raises(XlsxTableTooLarge):
             chunk_file(_xlsx(tmp_path, build))
 
 
 # ── 채팅 첨부는 docling을 타지 않는다 (#220 결정 6) ──────────────────────────────────
+
 
 class TestAttachmentStaysPlain:
     def test_첨부_추출은_docling_변환을_부르지_않는다(self, tmp_path, monkeypatch):
@@ -378,6 +433,7 @@ class TestAttachmentStaysPlain:
 
         def boom(*a, **k):
             raise AssertionError('첨부가 docling을 탔다')
+
         monkeypatch.setattr(convert_process, 'docling_convert', boom)
 
         def build_x(wb):
@@ -386,19 +442,22 @@ class TestAttachmentStaysPlain:
 
         def build_d(doc):
             doc.add_paragraph('첨부 본문')
+
         assert '첨부값' in extract_text(_xlsx(tmp_path, build_x))
         assert '첨부 본문' in extract_text(_docx(tmp_path, build_d))
-        md = tmp_path / 'a.md'                            # MD 색인은 #267부터 docling — 첨부는 원문 그대로다
+        md = tmp_path / 'a.md'  # MD 색인은 #267부터 docling — 첨부는 원문 그대로다
         md.write_text('# 제목\n\n| 칸 | 값 |\n| --- | --- |\n| A\\|B | 1<br>2 |\n', encoding='utf-8')
         assert extract_text(md) == md.read_text(encoding='utf-8').strip()
 
 
 # ── 변환기 설정 ────────────────────────────────────────────────────────────────────
 
+
 class TestConverterOptions:
     def test_워드_엑셀_캡션_설정이_PDF와_같다(self):
         # 조용히 무시되는 설정을 잡는 테스트(#151 교훈) — 한 형식만 캡션이 빠지거나 다른 프롬프트로 돌면 에러 없이 품질만 갈린다
         from docling.datamodel.base_models import InputFormat
+
         from rag.chunking.document_converter import docling_converter
 
         converter = docling_converter()
@@ -406,7 +465,7 @@ class TestConverterOptions:
         for fmt in (InputFormat.DOCX, InputFormat.XLSX):
             opts = converter.format_to_options[fmt].pipeline_options
             assert opts.do_picture_description is True
-            assert opts.enable_remote_services is True   # 빠지면 OperationNotAllowed로 변환 자체가 죽는다
+            assert opts.enable_remote_services is True  # 빠지면 OperationNotAllowed로 변환 자체가 죽는다
             # XLSX는 면적 하한만 0(#249 결정 1 — 시트 칸 단위라 비율이 그림 크기를 반영 못 함), 그 밖의 캡션 설정은 PDF와 같다
             expected = pdf.picture_description_options
             if fmt == InputFormat.XLSX:
@@ -425,9 +484,14 @@ class TestNestedAndLong:
             for r, (a, b) in enumerate((('항목', '배점'), ('업적', '60'), ('역량', '40'))):
                 inner.cell(r, 0).text, inner.cell(r, 1).text = a, b
             t.cell(2, 0).text, t.cell(2, 1).text = '평가 시기', '매년 12월'
+
         chunks = chunk_file(_docx(tmp_path, build))
         text = '\n'.join(c.text for c in chunks)
-        assert '| 평가 항목 | 항목 | 배점 |' in text and '| 평가 항목 | 업적 | 60 |' in text and '| 평가 항목 | 역량 | 40 |' in text
+        assert (
+            '| 평가 항목 | 항목 | 배점 |' in text
+            and '| 평가 항목 | 업적 | 60 |' in text
+            and '| 평가 항목 | 역량 | 40 |' in text
+        )
         assert '| 평가 시기 | 매년 12월 |' in text
 
     def test_긴_docx_표는_행_묶음으로_나뉘고_묶음마다_헤더가_있다(self, tmp_path):
@@ -436,12 +500,17 @@ class TestNestedAndLong:
             for c, h in enumerate(('번호', '품목', '단가')):
                 t.cell(0, c).text = h
             for i in range(1, 46):
-                t.cell(i, 0).text, t.cell(i, 1).text, t.cell(i, 2).text = str(i), f'품목-{i:03d}', f'{i * 1234 % 97000 + 1000:,}원'
+                t.cell(i, 0).text, t.cell(i, 1).text, t.cell(i, 2).text = (
+                    str(i),
+                    f'품목-{i:03d}',
+                    f'{i * 1234 % 97000 + 1000:,}원',
+                )
+
         chunks = chunk_file(_docx(tmp_path, build))
         assert len(chunks) >= 2
-        assert all(c.text.startswith('| 번호 | 품목 | 단가 |') for c in chunks)                      # 묶음마다 헤더
+        assert all(c.text.startswith('| 번호 | 품목 | 단가 |') for c in chunks)  # 묶음마다 헤더
         rows = [l for c in chunks for l in c.text.split('\n')[2:]]
-        assert rows == [f'| {i} | 품목-{i:03d} | {i * 1234 % 97000 + 1000:,}원 |' for i in range(1, 46)]   # 행 절단 없음
+        assert rows == [f'| {i} | 품목-{i:03d} | {i * 1234 % 97000 + 1000:,}원 |' for i in range(1, 46)]  # 행 절단 없음
 
     def test_셀_안_줄바꿈은_공백으로_접혀_행이_깨지지_않는다(self, tmp_path):
         def build(doc):
@@ -451,6 +520,7 @@ class TestNestedAndLong:
             t.cell(1, 1).text = '1. 요청서 수신'
             t.cell(1, 1).add_paragraph('2. 담당자 배정')
             t.cell(1, 2).text = '총무팀'
+
         chunks = chunk_file(_docx(tmp_path, build))
         assert '| 접수 | 1. 요청서 수신 2. 담당자 배정 | 총무팀 |' in chunks[0].text
 
@@ -465,6 +535,7 @@ class TestNestedAndLong:
             mid.cell(1, 0).text = '깊은'
             deep = mid.cell(1, 1).add_table(rows=1, cols=2)
             deep.cell(0, 0).text, deep.cell(0, 1).text = '최하', '99'
+
         text = '\n'.join(c.text for c in chunk_file(_docx(tmp_path, build)))
-        assert '| 구성 | 세부 라벨 |' in text                      # 칸의 라벨
-        assert text.count('99') == 1 and '| 구성 | 깊은 | 최하 | 99 |' in text   # 3단 값은 한 번, 바깥 글자 반복
+        assert '| 구성 | 세부 라벨 |' in text  # 칸의 라벨
+        assert text.count('99') == 1 and '| 구성 | 깊은 | 최하 | 99 |' in text  # 3단 값은 한 번, 바깥 글자 반복

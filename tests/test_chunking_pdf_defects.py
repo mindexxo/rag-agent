@@ -11,7 +11,6 @@
 
 그래서 픽스처는 **결함 조건을 의도적으로 재현한다** — 여기 남은 결함 3·4는 목록 번호와 이미지 쪽.
 """
-from pathlib import Path
 
 import pytest
 from reportlab.lib.pagesizes import A4
@@ -37,14 +36,12 @@ class TestOrphanMarker:
         # 실문서는 번호와 항목이 같은 줄이다 — 스플리터가 그 사이를 끊는다
         body = '앞 내용\n3. 숙박료의 실비정산 기준'
         offset = body.index('숙박료의')
-        assert restore_leading_marker(body, offset, '숙박료의 실비정산 기준') \
-            == '3. 숙박료의 실비정산 기준'
+        assert restore_leading_marker(body, offset, '숙박료의 실비정산 기준') == '3. 숙박료의 실비정산 기준'
 
     def test_번호가_독립_줄이어도_되살린다(self):
         body = '앞 내용\n3.\n숙박료의 실비정산 기준'
         offset = body.index('숙박료의')
-        assert restore_leading_marker(body, offset, '숙박료의 실비정산 기준') \
-            == '3. 숙박료의 실비정산 기준'
+        assert restore_leading_marker(body, offset, '숙박료의 실비정산 기준') == '3. 숙박료의 실비정산 기준'
 
     def test_overlap으로_이미_갖고_있으면_주입하지_않는다(self):
         # 초기 구현이 '다음 청크가 그 번호로 시작하지 않으면 주입'으로 판정했다가
@@ -52,7 +49,7 @@ class TestOrphanMarker:
         body = '앞 내용\n[상황 2] 배송 지연 항의\n\n1. "배송이 늦어져 죄송합니다."'
         offset = body.index('[상황 2]')
         chunk = body[offset:]
-        assert restore_leading_marker(body, offset, chunk) == chunk   # 그대로
+        assert restore_leading_marker(body, offset, chunk) == chunk  # 그대로
 
     def test_번호가_아닌_것_뒤에서는_주입하지_않는다(self):
         body = '문장이 끝났다.\n다음 문장'
@@ -72,6 +69,7 @@ class TestImageRatio:
 
     def test_이미지가_있으면_면적_비율을_돌려준다(self, tmp_path):
         from reportlab.lib.utils import ImageReader
+
         try:
             from PIL import Image
         except ImportError:

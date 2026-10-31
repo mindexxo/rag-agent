@@ -4,6 +4,7 @@ status 값 5종이 다섯 파일에 각자 나열돼 있던 것을 rag/models.Tu
 이 테스트는 그 정의와 파생(rag/turn/turn_state)의 관계가 조용히 어긋나는 것을 막는다 —
 #59(cancelled)·#72(failed) 때 나열이 흩어져 있어서 두 번 놓친 이력이 이 축의 동기다.
 """
+
 import json
 
 from fastapi.encoders import jsonable_encoder
@@ -18,7 +19,7 @@ class TestStrEnumCompat:
     def test_문자열_비교와_해시가_동일하다(self):
         assert TurnStatus.CANCELLED == 'cancelled'
         assert hash(TurnStatus.CANCELLED) == hash('cancelled')
-        assert 'failed' in UNANSWERED          # 문자열 멤버십도 그대로
+        assert 'failed' in UNANSWERED  # 문자열 멤버십도 그대로
 
     def test_와이어_직렬화는_값_그대로다(self):
         """SSE done.finish_reason·FE 응답 status — #56 계약의 소문자 문자열 유지."""
@@ -28,8 +29,7 @@ class TestStrEnumCompat:
     def test_다섯_값이_전부다(self):
         """새 상태를 추가하면 이 테스트가 깨진다 — 그때 확인할 곳:
         파생 집합(turn_state) · eval/_gold_history.py 계약 · FE의 status 판별 로직."""
-        assert {s.value for s in TurnStatus} == {
-            'generating', 'done', 'cancelled', 'failed', 'blocked'}
+        assert {s.value for s in TurnStatus} == {'generating', 'done', 'cancelled', 'failed', 'blocked'}
 
 
 class TestDerivedSets:
@@ -47,8 +47,7 @@ class TestDerivedSets:
         (5값 완전성 테스트가 있는 한 두 단언은 동치지만, 실패 메시지가 다른 이야기를 한다.)
         """
         assert set(TERMINAL) == set(TurnStatus) - {TurnStatus.GENERATING}
-        assert set(TERMINAL) == {TurnStatus.DONE, TurnStatus.CANCELLED,
-                                 TurnStatus.FAILED, TurnStatus.BLOCKED}
+        assert set(TERMINAL) == {TurnStatus.DONE, TurnStatus.CANCELLED, TurnStatus.FAILED, TurnStatus.BLOCKED}
 
     def test_blocked는_미응답이_아니다(self):
         """차단 결정을 '다시'로 뒤집으면 안 된다(#59) — RETRY 대상에서 제외."""
@@ -61,6 +60,7 @@ class TestWriteValidation:
         """finalize_turn 진입부의 TurnStatus(status) — 오타('canceled')가 조용히 저장돼
         RETRY가 무시되던 버그 클래스를 저장 전에 끊는다 (#85의 목적)."""
         import pytest
+
         with pytest.raises(ValueError):
-            TurnStatus('canceled')     # l 하나 빠진 오타
-        assert TurnStatus('cancelled') is TurnStatus.CANCELLED   # 정상 값은 멤버로
+            TurnStatus('canceled')  # l 하나 빠진 오타
+        assert TurnStatus('cancelled') is TurnStatus.CANCELLED  # 정상 값은 멤버로

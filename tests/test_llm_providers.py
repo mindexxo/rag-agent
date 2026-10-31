@@ -8,8 +8,8 @@
 4. 종료 사유는 공통 어휘(stop|length|other)로 맞춘다.
 5. 옛 설정 이름(VLLM_*)이 환경에 남아 있으면 기동이 멈춘다 — 기본값으로 조용히 붙는 사고 방지.
 """
+
 import pytest
-from pydantic import BaseModel
 
 from config import settings
 from rag.llm import CitationTail, ConstraintUnsupported, create_llm
@@ -31,30 +31,39 @@ class TestVllm요청은_이전과_같다:
             'model': settings.llm_model,
             'max_tokens': settings.generation_reserve_tokens,
             'temperature': settings.llm_temperature,
-            'extra_body': {'chat_template_kwargs': {'enable_thinking': False}},   # llm_reasoning_effort 미설정 = 끔
+            'extra_body': {'chat_template_kwargs': {'enable_thinking': False}},  # llm_reasoning_effort 미설정 = 끔
         }
 
     def test_스키마_의도는_structured_outputs로(self):
         body = _vllm_kwargs(schema=RouteDecision)['extra_body']
         assert body['structured_outputs'] == {'json': RouteDecision.model_json_schema()}
-        assert body['chat_template_kwargs'] == {'enable_thinking': False}   # 병합 — 유실 금지
+        assert body['chat_template_kwargs'] == {'enable_thinking': False}  # 병합 — 유실 금지
 
     def test_꼬리_의도는_structural_tag로(self):
-        rf = _vllm_kwargs(citations=CitationTail(count=3, start=TAIL_START, end=TAIL_END))['extra_body']['response_format']
+        rf = _vllm_kwargs(citations=CitationTail(count=3, start=TAIL_START, end=TAIL_END))['extra_body'][
+            'response_format'
+        ]
         assert rf['type'] == 'structural_tag'
-        assert rf['triggers'] == [TAIL_START]                   # 이 문자열이 나오면 제약이 시작된다
+        assert rf['triggers'] == [TAIL_START]  # 이 문자열이 나오면 제약이 시작된다
         structure = rf['structures'][0]
         assert structure['begin'] == TAIL_START and structure['end'] == TAIL_END
-        assert structure['schema'] == {'type': 'array', 'items': {'type': 'integer', 'enum': [1, 2, 3]}}   # 4가 없다 = 범위 밖 차단
+        assert structure['schema'] == {
+            'type': 'array',
+            'items': {'type': 'integer', 'enum': [1, 2, 3]},
+        }  # 4가 없다 = 범위 밖 차단
 
     def test_후보_없으면_빈_배열만_강제(self):
-        schema = _vllm_kwargs(citations=CitationTail(count=0, start=TAIL_START, end=TAIL_END))['extra_body']['response_format']['structures'][0]['schema']
-        assert schema == {'type': 'array', 'maxItems': 0}       # enum:[] 컴파일은 미검증 — 길이로 강제
+        schema = _vllm_kwargs(citations=CitationTail(count=0, start=TAIL_START, end=TAIL_END))['extra_body'][
+            'response_format'
+        ]['structures'][0]['schema']
+        assert schema == {'type': 'array', 'maxItems': 0}  # enum:[] 컴파일은 미검증 — 길이로 강제
 
     def test_빈_목록도_합법이다(self):
         """거절의 자유 — minItems를 걸지 않는다. 후보가 있어도 모델이 []를 낼 수 있어야 한다
         (프롬프트의 인용 표시 규칙). 라이브에서도 확인했다 — 답할 수 없는 질문에 후보 4개를 주면 2/2 []."""
-        schema = _vllm_kwargs(citations=CitationTail(count=3, start=TAIL_START, end=TAIL_END))['extra_body']['response_format']['structures'][0]['schema']
+        schema = _vllm_kwargs(citations=CitationTail(count=3, start=TAIL_START, end=TAIL_END))['extra_body'][
+            'response_format'
+        ]['structures'][0]['schema']
         assert 'minItems' not in schema
 
     def test_temperature는_설정됐을_때만(self, monkeypatch):
@@ -75,12 +84,14 @@ class TestBase:
     def test_종료_사유_공통_어휘(self):
         assert normalize_finish_reason('stop') == 'stop'
         assert normalize_finish_reason('length') == 'length'
-        assert normalize_finish_reason('content_filter') == 'other'   # 모르는 값은 other — 대시보드가 벤더를 몰라야 한다
+        assert normalize_finish_reason('content_filter') == 'other'  # 모르는 값은 other — 대시보드가 벤더를 몰라야 한다
 
 
 class TestCreateLlm:
     def test_설정_이름으로_고른다(self, monkeypatch):
-        monkeypatch.setattr(settings, 'llm_provider', 'vllm')   # 실행 환경의 .env(상용 스모크 중일 수 있음)에 묶이지 않게
+        monkeypatch.setattr(
+            settings, 'llm_provider', 'vllm'
+        )  # 실행 환경의 .env(상용 스모크 중일 수 있음)에 묶이지 않게
         assert isinstance(create_llm(), VllmClient)
         assert isinstance(create_llm('vllm'), VllmClient)
 
@@ -92,12 +103,14 @@ class TestCreateLlm:
 class TestSettings:
     def test_옛_이름이_환경에_남아_있으면_기동_실패(self, monkeypatch):
         from config import Settings
+
         monkeypatch.setenv('VLLM_MODEL', 'x')
         with pytest.raises(ValueError, match='VLLM_MODEL → LLM_MODEL'):
             Settings()
 
     def test_모르는_공급자_이름은_기동_실패(self, monkeypatch):
         from config import Settings
+
         monkeypatch.setenv('LLM_PROVIDER', 'gpt9')
         with pytest.raises(Exception):
             Settings()

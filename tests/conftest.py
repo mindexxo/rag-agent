@@ -10,6 +10,7 @@
 가짜 임베딩 주의: 벡터는 결정적이지만 의미 없음 — 코사인 거리가 근거 게이트(0.6)를
 통과한다는 보장이 없다. 검색 매칭까지 검증하는 테스트는 apply_gate를 함께 패치할 것.
 """
+
 import asyncio
 import hashlib
 import json
@@ -20,6 +21,7 @@ import pytest_asyncio
 
 # ── SSE 파싱 (비스트리밍 JSON 경로 삭제 #26로 전 테스트가 SSE를 읽는다) ──
 
+
 def sse_events(res_or_text) -> list[tuple[str, object]]:
     """SSE 응답 → [(event, data), ...]. httpx Response나 본문 문자열 모두 받는다.
     이벤트 경계는 빈 줄(\\n\\n), 각 이벤트는 event/data 두 줄이라는 봉투 규격에 의존.
@@ -28,8 +30,7 @@ def sse_events(res_or_text) -> list[tuple[str, object]]:
     out = []
     for block in text.strip().split('\n\n'):
         lines = block.splitlines()
-        out.append((lines[0].removeprefix('event: '),
-                    json.loads(lines[1].removeprefix('data: '))))
+        out.append((lines[0].removeprefix('event: '), json.loads(lines[1].removeprefix('data: '))))
     return out
 
 
@@ -50,36 +51,63 @@ def sse_done(res_or_text) -> dict:
 
 async def register_faq(client) -> int:
     """검색 근거용 FAQ 1건 등록 — 4개 테스트 파일이 같은 것을 복붙하던 것을 공용 승격."""
-    res = await client.post('/kms/faqs', json={
-        'question': '환불 기간은?', 'variants': [], 'answer': '7일 이내 처리됩니다.',
-    })
+    res = await client.post(
+        '/kms/faqs',
+        json={
+            'question': '환불 기간은?',
+            'variants': [],
+            'answer': '7일 이내 처리됩니다.',
+        },
+    )
     faq_id = res.json()['id']
-    await sync_faq(faq_id)      # 라우터는 대기열 행만 남긴다(#139) — 검색에 보이려면 drain
+    await sync_faq(faq_id)  # 라우터는 대기열 행만 남긴다(#139) — 검색에 보이려면 drain
     return faq_id
 
 
-async def seed_turn(tenant_id: str, question: str, answer: str, status: str = 'done',
-                    standalone: str | None = None, intent: str | None = None,
-                    conversation_id: int | None = None,
-                    attachments: list[dict] | None = None) -> int:
+async def seed_turn(
+    tenant_id: str,
+    question: str,
+    answer: str,
+    status: str = 'done',
+    standalone: str | None = None,
+    intent: str | None = None,
+    conversation_id: int | None = None,
+    attachments: list[dict] | None = None,
+) -> int:
     """user/assistant 한 턴 시딩 → conversation_id (register_faq와 같은 공용 승격 — #59에서
     이력 격리·RETRY 테스트 2파일이 거의 같은 헬퍼를 복붙하던 것. #63 리뷰에서 첨부 시딩
     복붙이 또 생겨 attachments 인자로 흡수). conversation_id를 주면 기존 대화에 턴을
     이어 붙인다(연속 취소 체인 시딩용)."""
     from database import AsyncSessionLocal
     from rag.models import Conversation, Message
+
     async with AsyncSessionLocal() as s:
         if conversation_id is None:
             conv = Conversation(tenant_id=tenant_id, created_by='agent-a')
             s.add(conv)
             await s.flush()
             conversation_id = conv.id
-        u = Message(tenant_id=tenant_id, conversation_id=conversation_id, role='user',
-                    content=question, standalone_query=standalone, attachments=attachments)
+        u = Message(
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
+            role='user',
+            content=question,
+            standalone_query=standalone,
+            attachments=attachments,
+        )
         s.add(u)
         await s.flush()
-        s.add(Message(tenant_id=tenant_id, conversation_id=conversation_id, role='assistant',
-                      content=answer, status=status, question_message_id=u.id, intent=intent))
+        s.add(
+            Message(
+                tenant_id=tenant_id,
+                conversation_id=conversation_id,
+                role='assistant',
+                content=answer,
+                status=status,
+                question_message_id=u.id,
+                intent=intent,
+            )
+        )
         await s.commit()
     return conversation_id
 
@@ -101,6 +129,7 @@ async def ingest(document_id: int) -> dict:
     """
     from database import AsyncSessionLocal
     from rag import outbox
+
     async with AsyncSessionLocal() as s:
         ids = await outbox.pending_row_ids(s, document_id=document_id)
     return await outbox.drain_once(row_ids=ids)
@@ -111,6 +140,7 @@ async def sync_faq(faq_id: int) -> dict:
     하지 않으므로(#139) 등록·수정·토글·삭제 뒤 검색 상태를 보려면 이걸 불러야 한다."""
     from database import AsyncSessionLocal
     from rag import outbox
+
     async with AsyncSessionLocal() as s:
         ids = await outbox.pending_row_ids(s, faq_id=faq_id)
     return await outbox.drain_once(row_ids=ids)
@@ -120,9 +150,10 @@ async def faq_doc(faq_id: int) -> dict | None:
     """FAQ 청크의 색인 문서(_source). 없으면 None — 청크는 OpenSearch에만 있다(#139)."""
     from config import settings
     from rag.search import os_client, os_index
-    resp = await os_client.client().get(index=settings.opensearch_index,
-                                        id=str(os_index.chunk_os_id(faq_id=faq_id)),
-                                        ignore=404)
+
+    resp = await os_client.client().get(
+        index=settings.opensearch_index, id=str(os_index.chunk_os_id(faq_id=faq_id)), ignore=404
+    )
     return resp.get('_source') if resp.get('found') else None
 
 
@@ -130,11 +161,16 @@ async def indexed_chunk_texts(document_id: int) -> list[str]:
     """문서의 색인 청크 본문들(chunk_index 순). PG `chunks`는 더 쓰지 않는다(#139)."""
     from config import settings
     from rag.search import os_client
-    resp = await os_client.client().search(index=settings.opensearch_index, body={
-        'size': 1000, '_source': ['chunk_id', 'text'],
-        'query': {'term': {'document_id': document_id}},
-        'sort': [{'chunk_id': 'asc'}],
-    })
+
+    resp = await os_client.client().search(
+        index=settings.opensearch_index,
+        body={
+            'size': 1000,
+            '_source': ['chunk_id', 'text'],
+            'query': {'term': {'document_id': document_id}},
+            'sort': [{'chunk_id': 'asc'}],
+        },
+    )
     return [h['_source']['text'] for h in resp['hits']['hits']]
 
 
@@ -142,11 +178,13 @@ async def indexed_chunk_texts(document_id: int) -> list[str]:
 def blob_tmp(monkeypatch, tmp_path):
     """blob 저장소를 테스트 임시 디렉터리로 — 실제 blob 디렉터리 오염 방지."""
     from config import settings
+
     monkeypatch.setattr(settings, 'blob_storage_dir', str(tmp_path))
     return tmp_path
 
 
 # ── 가짜 임베딩 ──────────────────────────────────────────────
+
 
 def fake_vector(text: str) -> list[float]:
     """결정적 1024차원 가짜 벡터 — 같은 텍스트는 같은 벡터 (배관 검증용, 의미 없음)."""
@@ -200,7 +238,7 @@ def fake_embed(monkeypatch):
     monkeypatch.setattr(rag.search.embeddings, 'embed_texts', _texts)
     monkeypatch.setattr(rag.search.os_index, 'embed_texts', _texts)
     monkeypatch.setattr(rag.ingestion, 'embed_texts', _texts)
-    monkeypatch.setattr(rag.search.retriever, 'embed_texts', _texts)   # 쿼리 확장(#5)으로 배치 임베딩 전환
+    monkeypatch.setattr(rag.search.retriever, 'embed_texts', _texts)  # 쿼리 확장(#5)으로 배치 임베딩 전환
     monkeypatch.setattr(rag.turn.cache, 'embed_query', _query)
     monkeypatch.setattr(settings, 'rerank_enabled', False)
     return counting
@@ -211,6 +249,7 @@ def pass_gate(monkeypatch):
     """근거 게이트 무조건 통과 — 가짜 벡터로는 임계(0.6)를 못 넘어서.
     (4개 테스트 파일에 복붙되던 것을 공용 승격 — #10 리뷰)"""
     import rag.search.retriever as rt
+
     monkeypatch.setattr(rt, 'apply_gate', lambda cands, max_dense_distance=0.6: rt.GateVerdict(False, None))
 
 
@@ -229,13 +268,15 @@ async def relaxed_quota(tenant_id):
     """
     from database import AsyncSessionLocal
     from rag.models import TenantQuota
+
     async with AsyncSessionLocal() as s:
         s.add(TenantQuota(tenant_id=tenant_id, concurrency_limit=50, user_concurrency=50))
         await s.commit()
-    yield                      # 정리는 purge_tenant가 한다 (TenantQuota 포함)
+    yield  # 정리는 purge_tenant가 한다 (TenantQuota 포함)
 
 
 # ── 가짜 LLM ─────────────────────────────────────────────────
+
 
 def _current_question(user_content: str) -> str:
     """condense 유저 메시지에서 '현재 질문:' 다음 줄을 집는다 — FakeLlm 반향용."""
@@ -261,35 +302,36 @@ class FakeLlm:
         # 인용 검증 테스트는 여전히 answer를 직접 교체해서 쓴다.
         # 어절 3개 유지 주의: pause_after_tokens=2(셋째 토큰 정지)를 쓰는 취소 테스트들의 전제.
         from rag.turn.citation_labels import citation_tail
+
         self.answer = answer if answer is not None else f'테스트 답변입니다. {citation_tail([1])}'
         self.intent_json = '{"safe": true, "intent": "KNOWLEDGE"}'
-        self.reuse_judge_json = '{"same_answer": true, "reason": "테스트 고정 승인"}'   # 캐시 판정 (#113)
-        self.calls: list[str] = []          # 어떤 용도로 호출됐는지 기록 (검증용)
-        self.system_prompts: list[tuple[str, str]] = []   # (용도, 시스템 프롬프트) — 주입 내용 검증용
-        self.citation_tails: list = []   # astream별 citations 의도(CitationTail|None) — 꼬리 제약 주입 검증용(#56·#65·#287)
-        self.schemas: list = []          # acomplete별 schema 의도 — 스키마 주입 증거(#43·#287)
+        self.reuse_judge_json = '{"same_answer": true, "reason": "테스트 고정 승인"}'  # 캐시 판정 (#113)
+        self.calls: list[str] = []  # 어떤 용도로 호출됐는지 기록 (검증용)
+        self.system_prompts: list[tuple[str, str]] = []  # (용도, 시스템 프롬프트) — 주입 내용 검증용
+        self.citation_tails: list = []  # astream별 citations 의도(CitationTail|None) — 꼬리 제약 주입 검증용(#56·#65·#287)
+        self.schemas: list = []  # acomplete별 schema 의도 — 스키마 주입 증거(#43·#287)
         # 취소 테스트용 정지 지점 (#30). None이면 기존 동작 그대로.
         # 왜 필요한가: astream에 진짜 await가 없으면 이벤트 루프에 제어가 넘어가지 않아
         # task.cancel()이 전달될 지점 자체가 없다 — 생성이 그대로 완주한다(실측).
         # 시간(sleep) 대신 Event로 멈추는 이유: 테스트가 "정확히 N토큰 뒤"를 잡을 수 있어
         # CI에서 타이밍 플레이크가 나지 않는다.
         self.pause_after_tokens: int | None = None
-        self.finish_reason = 'stop'   # astream 완주 시 콜백에 전달 (#129) — 'length'로 바꿔 잘림 재현
+        self.finish_reason = 'stop'  # astream 완주 시 콜백에 전달 (#129) — 'length'로 바꿔 잘림 재현
         # 생성 실패 테스트용 — N번째 토큰에서 스트림이 끊긴 상황(LLM·네트워크 장애) 주입.
         # pause와 달리 재개가 없다: 실패 경로의 저장 규칙을 보려는 것이라 중단 자체가 목적.
         self.raise_after_tokens: int | None = None
-        self.paused = asyncio.Event()        # 테스트: 정지 지점 도달을 기다린다
-        self.resume = asyncio.Event()        # 테스트: set()하면 스트림이 계속된다
+        self.paused = asyncio.Event()  # 테스트: 정지 지점 도달을 기다린다
+        self.resume = asyncio.Event()  # 테스트: set()하면 스트림이 계속된다
 
     def _kind(self, messages: list[dict]) -> str:
         system = messages[0]['content'] if messages else ''
         if '분류기' in system or '입력 검사' in system:
             return 'intent'
-        if '질문 여러 개' in system:      # CONDENSE_MULTI(#5) — '재작성'보다 먼저 (문자열 겹침)
+        if '질문 여러 개' in system:  # CONDENSE_MULTI(#5) — '재작성'보다 먼저 (문자열 겹침)
             return 'condense_multi'
         if '재작성' in system:
             return 'condense'
-        if '재사용 판정기' in system:     # 캐시 재사용 판정 (#113)
+        if '재사용 판정기' in system:  # 캐시 재사용 판정 (#113)
             return 'reuse_judge'
         return 'generate'
 
@@ -310,14 +352,12 @@ class FakeLlm:
         if kind == 'condense':
             # 실제 질문을 JSON으로 반향 (#43). 구현 주의: 옛 코드는 마지막 줄을 반향했는데
             # 그건 질문이 아니라 라벨이었다(잠복 버그 — 이 값을 검증하는 테스트가 없어 안 드러남).
-            return json.dumps({'standalone': _current_question(messages[-1]['content'])},
-                              ensure_ascii=False)
+            return json.dumps({'standalone': _current_question(messages[-1]['content'])}, ensure_ascii=False)
         if kind == 'condense_multi':
             # 멀티쿼리(#5) 규격 반향 — variants를 채워야 플래그 on 통합 테스트가
             # off와 동일 경로로 축소되지 않는다.
             q = _current_question(messages[-1]['content'])
-            return json.dumps({'standalone': q, 'variants': [f'{q} 변형A', f'{q} 변형B']},
-                              ensure_ascii=False)
+            return json.dumps({'standalone': q, 'variants': [f'{q} 변형A', f'{q} 변형B']}, ensure_ascii=False)
         return self.answer
 
     async def astream(self, messages: list[dict], *, schema=None, citations=None, on_finish_reason=None, on_usage=None):
@@ -330,7 +370,7 @@ class FakeLlm:
                 raise RuntimeError('LLM 스트림 중단 (테스트 주입)')
             if self.pause_after_tokens is not None and i == self.pause_after_tokens:
                 self.paused.set()
-                await self.resume.wait()      # 취소 테스트가 여기서 task.cancel()을 건다
+                await self.resume.wait()  # 취소 테스트가 여기서 task.cancel()을 건다
             yield token + ' '
         # 실제 구현(rag/llm/openai_compat.py)처럼 완주 시 종료 사유를 콜백으로 알린다 (#129).
         # finish_reason 속성을 'length'로 바꾸면 잘림 시나리오를 흉내 낼 수 있다.
@@ -343,12 +383,14 @@ def fake_llm(monkeypatch):
     """RagService가 쓰는 공용 LLM(shared_llm)과 보조 LLM(shared_aux_llm, #297)을 같은 가짜로 치환."""
     fake = FakeLlm()
     import rag.turn.service
+
     monkeypatch.setattr(rag.turn.service, 'shared_llm', fake)
     monkeypatch.setattr(rag.turn.service, 'shared_aux_llm', fake)
     return fake
 
 
 # ── 데이터 격리 + 루프 위생 ─────────────────────────────────
+
 
 @pytest_asyncio.fixture
 async def _loop_hygiene():
@@ -368,6 +410,7 @@ async def _loop_hygiene():
     clients.http_async = httpx.AsyncClient()
     # OpenSearch 클라이언트(aiohttp)도 루프에 묶인다 — 닫고 비워 다음 테스트가 새로 만들게 (#139)
     from rag.search import os_client
+
     await os_client.close_client()
 
 
@@ -397,11 +440,21 @@ async def purge_tenant(t: str) -> None:
         SearchIndexOutbox,
         TenantQuota,
     )
+
     async with AsyncSessionLocal() as session:
         # FK 순서: 자식(청크·메시지) 먼저. outbox 행(done/failed 포함)도 테넌트 단위로 지운다 —
         # 운영은 행을 보존하지만(이력) 테스트의 랜덤 테넌트 행이 공유 DB에 쌓일 이유는 없다 (#139).
-        for model in (Message, Conversation, AnswerCacheRow,
-                      Faq, FaqCategory, Document, Folder, TenantQuota, SearchIndexOutbox):
+        for model in (
+            Message,
+            Conversation,
+            AnswerCacheRow,
+            Faq,
+            FaqCategory,
+            Document,
+            Folder,
+            TenantQuota,
+            SearchIndexOutbox,
+        ):
             await session.execute(delete(model).where(model.tenant_id == t))
         await session.commit()
     # Redis 잔재는 리미터의 in-flight 키뿐 (kms:inflight:*) — 취소 채널은 pub/sub이라 키가 안 남는다
@@ -417,6 +470,7 @@ async def _ensure_search_index() -> None:
     보장한다 — 정리(purge_tenant)에서만 부르면 첫 테스트가 없는 인덱스에 색인하다 404로 죽는다(실측).
     엔진이 안 떠 있으면 여기서 바로 실패한다 — 조용히 PG만으로 도는 척하지 않는다."""
     from rag.search import os_client
+
     await os_client.ensure_index()
 
 
@@ -439,6 +493,7 @@ async def other_tenant_id(_loop_hygiene):
 
 
 # ── ASGI 클라이언트 ──────────────────────────────────────────
+
 
 @pytest_asyncio.fixture
 async def client(tenant_id, fake_embed):
@@ -469,8 +524,9 @@ def _no_remote_ocr():
     이벤트 루프 픽스처와의 해제 순서가 바뀌고, 루프가 닫힌 뒤 undo가 돌아 test_limiter_fail_open·
     test_retry_dispatch가 teardown에서 'Event loop is closed'로 깨졌다(2026-09-17 실측, origin/main에선 통과)."""
     from config import settings
+
     settings.docling_do_ocr = False
-    settings.ocr_provider = 'triton'   # 상용 OCR(#299)도 같은 이유로 끈다 — .env가 llm이면 PDF 테스트가 상용 LLM을 부른다. 켜는 건 tests/test_ocr_llm.py
+    settings.ocr_provider = 'triton'  # 상용 OCR(#299)도 같은 이유로 끈다 — .env가 llm이면 PDF 테스트가 상용 LLM을 부른다. 켜는 건 tests/test_ocr_llm.py
 
 
 # ── 그림 캡션 VLM 대역 (#223) ──
@@ -485,10 +541,10 @@ FAKE_CAPTION = '테스트 캡션: 로그인 화면'
 class FakeVlm:
     def __init__(self):
         self.caption = FAKE_CAPTION
-        self.status = 200          # 5xx로 바꾸면 docling은 빈 캡션을 준다 → CaptionFailedError
-        self.delay = 0.0           # 초 — 마감 테스트용
+        self.status = 200  # 5xx로 바꾸면 docling은 빈 캡션을 준다 → CaptionFailedError
+        self.delay = 0.0  # 초 — 마감 테스트용
         self.calls = 0
-        self.finish_reason = 'stop'   # 'length'면 출력이 상한에서 잘린 응답(#299 — 상용 OCR은 결정적 실패로 올린다)
+        self.finish_reason = 'stop'  # 'length'면 출력이 상한에서 잘린 응답(#299 — 상용 OCR은 결정적 실패로 올린다)
 
 
 @pytest.fixture(scope='session')
@@ -506,9 +562,20 @@ def _fake_vlm_server():
             vlm.calls += 1
             if vlm.delay:
                 time.sleep(vlm.delay)
-            body = json.dumps({'id': 'fake', 'created': 0, 'model': 'fake',
-                               'choices': [{'index': 0, 'finish_reason': vlm.finish_reason,
-                                            'message': {'role': 'assistant', 'content': vlm.caption}}]}).encode()
+            body = json.dumps(
+                {
+                    'id': 'fake',
+                    'created': 0,
+                    'model': 'fake',
+                    'choices': [
+                        {
+                            'index': 0,
+                            'finish_reason': vlm.finish_reason,
+                            'message': {'role': 'assistant', 'content': vlm.caption},
+                        }
+                    ],
+                }
+            ).encode()
             self.send_response(vlm.status)
             self.send_header('content-type', 'application/json')
             self.send_header('content-length', str(len(body)))
@@ -527,7 +594,8 @@ def _fake_vlm_server():
 @pytest.fixture
 def fake_vlm(_fake_vlm_server, monkeypatch):
     from config import settings
+
     vlm, url = _fake_vlm_server
-    vlm.__init__()                 # 상태(캡션·실패·지연·호출 수)는 테스트마다 초기화
+    vlm.__init__()  # 상태(캡션·실패·지연·호출 수)는 테스트마다 초기화
     monkeypatch.setattr(settings, 'vlm_caption_url', url)
     return vlm

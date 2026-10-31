@@ -17,6 +17,7 @@ status 없음 — 2026-08 시점 608행 전수)을 인라인으로 고정한다.
 DB·LLM 없음 — Message는 세션 없이 transient로만 쓰고, LLM은 conftest의 FakeLlm을 직접
 인스턴스화한다(monkeypatch 픽스처가 필요 없는 순수 함수 호출이라).
 """
+
 import pytest
 
 from eval._gold_history import DEFAULT_STATUS, messages_from_conversation
@@ -44,8 +45,7 @@ class TestAdapter:
 
     def test_gold가_실은_status는_그대로_통과한다(self):
         """어댑터를 안 고치고도 gold가 취소·실패 턴을 표현할 수 있어야 한다."""
-        out = messages_from_conversation(
-            [{'role': 'assistant', 'content': '', 'status': 'cancelled'}])
+        out = messages_from_conversation([{'role': 'assistant', 'content': '', 'status': 'cancelled'}])
         assert out[0].status == 'cancelled'
 
     def test_이력_없음은_빈_리스트(self):
@@ -62,16 +62,14 @@ class TestConsumerPaths:
 
     @pytest.mark.asyncio
     async def test_condense_query를_통과한다(self):
-        out = await condense_query(FakeLlm(), '그럼 교환도 그래요?',
-                                   messages_from_conversation(_GOLD_TURN))
+        out = await condense_query(FakeLlm(), '그럼 교환도 그래요?', messages_from_conversation(_GOLD_TURN))
         assert isinstance(out, str) and out
 
     @pytest.mark.asyncio
     async def test_condense_to_queries를_통과한다(self):
         """멀티쿼리 경로. 지금은 _condense_call이 multi 여부와 무관하게 이력 조립을 공유하므로
         위 단일 경로와 같은 코드를 타지만, 갈라지면 이 테스트만 남는다 — 소비처가 둘인 건 사실이다."""
-        out = await condense_to_queries(FakeLlm(), '그럼 교환도 그래요?',
-                                        messages_from_conversation(_GOLD_TURN))
+        out = await condense_to_queries(FakeLlm(), '그럼 교환도 그래요?', messages_from_conversation(_GOLD_TURN))
         assert isinstance(out, list) and out
 
 
@@ -80,8 +78,8 @@ class TestStatusRendering:
 
     def _rendered(self, status: str, content: str) -> str:
         msgs = messages_from_conversation(
-            [{'role': 'user', 'content': '질문'},
-             {'role': 'assistant', 'content': content, 'status': status}])
+            [{'role': 'user', 'content': '질문'}, {'role': 'assistant', 'content': content, 'status': status}]
+        )
         return build_prior_turns(msgs, 2000)[0]['a']
 
     def test_취소_턴은_부분답변에_표식을_붙인다(self):

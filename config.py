@@ -5,6 +5,7 @@
 
 우선순위: OS 환경변수 > .env 파일 > 코드 기본값.
 """
+
 import os
 from pathlib import Path
 from typing import Literal
@@ -46,13 +47,13 @@ class Settings(BaseSettings):
     # 부하 실측(#101): 인프라 붕괴점이 동시 ~32(완료 p95가 12초→63초로 폭증)이고 안전선은 24.
     # 그런데 테넌트가 23개라 테넌트당 10이면 이론상 동시 230까지 앱이 허용해 전역 상한이 없다 —
     # 한정된 GPU(14B 단일)에 맞춰 테넌트 상한을 조인다. 전역 동시 상한은 최종 스펙 확정 시 별도.
-    concurrency_limit_default: int = 5    # 테넌트 동시 in-flight 기본 (quota 행 없을 때)
+    concurrency_limit_default: int = 5  # 테넌트 동시 in-flight 기본 (quota 행 없을 때)
     # 1 = 멀티창으로 동시 두 질문 차단. 상담 보조 도구라 한 사람이 병렬 질의할 이유가 없고,
     # 자원이 한정적이라 열어줄 여유가 없다. **X-User-Id 헤더가 있을 때만 적용**된다(limiter
     # docstring) — FE가 헤더를 안 보내면 테넌트 상한만 걸리므로, 이 값이 실효하려면 FE 전송 필요.
-    user_concurrency_default: int = 1     # 사용자(X-User-Id)별 동시 in-flight 기본
-    inflight_max_seconds: int = 120       # in-flight 유령 판정 — 넘으면 카운트서 제거(강제종료 아님)
-    sse_ping_interval_seconds: int = 15   # SSE 유휴 ping 주기 — 프록시 idle 종료 대비 (#56, 생성 경로만)
+    user_concurrency_default: int = 1  # 사용자(X-User-Id)별 동시 in-flight 기본
+    inflight_max_seconds: int = 120  # in-flight 유령 판정 — 넘으면 카운트서 제거(강제종료 아님)
+    sse_ping_interval_seconds: int = 15  # SSE 유휴 ping 주기 — 프록시 idle 종료 대비 (#56, 생성 경로만)
     # 재접속용 Redis Stream (#75). TTL은 종료 후 재접속 유예 — 레이스(이력 조회와 구독 사이에
     # 생성이 끝나는 창)를 매끄럽게 흡수한다. 스트림 하나가 답변 하나 크기(수 KB)라 넉넉해도 무해.
     stream_resume_ttl_seconds: int = 300
@@ -77,12 +78,14 @@ class Settings(BaseSettings):
 
     # LLM — 공급자 하나를 고르고 그 접속 정보를 준다(#287). 공급자별 구현은 rag/llm/ (정의점 rag/llm/__init__.py).
     # 이름에 벤더를 넣지 않는다 — 옛 VLLM_BASE_URL·VLLM_MODEL은 없앴고, 남아 있으면 기동 시 멈춘다(_reject_renamed_env).
-    llm_provider: Literal["vllm", "gemini", "openai", "anthropic"] = "vllm"   # 모르는 이름은 기동 시 실패. 벤더 추가 = 여기 + rag/llm 등록부
+    llm_provider: Literal["vllm", "gemini", "openai", "anthropic"] = (
+        "vllm"  # 모르는 이름은 기동 시 실패. 벤더 추가 = 여기 + rag/llm 등록부
+    )
     # 상용 3종(#288)은 LiteLLM 경유(rag/llm/litellm.py). llm_model은 접두 없이 벤더 모델명(예: gemini-2.5-flash, gpt-5-mini,
     # claude-sonnet-5), 키는 llm_api_key 하나(벤더별 환경변수 GEMINI_API_KEY 등은 읽지 않는다 — 결정 6).
     llm_base_url: str = "http://localhost:11434/v1"
     llm_model: str = "qwen3:4b"
-    llm_api_key: str = "EMPTY"               # 사내 vLLM은 키를 안 본다. 상용 벤더 키는 .env에만 둔다(이 파일·.env.dev에 적지 말 것)
+    llm_api_key: str = "EMPTY"  # 사내 vLLM은 키를 안 본다. 상용 벤더 키는 .env에만 둔다(이 파일·.env.dev에 적지 말 것)
     # 문서 기반 사실 제공 서비스라 다양성이 손해 — 낮게 고정 (2026-08-05).
     # None이면 서버 기본값(Qwen3 non-thinking 권장 0.7)이 쓰이는데, 실측 4회 반복에서 매번 다른 답이
     # 나왔다. 인용 형식 파싱(출처 꼬리)·시맨틱 캐시가 모두 결정성에 의존해 불리하다.
@@ -104,7 +107,7 @@ class Settings(BaseSettings):
     # (키 하나·장애 영역 하나, 사용자 결정 10/25). 온도를 공유해도 되는 이유: 같은 계열이면 온도 제약도 같다(gpt-5는 생각을 켜면 1.0만).
     # 모델 선택 근거(품질·단가·지연·프롬프트 캐싱 최소 길이)는 이슈 #297 측정 코멘트가 정본.
     llm_aux_model: str = ""
-    llm_aux_reasoning_effort: Literal["", "none", "minimal", "low", "medium", "high"] = ""   # ""=생성 값을 따름, none=끔
+    llm_aux_reasoning_effort: Literal["", "none", "minimal", "low", "medium", "high"] = ""  # ""=생성 값을 따름, none=끔
     # ⚠ 벤더마다 받는 값이 다르다 — gpt-5-mini는 'none'을 400으로 거부하고 'minimal'부터 받는다(실측 10/25, "Supported values
     #   are: 'minimal', 'low'…"). 맞지 않는 값은 조용히 빼지 않고 400으로 드러난다(위 llm_reasoning_effort와 같은 규칙).
 
@@ -112,16 +115,18 @@ class Settings(BaseSettings):
     # 공급자(#289, 정의점 rag/search/embeddings.py): tei(사내, 기본) | openai | gemini | voyage — 상용은 LiteLLM 경유, 모델명은 접두 없이
     # (예: text-embedding-3-large, gemini-embedding-001, voyage-3.5), 차원은 항상 1024로 요청하고 응답을 검사한다.
     embed_provider: Literal["tei", "openai", "gemini", "voyage"] = "tei"
-    embed_model: str = ""                    # 상용일 때 모델·키 필수(_require_vendor_model_and_key). TEI는 컨테이너당 모델 고정이라 안 본다
-    embed_api_key: str = ""                  # 상용 키 — .env에만 (LLM과 별개 키: 벤더가 다를 수 있다)
-    embed_base_url: str = "http://localhost:38889"    # TEI 임베딩 서버 (BGE-M3, /embed) — 실주소는 .env. 상용이면 무시
+    embed_model: str = (
+        ""  # 상용일 때 모델·키 필수(_require_vendor_model_and_key). TEI는 컨테이너당 모델 고정이라 안 본다
+    )
+    embed_api_key: str = ""  # 상용 키 — .env에만 (LLM과 별개 키: 벤더가 다를 수 있다)
+    embed_base_url: str = "http://localhost:38889"  # TEI 임베딩 서버 (BGE-M3, /embed) — 실주소는 .env. 상용이면 무시
     embed_timeout: float = 30.0
-    embed_dimensions: int | None = None      # TEI 전용 MRL 절단 — 상용은 rag/search/embeddings.EMBED_DIM(1024) 고정
+    embed_dimensions: int | None = None  # TEI 전용 MRL 절단 — 상용은 rag/search/embeddings.EMBED_DIM(1024) 고정
 
     # OTel 트레이싱 (#7). 미설정(빈 값)이면 완전 no-op — 계측 코드는 돌지만 스팬이 기록되지 않음.
     # 로컬 Phoenix: http://localhost:6006/v1/traces (docker-compose.local.yml). 개발계 전용 권장.
     otel_endpoint: str = ""
-    otel_text_limit: int = 500        # 스팬에 담는 청크 본문·답변 절단 길이 (질문·재작성은 전문)
+    otel_text_limit: int = 500  # 스팬에 담는 청크 본문·답변 절단 길이 (질문·재작성은 전문)
 
     # 워커 프로세스 지표 (#151). arq에는 HTTP 서버가 없어 웹의 /metrics(main.py)가 워커를 못 덮는다 —
     # 값을 주면 워커가 startup에서 그 포트로 자기 /metrics를 연다(0이면 안 연다).
@@ -144,19 +149,21 @@ class Settings(BaseSettings):
     condense_multi_query_enabled: bool = True
 
     # reranker (F99: TEI /rerank, cross-encoder 재정렬). on/off 토글 한 줄.
-    rerank_enabled: bool = True                       # False면 dense-only 순서 그대로 (리랭크 skip). .env로 오버라이드 가능
+    rerank_enabled: bool = True  # False면 dense-only 순서 그대로 (리랭크 skip). .env로 오버라이드 가능
     # 하이브리드 어휘 채널(#135→#139): 엔진 BM25(Nori) 상위 중 dense 미포함분을 리랭커 풀에 주입.
     # 실측(모의 450 + 인티큐브 실문서 75문항)은 주입 상방 0 — 그래도 실코퍼스의 상품코드·고유명
     # 분포 대비 정식 채널로 켜둔다(사용자 결정). 끄면 dense-only.
     hybrid_lexical_enabled: bool = True
-    hybrid_lexical_inject: int = 15                   # dense 미포함 BM25 상위 주입 수 (어블레이션 조립과 동일)
+    hybrid_lexical_inject: int = 15  # dense 미포함 BM25 상위 주입 수 (어블레이션 조립과 동일)
     # 리랭크 공급자(#289, 정의점 rag/search/reranker.py): tei(사내, 기본) | cohere | voyage | jina — 상용은 LiteLLM arerank 경유,
     # 모델명은 접두 없이(예: rerank-v5.0-pro, rerank-3, jina-reranker-v2-base-multilingual — Cohere 목록은 /v2/models?endpoint=rerank, 10/24 기준 v5.0이 최신). 점수 눈금이 벤더마다 달라
     # ident_boost는 벤더 전환 측정 때 다시 본다.
     rerank_provider: Literal["tei", "cohere", "voyage", "jina"] = "tei"
-    rerank_model: str = ""                   # 상용일 때 모델·키 필수(_require_vendor_model_and_key)
-    rerank_api_key: str = ""                 # 상용 키 — .env에만
-    rerank_base_url: str = "http://localhost:38890"   # TEI 리랭커 서버 (bge-reranker-v2-m3, /rerank) — 실주소는 .env. 상용이면 무시
+    rerank_model: str = ""  # 상용일 때 모델·키 필수(_require_vendor_model_and_key)
+    rerank_api_key: str = ""  # 상용 키 — .env에만
+    rerank_base_url: str = (
+        "http://localhost:38890"  # TEI 리랭커 서버 (bge-reranker-v2-m3, /rerank) — 실주소는 .env. 상용이면 무시
+    )
     rerank_timeout: float = 30.0
     # 식별자 채널(#238, 정의점 rag/identifiers·rag/search/retriever). 질문에 사전 식별자('11조')가 있을 때만 발동:
     # 정확 일치 조각을 리랭커 풀에 주입하고, 리랭크 **뒤** 점수에 ident_boost를 더해 재정렬한다.
@@ -164,7 +171,7 @@ class Settings(BaseSettings):
     # 실질문 23건 근거5안 15→23, 회귀 0(2026-10-17). 0.5는 묶음·파일명 문제까지 보정치로 덮는 값이라 기각.
     ident_channel_enabled: bool = True
     ident_boost: float = 0.3
-    ident_inject: int = 10                            # dense·BM25 미포함 정확 일치 조각 주입 상한
+    ident_inject: int = 10  # dense·BM25 미포함 정확 일치 조각 주입 상한
 
     # 검색 저장소 — OpenSearch 하나 (#139 도입 확정 2026-09-12, 사유=확장성). PG는 문서·FAQ·폴더·
     # 대화·캐시·outbox의 정본이고, 청크(본문·메타·벡터·어휘 필드)는 엔진에만 있다. 서빙은 엔진에서
@@ -177,7 +184,7 @@ class Settings(BaseSettings):
     # 남은 것: BM25 df 스코프가 인덱스 전체(테넌트 간 idf 간섭 — 실측 표시 지표 미동). 테넌트별
     # 인덱스가 대안. 배포는 자체 설치 단일 노드(매핑 1샤드·0레플리카)라 노드 다운 = 검색 불가 —
     # 인제스션은 outbox가 pending으로 들고 있다가 복구 후 반영한다.
-    opensearch_url: str = "http://localhost:9200"     # 실주소는 .env
+    opensearch_url: str = "http://localhost:9200"  # 실주소는 .env
     opensearch_index: str = "kms_chunks_v1"
     opensearch_timeout: float = 30.0
     # 커넥션 풀 상한 (#201). 안 주면 opensearchpy 기본 10이고, 그 값이 곧
@@ -198,18 +205,22 @@ class Settings(BaseSettings):
     # 교차 검증: 풀 30·동시 128 = 84 필요 → QueuePool 에러 371건이 실제로 났다(#114).
     # 공용 개발계라 앱·워커·사람 세션이 1000을 나눠 쓴다 — 무한정 올리지 않는다.
     db_pool_size: int = 50
-    db_max_overflow: int = 50        # 총 상한 100
+    db_max_overflow: int = 50  # 총 상한 100
 
     # 컨텍스트 예산 (F100). context_window는 vLLM --max-model-len과 반드시 일치시킬 것.
     context_window: int = 30720
-    generation_reserve_tokens: int = 3000    # 답변 생성 몫 = max_tokens (한글 ~4,500자 상한 — 폭주 방지용, 정상 답변은 미도달)
-    history_budget_tokens: int = 2000        # 이전 대화 참고 몫 (최신 턴부터 예산 소진까지) — 답변 생성용
-    condense_history_budget_tokens: int = 600  # 질의 재작성(condense)용 히스토리 예산 — 참조 해소엔 최근 몇 턴이면 충분,
-                                               # 길면 이전 답변의 수치가 질의에 주입됨 (실측: 1751tk 1/5 → 493tk 5/5, 2026-07-20)
-    max_attachments: int = 1                 # 컨텍스트 유지 첨부 개수 (넘으면 오래된 것 제외 — FE 고정 안내)
-                                             # 2→1 (#63 운영 결정): 복수 첨부는 "이 문서" 단수 지시의
-                                             # 대상 모호·이월+신규 공존 등 엣지 표면만 넓혔다. 파일럿에서
-                                             # 두 문서 대조 실수요가 나오면 되돌린다 (ATTACHMENT_MAX_ITEMS와 짝)
+    generation_reserve_tokens: int = (
+        3000  # 답변 생성 몫 = max_tokens (한글 ~4,500자 상한 — 폭주 방지용, 정상 답변은 미도달)
+    )
+    history_budget_tokens: int = 2000  # 이전 대화 참고 몫 (최신 턴부터 예산 소진까지) — 답변 생성용
+    condense_history_budget_tokens: int = (
+        600  # 질의 재작성(condense)용 히스토리 예산 — 참조 해소엔 최근 몇 턴이면 충분,
+    )
+    # 길면 이전 답변의 수치가 질의에 주입됨 (실측: 1751tk 1/5 → 493tk 5/5, 2026-07-20)
+    max_attachments: int = 1  # 컨텍스트 유지 첨부 개수 (넘으면 오래된 것 제외 — FE 고정 안내)
+    # 2→1 (#63 운영 결정): 복수 첨부는 "이 문서" 단수 지시의
+    # 대상 모호·이월+신규 공존 등 엣지 표면만 넓혔다. 파일럿에서
+    # 두 문서 대조 실수요가 나오면 되돌린다 (ATTACHMENT_MAX_ITEMS와 짝)
 
     # cache (exact 캐시 제거됨 — semantic만)
     # 히트 = floor 이상 후보 + doc집합 동일 + LLM 재사용 판정 승인 (#113).
@@ -230,57 +241,59 @@ class Settings(BaseSettings):
     # 보이고, 변환 세마포어를 색인과 나누면 색인 작업 뒤에 줄을 선다(#220 결정 6).
     # 아래 메모리·시간 값은 PDF 실측에서 왔다(2026-09-11 M3 → 리눅스 컨테이너 재측정). 소비처는 rag/chunking/.
     # 인제스션 경로는 docling 하나다 — 끄는 스위치는 없다(#272). 저품질 색인을 조용히 만드느니 docling 실패는 failed로 끝낸다.
-    docling_table_mode: str = "accurate"      # fast | accurate. accurate이 병합 셀을 한 셀로 잡는다(출장 지급표
-                                              # '부회장/사장' 실측). RAM 차이 +110MB(687→796MB)라 정확도를 택한다
-    docling_do_ocr: bool = True               # 이미지로 렌더된 표(TableItem)의 셀을 읽는다(#168). 그림(PictureItem)은
-                                              # VLM 캡션(#162)이 읽고, 이 둘은 서로 닿지 않는 경로다. 엔진은 워커 안이
-                                              # 아니라 **원격 Triton**(아래 ocr_kserve_*) — 인프로세스로 켜면 워커 피크
-                                              # +1.2GB(1,784→2,990~3,318MiB)·시간 79%(쪽당 3.3→15.9초)라 밖으로 뺐다
-                                              # (리눅스 컨테이너 실측 2026-09-16, 이슈 #168). 원격 실패는 문서 failed로
-                                              # 확정된다(조용한 저품질 색인 금지) — Triton이 오래 죽어 있을 때 이 스위치로
-                                              # 끄면 OCR 없이(표 이미지는 빈 격자) 색인이 계속된다. 켜기 전 상태와 같다.
-    docling_do_cell_matching: bool = False    # 7월 설정 계승 — 켜면 한글 표 셀의 공백이 뭉친다 ("편도 3,000원")
-    docling_device: str = "cpu"               # 'auto'는 서버에서 GPU/MPS 탐색을 시도한다. 앱은 GPU 장비에 안 올린다
-    docling_num_threads: int = 4              # 워커 vCPU 수에 맞춤. 공식 실측: 4→16스레드에 쪽당 1.67→1.09초
+    docling_table_mode: str = "accurate"  # fast | accurate. accurate이 병합 셀을 한 셀로 잡는다(출장 지급표
+    # '부회장/사장' 실측). RAM 차이 +110MB(687→796MB)라 정확도를 택한다
+    docling_do_ocr: bool = True  # 이미지로 렌더된 표(TableItem)의 셀을 읽는다(#168). 그림(PictureItem)은
+    # VLM 캡션(#162)이 읽고, 이 둘은 서로 닿지 않는 경로다. 엔진은 워커 안이
+    # 아니라 **원격 Triton**(아래 ocr_kserve_*) — 인프로세스로 켜면 워커 피크
+    # +1.2GB(1,784→2,990~3,318MiB)·시간 79%(쪽당 3.3→15.9초)라 밖으로 뺐다
+    # (리눅스 컨테이너 실측 2026-09-16, 이슈 #168). 원격 실패는 문서 failed로
+    # 확정된다(조용한 저품질 색인 금지) — Triton이 오래 죽어 있을 때 이 스위치로
+    # 끄면 OCR 없이(표 이미지는 빈 격자) 색인이 계속된다. 켜기 전 상태와 같다.
+    docling_do_cell_matching: bool = False  # 7월 설정 계승 — 켜면 한글 표 셀의 공백이 뭉친다 ("편도 3,000원")
+    docling_device: str = "cpu"  # 'auto'는 서버에서 GPU/MPS 탐색을 시도한다. 앱은 GPU 장비에 안 올린다
+    docling_num_threads: int = 4  # 워커 vCPU 수에 맞춤. 공식 실측: 4→16스레드에 쪽당 1.67→1.09초
     # 메모리 노브 — **리눅스 컨테이너 실측 기준**(2026-09-13). 이전 주석은 macOS에서 샘플링한
     # RSS(0.35~0.85GB)에 기대 있었고 피크가 아니었다. 같은 문서를 ru_maxrss 피크로 다시 재면
     # 맥 1,708MB / 리눅스 2,641MB다 — 눈금은 배포 대상(리눅스 x86_64)에서만 의미가 있다.
     # (docling_page_batch_size는 제거했다 — 2.126의 기본 StandardPdfPipeline은 스레드 구조로
     #  재작성돼 그 값을 읽지 않는다. 읽는 것은 옛 LegacyStandardPdfPipeline뿐이고, 디버그 로그로
     #  해당 코드가 한 번도 실행되지 않음을 확인했다.)
-    docling_layout_batch_size: int = 1         # 레이아웃 모델에 한 번에 넣는 쪽 수. 기본 4 → 1로 내리면
-                                               # 피크 2,270~2,486MB → 1,779~1,843MB(3회 반복 재현).
-                                               # 산출물은 sha256까지 동일하고 오히려 0.5~1.2초 빠르다.
-                                               # 맥에서는 효과가 편차 내로 묻힌다 — 플랫폼 의존적이다.
-    docling_queue_max_size: int = 4            # 스테이지 간 큐 길이(기본 100). 긴 문서에서 처리 대기 쪽이
-                                               # 쌓이는 상한 — layout_batch와 함께 내려야 효과가 있다
-    docling_document_timeout_seconds: float = 900.0   # **문서 1건의 변환 마감 — PDF·DOCX·XLSX 전 형식, 그림 캡션 단계 포함(#223).**
-                                              # rag/chunking/convert_process.ConvertProcess가 변환 프로세스를 kill해 끊는다(docling의
-                                              # document_timeout은 PDF 쪽 루프에서만 검사해 캡션·DOCX·XLSX를 못 막았다 — 그래서 안 쓴다).
-                                              # 넘기면 TimeoutError → outbox가 일시 실패로 백오프 재시도(#223 결정 5, 최대 약 24시간).
-                                              # 값 근거: 정상 최악 = PDF 100쪽(#168 리눅스 실측 쪽당 약 6.1초 → 약 610초)
-                                              # + 그림 100장(docling_max_pictures, 장당 약 2초 → 약 200초) ≈ 810초.
-                                              # 쪽당 6.1초 = CPU 3.3초 + OCR 요청 약 5.9건/쪽 × 0.47초(#168, CUDA EP 튜닝 후).
-                                              # drain 회차 예산·arq job_timeout(rag/outbox.py DRAIN_ROUND_SECONDS)이 이 값에서 계산된다
-                                              # (마감 + 꼬리 300 + 여유 180). 변환 동시성은 프로세스가 하나라 1이다(옛 docling_max_concurrency).
-    docling_max_num_pages: int = 100          # 병적 입력 가드(PDF만 — DOCX·XLSX엔 쪽 개념이 없어 넘기지 않는다, #220).
-                                              # **초과분을 자르는 게 아니라 문서를 거부한다**.
-                                              # 300 → 100 (#194). 300은 **사실상 죽은 상한**이었다 — 위 timeout(900초)이
-                                              # 쪽당 약 6.1초에서 약 145쪽에 먼저 걸려, 그 사이 구간 문서는 "900초를 기다린 끝에
-                                              # timeout failed"를 받았다. 사유도 불명확하고 그동안 다른 PDF 변환이 막힌다
-                                              # (변환 동시성 1). 100이면 가드가 **항상 먼저** 걸려 즉시·명확히 거절한다.
-                                              # 대가는 처리 가능한 100~145쪽 문서도 거부하는 것 — 처리율을 예측 가능성과 바꾼
-                                              # 제품 결정이다(#194, 2026-10-03). 되돌릴 땐 timeout부터 재실측할 것.
-                                              # (ConversionError → failed, 2026-09-13 실측). 파일 크기 상한은 라우터(DOC_MAX_FILE_BYTES 10MB)가
-                                              # 업로드 시점에 이미 막으므로 여기선 쪽 수만. 10MB 텍스트 PDF ≈ 100~200쪽
-    docling_max_pictures: int = 100           # 문서당 캡션 대상 그림 상한(#223 결정 4). **넘으면 문서를 거부한다**(결정적 실패 —
-                                              # 앞 N장만 캡션하고 나머지를 자리표시로 두는 안은 조용한 불완전 색인이라 기각).
-                                              # 대상 = docling이 VLM에 보낼 그림(면적 하한 picture_area_threshold 통과분) — 로고·아이콘은
-                                              # 안 센다. 셈은 rag/chunking/document_converter.PictureGuard. 전 형식 공통(PDF·DOCX·XLSX).
-                                              # 값 근거: 그림 100장 DOCX 캡션 199~214초(2026-10-15 실측, 동시 1) — PDF 100쪽 최악(약 610초)과
-                                              # 합쳐 약 810초 < 마감 900초. 실문서는 문서당 1~2장, 화면 캡처 매뉴얼(수십 장)까지 받는다.
-    docling_artifacts_path: str | None = None # 모델 가중치 디렉터리. None이면 첫 변환 때 HF에서 내려받는다 —
-                                              # NCP VM은 외부망 확인 필요. 이미지에 미리 굽고 경로를 주는 쪽이 안전
+    docling_layout_batch_size: int = 1  # 레이아웃 모델에 한 번에 넣는 쪽 수. 기본 4 → 1로 내리면
+    # 피크 2,270~2,486MB → 1,779~1,843MB(3회 반복 재현).
+    # 산출물은 sha256까지 동일하고 오히려 0.5~1.2초 빠르다.
+    # 맥에서는 효과가 편차 내로 묻힌다 — 플랫폼 의존적이다.
+    docling_queue_max_size: int = 4  # 스테이지 간 큐 길이(기본 100). 긴 문서에서 처리 대기 쪽이
+    # 쌓이는 상한 — layout_batch와 함께 내려야 효과가 있다
+    docling_document_timeout_seconds: float = (
+        900.0  # **문서 1건의 변환 마감 — PDF·DOCX·XLSX 전 형식, 그림 캡션 단계 포함(#223).**
+    )
+    # rag/chunking/convert_process.ConvertProcess가 변환 프로세스를 kill해 끊는다(docling의
+    # document_timeout은 PDF 쪽 루프에서만 검사해 캡션·DOCX·XLSX를 못 막았다 — 그래서 안 쓴다).
+    # 넘기면 TimeoutError → outbox가 일시 실패로 백오프 재시도(#223 결정 5, 최대 약 24시간).
+    # 값 근거: 정상 최악 = PDF 100쪽(#168 리눅스 실측 쪽당 약 6.1초 → 약 610초)
+    # + 그림 100장(docling_max_pictures, 장당 약 2초 → 약 200초) ≈ 810초.
+    # 쪽당 6.1초 = CPU 3.3초 + OCR 요청 약 5.9건/쪽 × 0.47초(#168, CUDA EP 튜닝 후).
+    # drain 회차 예산·arq job_timeout(rag/outbox.py DRAIN_ROUND_SECONDS)이 이 값에서 계산된다
+    # (마감 + 꼬리 300 + 여유 180). 변환 동시성은 프로세스가 하나라 1이다(옛 docling_max_concurrency).
+    docling_max_num_pages: int = 100  # 병적 입력 가드(PDF만 — DOCX·XLSX엔 쪽 개념이 없어 넘기지 않는다, #220).
+    # **초과분을 자르는 게 아니라 문서를 거부한다**.
+    # 300 → 100 (#194). 300은 **사실상 죽은 상한**이었다 — 위 timeout(900초)이
+    # 쪽당 약 6.1초에서 약 145쪽에 먼저 걸려, 그 사이 구간 문서는 "900초를 기다린 끝에
+    # timeout failed"를 받았다. 사유도 불명확하고 그동안 다른 PDF 변환이 막힌다
+    # (변환 동시성 1). 100이면 가드가 **항상 먼저** 걸려 즉시·명확히 거절한다.
+    # 대가는 처리 가능한 100~145쪽 문서도 거부하는 것 — 처리율을 예측 가능성과 바꾼
+    # 제품 결정이다(#194, 2026-10-03). 되돌릴 땐 timeout부터 재실측할 것.
+    # (ConversionError → failed, 2026-09-13 실측). 파일 크기 상한은 라우터(DOC_MAX_FILE_BYTES 10MB)가
+    # 업로드 시점에 이미 막으므로 여기선 쪽 수만. 10MB 텍스트 PDF ≈ 100~200쪽
+    docling_max_pictures: int = 100  # 문서당 캡션 대상 그림 상한(#223 결정 4). **넘으면 문서를 거부한다**(결정적 실패 —
+    # 앞 N장만 캡션하고 나머지를 자리표시로 두는 안은 조용한 불완전 색인이라 기각).
+    # 대상 = docling이 VLM에 보낼 그림(면적 하한 picture_area_threshold 통과분) — 로고·아이콘은
+    # 안 센다. 셈은 rag/chunking/document_converter.PictureGuard. 전 형식 공통(PDF·DOCX·XLSX).
+    # 값 근거: 그림 100장 DOCX 캡션 199~214초(2026-10-15 실측, 동시 1) — PDF 100쪽 최악(약 610초)과
+    # 합쳐 약 810초 < 마감 900초. 실문서는 문서당 1~2장, 화면 캡처 매뉴얼(수십 장)까지 받는다.
+    docling_artifacts_path: str | None = None  # 모델 가중치 디렉터리. None이면 첫 변환 때 HF에서 내려받는다 —
+    # NCP VM은 외부망 확인 필요. 이미지에 미리 굽고 경로를 주는 쪽이 안전
 
     # 원격 OCR — Triton(worker15 GPU)에 올린 RapidOCR을 docling KserveV2OcrOptions로 부른다 (#168).
     # 모델·파라미터는 docling 인프로세스와 동일(serving/triton-ocr/ 참조). 동일성은 같은 PDF의 markdown 대조로
@@ -293,15 +306,23 @@ class Settings(BaseSettings):
     # rag/chunking/ocr_llm.py. 캡션과 연결을 공유하는 이유: #296에서 한 모델이 둘 다 Triton보다 잘 읽었고(표 숫자 오독 6 vs 26),
     # 같은 값을 두 벌 적으면 한쪽만 바꾸는 실수가 난다 — 다른 모델이 필요해지면 그때 나눈다.
     ocr_provider: Literal["triton", "llm"] = "triton"
-    ocr_llm_max_tokens: int = 4000            # 쪽 하나·표 하나의 출력 상한. 캡션(1,500)보다 큰 이유: 표 한 쪽이 1,500을 넘는다(#296 측정 엔진 값)
-    ocr_llm_timeout_seconds: float = 180.0    # 요청 하나의 상한. 실측(gpt-5-mini, 10/25): 표 하나 중앙값 8초·최대 42초(184칸), 쪽 통째 중앙값 7초
-    ocr_llm_concurrency: int = 4              # 문서 하나 안에서 동시에 보내는 OCR 요청 수(#299 결정 7). 하나씩이면 스캔 100쪽(쪽 상한)이 약 800초로
-                                              # 변환 마감 900초에 걸린다. 캡션(vlm_caption_concurrency 1)과 다른 이유: 1은 사내 vLLM이 동시
-                                              # 요청에서 결과가 흔들려서였고(#223), 상용 gpt-5 계열은 온도 1.0 필수라 어차피 매번 다르다
-    ocr_kserve_url: str = "http://localhost:18893"   # KServe v2 **base**(스킴+호스트:포트). vlm_caption_url과 달리
-                                              # 경로를 붙이지 않는다 — docling이 /v2/models/{model}/infer를 조립한다. 실주소는 .env
-    ocr_kserve_model_name: str = "ocr"        # Triton 모델 리포지토리 이름(serving/triton-ocr/model_repository/ocr)
-    ocr_kserve_timeout_seconds: float = 60.0  # 요청 하나(=비트맵 영역 하나) 상한. docling 기본값 유지. 넘으면 그 문서는 failed
+    ocr_llm_max_tokens: int = (
+        4000  # 쪽 하나·표 하나의 출력 상한. 캡션(1,500)보다 큰 이유: 표 한 쪽이 1,500을 넘는다(#296 측정 엔진 값)
+    )
+    ocr_llm_timeout_seconds: float = (
+        180.0  # 요청 하나의 상한. 실측(gpt-5-mini, 10/25): 표 하나 중앙값 8초·최대 42초(184칸), 쪽 통째 중앙값 7초
+    )
+    ocr_llm_concurrency: int = (
+        4  # 문서 하나 안에서 동시에 보내는 OCR 요청 수(#299 결정 7). 하나씩이면 스캔 100쪽(쪽 상한)이 약 800초로
+    )
+    # 변환 마감 900초에 걸린다. 캡션(vlm_caption_concurrency 1)과 다른 이유: 1은 사내 vLLM이 동시
+    # 요청에서 결과가 흔들려서였고(#223), 상용 gpt-5 계열은 온도 1.0 필수라 어차피 매번 다르다
+    ocr_kserve_url: str = "http://localhost:18893"  # KServe v2 **base**(스킴+호스트:포트). vlm_caption_url과 달리
+    # 경로를 붙이지 않는다 — docling이 /v2/models/{model}/infer를 조립한다. 실주소는 .env
+    ocr_kserve_model_name: str = "ocr"  # Triton 모델 리포지토리 이름(serving/triton-ocr/model_repository/ocr)
+    ocr_kserve_timeout_seconds: float = (
+        60.0  # 요청 하나(=비트맵 영역 하나) 상한. docling 기본값 유지. 넘으면 그 문서는 failed
+    )
     # 표 이미지 OCR의 한계 — 설정으로 못 고치는 것(#253, 합성 표 23축 실측 2026-10-17. 실문서엔 표 이미지 0건이라 전부 합성):
     #   · 한글 단어 사이 띄어쓰기 소실("지원 기준"→"지원기준", 오독의 87%). RapidOCR은 글자 사전에 공백을 **항상** 넣으므로
     #     PaddleOCR의 use_space_char 같은 스위치가 없고, 한국어 v5 모델이 한글↔숫자 사이에서만 공백을 낸다. 서버(Triton)와
@@ -321,48 +342,52 @@ class Settings(BaseSettings):
     # #223 전까지는 그대로 자리표시로 ready가 됐다 — 그림 내용이 빠진 문서가 "완료"로 보이는 조용한 불완전 색인.
     # 이제 rag/chunking/document_converter.PictureGuard가 빈 캡션을 CaptionFailedError(일시 실패)로 올려 문서를 백오프 재시도한다 —
     # VLM이 살아나면 저절로 ready가 된다. **on/off 스위치는 두지 않는다**(사용자 결정, #162).
-    vlm_caption_url: str = "http://localhost:18892/v1/chat/completions"   # **base가 아니라 전체 엔드포인트다**
-                                              # — docling이 이 값을 그대로 POST 대상으로 쓴다. 실주소는 .env
-    vlm_caption_model: str = "qwen25-vl"      # OpenAI 호환 body의 model 필드. Qwen2.5-VL-7B-Instruct(Apache 2.0)
+    vlm_caption_url: str = "http://localhost:18892/v1/chat/completions"  # **base가 아니라 전체 엔드포인트다**
+    # — docling이 이 값을 그대로 POST 대상으로 쓴다. 실주소는 .env
+    vlm_caption_model: str = "qwen25-vl"  # OpenAI 호환 body의 model 필드. Qwen2.5-VL-7B-Instruct(Apache 2.0)
     # 상용 VLM 키(#290 결정 1). 비면 지금처럼 헤더 없이(사내), 있으면 docling 옵션 headers에 Authorization: Bearer로 실린다.
     # 벤더 선택은 따로 없다 — docling이 OpenAI 호환 body 하나만 보내므로 **주소가 곧 벤더**다: OpenAI
     # https://api.openai.com/v1/chat/completions, Gemini https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
     # (Anthropic 호환 창구는 공식 문서상 테스트용 — 캡션은 OpenAI·Gemini로). 키는 .env에만.
     vlm_caption_api_key: str = ""
-    vlm_caption_scale: float = 4.0            # **그림 크롭을 VLM에 보낼 때의 해상도 배수(72dpi 기준).**
-                                              # docling 기본 2.0 → 4.0. 1.0(434×60px)에서는 글자가 안 보여 VLM이
-                                              # 원문에 없는 내용을 지어냈다(3회 재현). 4.0(1736×239px)에서 원문
-                                              # 완전 일치(3회 재현). PdfPipelineOptions.images_scale과 **다른 값**이다
-                                              # — 그쪽은 캡션 품질과 무관함을 실측으로 분리 확인했다(2026-09-14)
-    vlm_caption_temperature: float = 0.0      # OpenAI 호환 body의 temperature. 0 = greedy → 같은 크롭이면 같은 캡션(#209).
-                                              # 기본(샘플링)에서는 재인제스트마다 표 캡션이 마크다운/평문을 오가 골드 청크
-                                              # 순위가 흔들렸다(sf005 1→2위). 캡션은 "원문 그대로 옮기기"라 다양성이 필요 없다.
-    vlm_caption_timeout_seconds: float = 45.0 # 요청 하나의 상한. docling은 읽기 타임아웃을 **재시도하지 않는다**(Retry read=0)
-                                              # — 넘기면 빈 캡션 → CaptionFailedError로 문서째 재시도(#223). 기본 20초에서 3회 변환 중
-                                              # 1회 1건이 터져 45초로(#209). 실패가 보인 그림에서 멈춘다(동시 1이라 배치 안에서도 순서대로라
-                                              # 첫 실패 뒤 요청이 없다) — VLM이 멈췄을 때의 비용은 이 값 한 번이다(rag/chunking/document_converter.PictureGuard).
-    vlm_caption_area_threshold: float = 0.01  # 캡션을 요청할 그림의 최소 면적(쪽 면적 대비, #247 결정 17). docling 기본 0.05에서는 실문서 그림
-                                              # 29장 중 13장이 캡션 없이 자리표시만 남았고, 그중 3장은 내용이 있는 작은 캡처였다('총 23시간·휴게
-                                              # 1시간' 1.2%, 도형 라벨 8개 1.8%, 요일·시간 칸 12개 4.6%) — 하류 질문 '확인 불가'로 실측. 아이콘·버튼은
-                                              # 0.39% 안팎이라 1%가 둘을 가른다(A4 기준 약 2.5×2.5cm). XLSX는 면적을 시트 전체 대비로 계산해 이 값과
-                                              # 무관하게 걸린다(#249).
-    vlm_caption_max_tokens: int = 4000        # 캡션 하나의 출력 토큰 상한(#247 결정 16 — 1,500에서 #299로 4,000). docling은 요청에 상한을 안 넣는다 — 7B가 탐욕 디코딩
-                                              # (온도 0)에서 반복 고리에 빠지면 '확정⏎확정⏎…'을 수천 자 쏟는다(실측 6,483·6,480·5,161자, 화면 캡처처럼
-                                              # 같은 글자가 많은 그림; 프롬프트 문구와 무관하게 V0·V1·V10에서 났다). 그대로 두면 반복 글자가 색인되고,
-                                              # 길어져 요청 상한(45초)을 넘기면 캡션 실패 → 문서 재시도(#223)로 번진다. 정상 캡션 최대는 655토큰(빽빽한
-                                              # 화면, 실문서 29장 실측) — 그 2배 넘게 둔다. 잘린 꼬리에 반복이 일부 남는 건 감수(지표로 보고 필요하면 후처리).
-                                              # 4,000으로 올린 이유(#299, 사용자 결정 10/25): 상용 gpt-5 계열은 속으로 생각하는 토큰(reasoning)도 이 상한에
-                                              # 든다 — 그림 하나에 1,024~1,500을 써서 1,500이면 5번 중 3번 빈 캡션(finish=length) → 캡션 실패·문서 재시도.
-                                              # 4,000은 5/5 정상(생각 1,280~1,472, 같은 그림 실측). 대가: 사내 7B가 반복 고리에 빠지면 1,500 대신 4,000까지
-                                              # 쏟는다(반복 글자가 더 길게 색인되거나 45초 요청 상한에 걸려 재시도로 번질 수 있다) — 기본값 하나로 두기로 했다.
-    vlm_caption_concurrency: int = 1          # 문서 하나 안에서 동시에 보내는 캡션 요청 수(docling 기본 1, #223 결정 7).
-                                              # **1이어야 캡션이 결정적이다.** 동시로 보내면 vLLM이 요청을 묶어 계산하고, 묶음 크기에 따라
-                                              # 부동소수 합산 순서가 달라져 온도 0이어도 확률이 비슷한 토큰에서 갈린다 — 재색인마다 캡션이
-                                              # 바뀌어 #209(골드 순위 흔들림)가 되살아난다. 실측(2026-10-15, 실문서 화면 캡처 PDF 그림 25장,
-                                              # worker15 Qwen2.5-VL-7B): 동시 1 3/3 동일·main과 동일, 동시 2 10회 중 5회 1~2장 다름,
-                                              # 동시 4 매회 2~3장 다름. 합성 표 그림 100장에선 동시 4도 100/100 같아 처음엔 4로 정했다가 뒤집었다.
-                                              # 속도 대가: 그림 100장 DOCX 199초(동시 4면 68초), 보유 코퍼스 106건 합계로는 약 7%.
-                                              # 올리려면 vLLM의 배치 불변(batch-invariant) 모드 같은 서버 쪽 결정성부터 확인할 것.
+    vlm_caption_scale: float = 4.0  # **그림 크롭을 VLM에 보낼 때의 해상도 배수(72dpi 기준).**
+    # docling 기본 2.0 → 4.0. 1.0(434×60px)에서는 글자가 안 보여 VLM이
+    # 원문에 없는 내용을 지어냈다(3회 재현). 4.0(1736×239px)에서 원문
+    # 완전 일치(3회 재현). PdfPipelineOptions.images_scale과 **다른 값**이다
+    # — 그쪽은 캡션 품질과 무관함을 실측으로 분리 확인했다(2026-09-14)
+    vlm_caption_temperature: float = 0.0  # OpenAI 호환 body의 temperature. 0 = greedy → 같은 크롭이면 같은 캡션(#209).
+    # 기본(샘플링)에서는 재인제스트마다 표 캡션이 마크다운/평문을 오가 골드 청크
+    # 순위가 흔들렸다(sf005 1→2위). 캡션은 "원문 그대로 옮기기"라 다양성이 필요 없다.
+    vlm_caption_timeout_seconds: float = (
+        45.0  # 요청 하나의 상한. docling은 읽기 타임아웃을 **재시도하지 않는다**(Retry read=0)
+    )
+    # — 넘기면 빈 캡션 → CaptionFailedError로 문서째 재시도(#223). 기본 20초에서 3회 변환 중
+    # 1회 1건이 터져 45초로(#209). 실패가 보인 그림에서 멈춘다(동시 1이라 배치 안에서도 순서대로라
+    # 첫 실패 뒤 요청이 없다) — VLM이 멈췄을 때의 비용은 이 값 한 번이다(rag/chunking/document_converter.PictureGuard).
+    vlm_caption_area_threshold: float = (
+        0.01  # 캡션을 요청할 그림의 최소 면적(쪽 면적 대비, #247 결정 17). docling 기본 0.05에서는 실문서 그림
+    )
+    # 29장 중 13장이 캡션 없이 자리표시만 남았고, 그중 3장은 내용이 있는 작은 캡처였다('총 23시간·휴게
+    # 1시간' 1.2%, 도형 라벨 8개 1.8%, 요일·시간 칸 12개 4.6%) — 하류 질문 '확인 불가'로 실측. 아이콘·버튼은
+    # 0.39% 안팎이라 1%가 둘을 가른다(A4 기준 약 2.5×2.5cm). XLSX는 면적을 시트 전체 대비로 계산해 이 값과
+    # 무관하게 걸린다(#249).
+    vlm_caption_max_tokens: int = 4000  # 캡션 하나의 출력 토큰 상한(#247 결정 16 — 1,500에서 #299로 4,000). docling은 요청에 상한을 안 넣는다 — 7B가 탐욕 디코딩
+    # (온도 0)에서 반복 고리에 빠지면 '확정⏎확정⏎…'을 수천 자 쏟는다(실측 6,483·6,480·5,161자, 화면 캡처처럼
+    # 같은 글자가 많은 그림; 프롬프트 문구와 무관하게 V0·V1·V10에서 났다). 그대로 두면 반복 글자가 색인되고,
+    # 길어져 요청 상한(45초)을 넘기면 캡션 실패 → 문서 재시도(#223)로 번진다. 정상 캡션 최대는 655토큰(빽빽한
+    # 화면, 실문서 29장 실측) — 그 2배 넘게 둔다. 잘린 꼬리에 반복이 일부 남는 건 감수(지표로 보고 필요하면 후처리).
+    # 4,000으로 올린 이유(#299, 사용자 결정 10/25): 상용 gpt-5 계열은 속으로 생각하는 토큰(reasoning)도 이 상한에
+    # 든다 — 그림 하나에 1,024~1,500을 써서 1,500이면 5번 중 3번 빈 캡션(finish=length) → 캡션 실패·문서 재시도.
+    # 4,000은 5/5 정상(생각 1,280~1,472, 같은 그림 실측). 대가: 사내 7B가 반복 고리에 빠지면 1,500 대신 4,000까지
+    # 쏟는다(반복 글자가 더 길게 색인되거나 45초 요청 상한에 걸려 재시도로 번질 수 있다) — 기본값 하나로 두기로 했다.
+    vlm_caption_concurrency: int = 1  # 문서 하나 안에서 동시에 보내는 캡션 요청 수(docling 기본 1, #223 결정 7).
+    # **1이어야 캡션이 결정적이다.** 동시로 보내면 vLLM이 요청을 묶어 계산하고, 묶음 크기에 따라
+    # 부동소수 합산 순서가 달라져 온도 0이어도 확률이 비슷한 토큰에서 갈린다 — 재색인마다 캡션이
+    # 바뀌어 #209(골드 순위 흔들림)가 되살아난다. 실측(2026-10-15, 실문서 화면 캡처 PDF 그림 25장,
+    # worker15 Qwen2.5-VL-7B): 동시 1 3/3 동일·main과 동일, 동시 2 10회 중 5회 1~2장 다름,
+    # 동시 4 매회 2~3장 다름. 합성 표 그림 100장에선 동시 4도 100/100 같아 처음엔 4로 정했다가 뒤집었다.
+    # 속도 대가: 그림 100장 DOCX 199초(동시 4면 68초), 보유 코퍼스 106건 합계로는 약 7%.
+    # 올리려면 vLLM의 배치 불변(batch-invariant) 모드 같은 서버 쪽 결정성부터 확인할 것.
 
     @model_validator(mode="after")
     def _require_vendor_model_and_key(self):
@@ -406,10 +431,12 @@ class Settings(BaseSettings):
 _COMMERCIAL_VLM_HOSTS = ("api.openai.com", "generativelanguage.googleapis.com", "api.anthropic.com")
 
 # 옛 환경변수 이름 → 새 이름 (#287). 기동 시 Settings._reject_renamed_env가 본다.
-_RENAMED_ENV = {"VLLM_BASE_URL": "LLM_BASE_URL", "VLLM_MODEL": "LLM_MODEL",
-                "LLM_ENABLE_THINKING": "LLM_REASONING_EFFORT"}   # #288: bool 토글 → 수준값
+_RENAMED_ENV = {
+    "VLLM_BASE_URL": "LLM_BASE_URL",
+    "VLLM_MODEL": "LLM_MODEL",
+    "LLM_ENABLE_THINKING": "LLM_REASONING_EFFORT",
+}  # #288: bool 토글 → 수준값
 
 
 # 모듈 import가 곧 프로세스당 1회이므로 이 전역 자체가 싱글톤이다 (팩토리·캐시 불필요).
 settings = Settings()
-

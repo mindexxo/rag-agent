@@ -6,6 +6,7 @@ Alli형 지표 — 사용량·답변률·지식 갭. 전부 messages 원천 데�
 - 활성 사용자: 인증 전엔 X-User-Id 하드코딩이라 항상 1 — 진짜 수치가 될 때까지 미노출
 - 응답 지연·캐시 적중·차단/실패: 내부 모니터링(SLO·알람) 소관 — 원천 컬럼은 계속 저장하므로 필요 시 SQL로
 """
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,16 +24,16 @@ from schemas.stats import DailyCount, StatsSummary, TopDocument, UnansweredItem
 # int/interval 중 무엇으로 볼지 모호해질 수 있다. now()만 KST 벽시계로 바꾸고 구조는 유지한다.
 _TODAY_KST = "(now() AT TIME ZONE :tz)::date"
 _TODAY_KST_MINUS_DAYS = "((now() AT TIME ZONE :tz) - make_interval(days => :days))::date + 1"
-_SINCE_KST = f"(({_TODAY_KST_MINUS_DAYS})::timestamp AT TIME ZONE :tz)"   # KST 자정 → timestamptz
+_SINCE_KST = f"(({_TODAY_KST_MINUS_DAYS})::timestamp AT TIME ZONE :tz)"  # KST 자정 → timestamptz
 
 router = APIRouter(prefix='/kms')
 
 
 @router.get('/stats', response_model=StatsSummary)
 async def stats_summary(
-        days: int = Query(7, ge=1, le=90),
-        tenant_id: str = Depends(get_tenant_id),
-        session: AsyncSession = Depends(get_session),
+    days: int = Query(7, ge=1, le=90),
+    tenant_id: str = Depends(get_tenant_id),
+    session: AsyncSession = Depends(get_session),
 ):
     params = {'tenant_id': tenant_id, 'days': days, 'tz': KST.key}
 
@@ -47,7 +48,9 @@ async def stats_summary(
     # 들어간다(같은 이유로 stats_unanswered에도 이 필터를 새로 넣었다).
     # 분자도 같은 조건 필수 — intent NULL(컬럼 도입 전 행)이 분자에만 들어가면 분자가 분모의
     # 부분집합이 아니게 돼 근거미확인율이 1을 넘거나 답변률이 음수가 된다.
-    row = (await session.execute(text(f"""
+    row = (
+        await session.execute(
+            text(f"""
         SELECT
           count(*) FILTER (WHERE role = 'user')                                        AS questions,
           count(*) FILTER (WHERE role = 'assistant' AND status = 'done'
@@ -65,10 +68,15 @@ async def stats_summary(
         FROM messages
         WHERE tenant_id = :tenant_id
           AND created_at >= {_SINCE_KST}
-    """), params)).one()
+    """),
+            params,
+        )
+    ).one()
 
     # 질문 없는 날도 0으로 채운다 — 빠진 행은 FE에서 "구멍 난 표"가 되고 추이 감이 왜곡된다.
-    daily_rows = (await session.execute(text(f"""
+    daily_rows = (
+        await session.execute(
+            text(f"""
         SELECT to_char(d, 'YYYY-MM-DD') AS d, count(m.id) AS n
         FROM generate_series(
                {_TODAY_KST_MINUS_DAYS}, {_TODAY_KST}, '1 day') AS d
@@ -76,14 +84,19 @@ async def stats_summary(
           ON (m.created_at AT TIME ZONE :tz)::date = d::date
          AND m.tenant_id = :tenant_id AND m.role = 'user'
         GROUP BY 1 ORDER BY 1
-    """), params)).all()
+    """),
+            params,
+        )
+    ).all()
 
     # 인용 top 문서 — 저장 시 확정된 실인용 목록(cited_docs)만 집계. 본문 재파싱·전송 없음.
     # (저장 시점에 출처 꼬리 해석(rag/turn/citation_tail, #56)이 확정 — 단일 정의점.
     #  첨부 인용은 '첨부: 파일명' 문자열로 함께 잡힌다 — 첨부 기반 답변도 지표에 노출)
     # FAQ 항목 인용(#278)은 cited_faq_ids에 id로 있다 — 'FAQ: 질문'(현재 질문, 인용 표시명과 같은 꼴)으로 합쳐
     # 같은 top에 올린다. 삭제된 FAQ는 조인에서 빠진다. #278 전 행의 'FAQ' 원소는 cited_docs 쪽에서 그대로 잡힌다.
-    top_rows = (await session.execute(text(f"""
+    top_rows = (
+        await session.execute(
+            text(f"""
         SELECT filename, sum(cnt) AS cnt FROM (
             SELECT d AS filename, count(*) AS cnt
             FROM messages, jsonb_array_elements_text(cited_docs) AS d
@@ -101,7 +114,10 @@ async def stats_summary(
               AND m.created_at >= {_SINCE_KST}
             GROUP BY 1
         ) t GROUP BY filename ORDER BY cnt DESC LIMIT 10
-    """), params)).all()
+    """),
+            params,
+        )
+    ).all()
 
     knowledge_done = row.knowledge_done or 0
     return StatsSummary(
@@ -117,10 +133,10 @@ async def stats_summary(
 
 @router.get('/stats/unanswered', response_model=list[UnansweredItem])
 async def stats_unanswered(
-        days: int = Query(7, ge=1, le=90),
-        limit: int = Query(50, ge=1, le=200),
-        tenant_id: str = Depends(get_tenant_id),
-        session: AsyncSession = Depends(get_session),
+    days: int = Query(7, ge=1, le=90),
+    limit: int = Query(50, ge=1, le=200),
+    tenant_id: str = Depends(get_tenant_id),
+    session: AsyncSession = Depends(get_session),
 ):
     """지식 갭 — 근거를 못 댄 질문 원문 (최신순). FAQ/문서 보강의 직접 재료.
 
@@ -132,7 +148,9 @@ async def stats_unanswered(
     목적에는 그게 맞다(둘 다 근거가 없다는 뜻이므로). 다만 API 응답만으로는 그 둘을
     구별할 수 없다는 것을 알고 볼 것 — 필요하면 messages.content를 직접 감사해야 한다.
     """
-    rows = (await session.execute(text(f"""
+    rows = (
+        await session.execute(
+            text(f"""
         SELECT u.content AS question, a.created_at AS asked_at
         FROM messages a
         JOIN messages u ON u.id = a.question_message_id
@@ -148,5 +166,8 @@ async def stats_unanswered(
           AND a.created_at >= {_SINCE_KST}
         ORDER BY a.created_at DESC
         LIMIT :limit
-    """), {'tenant_id': tenant_id, 'days': days, 'limit': limit, 'tz': KST.key})).all()
+    """),
+            {'tenant_id': tenant_id, 'days': days, 'limit': limit, 'tz': KST.key},
+        )
+    ).all()
     return [UnansweredItem(question=r.question, asked_at=r.asked_at) for r in rows]

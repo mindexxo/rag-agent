@@ -25,23 +25,33 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/kms')
 
-MAX_CONVERSATIONS = 50   # 페이지 크기 상한 (#10부터 offset 페이지네이션의 limit 상한 의미)
+MAX_CONVERSATIONS = 50  # 페이지 크기 상한 (#10부터 offset 페이지네이션의 limit 상한 의미)
+
 
 async def _get_owned_conversation(
-        session: AsyncSession, conversation_id: int, tenant_id: str, user_id: str | None,
+    session: AsyncSession,
+    conversation_id: int,
+    tenant_id: str,
+    user_id: str | None,
 ) -> Conversation:
     """소유 대화 로드 — 없거나 남의 것이거나 삭제됐으면 404 (존재 여부 노출 안 함)."""
-    conv = (await session.execute(
-        select(Conversation).where(Conversation.id == conversation_id).where(owned_filter(tenant_id, user_id))
-    )).scalar_one_or_none()
+    conv = (
+        await session.execute(
+            select(Conversation).where(Conversation.id == conversation_id).where(owned_filter(tenant_id, user_id))
+        )
+    ).scalar_one_or_none()
     if conv is None:
         raise HTTPException(status_code=404, detail='대화를 찾을 수 없습니다.')
     return conv
 
 
 async def _get_owned_assistant_message(
-        session: AsyncSession, message_id: int, tenant_id: str, user_id: str | None,
-        *, status: str | None = None,
+    session: AsyncSession,
+    message_id: int,
+    tenant_id: str,
+    user_id: str | None,
+    *,
+    status: str | None = None,
 ) -> Message | None:
     """소유 검증을 통과한 assistant 메시지 로드 — 피드백·취소 공용 (#46).
 
@@ -52,14 +62,13 @@ async def _get_owned_assistant_message(
         select(Message)
         .join(Conversation, Message.conversation_id == Conversation.id)
         .where(Message.id == message_id)
-        .where(Message.tenant_id == tenant_id)     # 격리 — 메시지에도 tenant WHERE 명시
+        .where(Message.tenant_id == tenant_id)  # 격리 — 메시지에도 tenant WHERE 명시
         .where(Message.role == 'assistant')
         .where(owned_filter(tenant_id, user_id))
     )
     if status is not None:
         stmt = stmt.where(Message.status == status)
     return (await session.execute(stmt)).scalar_one_or_none()
-
 
 
 @router.get('/conversations', response_model=ConversationListResponse)
@@ -92,25 +101,33 @@ async def list_conversations(
     q = (q or '').strip() or None
 
     where = owned_filter(tenant_id, user_id) & conversation_search.search_filter(tenant_id, q)
-    total = (await session.execute(
-        select(func.count(Conversation.id)).where(where)
-    )).scalar_one()
-    rows = (await session.execute(
-        select(Conversation)
-        .where(where)
-        .order_by(Conversation.last_used_at.desc(), Conversation.id.desc())   # 동점 2차 키 — 페이지 간 중복·누락 방지
-        .offset(offset)
-        .limit(limit)
-    )).scalars().all()
+    total = (await session.execute(select(func.count(Conversation.id)).where(where))).scalar_one()
+    rows = (
+        (
+            await session.execute(
+                select(Conversation)
+                .where(where)
+                .order_by(
+                    Conversation.last_used_at.desc(), Conversation.id.desc()
+                )  # 동점 2차 키 — 페이지 간 중복·누락 방지
+                .offset(offset)
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
 
     # 제목에서만 걸린 대화는 여기서 값이 안 나와 snippet=None이 된다 (제목은 이미 목록에 보임)
-    snippets = (await conversation_search.snippets_for(session, tenant_id, [c.id for c in rows], q)
-                if q and rows else {})
+    snippets = await conversation_search.snippets_for(session, tenant_id, [c.id for c in rows], q) if q and rows else {}
 
     return ConversationListResponse(
-        items=[ConversationSummary(conversation_id=c.id, title=c.title, updated_at=c.last_used_at,
-                                   snippet=snippets.get(c.id))
-               for c in rows],
+        items=[
+            ConversationSummary(
+                conversation_id=c.id, title=c.title, updated_at=c.last_used_at, snippet=snippets.get(c.id)
+            )
+            for c in rows
+        ],
         # limit+1 조회 트릭은 제거 — total이 있으면 다음 페이지 유무가 산술로 나온다.
         # len(rows)를 쓰는 게 limit보다 안전하다(마지막 부분 페이지에서도 정확).
         has_more=offset + len(rows) < total,
@@ -120,20 +137,26 @@ async def list_conversations(
 
 @router.get('/conversations/{conversation_id}/messages', response_model=list[ConversationMessage])
 async def get_conversation_messages(
-        conversation_id: int,
-        tenant_id: str = Depends(get_tenant_id),
-        user_id: str | None = Depends(get_user_id),
-        session: AsyncSession = Depends(get_session),
+    conversation_id: int,
+    tenant_id: str = Depends(get_tenant_id),
+    user_id: str | None = Depends(get_user_id),
+    session: AsyncSession = Depends(get_session),
 ):
     # 소유 검증 (#10) — 이전엔 메시지 tenant 필터뿐이라 같은 테넌트 남의 대화도 조회 가능했음
     await _get_owned_conversation(session, conversation_id, tenant_id, user_id)
 
-    msgs = (await session.execute(
-        select(Message)
-        .where(Message.tenant_id == tenant_id)
-        .where(Message.conversation_id == conversation_id)
-        .order_by(Message.id)
-    )).scalars().all()
+    msgs = (
+        (
+            await session.execute(
+                select(Message)
+                .where(Message.tenant_id == tenant_id)
+                .where(Message.conversation_id == conversation_id)
+                .order_by(Message.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     return [
         ConversationMessage(
             message_id=m.id,
@@ -143,9 +166,13 @@ async def get_conversation_messages(
             # 실인용만 (#56) — sources(후보 스냅샷)를 cited_docs로 필터. 구 데이터는 sources가
             # 후보 전체라 필터가 실질이고, 신 데이터는 저장 자체가 인용만이라 no-op이다.
             # FAQ 항목 인용(#278)은 cited_faq_ids에 있다 — 파일명 필터만 두면 FAQ 인용이 이력에서 사라진다.
-            citations=[s for s in (m.sources or [])
-                       if s['filename'] in (m.cited_docs or [])
-                       or (s.get('faq_id') is not None and s['faq_id'] in (m.cited_faq_ids or []))] or None,
+            citations=[
+                s
+                for s in (m.sources or [])
+                if s['filename'] in (m.cited_docs or [])
+                or (s.get('faq_id') is not None and s['faq_id'] in (m.cited_faq_ids or []))
+            ]
+            or None,
             # 첨부 본문은 노출하지 않고 파일명만 (FE 뱃지/말풍선 표시용)
             attachments=[a['filename'] for a in m.attachments] if m.attachments else None,
             feedback=m.feedback,
@@ -158,11 +185,11 @@ async def get_conversation_messages(
 
 @router.patch('/messages/{message_id}/feedback', response_model=MessageFeedbackState)
 async def set_message_feedback(
-        message_id: int,
-        body: MessageFeedbackUpdate,
-        tenant_id: str = Depends(get_tenant_id),
-        user_id: str | None = Depends(get_user_id),
-        session: AsyncSession = Depends(get_session),
+    message_id: int,
+    body: MessageFeedbackUpdate,
+    tenant_id: str = Depends(get_tenant_id),
+    user_id: str | None = Depends(get_user_id),
+    session: AsyncSession = Depends(get_session),
 ):
     """답변 피드백 👍/👎 + 사유 태그 저장 (#8) — 멱등 set, 토글/취소는 FE가 최종 상태를 보내는 방식.
 
@@ -170,8 +197,7 @@ async def set_message_feedback(
     _get_owned_conversation과 같은 원칙). 👍/취소 시 태그·텍스트는 강제 NULL (👎 전용 축).
     """
     # status='done' — 실패/차단/생성중 턴엔 평가할 답변이 없음 (집계 오염 방지)
-    msg = await _get_owned_assistant_message(session, message_id, tenant_id, user_id,
-                                             status=TurnStatus.DONE)
+    msg = await _get_owned_assistant_message(session, message_id, tenant_id, user_id, status=TurnStatus.DONE)
     if msg is None:
         raise HTTPException(status_code=404, detail='메시지를 찾을 수 없습니다.')
 
@@ -179,16 +205,17 @@ async def set_message_feedback(
     msg.feedback_tag = body.tag if body.feedback is False else None
     msg.feedback_text = body.text if body.feedback is False else None
     await session.commit()
-    return MessageFeedbackState(message_id=msg.id, feedback=msg.feedback,
-                                feedback_tag=msg.feedback_tag, feedback_text=msg.feedback_text)
+    return MessageFeedbackState(
+        message_id=msg.id, feedback=msg.feedback, feedback_tag=msg.feedback_tag, feedback_text=msg.feedback_text
+    )
 
 
 @router.post('/messages/{message_id}/cancel', status_code=204)
 async def cancel_generation(
-        message_id: int,
-        tenant_id: str = Depends(get_tenant_id),
-        user_id: str | None = Depends(get_user_id),
-        session: AsyncSession = Depends(get_session),
+    message_id: int,
+    tenant_id: str = Depends(get_tenant_id),
+    user_id: str | None = Depends(get_user_id),
+    session: AsyncSession = Depends(get_session),
 ):
     """진행 중인 답변 생성을 중단한다 (#30) — 정지 버튼.
 
@@ -218,9 +245,9 @@ async def cancel_generation(
     # 임계가 크지만 초과 대기는 가능하다), 상태만 믿으면 살아 있는 태스크를 멈출 방법이
     # 사라진다. 태스크가 손에 있으면 DB가 뭐라 하든 멈추는 게 사용자 의사에 맞다.
     if cancellation.cancel_local(message_id):
-        return Response(status_code=204)           # 이 프로세스가 들고 있었다
+        return Response(status_code=204)  # 이 프로세스가 들고 있었다
     if msg.status == TurnStatus.CANCELLED:
-        return Response(status_code=204)           # 따닥 두 번째 — 결과가 같으니 성공으로 (멱등)
+        return Response(status_code=204)  # 따닥 두 번째 — 결과가 같으니 성공으로 (멱등)
     if msg.status != TurnStatus.GENERATING:
         # done·blocked — 멈출 게 없다. 즉시 경로(캐시히트 등)도 여기로 온다(태스크가 없음).
         raise HTTPException(status_code=404, detail='진행 중인 생성이 아닙니다.')
@@ -239,10 +266,10 @@ async def cancel_generation(
 
 @router.get('/messages/{message_id}/events')
 async def resume_events(
-        message_id: int,
-        tenant_id: str = Depends(get_tenant_id),
-        user_id: str | None = Depends(get_user_id),
-        session: AsyncSession = Depends(get_session),
+    message_id: int,
+    tenant_id: str = Depends(get_tenant_id),
+    user_id: str | None = Depends(get_user_id),
+    session: AsyncSession = Depends(get_session),
 ):
     """진행 중인 생성에 재접속해 스트림을 이어받는다 (#75) — 새로고침 복구용.
 
@@ -264,7 +291,7 @@ async def resume_events(
 
     key = stream_resume.stream_key(tenant_id, message_id)
     try:
-        exists = await clients.shared_redis.exists(key)   # 호출 시점 속성 읽기 (테스트가 교체한다)
+        exists = await clients.shared_redis.exists(key)  # 호출 시점 속성 읽기 (테스트가 교체한다)
     except Exception:
         # 쓰기와 달리 읽기 실패는 삼키지 않는다 — 여기가 실패하면 이 요청은 존재 이유를 잃는다.
         logger.exception('재접속 스트림 조회 실패 (message_id=%s)', message_id)
@@ -274,17 +301,18 @@ async def resume_events(
 
     return StreamingResponse(
         stream_resume.reconnect_reader(tenant_id, message_id),
-        media_type='text/event-stream', headers=streaming.SSE_HEADERS,
+        media_type='text/event-stream',
+        headers=streaming.SSE_HEADERS,
     )
 
 
 @router.patch('/conversations/{conversation_id}', response_model=ConversationSummary)
 async def rename_conversation(
-        conversation_id: int,
-        body: ConversationTitleUpdate,
-        tenant_id: str = Depends(get_tenant_id),
-        user_id: str | None = Depends(get_user_id),
-        session: AsyncSession = Depends(get_session),
+    conversation_id: int,
+    body: ConversationTitleUpdate,
+    tenant_id: str = Depends(get_tenant_id),
+    user_id: str | None = Depends(get_user_id),
+    session: AsyncSession = Depends(get_session),
 ):
     """제목 변경 (#10). 자동 제목은 title IS NULL일 때만 세팅되므로 이후 턴이 덮어쓰지 않는다."""
     conv = await _get_owned_conversation(session, conversation_id, tenant_id, user_id)
@@ -295,10 +323,10 @@ async def rename_conversation(
 
 @router.delete('/conversations/{conversation_id}', status_code=204)
 async def delete_conversation(
-        conversation_id: int,
-        tenant_id: str = Depends(get_tenant_id),
-        user_id: str | None = Depends(get_user_id),
-        session: AsyncSession = Depends(get_session),
+    conversation_id: int,
+    tenant_id: str = Depends(get_tenant_id),
+    user_id: str | None = Depends(get_user_id),
+    session: AsyncSession = Depends(get_session),
 ):
     """소프트 삭제 (#10) — deleted_at 마킹. 이력(메시지·첨부)은 감사 목적 보존.
 

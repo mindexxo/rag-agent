@@ -9,6 +9,7 @@ semantic 캐시의 문서 집합 비교·무효화가 코드 수정 없이 그�
 관리 필드(#278, FE 요청 4~6): 카테고리(routers/faq_categories.py)·등록/변경자·인용 횟수·목록 검색/필터/페이징.
 카테고리와 등록/변경자는 **관리용**이라 바꿔도 재임베딩·캐시 무효화가 없다 — 검색·생성 입력이 아니다.
 """
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import Text, cast, exists, func, or_, select
 from sqlalchemy import text as sql_text
@@ -18,20 +19,36 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
 from rag import outbox
-from rag.turn import cache
 from rag.models import Faq, FaqCategory
+from rag.turn import cache
 from routers.kms import get_tenant_id, get_user_id
-from schemas.kms import (DOC_LIST_DEFAULT_LIMIT, DOC_LIST_MAX_LIMIT, FaqCreateRequest, FaqListResponse,
-                         FaqResponse, FaqUpdateRequest)
+from schemas.kms import (
+    DOC_LIST_DEFAULT_LIMIT,
+    DOC_LIST_MAX_LIMIT,
+    FaqCreateRequest,
+    FaqListResponse,
+    FaqResponse,
+    FaqUpdateRequest,
+)
 from text_norm import LIKE_ESCAPE_CHAR, like_pattern
 
 router = APIRouter(prefix='/kms')
 
 
 def _to_response(f: Faq, ref_count: int | None = None) -> FaqResponse:
-    return FaqResponse(id=f.id, question=f.question, variants=f.variants or [], answer=f.answer, is_active=f.is_active,
-                       category_id=f.category_id, created_at=f.created_at, updated_at=f.updated_at,
-                       created_by=f.created_by, updated_by=f.updated_by, ref_count=ref_count)
+    return FaqResponse(
+        id=f.id,
+        question=f.question,
+        variants=f.variants or [],
+        answer=f.answer,
+        is_active=f.is_active,
+        category_id=f.category_id,
+        created_at=f.created_at,
+        updated_at=f.updated_at,
+        created_by=f.created_by,
+        updated_by=f.updated_by,
+        ref_count=ref_count,
+    )
 
 
 def _without_question(question: str, variants: list[str]) -> list[str]:
@@ -39,8 +56,9 @@ def _without_question(question: str, variants: list[str]) -> list[str]:
     return [v for v in variants if v != question]
 
 
-async def _reject_duplicate(session: AsyncSession, tenant_id: str, phrases: list[str],
-                            exclude_id: int | None = None) -> None:
+async def _reject_duplicate(
+    session: AsyncSession, tenant_id: str, phrases: list[str], exclude_id: int | None = None
+) -> None:
     """대표 질문·유사 질문이 같은 테넌트의 다른 FAQ(대표 질문 또는 유사 질문)와 **완전 일치**하면 409 (#276).
 
     완전 일치만 본다(공백 정리는 스키마가 했다) — 띄어쓰기·대소문자를 무시하면 정당한 변형 질문까지 막는다.
@@ -50,10 +68,11 @@ async def _reject_duplicate(session: AsyncSession, tenant_id: str, phrases: list
     """
     if not phrases:
         return
-    stmt = (select(Faq.id, Faq.question, Faq.variants)
-            .where(Faq.tenant_id == tenant_id)   # 격리 — WHERE 절 명시
-            .where(or_(Faq.question.in_(phrases),
-                       func.jsonb_exists_any(Faq.variants, cast(phrases, ARRAY(Text))))))
+    stmt = (
+        select(Faq.id, Faq.question, Faq.variants)
+        .where(Faq.tenant_id == tenant_id)  # 격리 — WHERE 절 명시
+        .where(or_(Faq.question.in_(phrases), func.jsonb_exists_any(Faq.variants, cast(phrases, ARRAY(Text)))))
+    )
     if exclude_id is not None:
         stmt = stmt.where(Faq.id != exclude_id)
     for other_id, question, variants in (await session.execute(stmt)).all():
@@ -62,11 +81,17 @@ async def _reject_duplicate(session: AsyncSession, tenant_id: str, phrases: list
 
 
 async def _get_faq(session: AsyncSession, tenant_id: str, faq_id: int) -> Faq:
-    faq = (await session.execute(
-        select(Faq)
-        .where(Faq.tenant_id == tenant_id)   # 격리 — WHERE 절 명시
-        .where(Faq.id == faq_id)
-    )).scalars().first()
+    faq = (
+        (
+            await session.execute(
+                select(Faq)
+                .where(Faq.tenant_id == tenant_id)  # 격리 — WHERE 절 명시
+                .where(Faq.id == faq_id)
+            )
+        )
+        .scalars()
+        .first()
+    )
     if faq is None:
         raise HTTPException(status_code=404, detail='FAQ not found')
     return faq
@@ -76,11 +101,13 @@ async def _check_category(session: AsyncSession, tenant_id: str, category_id: in
     """내 테넌트의 카테고리가 아니면 404 — 문서 업로드·PATCH가 남의 테넌트 폴더를 막는 것과 같은 규칙. None(미분류)은 통과."""
     if category_id is None:
         return
-    found = (await session.execute(
-        select(FaqCategory.id)
-        .where(FaqCategory.tenant_id == tenant_id)   # 격리 — WHERE 절 명시
-        .where(FaqCategory.id == category_id)
-    )).scalar_one_or_none()
+    found = (
+        await session.execute(
+            select(FaqCategory.id)
+            .where(FaqCategory.tenant_id == tenant_id)  # 격리 — WHERE 절 명시
+            .where(FaqCategory.id == category_id)
+        )
+    ).scalar_one_or_none()
     if found is None:
         raise HTTPException(status_code=404, detail='category not found')
 
@@ -93,7 +120,9 @@ async def _ref_counts(session: AsyncSession, tenant_id: str, faq_ids: list[int])
     """
     if not faq_ids:
         return {}
-    rows = (await session.execute(sql_text("""
+    rows = (
+        await session.execute(
+            sql_text("""
         SELECT fid::bigint AS faq_id, count(*) AS cnt
         FROM messages, jsonb_array_elements_text(messages.cited_faq_ids) AS fid
         WHERE messages.tenant_id = :tenant_id
@@ -101,7 +130,10 @@ async def _ref_counts(session: AsyncSession, tenant_id: str, faq_ids: list[int])
           AND jsonb_typeof(messages.cited_faq_ids) = 'array'
           AND fid::bigint = ANY(:faq_ids)
         GROUP BY 1
-    """), {"tenant_id": tenant_id, "faq_ids": faq_ids})).all()
+    """),
+            {"tenant_id": tenant_id, "faq_ids": faq_ids},
+        )
+    ).all()
     return {r.faq_id: r.cnt for r in rows}
 
 
@@ -114,16 +146,18 @@ def _list_where(tenant_id: str, q: str | None, category_id: int | None, is_activ
        같은 like_pattern. 호출부가 빈 문자열을 None으로 바꿔 넘긴다.
     category_id: 0 = 미분류만(문서 목록의 folder_id=0과 같은 약속 — 쿼리 파라미터엔 null이 없다), 그 외 = 그 카테고리.
     """
-    where = (Faq.tenant_id == tenant_id)
+    where = Faq.tenant_id == tenant_id
     if q is not None:
         pattern = like_pattern(q)
         variant = func.jsonb_array_elements_text(Faq.variants).table_valued('value').alias('variant')
-        variant_hit = exists(select(1).select_from(variant)
-                             .where(variant.c.value.ilike(pattern, escape=LIKE_ESCAPE_CHAR))
-                             .correlate(Faq))   # 바깥 faqs 행의 variants를 푼다 — correlate가 없으면 faqs를 한 번 더 조인한다
-        where &= or_(Faq.question.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-                     Faq.answer.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-                     variant_hit)
+        variant_hit = exists(
+            select(1).select_from(variant).where(variant.c.value.ilike(pattern, escape=LIKE_ESCAPE_CHAR)).correlate(Faq)
+        )  # 바깥 faqs 행의 variants를 푼다 — correlate가 없으면 faqs를 한 번 더 조인한다
+        where &= or_(
+            Faq.question.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+            Faq.answer.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+            variant_hit,
+        )
     if category_id is not None:
         where &= Faq.category_id.is_(None) if category_id == 0 else Faq.category_id == category_id
     if is_active is not None:
@@ -133,13 +167,13 @@ def _list_where(tenant_id: str, q: str | None, category_id: int | None, is_activ
 
 @router.get('/faqs', response_model=FaqListResponse)
 async def list_faqs(
-        limit: int = DOC_LIST_DEFAULT_LIMIT,
-        offset: int = 0,
-        q: str | None = None,                 # 질문·유사 질문·답변 부분 일치
-        category_id: int | None = None,       # 0 = 미분류만, 그 외 = 그 카테고리
-        is_active: bool | None = None,
-        tenant_id: str = Depends(get_tenant_id),
-        session: AsyncSession = Depends(get_session),
+    limit: int = DOC_LIST_DEFAULT_LIMIT,
+    offset: int = 0,
+    q: str | None = None,  # 질문·유사 질문·답변 부분 일치
+    category_id: int | None = None,  # 0 = 미분류만, 그 외 = 그 카테고리
+    is_active: bool | None = None,
+    tenant_id: str = Depends(get_tenant_id),
+    session: AsyncSession = Depends(get_session),
 ):
     """FAQ 목록 — 페이징·검색·필터 (#278, FE 요청 6). 최신 등록이 위로 온다(문서 목록과 같은 정렬 기준).
 
@@ -150,29 +184,33 @@ async def list_faqs(
         limit = DOC_LIST_MAX_LIMIT
     if offset < 0:
         offset = 0
-    q = (q or '').strip() or None      # 빈 문자열을 필터로 쓰면 '%%'가 되어 전건 매칭이다
+    q = (q or '').strip() or None  # 빈 문자열을 필터로 쓰면 '%%'가 되어 전건 매칭이다
 
     where = _list_where(tenant_id, q, category_id, is_active)
     total = (await session.execute(select(func.count(Faq.id)).where(where))).scalar_one()
-    faqs = (await session.execute(
-        select(Faq).where(where)
-        .order_by(Faq.created_at.desc(), Faq.id.desc())
-        .offset(offset).limit(limit)
-    )).scalars().all()
+    faqs = (
+        (
+            await session.execute(
+                select(Faq).where(where).order_by(Faq.created_at.desc(), Faq.id.desc()).offset(offset).limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
     ref_counts = await _ref_counts(session, tenant_id, [f.id for f in faqs])
     return FaqListResponse(
         items=[_to_response(f, ref_counts.get(f.id, 0)) for f in faqs],
         total=total,
-        has_more=offset + len(faqs) < total,   # len(faqs) — limit을 쓰면 마지막 부분 페이지에서 어긋난다
+        has_more=offset + len(faqs) < total,  # len(faqs) — limit을 쓰면 마지막 부분 페이지에서 어긋난다
     )
 
 
 @router.post('/faqs', response_model=FaqResponse)
 async def create_faq(
-        request: FaqCreateRequest,
-        tenant_id: str = Depends(get_tenant_id),
-        user_id: str | None = Depends(get_user_id),
-        session: AsyncSession = Depends(get_session),
+    request: FaqCreateRequest,
+    tenant_id: str = Depends(get_tenant_id),
+    user_id: str | None = Depends(get_user_id),
+    session: AsyncSession = Depends(get_session),
 ):
     # 공백 제거·빈 유사 질문 제거·길이 상한은 스키마가 했다(schemas/kms.py FAQ_*_MAX) — 여기선 빈 값만 본다.
     if not request.question or not request.answer:
@@ -186,11 +224,12 @@ async def create_faq(
         variants=variants,
         answer=request.answer,
         category_id=request.category_id,
-        created_by=user_id, updated_by=user_id,   # X-User-Id 미전송이면 둘 다 NULL(문서 uploaded_by와 같은 규칙)
+        created_by=user_id,
+        updated_by=user_id,  # X-User-Id 미전송이면 둘 다 NULL(문서 uploaded_by와 같은 규칙)
     )
     session.add(faq)
     try:
-        await session.flush()   # id 확보 (대기열 payload에 필요)
+        await session.flush()  # id 확보 (대기열 payload에 필요)
     except IntegrityError:
         # UNIQUE (tenant_id, question) — 위 검사와 커밋 사이에 같은 질문이 들어온 경쟁. 폴더 라우터의 IntegrityError→409 변환과 같다
         await session.rollback()
@@ -200,17 +239,17 @@ async def create_faq(
     # 그래서 생성 직후 최대 1분(재시도 포함 1~5분)은 검색에 안 잡힌다 — 제품 가이드 그대로.
     outbox.enqueue(session, tenant_id, outbox.INDEX_FAQ, faq_id=faq.id)
     await session.commit()
-    await session.refresh(faq)   # created_at·updated_at은 DB 기본값 — 응답에 실으려면 다시 읽는다
+    await session.refresh(faq)  # created_at·updated_at은 DB 기본값 — 응답에 실으려면 다시 읽는다
     return _to_response(faq, 0)
 
 
 @router.patch('/faqs/{faq_id}', response_model=FaqResponse)
 async def update_faq(
-        faq_id: int,
-        request: FaqUpdateRequest,
-        tenant_id: str = Depends(get_tenant_id),
-        user_id: str | None = Depends(get_user_id),
-        session: AsyncSession = Depends(get_session),
+    faq_id: int,
+    request: FaqUpdateRequest,
+    tenant_id: str = Depends(get_tenant_id),
+    user_id: str | None = Depends(get_user_id),
+    session: AsyncSession = Depends(get_session),
 ):
     faq = await _get_faq(session, tenant_id, faq_id)
 
@@ -232,12 +271,14 @@ async def update_faq(
     answer = request.answer if request.answer is not None else faq.answer
     content_changed = (question, variants, answer) != (faq.question, faq.variants or [], faq.answer)
     if content_changed:
-        await _reject_duplicate(session, tenant_id, [question, *variants], exclude_id=faq.id)   # 자기 자신은 제외
+        await _reject_duplicate(session, tenant_id, [question, *variants], exclude_id=faq.id)  # 자기 자신은 제외
         faq.question, faq.variants, faq.answer = question, variants, answer
         try:
-            await session.flush()   # UNIQUE (tenant_id, question) 경쟁을 여기서 받는다 — 뒤의 캐시 무효화 질의가 autoflush로 먼저 터지지 않게
+            await session.flush()  # UNIQUE (tenant_id, question) 경쟁을 여기서 받는다 — 뒤의 캐시 무효화 질의가 autoflush로 먼저 터지지 않게
         except IntegrityError:
-            await session.rollback()   # 폴더 라우터의 IntegrityError→409 변환과 같다. rollback이 faq를 만료시키므로 지역 변수를 쓴다
+            await (
+                session.rollback()
+            )  # 폴더 라우터의 IntegrityError→409 변환과 같다. rollback이 faq를 만료시키므로 지역 변수를 쓴다
             raise HTTPException(status_code=409, detail=f"같은 질문의 FAQ가 이미 있습니다: '{question}'")
 
     turned_off = False
@@ -245,7 +286,7 @@ async def update_faq(
         turned_off = faq.is_active and not request.is_active
         faq.is_active = request.is_active
     if changing_category:
-        faq.category_id = request.category_id   # 관리용 분류 — 재임베딩·캐시 무효화 없음(검색·생성 입력이 아니다)
+        faq.category_id = request.category_id  # 관리용 분류 — 재임베딩·캐시 무효화 없음(검색·생성 입력이 아니다)
     # 마지막 변경자는 어떤 PATCH든 덮는다 — updated_at(어떤 UPDATE든 DB가 올림)과 같은 기준이어야 시각과 사람이 짝이 맞는다.
     # 헤더가 없으면 NULL로 덮는다(사용자 결정 5 — ICCS 연동에선 헤더가 항상 있다).
     faq.updated_by = user_id
@@ -253,7 +294,7 @@ async def update_faq(
     if content_changed or turned_off:
         # 이 항목을 근거로 만든 캐시는 즉시 무효화한다 — 색인 반영(아래 outbox)은 다음 회차라
         # 캐시까지 늦추면 낡은 답이 두 경로로 나간다.
-        await cache.invalidate_source(session, tenant_id, -faq.id)   # 음수 = FAQ 네임스페이스
+        await cache.invalidate_source(session, tenant_id, -faq.id)  # 음수 = FAQ 네임스페이스
 
     # 색인 반영을 같은 트랜잭션에 적재 (#139) — 내용 변경은 재임베딩·재색인(INDEX_FAQ),
     # 활성 토글은 메타 부분 갱신(META_FAQS)이면 된다(재색인은 GPU를 태운다).
@@ -262,20 +303,20 @@ async def update_faq(
     elif request.is_active is not None:
         outbox.enqueue(session, tenant_id, outbox.META_FAQS, faq_ids=[faq.id])
     await session.commit()
-    await session.refresh(faq)   # updated_at은 DB onupdate 값 — 응답에 실으려면 다시 읽는다
+    await session.refresh(faq)  # updated_at은 DB onupdate 값 — 응답에 실으려면 다시 읽는다
     ref_counts = await _ref_counts(session, tenant_id, [faq.id])
     return _to_response(faq, ref_counts.get(faq.id, 0))
 
 
 @router.delete('/faqs/{faq_id}', status_code=204)
 async def delete_faq(
-        faq_id: int,
-        tenant_id: str = Depends(get_tenant_id),
-        session: AsyncSession = Depends(get_session),
+    faq_id: int,
+    tenant_id: str = Depends(get_tenant_id),
+    session: AsyncSession = Depends(get_session),
 ):
     """항목 삭제 — 청크는 FK cascade로 함께 삭제, 관련 캐시 무효화."""
     faq = await _get_faq(session, tenant_id, faq_id)
     await cache.invalidate_source(session, tenant_id, -faq.id)
     await session.delete(faq)
-    outbox.enqueue(session, tenant_id, outbox.DROP_FAQS, faq_ids=[faq_id])   # 같은 트랜잭션 (#139)
+    outbox.enqueue(session, tenant_id, outbox.DROP_FAQS, faq_ids=[faq_id])  # 같은 트랜잭션 (#139)
     await session.commit()

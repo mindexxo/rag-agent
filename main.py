@@ -6,6 +6,7 @@
 (과거 STT/화자분리/요약 실험 코드는 2026-07-18 제거, 테스트 UI(/ui 정적 서빙)는
  2026-07-23 제거 — FE가 별도 앱으로 분리됨. 필요 시 git 이전 백업 참조.)
 """
+
 import asyncio
 import contextlib
 from contextlib import asynccontextmanager
@@ -28,7 +29,7 @@ from routers.folders import router as folder_router
 from routers.kms import router as kms_router
 from routers.stats import router as stats_router
 
-init_tracing()   # OTel(#7) — otel_endpoint 미설정이면 no-op
+init_tracing()  # OTel(#7) — otel_endpoint 미설정이면 no-op
 
 
 @asynccontextmanager
@@ -67,6 +68,7 @@ app.add_middleware(
     allow_methods=['*'],
     allow_headers=['*'],
 )
+
 
 # Prometheus 스크레이프 (#129) — 앱 지표(rag/metrics.py: 체감 TTFT·finish_reason)와
 # prometheus_client 기본 프로세스 지표를 노출. 인증 없음 — 사내망 개발계 전제, 외부 노출

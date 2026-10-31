@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 _WS = re.compile(r'\s+')
-PLACEHOLDER = '<!-- image -->'      # rag.chunking._PICTURE_PLACEHOLDER — 캡션 대상에서 빠진 그림이 청크에 남기는 표시
+PLACEHOLDER = '<!-- image -->'      # rag.chunking.docling_elements.PICTURE_PLACEHOLDER — 캡션 대상에서 빠진 그림이 청크에 남기는 표시
 
 
 def norm(text: str) -> str:
@@ -110,7 +110,7 @@ def extract_document(document_id: int, filename: str, path: Path, chunk_texts: l
                 image = _pdf_crop(path, page, prov.bbox, size.height, settings.vlm_caption_scale)
         if image is None:
             image = item.get_image(doc)
-        caption = ch._docling_picture_caption(item)
+        caption = ch.docling_elements.docling_picture_caption(item)
         skip = ''
         if not caption:
             skip = 'XLSX 하한(#249)' if fmt == 'xlsx' else ('면적 하한' if ratio is not None and ratio < threshold else '기타')

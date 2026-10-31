@@ -6,7 +6,7 @@
       요소가 된 꼴 — 순서는 맞고 글자도 다 있다, 넓은 2단 실측) / **mixed = 글자를 이어도 원문이 안 됨**(다른 단의 줄이 끼어들거나 줄이 사라짐
       — 좁은 2단 실측: 두 단을 가로로 한 줄씩 이어 읽음). **단 섞임의 주 지표는 mixed**다. 첫 채점은 표식 순서만 봐서 1/4로 과소 집계했고
       (리뷰 지적 1), 둘째 채점(연속 문자열 여부)은 split을 mixed와 섞었다.
-  - docling 순서: `_docling_elements` 출력에서 문단 표식(`[P07]`)을 등장 순서대로 뽑아 정답(specs.expected_order)과 비교.
+  - docling 순서: `docling_elements.docling_elements` 출력에서 문단 표식(`[P07]`)을 등장 순서대로 뽑아 정답(specs.expected_order)과 비교.
       inversions = 인접 쌍 가운데 정답 순서가 뒤집힌 수, displaced = 정답 위치에서 멀리(2칸 이상) 밀린 표식 수(블록이 통째로 밀린 L05 같은 꼴 —
       인접 쌍 역전은 1로만 센다, 리뷰 지적 5), lost = 정답에 있는데 출력에 없는 표식, dup = 두 번 나온 표식,
       merged = 한 요소에 표식이 둘 이상(이웃 문단이 한 덩어리로 합쳐짐 — 순서는 맞아도 문단 경계를 잃음)
@@ -93,7 +93,7 @@ def evaluate(spec: dict, pdf: Path) -> dict:
         doc = ch.convert_process.convert_local(pdf, max_num_pages=settings.docling_max_num_pages)
     finally:
         settings.docling_do_ocr = ocr
-    elements = list(ch._docling_elements(doc))
+    elements = list(ch.docling_elements.docling_elements(doc))
     expected, bodies = expected_order(spec), paragraph_bodies(spec)
     # 소제목(h) 블록은 제목 경로로 올라가 조각 본문에 없는 게 정상 — 조각 찢어짐 판정에서 뺀다(요소 단계에선 본문에 있으니 둔다)
     heading_toks = {tokens_in(b[1])[0] for b in spec['blocks'] if b[0] == 'h'}

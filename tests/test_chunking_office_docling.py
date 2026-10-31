@@ -196,7 +196,7 @@ class TestDocxDocling:
     def test_조문처럼_시작하는_그림_캡션은_헤딩이_되지_않는다(self, tmp_path, monkeypatch):
         # 그림은 from_table=True로 #205 폴백 승격에서 빠진다. 자리표시는 원래 조문 패턴에 안 걸리므로 캡션을 바꿔 끼워 본다
         import rag.chunking as ch
-        monkeypatch.setattr(ch, 'docling_picture_text', lambda element: '제9조(그림 속 조문) 캡처 내용')
+        monkeypatch.setattr(ch.docling_elements, 'docling_picture_text', lambda element: '제9조(그림 속 조문) 캡처 내용')
 
         def build(doc):
             doc.add_paragraph('제1조(목적) 본문.')
@@ -258,7 +258,7 @@ class TestXlsxDocling:
         # #249 — docling은 시트를 칸 단위로 재고 OneCellAnchor 그림을 1×1칸으로 잡아, 칸이 100개만 넘어도 면적 비율이 하한(1%)
         # 아래로 떨어져 큰 그림도 캡션 없이 자리표시로 남았다(#223 실측: 41행+그림 10장 전부). XLSX는 하한 0으로 전부 캡션한다
         from openpyxl.drawing.image import Image as XlImage
-        from rag.chunking import _PICTURE_PLACEHOLDER
+        from rag.chunking.docling_elements import PICTURE_PLACEHOLDER
 
         def build(wb):
             ws = wb.active
@@ -269,7 +269,7 @@ class TestXlsxDocling:
             ws.add_image(XlImage(BytesIO(_png())), 'E60')
         chunks = chunk_file(_xlsx(tmp_path, build), description='긴 시트')
         text = chunks[0].meta['table_text']
-        assert FAKE_CAPTION in text and _PICTURE_PLACEHOLDER not in text
+        assert FAKE_CAPTION in text and PICTURE_PLACEHOLDER not in text
 
     def test_XLSX_그림도_장수_상한에_걸린다(self, tmp_path, monkeypatch):
         # #249 범위 — 하한 0이라 엑셀 그림은 전부 캡션 대상이고, #223 그림 장수 상한도 전부를 센다

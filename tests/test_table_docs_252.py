@@ -64,10 +64,10 @@ def test_쪽을_넘긴_70행_표는_한_표로_이어져_묶음마다_헤더와_
 def test_그림_면적_하한_1퍼센트_경계(fake_vlm):
     """#247 결정 17 — 0.5% 상자(유니폼)는 캡션 대상이 아니라 자리표시, 1.5% 상자(안전화)는 캡션이 붙는다. 실문서에서 내용 있는 작은
     캡처(1.2~4.6%)가 5% 하한에 걸려 빠졌다. 그림 생성의 정본은 sample_docs/corpus_v2/_src/build_picture_docs.py(P06·P07)."""
-    from rag.chunking import _PICTURE_PLACEHOLDER
+    from rag.chunking.docling_elements import PICTURE_PLACEHOLDER
     from tests.conftest import FAKE_CAPTION
     chunks = chunk_file(ROOT / 'sample_docs' / 'corpus_v2' / 'homeplus' / 'homeplus_15_매장운영지표안내.pdf')
     sec = next(c.text for c in chunks if '안전화는 매장 바닥 작업' in c.text)
     before, after = sec.split('안전화는 매장 바닥 작업', 1)
-    assert _PICTURE_PLACEHOLDER in before and FAKE_CAPTION not in before.split('업무용 물품을 지급한다')[-1]   # 0.5%: 자리표시
+    assert PICTURE_PLACEHOLDER in before and FAKE_CAPTION not in before.split('업무용 물품을 지급한다')[-1]   # 0.5%: 자리표시
     assert FAKE_CAPTION in after                                                                         # 1.5%: 캡션

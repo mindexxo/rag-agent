@@ -58,17 +58,22 @@ def test_옮긴_이름은_옛_경로로_패치하지_않는다() -> None:
 
 
 def _bound_directly() -> dict[str, dict[str, set[str]]]:
-    """정의 모듈 → {이름: 그 이름을 `from rag.chunking.X import 이름`으로 직접 바인딩한 패키지 모듈들}.
+    """정의 모듈 → {이름: 그 이름을 `from rag.chunking.X import 이름`으로 직접 바인딩해 **쓰는** 패키지 모듈들}.
 
     바인딩한 모듈은 자기 전역을 읽으므로 정의 모듈에 패치해도 닿지 않는다 — 그런 이름은 소비 모듈의 전역을 패치해야 한다.
+    `__init__`이 `__all__`용으로 재수출만 하는 바인딩은 소비가 아니라 세지 않는다.
     """
     out: dict[str, dict[str, set[str]]] = {}
     for f in PKG.glob('*.py'):
-        for node in ast.parse(f.read_text(encoding='utf-8')).body:
-            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith('rag.chunking.'):
-                sub = node.module.rsplit('.', 1)[1]
-                for a in node.names:
-                    out.setdefault(sub, {}).setdefault(a.asname or a.name, set()).add(f.stem)
+        tree = ast.parse(f.read_text(encoding='utf-8'))
+        used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}  # import·__all__ 문자열은 Name이 아니다
+        imports = [
+            n for n in tree.body if isinstance(n, ast.ImportFrom) and n.module and n.module.startswith('rag.chunking.')
+        ]
+        for node in imports:
+            sub = str(node.module).rsplit('.', 1)[1]
+            for name in [a.asname or a.name for a in node.names if (a.asname or a.name) in used]:
+                out.setdefault(sub, {}).setdefault(name, set()).add(f.stem)
     return out
 
 

@@ -205,7 +205,7 @@ class TestRealConversion:
         p = _mixed_pdf(tmp_path)
         doc = ch.docling_convert(p, max_num_pages=settings.docling_max_num_pages)     # 변환 자식 프로세스 — 운영과 같은 길
         by_page: dict[int, list[str]] = {}
-        for label, text, page, table in ch._docling_elements(doc):
+        for label, text, page, table in ch.docling_elements.docling_elements(doc):
             by_page.setdefault(page, []).append(text or ' | '.join(' | '.join(r) for r in table or []))
         assert sorted(by_page) == [1, 2, 3]
         page1, page2 = '\n'.join(by_page[1]), '\n'.join(by_page[2])

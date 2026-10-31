@@ -213,7 +213,7 @@ def _build_sections(items: list[_Item]) -> list[_Section]:
         이미 섹션 경로로 나간 스택 앞부분(emitted)은 고아가 아니다. 한계: 본문 없는 '제3조(삭제)'는 다음 조 본문 앞에
         붙어 경로가 제4조가 된다.
       - 문서 끝 헤딩 — 문서가 본문 없는 헤딩으로 끝나면 그 헤딩을 본문으로 남긴다(경로는 이미 나간 앞부분).
-    본문이 하나도 없는 문서는 섹션 0개 — 호출부(rag/documents)가 "추출된 텍스트 없음"으로 실패시킨다.
+    본문이 하나도 없는 문서는 섹션 0개 — 호출부(rag/ingestion)가 "추출된 텍스트 없음"으로 실패시킨다.
     """
     sections: list[_Section] = []
     stack: list[str] = []
@@ -946,7 +946,7 @@ def docling_block_text(item, doc) -> str:
 def count_picture_placeholders(chunks) -> int:
     """청크들에 남은 그림 자리표시 수 — 캡션 대상에서 빠진 그림(면적 하한 미만·MD 그림·엑셀 차트 객체)의 수.
 
-    캡션이 붙은 그림은 본문과 구분되지 않아 셀 수 없다. 지표 기록은 호출부(rag/documents.py)가 한다 — 이 모듈은
+    캡션이 붙은 그림은 본문과 구분되지 않아 셀 수 없다. 지표 기록은 호출부(rag/ingestion.py)가 한다 — 이 모듈은
     0층이라 rag/metrics.py를 import하지 않는다.
     """
     return sum(c.text.count(_PICTURE_PLACEHOLDER) for c in chunks)
@@ -1273,7 +1273,7 @@ _convert_process = _ConvertProcess()
 
 
 def abort_conversion() -> None:
-    """진행 중인 docling 변환을 끊는다(변환 프로세스 kill). 색인 잡이 취소될 때 rag/documents.py가 부른다."""
+    """진행 중인 docling 변환을 끊는다(변환 프로세스 kill). 색인 잡이 취소될 때 rag/ingestion.py가 부른다."""
     _convert_process.abort()
 
 
@@ -1565,7 +1565,7 @@ def pdf_image_area_ratio(file_path: str | Path) -> float:
     """PDF 쪽 면적 대비 삽입 이미지 면적 비율(%). PDF가 아니면 0.
 
     이미지 속 내용은 캡션·OCR로 읽어도 틀릴 수 있고 텍스트 커버리지로는 드러나지 않는다 — 면적이 유일한 탐지 신호라
-    호출부(rag/documents.py)가 이 값으로 문서에 경고를 남긴다.
+    호출부(rag/ingestion.py)가 이 값으로 문서에 경고를 남긴다.
     """
     if not str(file_path).lower().endswith('.pdf'):
         return 0.0

@@ -93,12 +93,12 @@ async def test_같은_내용_재업로드도_새_버전(client, tenant_id, fake_
 async def test_인덱싱_예외시_failed_기록(client, tenant_id, fake_queue, blob_tmp, monkeypatch):
     body = await upload(client, '환불정책.md', MD)
 
-    import rag.documents as rd
+    import rag.ingestion as ri
 
     async def _boom(texts):
         raise RuntimeError('임베딩 서버 폭발')
 
-    monkeypatch.setattr(rd, 'embed_texts', _boom)
+    monkeypatch.setattr(ri, 'embed_texts', _boom)
     # RuntimeError는 결정적 실패로 분류돼 1회로 확정된다(#185) — MAX_ATTEMPTS를 낮출 필요가 없다.
     r = await ingest(body['document_id'])              # 핸들러는 예외를 올리고, drain이 failed를 찍는다 (#139)
     assert r == {'done': 0, 'failed': 1}

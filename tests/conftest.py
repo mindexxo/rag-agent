@@ -190,8 +190,8 @@ def fake_embed(monkeypatch):
         return Embedding(dense=fake_vector(text))
 
     import rag.cache
-    import rag.documents
     import rag.embeddings
+    import rag.ingestion
     import rag.os_index
     import rag.retriever
     from config import settings
@@ -200,7 +200,7 @@ def fake_embed(monkeypatch):
     # 옛 함수를 계속 가리킨다(조용히 실제 TEI를 때린다). os_index는 index_faq_chunks가 쓴다(#146).
     monkeypatch.setattr(rag.embeddings, 'embed_texts', _texts)
     monkeypatch.setattr(rag.os_index, 'embed_texts', _texts)
-    monkeypatch.setattr(rag.documents, 'embed_texts', _texts)
+    monkeypatch.setattr(rag.ingestion, 'embed_texts', _texts)
     monkeypatch.setattr(rag.retriever, 'embed_texts', _texts)   # 쿼리 확장(#5)으로 배치 임베딩 전환
     monkeypatch.setattr(rag.cache, 'embed_query', _query)
     monkeypatch.setattr(settings, 'rerank_enabled', False)

@@ -5,7 +5,7 @@
 반복하지 않고, `/kms/query`로 캐시를 채우고(semantic 히트까지 확인) 재업로드 뒤 같은 질문이 어느
 시점에 miss가 되고 무엇을 근거로 다시 저장되는지를 사용자 경로 그대로 본다.
 
-시점별 기대(코드 근거: rag/documents.py index_pending_document ③, rag/cache.py get_semantic 6번):
+시점별 기대(코드 근거: rag/ingestion.py index_pending_document ③, rag/cache.py get_semantic 6번):
 - ③ 커밋 직후(DROP 전, ≤1분 공존 창): 구판 근거 캐시는 ③의 invalidate_source로 이미 없다 → miss.
   이때 생성된 답은 구·신 청크를 함께 근거({v1,v2})로 저장된다 — 공존 창의 제품 결정 범위이며
   #239 결정 1 = 손대지 않음. 이 행이 실제로 {v1,v2}인지 단언해야 아래 miss가 "행이 없어서"가 아니라

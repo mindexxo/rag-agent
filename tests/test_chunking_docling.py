@@ -633,7 +633,7 @@ class TestConvertProcess:
             assert ch.docling_convert(path, **kw).export_to_dict() == ch._convert_local(path, **kw).export_to_dict(), path
 
     def test_abort하면_기다리던_변환이_바로_끝나고_다음_변환은_정상(self, tmp_path, fake_vlm):
-        # 색인 잡이 취소될 때(rag/documents.py) 부른다 — 기다리던 스레드가 마감(900초)까지 잠금을 쥐지 않게(#223 리뷰)
+        # 색인 잡이 취소될 때(rag/ingestion.py) 부른다 — 기다리던 스레드가 마감(900초)까지 잠금을 쥐지 않게(#223 리뷰)
         import threading
         import time
         import rag.chunking as ch

@@ -104,7 +104,7 @@ async def test_색인_일시_실패는_attempts를_남기고_다음_회차에_�
     body = await _upload(client, '환불정책.md')
     doc_id = body['document_id']
 
-    import rag.documents as rd
+    import rag.ingestion as rd
     real = rd.os_index.index_parsed_document
     calls = {'n': 0}
 
@@ -284,7 +284,7 @@ async def test_일시_실패는_다음_시도를_미루고_cron_선정에서_빠
     """엔진 연결 실패 → attempts=1, next_attempt_at≈now+1분, 전체 drain의 선정 대상에서 빠진다.
     시각을 과거로 돌리면 다시 잡힌다. row_ids 지정(ingest)은 백오프를 무시한다(헬퍼 계약)."""
     doc_id = (await _upload(client, '환불정책.md'))['document_id']
-    import rag.documents as rd
+    import rag.ingestion as rd
 
     async def _down(**kw):
         raise ConnectionError('Cannot connect to host localhost:9200')
@@ -315,7 +315,7 @@ async def test_일시_실패는_다음_시도를_미루고_cron_선정에서_빠
 async def test_일시_실패가_MAX_ATTEMPTS에_닿으면_확정되고_훅이_불린다(client, tenant_id, fake_queue, blob_tmp,
                                                                   fake_embed, monkeypatch):
     doc_id = (await _upload(client, '환불정책.md'))['document_id']
-    import rag.documents as rd
+    import rag.ingestion as rd
 
     async def _down(**kw):
         raise ConnectionError('Cannot connect')
@@ -425,7 +425,7 @@ async def test_백오프로_미뤄진_v1보다_v2가_먼저_끝나도_신버전�
     """v1 INDEX가 일시 실패로 물러난 사이 v2가 올라와 먼저 색인된다. 그 뒤 v1 차례가 와도 v2를
     supersede하면 안 된다 — v2 ready·active·검색됨, v1 deleted·청크 0."""
     v1 = (await _upload(client, '환불정책.md'))['document_id']
-    import rag.documents as rd
+    import rag.ingestion as rd
 
     async def _down(**kw):
         raise ConnectionError('Cannot connect')

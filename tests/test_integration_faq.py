@@ -246,13 +246,13 @@ async def test_타_테넌트의_같은_질문은_허용(client, tenant_id, other
 @pytest.mark.asyncio
 async def test_앱_검사를_지나친_경쟁은_DB_UNIQUE가_409로(client, tenant_id, monkeypatch):
     """검사와 커밋 사이에 같은 질문이 들어온 경우 — 검사를 비활성화해 그 경로만 재현."""
-    import routers.faqs as faqs_router
+    import rag.faq as faq_svc
 
     await _create_faq(client, question='환불 기간은?')
 
     async def _noop(*a, **k): ...
 
-    monkeypatch.setattr(faqs_router, '_reject_duplicate', _noop)
+    monkeypatch.setattr(faq_svc, 'reject_duplicate', _noop)
     res = await client.post('/kms/faqs', json={'question': '환불 기간은?', 'answer': 'a'})
     assert res.status_code == 409 and '환불 기간은?' in res.json()['detail'], res.text
 
@@ -272,7 +272,7 @@ async def test_PATCH로_대표_질문을_남의_것과_같게_바꾸면_409(clie
 @pytest.mark.asyncio
 async def test_PATCH_경쟁도_DB_UNIQUE가_409로(client, tenant_id, monkeypatch):
     """리뷰 지적 2 — rollback 뒤 만료된 faq.question을 읽으면 500이었다."""
-    import routers.faqs as faqs_router
+    import rag.faq as faq_svc
 
     await _create_faq(client, question='환불 기간은?')
     res = await client.post('/kms/faqs', json={'question': '배송 기간은?', 'answer': 'a'})
@@ -280,6 +280,6 @@ async def test_PATCH_경쟁도_DB_UNIQUE가_409로(client, tenant_id, monkeypatc
 
     async def _noop(*a, **k): ...
 
-    monkeypatch.setattr(faqs_router, '_reject_duplicate', _noop)
+    monkeypatch.setattr(faq_svc, 'reject_duplicate', _noop)
     res = await client.patch(f'/kms/faqs/{b}', json={'question': '환불 기간은?'})
     assert res.status_code == 409 and '환불 기간은?' in res.json()['detail'], res.text

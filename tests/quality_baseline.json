@@ -439,7 +439,6 @@
   "routers/conversations.py::PLR0913": 1,
   "routers/documents.py::C901": 2,
   "routers/documents.py::PLR0913": 2,
-  "routers/faqs.py::C901": 1,
   "routers/faqs.py::PLR0913": 1,
   "tests/conftest.py::E741": 1,
   "tests/test_chunk_boundary_245.py::B905": 1,

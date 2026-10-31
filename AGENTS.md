@@ -22,7 +22,7 @@
   같은 함수로 하려고(#233)
 - **중간층(조합)**: `rag/citation_labels.py`, `rag/clients.py`, `rag/llm_schemas.py`,
   `rag/turn_state.py`, `rag/cache.py`, `rag/reranker.py`, `rag/retriever.py`,
-  `rag/stream_resume.py`, `rag/cancellation.py`, `rag/citation_tail.py`, `rag/documents.py`,
+  `rag/stream_resume.py`, `rag/cancellation.py`, `rag/citation_tail.py`, `rag/documents.py`, `rag/ingestion.py`,
   `rag/prompts.py`, `rag/conversation.py`, `rag/guardrail.py`, `rag/outbox.py`,
   `rag/os_search.py`, `rag/os_index.py`, `rag/os_reconcile.py`, `rag/xlsx_chunking.py`(톱레벨에서 `chunking`을 쓴다 —
   그래서 `chunking`이 함수 안에서 되부른다), `rag/conversation_search.py`(`models`만 쓴다)
@@ -37,7 +37,7 @@
 **함수 안 지연 import은 순환 회피용이며 의도된 것이다 — 톱레벨로 끌어올리지 마라.**
 이걸 하는 모듈: `chunking`(→xlsx_chunking), `embeddings`·`limiter`(→clients),
 `reranker`(→clients, embeddings), `retriever`(→reranker), `stream_resume`(→clients, streaming),
-`outbox`(→documents).
+`outbox`(→ingestion).
 순환 회피가 아닌 지연 import은 둘이다. `opensearchpy` — `rag/` 어느 모듈도 톱레벨에 들이지 않고
 `os_client.client()`·`outbox.is_transient()`가 함수 안에서 import한다(매핑 상수만 보는 테스트가 그 패키지
 없이 `os_client`를 import할 수 있게 한 규율을 outbox도 따른다). `litellm` — `rag/llm/litellm.py`·`rag/embeddings.py`·`rag/reranker.py`의 상용 분기 함수 안에서만

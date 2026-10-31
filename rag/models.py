@@ -54,7 +54,7 @@ class Folder(Base):
 
 
 # Document.status 6값 중 색인·supersede·DROP 판정 대상인 "살아 있는" 넷의 정의점.
-# deleted·failed는 사용자에게 없는 문서다. rag/documents.py와 rag/outbox.py가 같은 집합을 써야 한다.
+# deleted·failed는 사용자에게 없는 문서다. rag/documents.py·rag/ingestion.py·rag/outbox.py가 같은 집합을 써야 한다.
 ALIVE_DOCUMENT_STATUSES = ('pending', 'parsing', 'embedding', 'ready')
 
 

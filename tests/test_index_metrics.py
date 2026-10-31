@@ -67,10 +67,11 @@ class TestResultCounter:
     def test_최종_실패율은_retry를_분모에_넣지_않는다(self):
         # 한 문서가 5번 재시도되면 재시도 단위 카운터(kms_search_index_sync_total)는 error 5를
         # 세지만, 문서는 1건 실패다. ok+failed만 분모로 쓴다는 계약을 여기서 고정한다.
+        before = _counts(INDEX_TOTAL)  # 같은 프로세스의 앞선 통합 테스트가 올린 값은 뺀다
         INDEX_TOTAL.labels(ext='docx', result='ok').inc(8)
         INDEX_TOTAL.labels(ext='docx', result='retry').inc(12)
         INDEX_TOTAL.labels(ext='docx', result='failed').inc(2)
-        c = _counts(INDEX_TOTAL)
-        ok, retry, failed = c[('docx', 'ok')], c[('docx', 'retry')], c[('docx', 'failed')]
+        after = _counts(INDEX_TOTAL)
+        ok, retry, failed = (after[('docx', r)] - before.get(('docx', r), 0) for r in ('ok', 'retry', 'failed'))
         assert failed / (ok + failed) == 0.2      # retry 12건이 실패율을 흔들지 않는다
         assert retry == 12

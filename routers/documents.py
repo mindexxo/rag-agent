@@ -9,7 +9,7 @@ rag/os_index.py의 effective_searchable.
 - 식별 기준은 **filename 완전 일치** 하나뿐. 유사 파일명은 별개 문서로 본다.
 - 같은 이름 재업로드 = 새 version + 기존 버전 supersede. 내용이 같아도 마찬가지 —
   내용 해시 dedupe는 제거했다(규칙을 하나로 유지).
-  supersede가 **무엇을 언제** 하는지는 rag/documents.py의 index_pending_document가 정의점이다
+  supersede가 **무엇을 언제** 하는지는 rag/ingestion.py의 index_pending_document가 정의점이다
   (#186 이후 구버전 청크 삭제는 커밋 즉시가 아니라 다음 회차의 DROP 작업이다 — 최대 1분 공존).
 - 원본 파일은 테넌트 디렉터리 아래 UUID 이름으로 저장 (업로드 1건 = 파일 1개).
 - 버전 롤백은 미지원. 되돌리려면 이전 파일을 다시 업로드한다.

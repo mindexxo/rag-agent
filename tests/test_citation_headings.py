@@ -77,7 +77,7 @@ class TestBuildSections:
         assert [(s.heading_path, s.body) for s in _build_sections(items)] == [(['T', 'B'], 'A\na1\na2\n본문')]
 
     def test_헤딩만_있는_문서는_섹션_0개(self):
-        # 결정 3 — 빈 양식은 색인하지 않는다(rag/documents가 "추출된 텍스트 없음"으로 실패시킨다)
+        # 결정 3 — 빈 양식은 색인하지 않는다(rag/ingestion이 "추출된 텍스트 없음"으로 실패시킨다)
         assert _build_sections([_h('규정', 1), _h('제1조(목적)', 2), _h('제2조(정의)', 2)]) == []
 
     @pytest.mark.parametrize('items', [

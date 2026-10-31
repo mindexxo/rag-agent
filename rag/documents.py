@@ -1,34 +1,18 @@
-"""문서 도메인 — 업로드·인제스션·삭제. 라우터(routers/documents.py)와 워커가 함께 쓴다.
+"""문서 도메인 — 업로드·삭제·버전. 인제스션(pending → ready)은 rag/ingestion.py.
 
 라우터도 워커도 import하므로 starlette를 들이지 않는다 — HTTPException 대신 도메인 예외나 None을
-돌려주고 HTTP 변환은 라우터가 한다. 스레드 오프로딩도 stdlib `asyncio.to_thread`를 쓴다.
+돌려주고 HTTP 변환은 라우터가 한다.
 """
 
-import asyncio
 import mimetypes
-import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import AsyncSessionLocal
-from rag import cache, os_index, outbox
-from rag.chunking import abort_conversion, chunk_file, count_picture_placeholders, pdf_image_area_ratio
-from rag.embeddings import embed_texts  # 이름으로 들일 것 — tests/conftest.py가 rag.documents.embed_texts를 패치
-from rag.index_text import build_index_text
-from rag.metrics import (
-    INDEX_DURATION_SECONDS,
-    INDEX_PICTURE_PLACEHOLDER_TOTAL,
-    INDEX_TOTAL,
-    ext_label,
-)
+from rag import cache, outbox
 from rag.models import ALIVE_DOCUMENT_STATUSES, Document, Folder
-
-# 이미지 면적(%)이 이 값 이상이면 문서에 경고를 남긴다 — 작은 도표 하나에도 핵심 내용이 들 수 있어 낮게 잡는다.
-IMAGE_WARN_PERCENT = 0.5
 
 _MIME_OVERRIDES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -67,7 +51,7 @@ async def get_folder(session: AsyncSession, tenant_id: str, folder_id: int) -> F
     )
 
 
-async def _retire_documents(
+async def retire_documents(
     session: AsyncSession, tenant_id: str, document_ids: list[int], *, status_reason: str | None = None
 ) -> None:
     """문서들을 내린다 — 상태·캐시·DROP **세 동작이 한 묶음**이다(하나만 빠져도 조용히 어긋난다).
@@ -85,150 +69,6 @@ async def _retire_documents(
         await cache.invalidate_source(session, tenant_id, did)
     outbox.enqueue(session, tenant_id, outbox.DROP_DOCUMENTS, document_ids=list(document_ids))
     await session.flush()
-
-
-async def index_pending_document(document_id: int, *, outbox_row_id: int | None = None) -> None:
-    """INDEX_DOCUMENT 핸들러 — 인제스션 전체. 실패는 예외로 올린다(재시도·failed 판정은 outbox.drain).
-
-    커밋은 ③의 한 번뿐이고 ready·supersede·캐시 무효화·outbox done이 함께 들어가 `ready ≡ 색인됨`이
-    커밋 단위로 성립한다. 어디서 죽어도 다음 회차가 처음부터 다시 한다(엔진 색인은 같은 _id upsert라 멱등).
-    **파괴적 엔진 변경은 커밋 뒤 outbox로만** — 구버전 청크 삭제는 ③에 DROP 행으로 얹어, ③이 실패하면
-    구버전이 PG·엔진 모두 그대로 남게 한다.
-
-    세션을 셋으로 나눠 무거운 파싱·임베딩 동안 DB 커넥션을 물지 않는다.
-      ① 짧은 읽기   처리 대상 확인 + 파싱·색인에 필요한 값만
-      ② DB 없이     파싱·청킹·임베딩 → 엔진 색인(삭제 없음)
-      ③ 짧은 쓰기   유일한 커밋
-    """
-    # ── ① 짧은 읽기 ──
-    async with AsyncSessionLocal() as session:
-        row = (
-            await session.execute(
-                select(Document, Folder.name, Folder.description, Folder.is_searchable)
-                .outerjoin(Folder, Document.folder_id == Folder.id)
-                .where(Document.id == document_id)
-            )
-        ).first()
-        if row is None or row[0].status != 'pending':  # 이미 처리됨·삭제됨 — 할 일 없음
-            if outbox_row_id is not None:
-                await outbox.mark_done(session, outbox_row_id)
-                await session.commit()
-            return
-        doc, folder_name, folder_desc, folder_searchable = row
-        tenant_id, filename, version = doc.tenant_id, doc.filename, doc.version
-        blob_path, description = doc.blob_path, doc.description or ''
-        folder_id, doc_searchable = doc.folder_id, doc.is_searchable
-        # supersede 대상 — 같은 filename의 **낮은 version** 중 살아 있는 것(pending 포함). outbox 처리 순서는
-        # 보장되지 않으므로 늦게 도는 구버전이 신버전을 내리지 못하게 version 조건을 건다.
-        old_ids = list(
-            (
-                await session.execute(
-                    select(Document.id)
-                    .where(Document.tenant_id == tenant_id)
-                    .where(Document.filename == filename)
-                    .where(Document.version < version)
-                    .where(Document.status.in_(ALIVE_DOCUMENT_STATUSES))
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-    # ── ② 무거운 계산 — DB 세션 없음 ──
-    # 단계별 소요 지표는 성공한 건만 기록한다(실패는 outbox.drain이 센다).
-    _ext = ext_label(filename)
-    _t_start = time.monotonic()
-    # 청킹은 동기 CPU 작업이라 스레드로 보낸다. 취소되면 변환 프로세스를 즉시 죽인다 — to_thread는 취소돼도
-    # 스레드가 계속 돌며 변환 잠금을 쥐어, 다음 회차까지 잠금에 막혀 연쇄로 취소된다.
-    try:
-        chunks = await asyncio.to_thread(chunk_file, blob_path, description=description)
-    except asyncio.CancelledError:
-        abort_conversion()
-        raise
-    image_ratio = await asyncio.to_thread(pdf_image_area_ratio, blob_path)
-    if not chunks:  # 빈 파일·텍스트레이어 없는 PDF → ready 승격 대신 실패 (유령 ready 방지)
-        raise ValueError('추출된 텍스트가 없습니다 (빈 파일이거나 파싱 결과가 비어 있음)')
-    # 단계별 지표가 같은 분모(성공한 문서)를 갖도록 실패 분기 뒤에서 기록한다.
-    INDEX_DURATION_SECONDS.labels(stage='parse', ext=_ext).observe(time.monotonic() - _t_start)
-    # 캡션이 안 붙은 그림 수(면적 하한 미만 등) — 캡션 실패는 변환에서 예외로 끝나 여기까지 오지 않는다.
-    if placeholders := count_picture_placeholders(chunks):
-        INDEX_PICTURE_PLACEHOLDER_TOTAL.labels(ext=_ext).inc(placeholders)
-    _t_parse_done = time.monotonic()
-    # 임베딩 입력에만 '파일명 > 헤딩' 컨텍스트를 얹는다(저장되는 chunk.text는 원문 유지).
-    index_texts = [build_index_text(c.text, filename, c.heading_path) for c in chunks]
-    embeddings = await embed_texts(index_texts)
-    INDEX_DURATION_SECONDS.labels(stage='embed', ext=_ext).observe(time.monotonic() - _t_parse_done)
-    _t_embed_done = time.monotonic()
-
-    # searchable은 PG의 현재 상태(pending·inactive)가 아니라 ③이 만들 상태(ready·active)로 계산한다.
-    indexed_searchable = os_index.effective_searchable(
-        is_faq=False,
-        doc_is_active=True,
-        doc_status='ready',
-        doc_is_searchable=doc_searchable,
-        folder_is_searchable=folder_searchable,
-    )
-    await os_index.index_parsed_document(
-        document_id=document_id,
-        tenant_id=tenant_id,
-        filename=filename,
-        version=version,
-        folder_id=folder_id,
-        folder_name=folder_name,
-        folder_description=folder_desc,
-        searchable=indexed_searchable,
-        chunks=chunks,
-        embeddings=embeddings,
-    )
-    # 구버전 청크는 여기서 지우지 않는다 — ③의 DROP 행이 지운다.
-    INDEX_DURATION_SECONDS.labels(stage='index', ext=_ext).observe(time.monotonic() - _t_embed_done)
-
-    # ── ③ 유일한 커밋 ──
-    async with AsyncSessionLocal() as session:
-        doc = await session.get(Document, document_id)
-        if doc is None or doc.status != 'pending':
-            # ②가 도는 사이 삭제됐다. 엔진에 넣은 청크는 그 삭제가 만든 DROP 행이 다음 회차에 지운다.
-            if outbox_row_id is not None:
-                await outbox.mark_done(session, outbox_row_id)
-                await session.commit()
-            return
-
-        # 청크는 PG에 쓰지 않는다(엔진이 정본). 구버전 DROP 행은 이 커밋에 얹혀 상태와 함께 확정·롤백된다.
-        await _retire_documents(session, tenant_id, old_ids)
-
-        doc.status = 'ready'
-        doc.is_active = True
-        doc.char_count = sum(len(c.text) for c in chunks)
-        # 이미지 비중이 큰 문서는 캡션·OCR 오류 가능성만 알린다 — 검색·인용은 정상이라 ready 그대로.
-        if image_ratio >= IMAGE_WARN_PERCENT:
-            doc.status_reason = (
-                f'이미지가 쪽 면적의 {image_ratio:.0f}%를 차지합니다. '
-                f'그림은 AI가 설명을 만들고 표 이미지는 글자를 인식해 검색에 반영합니다. '
-                f'생성된 설명이나 인식된 값이 부정확할 수 있어 원문 확인이 필요합니다.'
-            )[:500]
-        doc.indexed_at = datetime.now(timezone.utc)
-
-        # ② 도중 토글·폴더 이동이 있었으면 ① 시점 값으로 넣은 메타가 낡는다(그때의 META 행은 이 문서를
-        # 못 봤다) — 최신 PG 값과 다르면 META 행을 이 커밋에 얹는다.
-        f_on = None
-        if doc.folder_id is not None:
-            f_on = (await session.execute(select(Folder.is_searchable).where(Folder.id == doc.folder_id))).scalar()
-        now_searchable = os_index.effective_searchable(
-            is_faq=False,
-            doc_is_active=True,
-            doc_status='ready',
-            doc_is_searchable=doc.is_searchable,
-            folder_is_searchable=f_on,
-        )
-        if now_searchable != indexed_searchable or doc.folder_id != folder_id:
-            outbox.enqueue(session, tenant_id, outbox.META_DOCUMENTS, document_ids=[document_id])
-
-        if outbox_row_id is not None:
-            await outbox.mark_done(session, outbox_row_id)  # ready와 같은 커밋
-        await session.commit()
-    # total은 ③ 커밋까지 포함한다(사용자 체감 지연에는 cron 대기 최대 1분이 더 붙는다).
-    INDEX_DURATION_SECONDS.labels(stage='total', ext=_ext).observe(time.monotonic() - _t_start)
-    INDEX_TOTAL.labels(ext=_ext, result='ok').inc()  # 실패 쪽은 outbox.drain이 센다(재시도/확정 구분)
 
 
 async def soft_delete_documents(session: AsyncSession, tenant_id: str, document_ids: list[int]) -> list[int]:
@@ -336,7 +176,7 @@ async def _reuse_failed_document(
     # 나머지 failed는 내린다 — soft_delete_documents는 filename 기준이라 target까지 지우므로 쓰지 않는다.
     # failed라도 엔진에 청크가 남을 수 있어 DROP이 필요하다(failed 확정 DROP의 이중 안전판).
     others = [d.id for d in failed if d.id != target.id]
-    await _retire_documents(session, tenant_id, others, status_reason='failed_superseded')
+    await retire_documents(session, tenant_id, others, status_reason='failed_superseded')
     await session.refresh(target)  # UPDATE로 바뀐 값을 ORM 객체에 반영(응답에 쓴다)
     outbox.enqueue(session, tenant_id, outbox.INDEX_DOCUMENT, document_id=target.id)
     return UploadResult(target, stale_blob)

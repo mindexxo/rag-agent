@@ -81,7 +81,7 @@ async def mark_done(session, row_id: int) -> None:
 async def _apply(session, op: str, payload: dict, row_id: int) -> None:
     """행 하나를 실제로 반영한다. 실패는 예외로 올린다 — 횟수·failed 판정은 drain이 한다."""
     if op == INDEX_DOCUMENT:
-        from rag.documents import index_pending_document  # 지연 import — documents가 이 모듈을 import
+        from rag.ingestion import index_pending_document  # 지연 import — ingestion이 이 모듈을 import
 
         await index_pending_document(payload['document_id'], outbox_row_id=row_id)
     elif op == DROP_DOCUMENTS:

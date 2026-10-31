@@ -397,9 +397,9 @@ def _table_image_pdf(tmp_path):
 
 
 class TestConversionGuard:
-    """raises_on_error=True가 못 잡는 불완전 변환을 _convert_local이 올리는지 — 모델 없이 가짜 컨버터로."""
+    """raises_on_error=True가 못 잡는 불완전 변환을 convert_process.convert_local이 올리는지 — 모델 없이 가짜 컨버터로."""
 
-    # 가드는 변환 프로세스 안의 _convert_local에 있다 — 가짜 컨버터는 이 프로세스에서만 보이므로 그것을 직접 부른다.
+    # 가드는 변환 프로세스 안의 convert_process.convert_local에 있다 — 가짜 컨버터는 이 프로세스에서만 보이므로 그것을 직접 부른다.
     def _with_result(self, monkeypatch, status, errors):
         import types
         import rag.chunking as ch
@@ -415,7 +415,7 @@ class TestConversionGuard:
         from docling.datamodel.base_models import ConversionStatus
         ch = self._with_result(monkeypatch, ConversionStatus.PARTIAL_SUCCESS, [])
         with pytest.raises(RuntimeError, match='partial_success'):
-            ch._convert_local(tmp_path / 'x.pdf')
+            ch.convert_process.convert_local(tmp_path / 'x.pdf')
 
     def test_성공이어도_errors가_있으면_실패로_올린다(self, monkeypatch, tmp_path):
         # 원격 OCR 실패는 status를 안 바꾸고 errors에만 남긴다(kserve_v2_ocr_model.py) — 표가 빈 격자로 색인된다.
@@ -425,12 +425,12 @@ class TestConversionGuard:
                         error_message='connection refused', category=FailureCategory.INFERENCE_FAILURE)
         ch = self._with_result(monkeypatch, ConversionStatus.SUCCESS, [err])
         with pytest.raises(RuntimeError, match='KserveV2OcrModel'):
-            ch._convert_local(tmp_path / 'x.pdf')
+            ch.convert_process.convert_local(tmp_path / 'x.pdf')
 
     def test_완전_성공은_통과한다(self, monkeypatch, tmp_path):
         from docling.datamodel.base_models import ConversionStatus
         ch = self._with_result(monkeypatch, ConversionStatus.SUCCESS, [])
-        assert ch._convert_local(tmp_path / 'x.pdf') is self.doc
+        assert ch.convert_process.convert_local(tmp_path / 'x.pdf') is self.doc
 
 
 class TestRemoteOcr:
@@ -597,7 +597,7 @@ class TestConvertProcess:
         monkeypatch.setattr(settings, 'docling_document_timeout_seconds', 3.0)
         with pytest.raises(TimeoutError, match='3초'):
             ch.docling_convert(p)
-        assert ch._convert_process._proc is None          # kill하고 비웠다 — 다음 요청이 새로 띄운다
+        assert ch.convert_process.process._proc is None          # kill하고 비웠다 — 다음 요청이 새로 띄운다
         fake_vlm.delay = 0
         monkeypatch.setattr(settings, 'docling_document_timeout_seconds', deadline)
         assert ch.docling_convert(p).pictures             # 새 자식에서 정상 변환
@@ -606,10 +606,10 @@ class TestConvertProcess:
         import rag.chunking as ch
         p = _picture_pdf(tmp_path)
         ch.docling_convert(p)
-        old = ch._convert_process._proc
+        old = ch.convert_process.process._proc
         old.kill(); old.wait(10)                          # OOM kill 같은 외부 종료
         assert ch.docling_convert(p).pictures
-        assert ch._convert_process._proc is not old
+        assert ch.convert_process.process._proc is not old
 
     def test_자식을_거친_문서가_이_프로세스_변환과_같다(self, tmp_path, fake_vlm):
         # 자식은 DoclingDocument를 피클로 돌려준다. 손실이 있으면 청크가 조용히 달라진다 — 형식별로 대조한다
@@ -627,7 +627,7 @@ class TestConvertProcess:
         xlsx = tmp_path / 'a.xlsx'; wb.save(xlsx)
         for path, kw in ((_picture_pdf(tmp_path), {'max_num_pages': settings.docling_max_num_pages}),
                          (docx, {}), (xlsx, {})):
-            assert ch.docling_convert(path, **kw).export_to_dict() == ch._convert_local(path, **kw).export_to_dict(), path
+            assert ch.docling_convert(path, **kw).export_to_dict() == ch.convert_process.convert_local(path, **kw).export_to_dict(), path
 
     def test_abort하면_기다리던_변환이_바로_끝나고_다음_변환은_정상(self, tmp_path, fake_vlm):
         # 색인 잡이 취소될 때(rag/ingestion.py) 부른다 — 기다리던 스레드가 마감(900초)까지 잠금을 쥐지 않게(#223 리뷰)
@@ -656,21 +656,21 @@ class TestConvertProcess:
         p = tmp_path / 'a.md'
         p.write_text('# 제목\n\n본문.\n', encoding='utf-8')
         ch.docling_convert(p)
-        first = ch._convert_process._proc
+        first = ch.convert_process.process._proc
         monkeypatch.setattr(settings, 'rerank_timeout', settings.rerank_timeout + 1)
         ch.docling_convert(p)
-        assert ch._convert_process._proc is first
+        assert ch.convert_process.process._proc is first
         monkeypatch.setattr(settings, 'docling_table_mode', 'fast' if settings.docling_table_mode != 'fast' else 'accurate')
         ch.docling_convert(p)
-        assert ch._convert_process._proc is not first        # 변환 설정은 여전히 자식에 닿아야 한다
+        assert ch.convert_process.process._proc is not first        # 변환 설정은 여전히 자식에 닿아야 한다
 
     def test_이_모듈이_읽는_설정은_모두_자식에_넘어간다(self):
-        # 자식은 _CHILD_SETTING_PREFIXES 설정만 받는다 — 다른 접두사 설정을 자식 코드가 읽으면 부모가 바꿔도 옛 값으로 돈다
+        # 자식은 CHILD_SETTING_PREFIXES 설정만 받는다 — 다른 접두사 설정을 자식 코드가 읽으면 부모가 바꿔도 옛 값으로 돈다
         import re
         import rag.chunking as ch
         src = ''.join(f.read_text(encoding='utf-8') for f in Path(ch.__file__).parent.glob('*.py'))  # 패키지 전체
         names = set(re.findall(r'settings\.([a-z_]+)', src)) - {'model_dump'}
-        assert names and all(n.startswith(ch._CHILD_SETTING_PREFIXES) for n in names), sorted(names)
+        assert names and all(n.startswith(ch.convert_process.CHILD_SETTING_PREFIXES) for n in names), sorted(names)
 
 
 def _raises(fn, *args):

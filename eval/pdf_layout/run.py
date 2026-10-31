@@ -14,7 +14,7 @@
       조각에 들어옴 — 검색·인용이 오염되는 모양). 빈틈은 섞임이 아니다 — 표 캡션·헤딩으로 올라간 문단이 빈틈을 만든다(첫 측정의
       "연속 구간" 판정은 L04·L02에서 거짓 양성을 냈다).
   - 머리글·바닥글(L07): 요소 글에 furniture 문자열이 들어오면 '본문 오염'.
-운영 코드 무변경. 변환은 `_convert_local`(인프로세스)로 한 번만 하고 그 문서를 chunk_file에 끼운다(표 축 #246과 같은 방식). OCR은 끈다(순서
+운영 코드 무변경. 변환은 `convert_process.convert_local`(인프로세스)로 한 번만 하고 그 문서를 chunk_file에 끼운다(표 축 #246과 같은 방식). OCR은 끈다(순서
 판정과 무관, 원격 의존 제거 — 끝나면 복구). 그림 캡션 설정은 운영 그대로다 — L03의 그림이 캡션 대상이면 VLM이 호출된다(안 닿으면 변환 실패).
 용법: python -m eval.pdf_layout.run [--out eval/results/pdf_layout] [--only L01_two_col_narrow ...]
 산출물: <out>/docs/*.pdf, results.jsonl(건별 — 실제 순서·조각 글 포함), matrix.md(유형 × 지표).
@@ -90,7 +90,7 @@ def evaluate(spec: dict, pdf: Path) -> dict:
     ocr = settings.docling_do_ocr
     settings.docling_do_ocr = False            # 순서 판정과 무관 — 원격 OCR 의존을 뺀다(끝나면 복구)
     try:
-        doc = ch._convert_local(pdf, max_num_pages=settings.docling_max_num_pages)
+        doc = ch.convert_process.convert_local(pdf, max_num_pages=settings.docling_max_num_pages)
     finally:
         settings.docling_do_ocr = ocr
     elements = list(ch._docling_elements(doc))

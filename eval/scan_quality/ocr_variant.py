@@ -10,7 +10,7 @@ Global.max_side_len(2000)이 검출 앞에서 이미 하므로 설정과 무관�
 local_min736으로 명시해 덮어쓴다. 로컬 CPU가 서버를 재현하는지는 같은 설정의 local ↔ remote로 먼저 확인한다
 (#224 실측: 표 하네스 셀 단위 완전 일치 / 본문은 글머리표 줄 순서만 다름 — #168의 GPU·CPU 줄 묶음 차이와 같은 종류).
 
-install(name): docling_convert를 이 프로세스의 _convert_local로, KserveV2OcrOptions를 같은 파라미터의 RapidOcrOptions로 바꾼다.
+install(name): docling_convert를 이 프로세스의 convert_process.convert_local로, KserveV2OcrOptions를 같은 파라미터의 RapidOcrOptions로 바꾼다.
 'remote'는 OCR 옵션은 그대로 두고 변환만 이 프로세스로 옮긴다(실험 간 같은 경로를 쓰려고).
 """
 from pathlib import Path
@@ -55,5 +55,5 @@ def install(name: str) -> None:
             return PO.RapidOcrOptions(lang=kw.get('lang', ['korean']), scale=kw.get('scale', 3.0), text_score=0.5,
                                       use_cls=False, rapidocr_params=params)
         PO.KserveV2OcrOptions = _local
-    C.docling_convert = lambda p, **kw: C._convert_local(p, **kw)
+    C.docling_convert = lambda p, **kw: C.convert_process.convert_local(p, **kw)
     C.document_converter._converter = None                       # 다음 변환에서 새 옵션으로 변환기를 다시 만든다

@@ -1,6 +1,6 @@
 """docling 변환기 조립과 변환 — 프로세스당 1회 변환기(PDF·DOCX·XLSX)·캡션 가드(그림 장수·캡션 실패)·불완전 결과 가드.
 
-변환 프로세스(_ConvertProcess) 안에서 불린다. docling은 톱레벨에 들이지 않는다(함수 안 지연 import).
+변환 프로세스(convert_process.ConvertProcess) 안에서 불린다. docling은 톱레벨에 들이지 않는다(함수 안 지연 import).
 """
 
 import threading
@@ -127,7 +127,7 @@ def caption_headers() -> dict[str, str]:
 
 
 def docling_converter() -> 'DocumentConverter':
-    """프로세스당 1회: PDF·DOCX·XLSX 변환기(모델 로딩). 변환 프로세스(_ConvertProcess) 안에서 불린다.
+    """프로세스당 1회: PDF·DOCX·XLSX 변환기(모델 로딩). 변환 프로세스(convert_process.ConvertProcess) 안에서 불린다.
 
     메모리: 모델이 상주하고 glibc가 해제분을 바로 반납하지 않아, 여러 문서를 돈 정상상태 RSS가 단일 문서 피크보다 높다 —
     컨테이너 메모리 상한(docker-compose.yml)은 단일 문서 피크로 정하면 안 된다.
@@ -155,7 +155,7 @@ def docling_converter() -> 'DocumentConverter':
             # 메모리 노브 — config.py 주석 참조. perf.page_batch_size는 쓰지 않는다: 기본 파이프라인이 그 값을 읽지 않는다.
             opts.layout_batch_size = settings.docling_layout_batch_size
             opts.queue_max_size = settings.docling_queue_max_size
-            # 상용 OCR(OCR_PROVIDER=llm)이면 Triton을 안 부른다 — 사진 표·스캔 쪽은 '상용 OCR' 절이 LLM으로 읽는다.
+            # 상용 OCR(OCR_PROVIDER=llm)이면 Triton을 안 부른다 — 사진 표·스캔 쪽은 ocr_llm이 LLM으로 읽는다.
             opts.do_ocr = settings.docling_do_ocr and settings.ocr_provider == 'triton'
             if opts.do_ocr:
                 # 엔진은 원격 Triton. 기본 OcrMode는 비트맵 영역만 OCR하고 텍스트 레이어는 건드리지 않는다.
@@ -173,7 +173,7 @@ def docling_converter() -> 'DocumentConverter':
                 TableFormerMode.FAST if settings.docling_table_mode == 'fast' else TableFormerMode.ACCURATE
             )
             opts.table_structure_options.do_cell_matching = settings.docling_do_cell_matching
-            # opts.document_timeout은 걸지 않는다 — 문서 마감은 _ConvertProcess가 프로세스째 끊는다. docling의 것은
+            # opts.document_timeout은 걸지 않는다 — 문서 마감은 convert_process.ConvertProcess가 프로세스째 끊는다. docling의 것은
             # PDF 쪽 루프에서만 검사하고 PARTIAL_SUCCESS(→ 결정적 실패)로 끝나 "마감 초과 = 일시 실패"와 어긋난다.
             opts.accelerator_options = AcceleratorOptions(
                 num_threads=settings.docling_num_threads, device=AcceleratorDevice(settings.docling_device)

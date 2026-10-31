@@ -1,4 +1,4 @@
-"""상용 OCR(OCR_PROVIDER=llm, #299) — 사진 표는 잘라서, 스캔 쪽은 쪽 통째로 LLM이 읽는다. 정의점은 rag/chunking/ '상용 OCR' 절.
+"""상용 OCR(OCR_PROVIDER=llm, #299) — 사진 표는 잘라서, 스캔 쪽은 쪽 통째로 LLM이 읽는다. 정의점은 rag/chunking/ocr_llm.py.
 
 두 층:
   - 순수 함수(판정·묶음·자를 영역·답 해석·라우팅): docling 모델 없이 몇 초.
@@ -11,7 +11,8 @@ import pytest
 
 from config import settings
 import rag.chunking as ch
-from rag.chunking import LlmReadFailedError, _PdfPage, _is_scan_page, _page_runs, _photo_box, _require_pages, _split_table_reply, chunk_file
+from rag.chunking import LlmReadFailedError, chunk_file
+from rag.chunking.ocr_llm import PdfPage, is_scan_page, page_runs, photo_box, require_pages, split_table_reply
 
 
 # ── 순수 함수 ─────────────────────────────────────────────────────────────────────
@@ -19,21 +20,21 @@ from rag.chunking import LlmReadFailedError, _PdfPage, _is_scan_page, _page_runs
 class TestScanJudgement:
     def _page(self, chars, image_area):
         side = (image_area * 100 * 100) ** 0.5     # 100×100pt 쪽에 정사각형 사진
-        return _PdfPage(100.0, 100.0, chars, ((0.0, 0.0, side, side),) if image_area else ())
+        return PdfPage(100.0, 100.0, chars, ((0.0, 0.0, side, side),) if image_area else ())
 
     def test_글자가_거의_없고_사진이_쪽을_덮으면_스캔이다(self):
-        assert _is_scan_page(self._page(0, 1.0))
-        assert _is_scan_page(self._page(ch._SCAN_MAX_CHARS - 1, ch._SCAN_MIN_IMAGE_AREA))   # 쪽 번호·도장 몇 글자는 허용
+        assert is_scan_page(self._page(0, 1.0))
+        assert is_scan_page(self._page(ch.ocr_llm.SCAN_MAX_CHARS - 1, ch.ocr_llm.SCAN_MIN_IMAGE_AREA))   # 쪽 번호·도장 몇 글자는 허용
 
     def test_글자가_있거나_사진이_작거나_없으면_스캔이_아니다(self):
-        assert not _is_scan_page(self._page(ch._SCAN_MAX_CHARS, 1.0))      # 실측 최소 21자(표 이미지 축)가 이쪽
-        assert not _is_scan_page(self._page(0, 0.4))
-        assert not _is_scan_page(self._page(0, 0))                         # 글자 없는 빈 쪽·표지
+        assert not is_scan_page(self._page(ch.ocr_llm.SCAN_MAX_CHARS, 1.0))      # 실측 최소 21자(표 이미지 축)가 이쪽
+        assert not is_scan_page(self._page(0, 0.4))
+        assert not is_scan_page(self._page(0, 0))                         # 글자 없는 빈 쪽·표지
 
     def test_연속된_같은_종류끼리_묶는다(self):
-        assert _page_runs([False, False, True, False]) == [(False, 1, 2), (True, 3, 3), (False, 4, 4)]
-        assert _page_runs([True, True]) == [(True, 1, 2)]
-        assert _page_runs([]) == []
+        assert page_runs([False, False, True, False]) == [(False, 1, 2), (True, 3, 3), (False, 4, 4)]
+        assert page_runs([True, True]) == [(True, 1, 2)]
+        assert page_runs([]) == []
 
 
 class TestPhotoBox:
@@ -42,35 +43,35 @@ class TestPhotoBox:
     def test_표를_담은_사진_전체를_자른다(self):
         # 결정 4 — 사진 안 표 제목이 docling 표 영역 밖에 있다(실문서 07: 사진 247pt 중 위 39pt)
         photo = (90.0, 160.0, 410.0, 420.0)
-        assert _photo_box(self.TABLE, (photo,)) == photo
+        assert photo_box(self.TABLE, (photo,)) == photo
 
     def test_여럿이면_가장_작은_사진(self):
         small, big = (90.0, 160.0, 410.0, 420.0), (50.0, 100.0, 450.0, 500.0)
-        assert _photo_box(self.TABLE, (big, small)) == small
+        assert photo_box(self.TABLE, (big, small)) == small
 
     def test_사진이_너무_크면_표_영역만(self):
         # 쪽 배경·레터헤드 사진 — 통째로 보내면 사진 밖 디지털 글이 섞여 두 번 색인된다
         page_bg = (0.0, 0.0, 595.0, 842.0)
-        assert _photo_box(self.TABLE, (page_bg,)) == self.TABLE
+        assert photo_box(self.TABLE, (page_bg,)) == self.TABLE
 
     def test_표를_안_담은_사진은_무시한다(self):
-        assert _photo_box(self.TABLE, ((0.0, 0.0, 50.0, 50.0),)) == self.TABLE
-        assert _photo_box(self.TABLE, ()) == self.TABLE
+        assert photo_box(self.TABLE, ((0.0, 0.0, 50.0, 50.0),)) == self.TABLE
+        assert photo_box(self.TABLE, ()) == self.TABLE
 
 
 class TestTableReply:
     def test_표_밖_줄은_글로_표는_행으로(self):
         reply = ('```markdown\n**<표 1> 지원 기준**\n\n| 구분 | 한도 |\n| :--- | ---: |\n| 어학 | 300,000원 |\n| 자격증 |\n```\n'
                  '※ 연 1회 한도')
-        outside, rows = _split_table_reply(reply)
+        outside, rows = split_table_reply(reply)
         assert outside == '<표 1> 지원 기준 ※ 연 1회 한도'                 # 아래 주석도 표 앞 글에 합친다
         assert rows == [['구분', '한도'], ['어학', '300,000원'], ['자격증', '']]   # 구분선 버림·짧은 행은 빈 칸으로
 
     def test_제목_줄의_마크다운_머리표시를_뗀다(self):
-        assert _split_table_reply('## 표 제목\n| a |')[0] == '표 제목'
+        assert split_table_reply('## 표 제목\n| a |')[0] == '표 제목'
 
     def test_표가_없으면_행이_비고_글만_남는다(self):
-        assert _split_table_reply('표가 아닌 글') == ('표가 아닌 글', [])
+        assert split_table_reply('표가 아닌 글') == ('표가 아닌 글', [])
 
 
 class TestRouting:
@@ -81,18 +82,18 @@ class TestRouting:
     def test_triton_모드는_상용_경로를_안_탄다(self, monkeypatch, tmp_path):
         # 사내 모드 불변(결정 1) — PDF도 예전 그대로 document_converter.docling_converter 하나로 변환한다
         monkeypatch.setattr(settings, 'ocr_provider', 'triton')
-        monkeypatch.setattr(ch, '_convert_pdf_llm', lambda *a, **k: pytest.fail('상용 경로를 탔다'))
+        monkeypatch.setattr(ch.ocr_llm, 'convert_pdf', lambda *a, **k: pytest.fail('상용 경로를 탔다'))
         monkeypatch.setattr(ch.document_converter, 'convert_with', lambda conv, p, **k: ('기존', conv))
         monkeypatch.setattr(ch.document_converter, 'docling_converter', lambda: 'standard')
-        assert ch._convert_local(tmp_path / 'a.pdf') == ('기존', 'standard')
+        assert ch.convert_process.convert_local(tmp_path / 'a.pdf') == ('기존', 'standard')
 
     def test_llm_모드도_PDF만_상용_경로다(self, monkeypatch, tmp_path):
         monkeypatch.setattr(settings, 'ocr_provider', 'llm')
-        monkeypatch.setattr(ch, '_convert_pdf_llm', lambda p, **k: '상용')
+        monkeypatch.setattr(ch.ocr_llm, 'convert_pdf', lambda p, **k: '상용')
         monkeypatch.setattr(ch.document_converter, 'convert_with', lambda conv, p, **k: '기존')
         monkeypatch.setattr(ch.document_converter, 'docling_converter', lambda: 'standard')
-        assert ch._convert_local(tmp_path / 'a.PDF') == '상용'
-        assert ch._convert_local(tmp_path / 'a.docx') == '기존'
+        assert ch.convert_process.convert_local(tmp_path / 'a.PDF') == '상용'
+        assert ch.convert_process.convert_local(tmp_path / 'a.docx') == '기존'
 
     def test_llm_모드는_Triton_OCR을_끈다(self, monkeypatch):
         pytest.importorskip('docling')
@@ -114,9 +115,9 @@ class TestEmptyReply:
         from rag.outbox import is_transient
         item = types.SimpleNamespace(prov=[types.SimpleNamespace(page_no=3)])
         doc = types.SimpleNamespace(iterate_items=lambda: iter([(item, 0)]))
-        _require_pages(doc, 3, 3)                                      # 3쪽에 글이 있으면 통과
+        require_pages(doc, 3, 3)                                      # 3쪽에 글이 있으면 통과
         with pytest.raises(LlmReadFailedError, match=r'\[4\]') as e:
-            _require_pages(doc, 3, 4)
+            require_pages(doc, 3, 4)
         assert is_transient(e.value)                                   # outbox가 문서를 다시 처리한다(결정 5)
 
 
@@ -193,9 +194,9 @@ def llm_ocr(fake_vlm, monkeypatch):
 
 class TestRealConversion:
     def test_쪽마다_판정한다(self, tmp_path):
-        pages = ch._scan_profile(_mixed_pdf(tmp_path), None)
-        assert [_is_scan_page(p) for p in pages] == [False, True, False]
-        assert ch._scan_profile(_mixed_pdf(tmp_path), 2) is None              # 쪽 상한 초과 — 거절은 docling에 맡긴다
+        pages = ch.ocr_llm.scan_profile(_mixed_pdf(tmp_path), None)
+        assert [is_scan_page(p) for p in pages] == [False, True, False]
+        assert ch.ocr_llm.scan_profile(_mixed_pdf(tmp_path), 2) is None              # 쪽 상한 초과 — 거절은 docling에 맡긴다
 
     def test_섞인_문서는_쪽별로_읽고_쪽_번호를_지킨다(self, tmp_path, llm_ocr):
         # 가짜 VLM은 사진 표·스캔 쪽 모두에 같은 답을 준다 — 표 밖 줄 + 표. 스캔 쪽에선 같은 글이 마크다운 문서가 된다.

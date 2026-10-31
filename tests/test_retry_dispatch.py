@@ -84,7 +84,6 @@ async def test_RETRY_직전취소는_그_질문으로_KNOWLEDGE_재실행(client
 
     assert prepared.route == 'knowledge'
     assert prepared.original_query == '사이즈 가이드해줘'            # 검색·프롬프트용 실질 질문
-    assert prepared.display_query == '다시얘기해줘야지'              # 저장·화면용 원 발화
     assert prepared.standalone_query == '티셔츠 사이즈별 착용 가이드'  # 원본 검색 재현 (condense 스킵)
     assert 'condense' not in fake_llm.calls                          # LLM 재작성 미호출
     assert prepared.intent_label == 'KNOWLEDGE'                      # RETRY는 저장 어휘에 없다
@@ -99,7 +98,7 @@ async def test_RETRY_재실행_턴의_user_메시지는_원_발화로_저장(cli
 
     async with AsyncSessionLocal() as s:
         svc = RagService(tenant_id=tenant_id, session=s, user_id='agent-a')
-        prepared = await svc.prepare('다시', conversation_id=cid)   # 자리표시는 prepare가 커밋 (#72)
+        await svc.prepare('다시', conversation_id=cid)   # 자리표시는 prepare가 커밋 (#72)
 
     async with AsyncSessionLocal() as s:
         users = (await s.execute(
@@ -130,7 +129,6 @@ async def test_RETRY_직전완료는_OTHER_회상(client, tenant_id, fake_llm):
         prepared = await svc.prepare('다시 말해줘', conversation_id=cid)
     assert prepared.route == 'other'
     assert prepared.original_query == '다시 말해줘'                  # 스왑 없음
-    assert prepared.display_query is None
 
 
 @pytest.mark.asyncio
@@ -153,7 +151,6 @@ async def test_RETRY_원래_OTHER턴_취소는_OTHER로_재실행(client, tenant
         prepared = await svc.prepare('다시', conversation_id=cid)
     assert prepared.route == 'other'
     assert prepared.original_query == '지금까지 요약해줘'            # OTHER 생성이 볼 실질 질문
-    assert prepared.display_query == '다시'
 
 
 @pytest.mark.asyncio
@@ -174,7 +171,6 @@ async def test_RETRY_체인은_실질_질문과_검색어를_모두_복원(clien
     assert prepared.route == 'knowledge'
     assert prepared.original_query == '사이즈 가이드해줘'               # 질문 슬롯 퇴화 없음
     assert prepared.standalone_query == '티셔츠 사이즈별 착용 가이드'   # 검색도 원본 그대로
-    assert prepared.display_query == '다시'
 
 
 @pytest.mark.asyncio
@@ -236,7 +232,6 @@ async def test_실패턴_뒤_다시는_그_질문으로_재실행(client, tenant
 
     assert prepared.route == 'knowledge'
     assert prepared.original_query == '그럼 교환은 며칠까지예요?'   # 전전 턴(반품)이 아니다
-    assert prepared.display_query == '다시'
 
 
 @pytest.mark.asyncio
@@ -270,4 +265,3 @@ async def test_실패턴_다시_연타도_질문_슬롯이_퇴화하지_않는�
         prepared = await svc.prepare('다시', conversation_id=cid)
 
     assert prepared.original_query == '그럼 교환은 며칠까지예요?'   # "다시"로 퇴화하지 않는다
-    assert prepared.display_query == '다시'

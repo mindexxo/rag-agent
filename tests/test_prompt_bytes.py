@@ -25,10 +25,11 @@ from rag.citation_labels import sources_from_chunks
 from rag.conversation import build_prior_turns, condense_query, condense_to_queries, trim_messages_for_condense
 from rag.guardrail import classify_and_guard
 from rag.models import TurnStatus
+from rag.prepared import PreparedRag
 from rag.prompts import build_cache_reuse_judge_messages
 from rag.retrieval_types import RetrievalResult, RetrievedChunk
 from rag.retriever import prepare_evidence
-from rag.service import PreparedRag, RagService
+from rag.service import RagService
 
 SNAPSHOT = Path(__file__).with_name('prompt_bytes.json')
 HINT = '보험 약관·청구 절차'

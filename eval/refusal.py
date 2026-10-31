@@ -41,7 +41,8 @@ from eval.misinfo_judge import JUDGE_PROMPT_VERSION as MISINFO_JUDGE_VERSION, co
 from eval.absence_judge import (JUDGE_PROMPT_VERSION, judge_absence, judge_llm,
                                 save_audit)
 from rag.citation_tail import TailSplitter, resolve_citations
-from rag.service import PreparedRag, RagService
+from rag.prepared import PreparedRag
+from rag.service import RagService
 
 GOLD = Path(__file__).resolve().parent / "gold_set_v2.jsonl"
 CONCURRENCY = 4

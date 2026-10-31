@@ -56,10 +56,13 @@ import한다(118MB 패키지라 사내 vLLM·TEI만 쓰는 프로세스가 비�
 - 워커(문서 업로드·정리 작업 시 필요): `arq rag.worker.WorkerSettings`
 - OpenSearch(검색 저장소 — 청크는 여기에만 있다 #139): `.env.dev` 기본은 개발계(worker20) 인덱스. 로컬 컨테이너를
   쓰려면 `docker compose -f docker-compose.opensearch.yml up -d` 후 `.env`에서 `OPENSEARCH_URL` 오버라이드.
-  못 붙어도 서버·워커는 기동되지만(ERROR 로그) 검색·색인이 안 되고, 테스트는 첫 픽스처에서 죽는다.
+  못 붙어도 서버·워커는 기동되지만(ERROR 로그) 검색·색인이 안 된다.
 - 색인 정합 복구: `python -m rag.os_reconcile`(대조만) / `--apply`(재등재·삭제). `eval/`이 아니라
   `rag/` 아래인 이유는 도커 이미지가 `eval/`을 빼기 때문이다 — 운영 복구 명령은 운영 이미지 안에 있어야 한다(#146).
-- 테스트: `pytest` — 전체 약 5분(DB·Redis·**OpenSearch** 필수, LLM·임베딩은 fake로 대체).
+- 테스트: `pytest` — 전체 십수 분, 절반이 docling 변환 테스트(LLM·임베딩은 fake로 대체).
+  DB·Redis·OpenSearch는 **로컬 컨테이너만** 쓴다(`docker-compose.test.yml`, 도커 필요) — 루트 `conftest.py`가 `.env`의
+  개발계 주소를 로컬 포트로 덮고, 세션 시작마다 `up -d --wait`로 헬스체크까지 기다린다(떠 있으면 약 1초, 첫 기동은 OpenSearch 이미지 빌드).
+  데이터는 tmpfs라 `docker compose -f docker-compose.test.yml down` 후 다시 띄우면 빈 스키마로 돌아온다.
   DB 없이 순수 로직만 몇 초 만에 돌리려면 `pytest tests/test_service_pure.py tests/test_prompts.py
   tests/test_turn_status_contract.py tests/test_docs_freshness.py tests/test_code_quality.py
   tests/test_prompt_bytes.py`. 리팩토링의 동작 보존 증거는 프롬프트 = `tests/test_prompt_bytes.py`(모델에 가는 문자열 해시),

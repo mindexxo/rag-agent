@@ -5,7 +5,7 @@ rag/streaming.py(이벤트 방출·finally 정리), rag/cancellation.py(레지�
 (재접속 미러링), routers/kms.py(리미터 lease 소유권)다 — 근거 문장은 거기 있고 여기선 관측만 한다.
 
 관측 수단 두 가지:
-  - 리미터 슬롯은 Redis ZSET 카드널리티(_inflight_count)와 limiter.release 호출 기록을 함께 본다.
+  - 리미터 슬롯은 Redis ZSET 카드널리티(inflight_count)와 limiter.release 호출 기록을 함께 본다.
     zrem이 멱등이라 ZSET만 보면 이중 반납이 숨는다 — 호출 횟수를 따로 세는 이유.
   - "연결이 끊긴 뒤에도 태스크가 슬롯을 쥐고 있는가"는 httpx ASGITransport로 재현할 수 없다
     (응답 본문이 끝날 때까지 stream()이 반환되지 않는다 — tests/test_cancellation.py 실측).
@@ -25,27 +25,13 @@ from rag.models import Message
 from rag.service import RagService
 from rag.streaming import _run_generation, spawn_generation
 from tests.conftest import register_faq, sse_done, sse_events, sse_meta
+from tests.polling import inflight_count, wait_inflight
 
 SECRET = '/etc/secret-path-xyz'
 BLOCK_JSON = '{"safe": false, "reason": "프롬프트 인젝션 시도", "intent": "OTHER"}'
 
 
 # ── 공용 헬퍼 ───────────────────────────────────────────────
-
-
-async def _inflight_count(tenant_id: str) -> int:
-    """리미터 ZSET에 남은 in-flight 항목 수 (tests/test_stream_disconnect.py와 같은 관측)."""
-    return await limiter._redis().zcard(f'kms:inflight:t:{tenant_id}')
-
-
-async def _wait_inflight(tenant_id: str, expected: int, tries: int = 100) -> int:
-    """백그라운드 정리(finally의 반납)를 기다린다 — 고정 sleep 대신 폴링."""
-    for _ in range(tries):
-        n = await _inflight_count(tenant_id)
-        if n == expected:
-            return n
-        await asyncio.sleep(0.05)
-    return await _inflight_count(tenant_id)
 
 
 @pytest.fixture
@@ -131,7 +117,7 @@ async def test_INV04_생성_실패의_예외_원문은_SSE에도_재접속_스�
     assert 'config not found' not in errors[0]['message']
 
     # 재접속 스트림은 finally의 writer.aclose()가 다 쓴 뒤 슬롯이 반납된다 — 그걸 기다린 뒤 읽는다
-    assert await _wait_inflight(tenant_id, 0) == 0
+    assert await wait_inflight(tenant_id, 0) == 0
     key = stream_resume.stream_key(tenant_id, sse_meta(res)['assistant_message_id'])
     entries = await stream_resume._redis().xrange(key, '-', '+')
     assert any(f[b'event'] == b'error' for _, f in entries), '재접속 스트림에 error가 없다 — 관측 전제 붕괴'
@@ -154,7 +140,7 @@ async def _assert_immediate_slot_returned(client, tenant_id, lease_spy, query: s
     assert len(acquired) == 1
     lease = acquired[0]
     assert lease.handed_off is False, '즉시 경로가 lease를 넘겼다 — 아무도 반납하지 않는다'
-    assert await _wait_inflight(tenant_id, 0) == 0, '즉시 경로 슬롯이 유출됐다'
+    assert await wait_inflight(tenant_id, 0) == 0, '즉시 경로 슬롯이 유출됐다'
     assert released.count(lease.token) == 1, f'반납 횟수 {released.count(lease.token)} (정확히 1이어야 한다)'
     return res
 
@@ -191,7 +177,7 @@ async def test_INV41_캐시_히트_즉시_경로는_lease를_넘기지_않고_�
     await register_faq(client)
     first = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
     assert sse_meta(first)['cached'] is False
-    assert await _wait_inflight(tenant_id, 0) == 0
+    assert await wait_inflight(tenant_id, 0) == 0
     await _assert_immediate_slot_returned(client, tenant_id, lease_spy, '환불 기간 알려줘', {'cached': True})
 
 
@@ -273,7 +259,7 @@ async def test_INV40_생성_경로는_연결이_끊겨도_태스크가_슬롯을
     assert len(acquired) == 1
     lease = acquired[0]
     assert lease.handed_off is True
-    assert await _inflight_count(tenant_id) == 1, '연결이 끊기자 태스크가 도는 중인데 슬롯이 풀렸다'
+    assert await inflight_count(tenant_id) == 1, '연결이 끊기자 태스크가 도는 중인데 슬롯이 풀렸다'
     assert released.count(lease.token) == 0, '요청 쪽이 넘겨준 lease를 반납했다'
 
     # spawn_generation이 띄운 생성 태스크를 직접 기다린 뒤, 그 완료 콜백이 띄웠을 늦은 반납 태스크까지 남은 태스크를
@@ -283,7 +269,7 @@ async def test_INV40_생성_경로는_연결이_끊겨도_태스크가_슬롯을
     await asyncio.wait_for(task, timeout=10)
     await asyncio.wait_for(asyncio.gather(*(asyncio.all_tasks() - {asyncio.current_task()})), timeout=5)
     assert released.count(lease.token) == 1, f'반납 횟수 {released.count(lease.token)} (정확히 1이어야 한다)'
-    assert await _inflight_count(tenant_id) == 0
+    assert await inflight_count(tenant_id) == 0
 
 
 # ── INV-47 ─────────────────────────────────────────────────

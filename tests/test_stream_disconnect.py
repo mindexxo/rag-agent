@@ -11,20 +11,14 @@ import asyncio
 import time
 
 import pytest
-from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from rag.models import Message
-from rag.service import PreparedRag, RagService
-from rag.streaming import _run_generation
-from rag.retrieval_types import RetrievalResult
 from rag import limiter, otel
+from rag.models import Message
+from rag.service import RagService
+from rag.streaming import _run_generation
 from tests.conftest import register_faq
-
-
-async def _inflight_count(tenant_id: str) -> int:
-    """리미터 ZSET에 남아 있는 in-flight 항목 수 (슬롯 유출 관측)."""
-    return await limiter._redis().zcard(f'kms:inflight:t:{tenant_id}')
+from tests.polling import inflight_count, wait_inflight
 
 
 @pytest.mark.asyncio
@@ -44,7 +38,7 @@ async def test_소비자가_없어도_태스크는_완주해_finalize한다(clie
 
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
     assert lease is not None
-    assert await _inflight_count(tenant_id) == 1
+    assert await inflight_count(tenant_id) == 1
 
     queue: asyncio.Queue = asyncio.Queue()          # 아무도 get()하지 않는다
     root_span, token = otel.start_turn()
@@ -60,7 +54,7 @@ async def test_소비자가_없어도_태스크는_완주해_finalize한다(clie
         assert '테스트 답변입니다.' in msg.content
 
     # 완주 증거 ② 리미터 슬롯이 반납됐다 (유출 없음)
-    assert await _inflight_count(tenant_id) == 0
+    assert await inflight_count(tenant_id) == 0
 
     # 완주 증거 ③ 읽지 않은 큐에도 토큰과 종료 sentinel이 다 들어와 있다
     drained = []
@@ -145,7 +139,7 @@ async def test_생성_실패도_failed로_남고_정리가_끝난다(client, ten
         assert msg.status == 'failed'
         assert msg.latency_ms is not None and 0 <= msg.latency_ms < 60_000
 
-    assert await _inflight_count(tenant_id) == 0     # 슬롯 반납 (finally)
+    assert await inflight_count(tenant_id) == 0     # 슬롯 반납 (finally)
 
     drained = []
     while not queue.empty():
@@ -182,4 +176,4 @@ async def test_스트림_중단해도_턴이_done으로_남는다(client, tenant
         assert msg.status == 'done', '연결이 끊기면 생성이 중단됐다 — 태스크 분리가 깨졌다'
         assert '테스트 답변입니다.' in msg.content
 
-    assert await _inflight_count(tenant_id) == 0     # 슬롯도 반납됨
+    assert await wait_inflight(tenant_id) == 0     # 슬롯도 반납됨(done 커밋·캐시 적재 뒤 finally)

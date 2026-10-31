@@ -171,9 +171,9 @@ def test_모양이_달라진_그림은_캡션으로_짝짓고_합쳐진_그림�
 class TestPromptAB:
     def test_변형은_현행에서_한_줄씩만_다르다(self):
         from eval.doc_fidelity.prompt_ab import VARIANTS
-        from rag.chunking import _PICTURE_CAPTION_PROMPT
-        assert VARIANTS['V13_V11+계층'] == _PICTURE_CAPTION_PROMPT     # 채택안(#247 결정 15)이 운영 프롬프트와 같다
-        assert VARIANTS['V0_현행'].split('\n') == [x for x in _PICTURE_CAPTION_PROMPT.split('\n')       # 옛 운영 = 채택안에서 더한 4줄을 뺀 것
+        from rag.chunking.document_converter import PICTURE_CAPTION_PROMPT
+        assert VARIANTS['V13_V11+계층'] == PICTURE_CAPTION_PROMPT     # 채택안(#247 결정 15)이 운영 프롬프트와 같다
+        assert VARIANTS['V0_현행'].split('\n') == [x for x in PICTURE_CAPTION_PROMPT.split('\n')       # 옛 운영 = 채택안에서 더한 4줄을 뺀 것
                                                     if not x.startswith(('- 흐름도', '- 조직도', '- 차트', '- 값이 비어'))]
         v0 = VARIANTS['V0_현행'].split('\n')
         for name in ('V1_한국어로_제거', 'V2_위치나열_제거', 'V3_빈칸_추가'):

@@ -56,4 +56,4 @@ def install(name: str) -> None:
                                       use_cls=False, rapidocr_params=params)
         PO.KserveV2OcrOptions = _local
     C.docling_convert = lambda p, **kw: C._convert_local(p, **kw)
-    C._docling_converter = None                       # 다음 변환에서 새 옵션으로 변환기를 다시 만든다
+    C.document_converter._converter = None                       # 다음 변환에서 새 옵션으로 변환기를 다시 만든다

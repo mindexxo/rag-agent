@@ -54,7 +54,7 @@ def build_converter():
     from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling.pipeline.vlm_pipeline import VlmPipeline
     opts = ApiVlmOptions(
-        url=settings.vlm_caption_url, headers=C._caption_headers(), prompt=PROMPT, response_format=ResponseFormat.MARKDOWN,
+        url=settings.vlm_caption_url, headers=C.document_converter.caption_headers(), prompt=PROMPT, response_format=ResponseFormat.MARKDOWN,
         scale=SCALE, timeout=TIMEOUT, concurrency=1,
         # 온도는 **옵션 필드**로 줘야 한다 — docling ApiVlmModel이 params 위에 vlm_options.temperature를 덮어쓴다(실측: params에만
         # 1.0을 주니 gpt-5가 0.0 거부 400). 인자 이름은 캡션과 같은 새 표기(#290 결정 3 — gpt-5가 max_tokens 거부)

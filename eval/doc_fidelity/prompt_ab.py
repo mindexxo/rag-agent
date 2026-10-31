@@ -4,7 +4,7 @@
 쪽에서 자른 것, DOCX·XLSX는 파일 속 원본이라 docling이 보내는 그림과 같다.
 
 변형(VARIANTS)은 #247 이전 운영 프롬프트(V0)를 한 줄씩 바꿔 가며 효과를 가른다 — 추측으로 고치지 않는다. 채택안은
-V13(결정 15, 10/18)이고 지금 rag/chunking._PICTURE_CAPTION_PROMPT와 같다(테스트가 강제). 채점(score_variant)은 합성 그림 정답(picture_specs)으로 자동:
+V13(결정 15, 10/18)이고 지금 rag/chunking/document_converter.PICTURE_CAPTION_PROMPT와 같다(테스트가 강제). 채점(score_variant)은 합성 그림 정답(picture_specs)으로 자동:
   글자·숫자·짝·순서(synthetic.score_picture) + 빈 칸 환각(P08 '2026년 4분기'에 숫자를 지어냈나) + 흐름도 화살표 연결(edges가
   '→'가 든 한 줄에 함께 있나) + 영문 유지(P05의 영문 메뉴).
 실문서는 정답이 없어 캡션만 남기고 Claude 판정(judge.judge_one)·사람 확인으로 본다.

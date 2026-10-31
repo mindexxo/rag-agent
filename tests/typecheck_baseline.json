@@ -77,6 +77,7 @@
  "rag/cache.py",
  "rag/cancellation.py",
  "rag/chunking/__init__.py",
+ "rag/chunking/document_converter.py",
  "rag/chunking/plain.py",
  "rag/chunking/sections.py",
  "rag/chunking/split.py",

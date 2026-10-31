@@ -266,8 +266,8 @@ class TestRealConversion:
                 assert ch.page == int(first.split()[1])
 
     def test_변환기는_프로세스당_하나(self):
-        from rag.chunking.runtime import docling_runtime
-        assert docling_runtime() is docling_runtime()
+        from rag.chunking.document_converter import docling_converter
+        assert docling_converter() is docling_converter()
 
     def test_메모리_설정이_파이프라인에_실제로_전달된다(self):
         # 조용히 무시되는 설정을 잡기 위한 테스트다. docling_page_batch_size가 정확히 그랬다 —
@@ -276,9 +276,9 @@ class TestRealConversion:
         # PdfPipelineOptions는 pydantic 모델이라 필드명이 바뀌면 대입 자체가 실패한다 —
         # docling 업그레이드 때 이 테스트가 먼저 깨진다.
         from docling.datamodel.base_models import InputFormat
-        from rag.chunking.runtime import docling_runtime
+        from rag.chunking.document_converter import docling_converter
 
-        converter = docling_runtime()
+        converter = docling_converter()
         opts = converter.format_to_options[InputFormat.PDF].pipeline_options
         assert opts.layout_batch_size == settings.docling_layout_batch_size
         assert opts.queue_max_size == settings.docling_queue_max_size
@@ -290,9 +290,9 @@ class TestRealConversion:
         # 내용을 지어낸다**(#162 실측: scale 1.0에서 3회 모두 환각). 값이 안 걸리면 기본 2.0으로
         # 도는데 에러가 없어 아무도 모른다 — 그래서 값까지 단언한다.
         from docling.datamodel.base_models import InputFormat
-        from rag.chunking.runtime import PICTURE_CAPTION_PROMPT, caption_headers, docling_runtime
+        from rag.chunking.document_converter import PICTURE_CAPTION_PROMPT, caption_headers, docling_converter
 
-        converter = docling_runtime()
+        converter = docling_converter()
         opts = converter.format_to_options[InputFormat.PDF].pipeline_options
         assert opts.do_picture_description is True
         assert opts.enable_remote_services is True   # 빠지면 OperationNotAllowed로 변환 자체가 죽는다
@@ -315,7 +315,7 @@ class TestRealConversion:
         assert office[InputFormat.XLSX].prompt == PICTURE_CAPTION_PROMPT          # 하한 말고는 같은 캡션 설정
         assert office[InputFormat.XLSX].params == api.params
         # 형식마다 캡션 감시(PictureGuard)가 따로 붙는다 — XLSX가 DOCX 파이프라인을 공유하지 않으므로
-        from rag.chunking.runtime import PictureGuard
+        from rag.chunking.document_converter import PictureGuard
         guarded = [p for p in converter.initialized_pipelines.values() if any(isinstance(m, PictureGuard) for m in p.enrichment_pipe)]
         assert len(guarded) >= 3
         assert api.params['temperature'] == 0.0 and api.timeout == 45.0   # .env.dev가 config를 덮으므로 값 자체도 단언
@@ -364,7 +364,7 @@ def _picture_pdf(tmp_path, pictures: int = 1):
 
 def _reset_converter(ch):
     """설정 변경이 먹으려면 컨버터 싱글턴을 비워야 한다 — 전역 캐시라 재생성이 안 된다."""
-    ch.runtime._docling_converter = None
+    ch.document_converter._converter = None
 
 
 def _triton_ready(base_url: str) -> bool:
@@ -406,7 +406,7 @@ class TestConversionGuard:
         self.doc = types.SimpleNamespace(iterate_items=lambda: iter(()))
         res = types.SimpleNamespace(status=status, errors=errors, document=self.doc)
         conv = types.SimpleNamespace(convert=lambda *a, **k: res)
-        monkeypatch.setattr(ch.runtime, 'docling_runtime', lambda: conv)
+        monkeypatch.setattr(ch.document_converter, 'docling_converter', lambda: conv)
         return ch
 
     def test_부분_성공은_실패로_올린다(self, monkeypatch, tmp_path):
@@ -443,13 +443,13 @@ class TestRemoteOcr:
         monkeypatch.setattr(settings, 'docling_do_ocr', True)
         _reset_converter(ch)
         try:
-            converter = ch.runtime.docling_runtime()
+            converter = ch.document_converter.docling_converter()
             opts = converter.format_to_options[InputFormat.PDF].pipeline_options
             assert opts.do_ocr is True
             o = opts.ocr_options
             assert o.kind == 'kserve_v2_ocr'
-            assert o.scale == ch.runtime.OCR_SCALE == 3.0
-            assert o.lang == [ch.runtime.OCR_LANG] == ['korean']
+            assert o.scale == ch.document_converter.OCR_SCALE == 3.0
+            assert o.lang == [ch.document_converter.OCR_LANG] == ['korean']
             assert o.transport == 'http'
             assert o.model_name == settings.ocr_kserve_model_name
             assert o.url == settings.ocr_kserve_url

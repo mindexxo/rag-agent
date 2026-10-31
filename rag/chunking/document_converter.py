@@ -37,7 +37,7 @@ PICTURE_CAPTION_PROMPT = (
 
 
 DOCLING_LOCK = threading.Lock()
-_docling_converter = None
+_converter = None
 
 
 class PictureGuard:
@@ -96,7 +96,7 @@ def _captionable_count(doc, area_threshold: float) -> int:
     return n
 
 
-_XLSX_PICTURE_AREA_THRESHOLD = 0.0  # 엑셀 그림 캡션 면적 하한 — 근거는 docling_runtime의 xlsx_opts 주석
+_XLSX_PICTURE_AREA_THRESHOLD = 0.0  # 엑셀 그림 캡션 면적 하한 — 근거는 docling_converter의 xlsx_opts 주석
 
 _picture_guards: list[PictureGuard] = []
 
@@ -126,15 +126,15 @@ def caption_headers() -> dict[str, str]:
     return {'Authorization': f'Bearer {key}'} if key else {}
 
 
-def docling_runtime() -> 'DocumentConverter':
+def docling_converter() -> 'DocumentConverter':
     """프로세스당 1회: PDF·DOCX·XLSX 변환기(모델 로딩). 변환 프로세스(_ConvertProcess) 안에서 불린다.
 
     메모리: 모델이 상주하고 glibc가 해제분을 바로 반납하지 않아, 여러 문서를 돈 정상상태 RSS가 단일 문서 피크보다 높다 —
     컨테이너 메모리 상한(docker-compose.yml)은 단일 문서 피크로 정하면 안 된다.
     """
-    global _docling_converter
+    global _converter
     with DOCLING_LOCK:
-        if _docling_converter is None:
+        if _converter is None:
             from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
             from docling.datamodel.base_models import InputFormat
             from docling.datamodel.pipeline_options import (
@@ -211,15 +211,15 @@ def docling_runtime() -> 'DocumentConverter':
                     update={'picture_area_threshold': _XLSX_PICTURE_AREA_THRESHOLD}
                 ),
             )
-            _docling_converter = DocumentConverter(
+            _converter = DocumentConverter(
                 format_options={
                     InputFormat.PDF: PdfFormatOption(pipeline_options=opts),
                     InputFormat.DOCX: WordFormatOption(pipeline_options=office_opts),
                     InputFormat.XLSX: ExcelFormatOption(pipeline_options=xlsx_opts),
                 }
             )
-            _guard_picture_models(_docling_converter)
-    return _docling_converter
+            _guard_picture_models(_converter)
+    return _converter
 
 
 def convert_with(converter: 'DocumentConverter', file_path: str | Path, **kwargs) -> 'DoclingDocument':

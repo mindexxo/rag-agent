@@ -12,7 +12,7 @@ import importlib.util
 import pytest
 
 from config import settings
-from rag.chunking.runtime import caption_headers
+from rag.chunking.document_converter import caption_headers
 
 
 class TestCaptionHeaders:
@@ -29,8 +29,8 @@ class TestCaptionHeaders:
         from docling.datamodel.base_models import InputFormat
         import rag.chunking as ch
         monkeypatch.setattr(settings, "vlm_caption_api_key", "k-test")
-        monkeypatch.setattr(ch.runtime, "_docling_converter", None)   # 프로세스당 1회 캐시 — 키 바꾼 뒤 다시 만들게 (운영은 기동 시 설정 고정)
-        conv = ch.runtime.docling_runtime()
+        monkeypatch.setattr(ch.document_converter, "_converter", None)   # 프로세스당 1회 캐시 — 키 바꾼 뒤 다시 만들게 (운영은 기동 시 설정 고정)
+        conv = ch.document_converter.docling_converter()
         for fmt in (InputFormat.PDF, InputFormat.DOCX, InputFormat.XLSX):
             assert conv.format_to_options[fmt].pipeline_options.picture_description_options.headers == {"Authorization": "Bearer k-test"}
 

@@ -31,7 +31,7 @@ from docx.text.paragraph import Paragraph as DocxParagraph
 from llama_index.core.node_parser import SentenceSplitter
 
 from config import settings
-from rag.chunking import plain, runtime, sections, split
+from rag.chunking import document_converter, plain, sections, split
 from rag.chunking.errors import CaptionFailedError, LlmReadFailedError, PictureLimitError, TableTooLargeError
 from rag.chunking.plain import pdf_image_area_ratio
 from rag.chunking.split import TABLE_NOTE
@@ -172,7 +172,7 @@ def _page_runs(scan_flags: list[bool]) -> list[tuple[bool, int, int]]:
 def _vlm_runtime():
     """프로세스당 1회: 스캔 쪽용 VlmPipeline 변환기. 연결은 캡션 설정을 공유한다(config.py ocr_provider 주석)."""
     global _vlm_converter
-    with runtime.DOCLING_LOCK:
+    with document_converter.DOCLING_LOCK:
         if _vlm_converter is None:
             from docling.datamodel.base_models import InputFormat
             from docling.datamodel.pipeline_options import VlmPipelineOptions
@@ -182,7 +182,7 @@ def _vlm_runtime():
 
             vlm_opts = ApiVlmOptions(
                 url=settings.vlm_caption_url,
-                headers=runtime.caption_headers(),
+                headers=document_converter.caption_headers(),
                 prompt=_SCAN_PAGE_PROMPT,
                 response_format=ResponseFormat.MARKDOWN,
                 scale=_OCR_LLM_SCALE,
@@ -204,19 +204,19 @@ def _vlm_runtime():
 
 
 def _convert_pdf_llm(file_path: str | Path, **kwargs):
-    """상용 OCR의 PDF 변환 — 쪽 묶음마다 경로를 골라 변환하고 합친다(이 절 머리 주석). 실패 분류는 runtime.convert_with·LlmReadFailedError."""
+    """상용 OCR의 PDF 변환 — 쪽 묶음마다 경로를 골라 변환하고 합친다(이 절 머리 주석). 실패 분류는 document_converter.convert_with·LlmReadFailedError."""
     pages = _scan_profile(file_path, kwargs.get('max_num_pages'))
     if not pages:  # 쪽 상한 초과(None)·빈 PDF — docling이 기본 경로와 같은 방식으로 거절·처리한다
-        return runtime.convert_with(runtime.docling_runtime(), file_path, **kwargs)
+        return document_converter.convert_with(document_converter.docling_converter(), file_path, **kwargs)
     parts = []
     for scan, first, last in _page_runs([_is_scan_page(p) for p in pages]):
         span = {} if (first, last) == (1, len(pages)) else {'page_range': (first, last)}
         if scan:
-            doc = runtime.convert_with(_vlm_runtime(), file_path, **kwargs, **span)
+            doc = document_converter.convert_with(_vlm_runtime(), file_path, **kwargs, **span)
             _require_pages(doc, first, last)
             _titles_to_section_headers(doc)
         else:
-            doc = runtime.convert_with(runtime.docling_runtime(), file_path, **kwargs, **span)
+            doc = document_converter.convert_with(document_converter.docling_converter(), file_path, **kwargs, **span)
             _fill_photo_tables(doc, file_path, pages)
         parts.append(doc)
     if len(parts) == 1:
@@ -312,7 +312,7 @@ def _read_photo_table(image) -> str:
     """사진 표 하나를 LLM에 보낸다(docling api_image_request). 빈 응답이면 일시 실패(LlmReadFailedError).
 
     출력이 상한에서 잘렸거나(length) 벤더가 걸렀으면 결정적 실패(RuntimeError) — 잘린 표가 행이 빠진 채 색인되지 않게,
-    그리고 같은 이미지는 다시 보내도 같다. 스캔 쪽의 같은 두 경우는 runtime.convert_with가 PARTIAL_SUCCESS로 잡아 같은 분류다.
+    그리고 같은 이미지는 다시 보내도 같다. 스캔 쪽의 같은 두 경우는 document_converter.convert_with가 PARTIAL_SUCCESS로 잡아 같은 분류다.
     """
     from docling.datamodel.base_models import VlmStopReason  # 지연 import — docling은 톱레벨에 안 들인다
     from docling.utils.api_image_request import api_image_request
@@ -322,7 +322,7 @@ def _read_photo_table(image) -> str:
         prompt=_PHOTO_TABLE_PROMPT,
         url=settings.vlm_caption_url,
         timeout=settings.ocr_llm_timeout_seconds,
-        headers=runtime.caption_headers(),
+        headers=document_converter.caption_headers(),
         model=settings.vlm_caption_model,
         temperature=settings.vlm_caption_temperature,
         max_completion_tokens=settings.ocr_llm_max_tokens,
@@ -655,12 +655,12 @@ def _sections_from_docling_elements(elements) -> list[Section]:
 def _convert_local(file_path: str | Path, **kwargs):
     """이 프로세스에서 docling 변환 한 번 → DoclingDocument. 변환 프로세스(_convert_child_main)가 부른다.
 
-    상용 OCR(OCR_PROVIDER=llm)의 PDF는 _convert_pdf_llm으로, 나머지는 기본 변환기로 runtime.convert_with를 거친다.
+    상용 OCR(OCR_PROVIDER=llm)의 PDF는 _convert_pdf_llm으로, 나머지는 기본 변환기로 document_converter.convert_with를 거친다.
     kwargs는 converter.convert로 넘긴다(PDF의 max_num_pages — 쪽 개념이 없는 형식엔 주지 않는다).
     """
     if settings.ocr_provider == 'llm' and Path(file_path).suffix.lower() == '.pdf':
         return _convert_pdf_llm(file_path, **kwargs)
-    return runtime.convert_with(runtime.docling_runtime(), file_path, **kwargs)
+    return document_converter.convert_with(document_converter.docling_converter(), file_path, **kwargs)
 
 
 def _picklable(exc: BaseException) -> BaseException:
@@ -684,7 +684,7 @@ def _convert_child_main(fd: int) -> None:
     for key, value in conn.recv().items():
         setattr(settings, key, value)
     try:
-        runtime.docling_runtime()
+        document_converter.docling_converter()
     except Exception as e:  # noqa: BLE001 — 기동 실패도 부모에 사유로 돌려준다
         conn.send(('err', _picklable(e)))
         return

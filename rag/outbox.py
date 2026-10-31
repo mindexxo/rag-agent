@@ -120,6 +120,7 @@ def is_transient(exc: BaseException) -> bool:
     **결정적** — 백 번 돌려도 같으므로 바로 failed로 보이는 것이 사용자에게 싸다.
     rag/chunking의 변환 예외도 이 기준에 맞춰 종류를 고른다(마감 초과·캡션/OCR 실패는 일시, 그림 장수 초과는 결정적).
     알려진 오분류: bulk 부분 실패(RuntimeError)에 섞인 rejected_execution은 일시인데 결정적으로 잡힌다(단일 워커라 드물다).
+    routers/kms.py도 질의 준비 단계 실패를 503으로 볼지 같은 기준으로 판정한다 — 여기를 바꾸면 응답 코드도 바뀐다.
     """
     if isinstance(exc, (ConnectionError, TimeoutError, OperationalError, InterfaceError)):
         return True

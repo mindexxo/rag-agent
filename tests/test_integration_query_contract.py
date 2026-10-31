@@ -1,4 +1,4 @@
-"""질의 API의 FE 계약 — 동시 요청 상한(429), SSE 봉투(이벤트 어휘·필드·헤더), 스트림 전 오류 응답.
+"""질의 API의 FE 계약 — 동시 요청 상한(429), SSE 봉투(이벤트 어휘·필드·헤더), 스트림 전 오류 응답과 상태코드 매핑.
 
 HTTP로만 확인한다. 동시 요청은 가짜 LLM을 생성 도중 멈춰 슬롯을 실제로 쥔 상태를 만든다.
 """
@@ -6,6 +6,9 @@ HTTP로만 확인한다. 동시 요청은 가짜 LLM을 생성 도중 멈춰 슬
 import asyncio
 
 import httpx
+import litellm
+import openai
+import opensearchpy
 import pytest
 from sqlalchemy import func, select
 
@@ -140,13 +143,49 @@ async def test_SSE_계약_생성_실패는_error_다음_done으로_닫힌다(cli
     assert sse_done(res)['finish_reason'] == 'failed'
 
 
+# ── prepare 단계 오류 매핑 — 404는 대화 없음에만, 503은 일시 장애, 그 외는 500 ──
+
+UNAVAILABLE = {'detail': '일시적으로 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.'}
+_REQ = httpx.Request('POST', 'http://llm.test/v1/chat/completions')
+
+
+@pytest.fixture
+def span_errors(monkeypatch) -> list[BaseException]:
+    """루트 스팬 ERROR 마킹을 가로채 기록한다 — 5xx만 남기고 404는 남기지 않는 규칙 검증용."""
+    import rag.otel
+
+    seen: list[BaseException] = []
+    monkeypatch.setattr(rag.otel, 'mark_error', lambda sp, exc: seen.append(exc))
+    return seen
+
+
+async def _turn_states(tenant: str) -> list[tuple[str, str]]:
+    async with AsyncSessionLocal() as s:
+        msgs = (
+            (await s.execute(select(Message).where(Message.tenant_id == tenant).order_by(Message.id))).scalars().all()
+        )
+    return [(m.role, m.status) for m in msgs]
+
+
+def _lenient_client(tenant: str) -> httpx.AsyncClient:
+    """앱 예외를 테스트로 되던지지 않고 500 응답으로 받는 클라이언트 — 예상외 오류 경로 전용."""
+    from main import app
+
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url='http://testserver',
+        headers={'X-Tenant-Id': tenant},
+    )
+
+
 @pytest.mark.asyncio
-async def test_스트림_전_오류는_SSE가_아니라_JSON(client, tenant_id, fake_llm):
-    """QRY-69 — 404·422는 스트림을 열기 전에 끝나 일반 JSON 본문이다."""
+async def test_스트림_전_오류는_SSE가_아니라_JSON(client, tenant_id, fake_llm, span_errors):
+    """QRY-69 — 404·422는 스트림을 열기 전에 끝나 일반 JSON 본문이다. 클라이언트 오류라 스팬 ERROR도 없다."""
     res = await client.post('/kms/query', json={'query': '질문', 'conversation_id': 999999999})
     assert res.status_code == 404
     assert res.headers['content-type'].startswith('application/json')
     assert res.json() == {'detail': '대화를 찾을 수 없습니다.'}
+    assert span_errors == []
 
     res = await client.post('/kms/query', json={'query': ''})
     assert res.status_code == 422
@@ -154,30 +193,81 @@ async def test_스트림_전_오류는_SSE가_아니라_JSON(client, tenant_id, 
 
 
 @pytest.mark.asyncio
-async def test_대화와_무관한_ValueError도_현재는_대화없음_404로_나간다(
-    client, tenant_id, fake_llm, pass_gate, monkeypatch
+@pytest.mark.parametrize(
+    'exc',
+    [
+        openai.APIConnectionError(request=_REQ),
+        openai.APITimeoutError(request=_REQ),
+        openai.InternalServerError('upstream', response=httpx.Response(502, request=_REQ), body=None),
+        openai.RateLimitError('slow down', response=httpx.Response(429, request=_REQ), body=None),
+        litellm.exceptions.ServiceUnavailableError('busy', 'anthropic', 'claude'),
+    ],
+    ids=['connect', 'timeout', '5xx', '429', 'litellm-503'],
+)
+async def test_LLM_호출_실패는_503이고_턴은_failed로_닫힌다(
+    client, tenant_id, fake_llm, pass_gate, span_errors, monkeypatch, exc
 ):
-    """QRY-42 현재 동작 재현 — 질의 준비 중 어떤 ValueError든 '대화를 찾을 수 없습니다' 404가 된다.
-
-    진짜 대화 없음은 턴을 열기 전이라 행이 없지만, 여기서는 질문과 실패 처리된 답변 행이 남는다 — 같은 404가
-    다른 두 사건을 덮는다는 증거다. 오류 매핑을 고칠 때 이 테스트의 기대값을 뒤집는다.
-    """
+    """QRY-40 — 분류 LLM에 닿지 못하거나 상대가 429·5xx를 주면 형식 오류(LlmJudgmentFailed)와 같은 503. 상용 공급자(litellm) 예외도 같다."""
     await register_faq(client)
 
+    async def _down(*a, **kw):
+        raise exc
+
+    monkeypatch.setattr(fake_llm, 'acomplete', _down)
+    res = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
+
+    assert res.status_code == 503
+    assert res.json() == UNAVAILABLE
+    assert await _turn_states(tenant_id) == [('user', 'done'), ('assistant', 'failed')]
+    assert span_errors == [exc]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('module', 'name', 'exc'),
+    [
+        ('rag.os_search', 'search_dense_per_query', opensearchpy.ConnectionError('N/A', 'connection refused', None)),
+        ('rag.retriever', 'embed_texts', httpx.ConnectError('connection refused', request=_REQ)),
+    ],
+    ids=['opensearch', 'embedding'],
+)
+async def test_검색_저장소와_임베딩_장애는_503(
+    client, tenant_id, fake_llm, pass_gate, span_errors, monkeypatch, module, name, exc
+):
+    """QRY-40 — 검색 단계의 연결 장애도 LLM 장애와 같은 503·같은 문구."""
+    import importlib
+
+    await register_faq(client)
+
+    async def _down(*a, **kw):
+        raise exc
+
+    monkeypatch.setattr(importlib.import_module(module), name, _down)
+    res = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
+
+    assert res.status_code == 503
+    assert res.json() == UNAVAILABLE
+    assert await _turn_states(tenant_id) == [('user', 'done'), ('assistant', 'failed')]
+    assert span_errors == [exc]
+
+
+@pytest.mark.asyncio
+async def test_대화와_무관한_ValueError는_500이고_턴은_failed로_닫힌다(
+    client, tenant_id, fake_llm, pass_gate, span_errors, monkeypatch
+):
+    """QRY-42 — 서버 결함(임베딩 차원 불일치 등)은 404로 위장하지 않는다. 질문은 남고 자리표시는 failed."""
+    await register_faq(client)
+    exc = ValueError('임베딩 응답 차원이 맞지 않는다')
+
     async def _broken_embed(texts: list[str], kind: str = 'document') -> list:
-        raise ValueError('임베딩 응답 차원이 맞지 않는다')
+        raise exc
 
     import rag.retriever
 
     monkeypatch.setattr(rag.retriever, 'embed_texts', _broken_embed)  # fake_embed와 같은 지점
-    res = await client.post('/kms/query', json={'query': '환불 기간 알려줘'})
+    async with _lenient_client(tenant_id) as lenient:
+        res = await lenient.post('/kms/query', json={'query': '환불 기간 알려줘'})
 
-    assert res.status_code == 404
-    assert res.json() == {'detail': '대화를 찾을 수 없습니다.'}
-    async with AsyncSessionLocal() as s:
-        msgs = (
-            (await s.execute(select(Message).where(Message.tenant_id == tenant_id).order_by(Message.id)))
-            .scalars()
-            .all()
-        )
-    assert [(m.role, m.status) for m in msgs] == [('user', 'done'), ('assistant', 'failed')]
+    assert res.status_code == 500
+    assert await _turn_states(tenant_id) == [('user', 'done'), ('assistant', 'failed')]
+    assert span_errors == [exc]

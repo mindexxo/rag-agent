@@ -25,6 +25,10 @@ from rag.turn_state import HISTORY_ISOLATED
 DEFAULT_USER = 'test-user'
 
 
+class ConversationNotFound(LookupError):
+    """없거나 삭제됐거나 다른 소유자의 conversation_id — HTTP 경계가 404로 매핑하는 유일한 prepare 실패."""
+
+
 def owned_filter(tenant_id: str, user_id: str | None):
     """대화 소유 판정 WHERE 표현식(tenant + created_by + 미삭제)의 정의점.
 
@@ -44,7 +48,7 @@ async def ensure_conversation(
     conversation_id: int | None,
     user_id: str | None = None,
 ) -> Conversation:
-    """conversation_id=None이면 새 대화를 만들고, 있으면 소유·미삭제를 검증한다(아니면 ValueError)."""
+    """conversation_id=None이면 새 대화를 만들고, 있으면 소유·미삭제를 검증한다(아니면 ConversationNotFound)."""
     if conversation_id is None:
         # 저장값 폴백은 owned_filter의 필터 폴백과 별개 책임이라 여기서 직접 계산한다.
         conversation = Conversation(tenant_id=tenant_id, created_by=user_id or DEFAULT_USER)
@@ -58,7 +62,7 @@ async def ensure_conversation(
         )
     ).scalar_one_or_none()
     if conversation is None:
-        raise ValueError(f'Conversation {conversation_id} not found')
+        raise ConversationNotFound(f'Conversation {conversation_id} not found')
     return conversation
 
 

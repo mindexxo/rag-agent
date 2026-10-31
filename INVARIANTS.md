@@ -15,7 +15,7 @@
 | ID | 불변식 | 정의점 | 강제 | 비고 |
 |---|---|---|---|---|
 | INV-01 | 테넌트 격리는 쿼리 WHERE 절로만 보장한다(RLS 없음) — 모든 테넌트 테이블 조회에 tenant 조건 | `rag/models.py` | `tests/test_integration_isolation.py::test_검색_후보에_타_테넌트_청크가_없다` · `tests/test_integration_isolation.py::test_대화_목록과_메시지_격리` · `tests/test_integration_isolation.py::test_폴더_격리` · `tests/test_integration_isolation.py::test_FAQ_목록_격리` · `tests/test_integration_isolation.py::test_문서_일괄변경_격리` · `tests/test_integration_isolation.py::test_문서_일괄삭제_격리` · `tests/test_integration_isolation.py::test_문서_목록_필터_격리` · `tests/test_integration_documents.py::test_exists_는_테넌트_격리` · `tests/test_integration_documents.py::test_다운로드는_테넌트_격리` · `tests/test_integration_cache.py::test_테넌트_간_캐시_격리` · `tests/test_integration_cache.py::test_FAQ_스냅샷_검증도_테넌트_격리` (부분) | 표면별 테스트 — "모든 조회"를 덮는 정적 강제는 없다(#90 전용 린터 후보). 일괄변경 META는 호출부 사전 스코프에 기댄다(가장 위험한 표면) |
-| INV-02 | 없거나 타 테넌트 소유 conversation_id로 질의하면 404 | `routers/kms.py` | `tests/test_integration_query_sse.py::test_없는_대화_id는_404` (부분) | 타 테넌트 소유 케이스 미검증 |
+| INV-02 | 없거나 타 테넌트 소유 conversation_id로 질의하면 404 — 404는 대화 없음(`ConversationNotFound`)에만 | `routers/kms.py` | `tests/test_integration_query_sse.py::test_없는_대화_id는_404` · `tests/test_integration_tenant_boundary.py::test_다른_테넌트_대화_id로_질의하면_404이고_어느_쪽에도_행이_생기지_않는다` · `tests/test_integration_query_contract.py::test_대화와_무관한_ValueError는_500이고_턴은_failed로_닫힌다` | |
 | INV-03 | 테넌트·검색가능 필터는 엔진에서 건다(post-filter 금지) | `rag/os_search.py` | `tests/test_os_search_pure.py::test_필터는_엔진에서_걸린다` (부분) | 필터 dict 모양만 본다 — 실제 kNN·BM25 질의가 이 필터를 쓰는지는 미검증 |
 | INV-04 | 생성 실패 시 예외 원문을 클라이언트에 보내지 않는다 | `rag/streaming.py` | `tests/test_invariants_turn.py::test_INV04_생성_실패의_예외_원문은_SSE에도_재접속_스트림에도_실리지_않는다` |  |
 | INV-05 | 커밋된 설정·config 기본값에 평문 비밀값을 두지 않는다 | `AGENTS.md` | `tests/test_guardrails.py::test_커밋된_설정에_평문_비밀값이_없다` · `tests/test_guardrails.py::test_config의_비밀_필드_기본값은_비어_있다` |  |
@@ -65,14 +65,14 @@
 | INV-39 | 취소 신호 발행 실패(Redis 순단)는 503 | `routers/conversations.py` | `tests/test_cancellation.py::test_발행_실패는_503` | 202(다른 인스턴스) 응답은 미검증 |
 | INV-40 | 생성 경로는 lease를 태스크에 넘기고 끝에 슬롯을 반납한다 | `routers/kms.py` | `tests/test_stream_disconnect.py::test_생성_실패도_failed로_남고_정리가_끝난다` · `tests/test_stream_disconnect.py::test_스트림_중단해도_턴이_done으로_남는다` · `tests/test_invariants_turn.py::test_INV40_생성_경로는_연결이_끊겨도_태스크가_슬롯을_쥐고_끝에_한번만_반납한다` | 끊긴 동안 슬롯 유지·반납 1회 |
 | INV-41 | 즉시 경로(캐시 히트·차단·근거 없음)는 lease를 넘기지 않는다(이중 반납·슬롯 유출 금지) | `routers/kms.py` | `tests/test_invariants_turn.py::test_INV41_근거없음과_차단_즉시_경로는_lease를_넘기지_않고_정확히_한번_반납한다` · `tests/test_invariants_turn.py::test_INV41_캐시_히트_즉시_경로는_lease를_넘기지_않고_정확히_한번_반납한다` | 근거 없음·차단·캐시 히트 — 반납 횟수까지 센다 |
-| INV-42 | LLM 판단 실패는 폴백 추측 없이 503 | `routers/kms.py` | `tests/test_integration_query_sse.py::test_인텐트_판단_실패는_503이고_질문은_남는다` | |
+| INV-42 | prepare 단계 실패는 LLM 판단 불가·일시 장애(연결·타임아웃·429/5xx, `outbox.is_transient`)만 503, 그 외는 500 — 폴백 추측 없음, 5xx는 스팬 ERROR·404는 아님 | `routers/kms.py` | `tests/test_integration_query_sse.py::test_인텐트_판단_실패는_503이고_질문은_남는다` · `tests/test_integration_query_contract.py::test_LLM_호출_실패는_503이고_턴은_failed로_닫힌다` · `tests/test_integration_query_contract.py::test_검색_저장소와_임베딩_장애는_503` · `tests/test_integration_query_contract.py::test_대화와_무관한_ValueError는_500이고_턴은_failed로_닫힌다` · `tests/test_integration_query_contract.py::test_스트림_전_오류는_SSE가_아니라_JSON` | |
 | INV-43 | Redis가 죽으면 동시 상한은 통과시킨다(fail-open) | `rag/limiter.py` | `tests/test_limiter_fail_open.py::test_Redis가_죽으면_상한_없이_통과한다` · `tests/test_limiter_fail_open.py::test_Redis가_죽어도_질문은_받아진다` | |
 | INV-44 | 프롬프트 이력에서 blocked·generating 턴은 짝째로 빼고, cancelled·failed 턴은 남긴다 | `rag/conversation.py` | `tests/test_guardrail_hardening.py::test_차단_턴은_이력에서_짝째로_제외` · `tests/test_guardrail_hardening.py::test_실패_턴은_이력에_남는다` · `tests/test_guardrail_hardening.py::test_취소_턴은_짝으로_이력에_남는다` · `tests/test_turn_status_contract.py::TestDerivedSets::test_격리와_미응답은_교집합이_없다` (부분) | generating 격리 단언 없음 |
 | INV-45 | 취소·실패 표식은 조립 시점에만 붙이고 저장본(Message.content)은 바꾸지 않는다 | `rag/conversation.py` | `tests/test_guardrail_hardening.py::test_취소_턴은_프롬프트_이력에서_중단_표식` (부분) | 저장본 불변은 간접 |
 | INV-46 | RETRY 인텐트는 저장 계층에 닿지 않는다 | `rag/llm_schemas.py` | `tests/test_retry_dispatch.py::test_RETRY_직전취소는_그_질문으로_KNOWLEDGE_재실행` (부분) | messages.intent 컬럼 미검증 |
 | INV-47 | 캐시 적재는 done 전송 뒤에 따로 한다 | `rag/streaming.py` | `tests/test_invariants_turn.py::test_INV47_캐시_적재는_done_방출_뒤에_따로_한다` |  |
 | INV-48 | 스테일 치유는 워커 cron만 한다(GET은 상태를 바꾸지 않는다) — 전역이다 | `rag/turn_state.py` | `tests/test_stale_sweep.py::test_전역이다_다른_테넌트도_함께_치유된다` · `tests/test_stale_sweep.py::test_GET은_더이상_상태를_바꾸지_않는다` |  |
-| INV-49 | 질문과 generating 자리표시는 판단 이전에 커밋되고, 실패하면 failed로 닫힌다(#72) | `rag/service.py` | `tests/test_integration_query_sse.py::test_인텐트_판단_실패는_503이고_질문은_남는다` (부분) | 503 경로만 — 다른 실패 경로의 failed 마감 대조 필요 |
+| INV-49 | 질문과 generating 자리표시는 판단 이전에 커밋되고, 실패하면 failed로 닫힌다(#72) | `rag/service.py` | `tests/test_integration_query_sse.py::test_인텐트_판단_실패는_503이고_질문은_남는다` · `tests/test_integration_query_contract.py::test_LLM_호출_실패는_503이고_턴은_failed로_닫힌다` · `tests/test_integration_query_contract.py::test_대화와_무관한_ValueError는_500이고_턴은_failed로_닫힌다` | |
 
 ## 검색·인용·캐시·LLM
 

@@ -15,6 +15,7 @@
 사용: python -m eval.scan_quality.compare [remote|local_min736|local_max|local_min400|vlm|llm ...]  (ocr_variant.VARIANTS + vlm=#296 쪽 전체 VLM
       + llm=#299 운영 상용 OCR 경로 OCR_PROVIDER=llm)   → eval/results/scan224/compare.json · compare.html
 """
+
 import difflib
 import html
 import json
@@ -35,12 +36,13 @@ def _chunk(path, variant: str):
     from config import settings
     from eval import vlm_engine
     from eval.scan_quality.ocr_variant import install
-    vlm_engine.uninstall()                 # 앞 모드가 vlm이었으면 원복 — 디지털 기준·OCR 변형이 VLM을 타지 않게(#296)
-    settings.ocr_provider = 'llm' if variant == 'llm' else 'triton'   # 운영 상용 OCR 경로(#299) — 다른 모드엔 안 샌다
+
+    vlm_engine.uninstall()  # 앞 모드가 vlm이었으면 원복 — 디지털 기준·OCR 변형이 VLM을 타지 않게(#296)
+    settings.ocr_provider = 'llm' if variant == 'llm' else 'triton'  # 운영 상용 OCR 경로(#299) — 다른 모드엔 안 샌다
     if variant == 'vlm':
-        vlm_engine.install()               # 쪽 전체 VLM(VLM_CAPTION_* 설정의 벤더), #296
+        vlm_engine.install()  # 쪽 전체 VLM(VLM_CAPTION_* 설정의 벤더), #296
     else:
-        install('remote' if variant == 'llm' else variant)   # llm은 OCR 옵션을 안 쓴다 — 변환만 이 프로세스로
+        install('remote' if variant == 'llm' else variant)  # llm은 OCR 옵션을 안 쓴다 — 변환만 이 프로세스로
     return C.chunk_file(path)
 
 
@@ -60,6 +62,7 @@ def _sentences(chunks) -> list[str]:
 
 def _space_kept(ref: str, hyp: str) -> float:
     """공백을 뺀 두 글을 정렬하고, 원본에서 공백 바로 앞이던 글자 중 스캔에서도 공백 앞인 비율."""
+
     def strip(t):
         chars, before_space = [], []
         for i, ch in enumerate(t):
@@ -70,9 +73,10 @@ def _space_kept(ref: str, hyp: str) -> float:
             chars.append(ch)
             before_space.append(False)
         return ''.join(chars), before_space
+
     rc, rs = strip(ref)
     hc, hs = strip(hyp)
-    kept = 0                                          # 정렬되지 않은 구간의 공백은 '남지 않음'으로 센다(보수적)
+    kept = 0  # 정렬되지 않은 구간의 공백은 '남지 않음'으로 센다(보수적)
     for a, b, n in difflib.SequenceMatcher(None, rc, hc, autojunk=False).get_matching_blocks():
         for k in range(n):
             if rs[a + k]:
@@ -88,7 +92,8 @@ def measure(digital, scan) -> dict:
     scan_ns = _ns(scan_body)
     dtext, stext = '\n'.join(c.text for c in digital), scan_body
     return {
-        'title': dh[0] if dh else None, 'scan_title': sh[0] if sh else None,
+        'title': dh[0] if dh else None,
+        'scan_title': sh[0] if sh else None,
         # 공백 무시 글자 유사도 0.95 이상이면 같은 제목 — 'ㆍ'(한글 자모)를 OCR이 '·'로 읽는 정도는 깨짐이 아니다(harim_13 실측)
         'title_sim': round(difflib.SequenceMatcher(None, _ns(dh[0]), _ns(sh[0])).ratio(), 3) if dh and sh else 0.0,
         'title_ok': bool(dh and sh and difflib.SequenceMatcher(None, _ns(dh[0]), _ns(sh[0])).ratio() >= 0.95),
@@ -99,7 +104,8 @@ def measure(digital, scan) -> dict:
         'sent_nospace': sum(_ns(s) in scan_ns for s in ds) / len(ds) if ds else 1.0,
         'char_acc': difflib.SequenceMatcher(None, _ns(dtext), scan_ns, autojunk=False).ratio(),
         'space_kept': _space_kept(dtext, stext),
-        'chunks': len(scan), 'digital_chunks': len(digital),
+        'chunks': len(scan),
+        'digital_chunks': len(digital),
         'missing_sentences': [s for s in ds if _ns(s) not in scan_ns][:15],
     }
 
@@ -111,8 +117,11 @@ def main(modes: list[str]) -> None:
         for s in SPECS:
             m = measure(digital[s.filename], _chunk(s.out, mode))
             rows.append({'file': s.filename, 'condition': s.note, 'mode': mode, **m})
-            print(f"{mode:<10} {s.filename[:28]:<30} title {'✓' if m['title_ok'] else '✗'} head {m['heading_recall']:.2f} "
-                  f"sent {m['sent_exact']:.2f}/{m['sent_nospace']:.2f} char {m['char_acc']:.3f} space {m['space_kept']:.2f}", flush=True)
+            print(
+                f"{mode:<10} {s.filename[:28]:<30} title {'✓' if m['title_ok'] else '✗'} head {m['heading_recall']:.2f} "
+                f"sent {m['sent_exact']:.2f}/{m['sent_nospace']:.2f} char {m['char_acc']:.3f} space {m['space_kept']:.2f}",
+                flush=True,
+            )
     (OUT / 'compare.json').write_text(json.dumps(rows, ensure_ascii=False, indent=1))
     e = html.escape
     body = ''.join(
@@ -122,8 +131,11 @@ def main(modes: list[str]) -> None:
         f"글자 {r['char_acc']:.3f} · 띄어쓰기 유지 {r['space_kept']:.2f}</p>"
         f"<details><summary>원본에 없는 스캔 헤딩 {len(r['bad_headings'])}</summary><pre>{e(chr(10).join(r['bad_headings']))}</pre></details>"
         f"<details><summary>공백 무시해도 없는 원본 문장 {len(r['missing_sentences'])}</summary><pre>{e(chr(10).join(r['missing_sentences']))}</pre></details></section>"
-        for r in rows)
-    (OUT / 'compare.html').write_text(f"<!doctype html><meta charset=utf-8><title>#224 스캔 대조</title><style>body{{font-family:sans-serif;max-width:1100px;margin:20px auto;padding:0 16px}}section{{border-top:1px solid #ccc}}pre{{white-space:pre-wrap;background:#f5f5f5;padding:8px}}</style><h1>#224 합성 스캔 ↔ 원본 디지털 대조</h1>{body}")
+        for r in rows
+    )
+    (OUT / 'compare.html').write_text(
+        f"<!doctype html><meta charset=utf-8><title>#224 스캔 대조</title><style>body{{font-family:sans-serif;max-width:1100px;margin:20px auto;padding:0 16px}}section{{border-top:1px solid #ccc}}pre{{white-space:pre-wrap;background:#f5f5f5;padding:8px}}</style><h1>#224 합성 스캔 ↔ 원본 디지털 대조</h1>{body}"
+    )
 
 
 if __name__ == '__main__':

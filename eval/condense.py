@@ -14,6 +14,7 @@ condense는 확률적이라 케이스마다 RUNS회 반복 → 일관성(flaky)�
 실행: python -m eval.condense
      python -m eval.condense --multi   # 멀티쿼리 통합(#5)의 첫 줄(재작성)을 같은 규칙으로 채점
 """
+
 import argparse
 import asyncio
 import json
@@ -21,13 +22,12 @@ from collections import defaultdict
 from pathlib import Path
 
 from config import settings
-from rag.llm import create_aux_llm
 from eval._gold_history import messages_from_conversation
-from rag.turn.conversation import (condense_query, condense_to_queries,
-                              trim_messages_for_condense)
+from rag.llm import create_aux_llm
+from rag.turn.conversation import condense_query, condense_to_queries, trim_messages_for_condense
 
 GOLD = Path(__file__).resolve().parent / "condense_set_v1.jsonl"
-RUNS = 3            # 케이스당 반복 (일관성 측정)
+RUNS = 3  # 케이스당 반복 (일관성 측정)
 CONCURRENCY = 4
 
 
@@ -52,15 +52,16 @@ async def compute(multi: bool = False) -> dict:
     변형 생성을 얹었을 때 재작성 품질이 회귀하지 않는지 본다. 변형 줄은 채점 대상 아님.
     """
     cases = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
-    llm = create_aux_llm()   # 운영과 같은 보조 클라이언트(#297) — LLM_AUX_*가 비면 생성 설정 그대로
+    llm = create_aux_llm()  # 운영과 같은 보조 클라이언트(#297) — LLM_AUX_*가 비면 생성 설정 그대로
     sem = asyncio.Semaphore(CONCURRENCY)
 
     async def _one(case: dict, _i: int):
         # 운영과 같은 예산으로 자른다 (rag/turn/service.py의 condense 경로와 같은 모양) — #81.
         # 이 데이터셋은 최대 85토큰이라 실제로 잘리는 케이스는 없지만, 예산 지식이 세 축에
         # 흩어지지 않게 형태를 맞춘다. 데이터가 길어지면 자동으로 운영과 같이 동작한다.
-        msgs = trim_messages_for_condense(messages_from_conversation(case["conversation"]),
-                                          settings.condense_history_budget_tokens)
+        msgs = trim_messages_for_condense(
+            messages_from_conversation(case["conversation"]), settings.condense_history_budget_tokens
+        )
         async with sem:
             if multi:
                 out = (await condense_to_queries(llm, case["query"], msgs))[0]
@@ -71,8 +72,8 @@ async def compute(multi: bool = False) -> dict:
     # 케이스 × RUNS 회 전부 실행
     results = await asyncio.gather(*(_one(c, i) for c in cases for i in range(RUNS)))
 
-    per_case = defaultdict(list)       # id -> [pass 여부...]
-    sample = {}                        # id -> 마지막 재작성(오류 표시용)
+    per_case = defaultdict(list)  # id -> [pass 여부...]
+    sample = {}  # id -> 마지막 재작성(오류 표시용)
     for cid, ok, out in results:
         per_case[cid].append(ok)
         if not ok:
@@ -83,15 +84,17 @@ async def compute(multi: bool = False) -> dict:
     passing_runs = sum(sum(v) for v in per_case.values())
     flaky = [cid for cid, oks in per_case.items() if 0 < sum(oks) < len(oks)]
 
-    by_cat = defaultdict(lambda: [0, 0])   # category -> [pass_runs, total_runs]
+    by_cat = defaultdict(lambda: [0, 0])  # category -> [pass_runs, total_runs]
     for cid, oks in per_case.items():
         cat = by_case[cid]["category"]
         by_cat[cat][0] += sum(oks)
         by_cat[cat][1] += len(oks)
 
-    misses = [{"id": cid, "query": by_case[cid]["query"], "got": sample[cid],
-               "pass": f"{sum(oks)}/{len(oks)}"}
-              for cid, oks in per_case.items() if sum(oks) < len(oks)]
+    misses = [
+        {"id": cid, "query": by_case[cid]["query"], "got": sample[cid], "pass": f"{sum(oks)}/{len(oks)}"}
+        for cid, oks in per_case.items()
+        if sum(oks) < len(oks)
+    ]
 
     return {
         "accuracy": passing_runs / total_runs if total_runs else 0.0,
@@ -105,8 +108,9 @@ async def compute(multi: bool = False) -> dict:
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--multi", action="store_true",
-                        help="condense_to_queries(#5) 첫 줄 채점 — 통합 프롬프트의 재작성 회귀 확인")
+    parser.add_argument(
+        "--multi", action="store_true", help="condense_to_queries(#5) 첫 줄 채점 — 통합 프롬프트의 재작성 회귀 확인"
+    )
     args = parser.parse_args()
 
     r = await compute(multi=args.multi)

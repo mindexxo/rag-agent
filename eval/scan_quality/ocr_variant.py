@@ -13,14 +13,15 @@ local_min736으로 명시해 덮어쓴다. 로컬 CPU가 서버를 재현하는�
 install(name): docling_convert를 이 프로세스의 convert_process.convert_local로, KserveV2OcrOptions를 같은 파라미터의 RapidOcrOptions로 바꾼다.
 'remote'는 OCR 옵션은 그대로 두고 변환만 이 프로세스로 옮긴다(실험 간 같은 경로를 쓰려고).
 """
+
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 VARIANTS = {
-    'remote': None,                                                    # 운영 서버 그대로(배포된 설정)
-    'local_max': {},                                                   # 서버 코드 그대로 = #224 채택안(키우지 않음)
-    'local_min736': {'Det.limit_type': 'min', 'Det.limit_side_len': 736},   # #224 전 운영(rapidocr 기본) — 재현·기준선
-    'local_min400': {'Det.limit_type': 'min', 'Det.limit_side_len': 400},   # 덜 키운다(중간안)
+    'remote': None,  # 운영 서버 그대로(배포된 설정)
+    'local_max': {},  # 서버 코드 그대로 = #224 채택안(키우지 않음)
+    'local_min736': {'Det.limit_type': 'min', 'Det.limit_side_len': 736},  # #224 전 운영(rapidocr 기본) — 재현·기준선
+    'local_min400': {'Det.limit_type': 'min', 'Det.limit_side_len': 400},  # 덜 키운다(중간안)
 }
 
 
@@ -36,7 +37,9 @@ def server_params() -> dict:
 
 def install(name: str) -> None:
     import docling.datamodel.pipeline_options as PO
+
     import rag.chunking as C
+
     if not hasattr(PO, '_scan224_orig'):
         PO._scan224_orig = PO.KserveV2OcrOptions
     PO.KserveV2OcrOptions = PO._scan224_orig
@@ -49,11 +52,18 @@ def install(name: str) -> None:
         # OCR 엔진 등록부를 **바꾸기 전에** 만든다 — 등록부가 엔진마다 PO의 옵션 클래스를 읽어 짝짓기 때문에, 바꾼 뒤에
         # 만들면 Kserve 엔진이 이 대역과 짝지어진다(실측: 'function' has no attribute 'kind' / '_Local' has no 'url').
         from docling.models.factories import get_ocr_factory
+
         get_ocr_factory(False), get_ocr_factory(True)
 
         def _local(**kw):
-            return PO.RapidOcrOptions(lang=kw.get('lang', ['korean']), scale=kw.get('scale', 3.0), text_score=0.5,
-                                      use_cls=False, rapidocr_params=params)
+            return PO.RapidOcrOptions(
+                lang=kw.get('lang', ['korean']),
+                scale=kw.get('scale', 3.0),
+                text_score=0.5,
+                use_cls=False,
+                rapidocr_params=params,
+            )
+
         PO.KserveV2OcrOptions = _local
     C.convert_process.docling_convert = lambda p, **kw: C.convert_process.convert_local(p, **kw)
-    C.document_converter._converter = None                       # 다음 변환에서 새 옵션으로 변환기를 다시 만든다
+    C.document_converter._converter = None  # 다음 변환에서 새 옵션으로 변환기를 다시 만든다

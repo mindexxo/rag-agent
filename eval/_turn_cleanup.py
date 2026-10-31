@@ -12,6 +12,7 @@
 않는 경로"를 파이프라인에 새로 만드는 것이고, 우리가 #72에서 세운 보장(어떤 실패에도 질문은
 남는다)을 정면으로 되돌리는 스위치가 된다. 어지른 쪽이 치우는 편이 안전하다.
 """
+
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,13 +26,9 @@ async def discard_turn(session: AsyncSession, tenant_id: str, conversation_id: i
     명시한다(쓰기 경로는 예외 없이 테넌트를 WHERE에 넣는다는 프로젝트 원칙).
     """
     await session.execute(
-        delete(Message)
-        .where(Message.tenant_id == tenant_id)
-        .where(Message.conversation_id == conversation_id)
+        delete(Message).where(Message.tenant_id == tenant_id).where(Message.conversation_id == conversation_id)
     )
     await session.execute(
-        delete(Conversation)
-        .where(Conversation.tenant_id == tenant_id)
-        .where(Conversation.id == conversation_id)
+        delete(Conversation).where(Conversation.tenant_id == tenant_id).where(Conversation.id == conversation_id)
     )
     await session.commit()

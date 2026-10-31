@@ -24,6 +24,7 @@
 필요: OpenSearch + TEI(임베딩·리랭커).
 사용: python -m eval.retrieval_keyword [--tenants a,b] [--cap 60] [--spot 30]
 """
+
 import argparse
 import asyncio
 import json
@@ -40,21 +41,23 @@ from eval.retrieval import score_one
 from rag.search.os_client import client, close_client
 from rag.search.retriever import prepare_evidence, retrieve_candidates
 
-TENANTS = tuple(sorted(V2_TENANTS))   # 모의 6 + inticube — 문장형 골드(retrieval_v2)와 같은 테넌트
+TENANTS = tuple(sorted(V2_TENANTS))  # 모의 6 + inticube — 문장형 골드(retrieval_v2)와 같은 테넌트
 RESULT_DIR = Path("eval/results")
 SEED = 248
-CONCURRENCY = 6           # TEI 공유 장비 — retrieval_article과 같은 안전선
-ANALYZE_CONCURRENCY = 8   # _analyze는 OpenSearch만 쓴다
+CONCURRENCY = 6  # TEI 공유 장비 — retrieval_article과 같은 안전선
+ANALYZE_CONCURRENCY = 8  # _analyze는 OpenSearch만 쓴다
 CAP_PER_TENANT = 60
 GOLD_MAX_DF = 3
 KINDS = ("code", "acronym", "noun")
-TAILS = ("관련 내용", "알려줘", "어떻게 돼?")   # 뜻을 바꾸지 않는 꼬리(설계 6)
-METRICS = ("in_evidence", "hit_at_1", "recall_at_5", "recall_at_20", "mrr")   # 합격 기준은 in_evidence
+TAILS = ("관련 내용", "알려줘", "어떻게 돼?")  # 뜻을 바꾸지 않는 꼬리(설계 6)
+METRICS = ("in_evidence", "hit_at_1", "recall_at_5", "recall_at_20", "mrr")  # 합격 기준은 in_evidence
 
 # 코드 — 라틴 문자와 숫자가 함께 있는 한 덩어리. 하이픈으로 이어진 문자 마디는 통째로 본다 — 'SUM-MB-012'에서 'MB-012'만
 # 떼어 내면 문서번호의 일부가 코드로 둔갑한다(첫 검수 실측). 순수 숫자·날짜는 문자가 없어 안 걸린다.
 # 버전 표기('Ver1.8'·'v1.2')는 코드가 아니다 — 숫자 뒤에 '.숫자'가 이어지면 뺀다(리뷰 지적).
-_CODE_RE = re.compile(r"(?<![A-Za-z0-9-])[A-Za-z]{1,6}(?:-[A-Za-z]{1,6})*-?\d{1,6}(?:-[A-Za-z0-9]{1,6})*(?![A-Za-z0-9]|\.\d)")
+_CODE_RE = re.compile(
+    r"(?<![A-Za-z0-9-])[A-Za-z]{1,6}(?:-[A-Za-z]{1,6})*-?\d{1,6}(?:-[A-Za-z0-9]{1,6})*(?![A-Za-z0-9]|\.\d)"
+)
 # 약어 — 라틴 대문자 2~6자. 앞뒤가 라틴 문자·숫자·하이픈이면 더 긴 단어·코드의 일부라 뺀다('HP-OPS-015'의 'OPS',
 # 'SB1000'의 'SB' — 리뷰 지적).
 _ACRONYM_RE = re.compile(r"(?<![A-Za-z0-9-])[A-Z]{2,6}(?![A-Za-z0-9-])")
@@ -66,7 +69,7 @@ _HANGUL_RE = re.compile(r"[가-힣]")
 
 def extract_codes(text: str) -> set[str]:
     """코드 토큰(_CODE_RE). 하이픈을 빼고 3자 미만이면 버린다."""
-    return {m for m in _CODE_RE.findall(text) if len(m.replace('-', '')) >= 3}   # 'D-1'·'N-2'(일정 표기)는 코드가 아니다
+    return {m for m in _CODE_RE.findall(text) if len(m.replace('-', '')) >= 3}  # 'D-1'·'N-2'(일정 표기)는 코드가 아니다
 
 
 def extract_acronyms(text: str) -> set[str]:
@@ -91,7 +94,7 @@ def noun_terms(tokens: list[dict]) -> set[str]:
         run.clear()
 
     for t in tokens:
-        if t["start_offset"] < skip_until:          # 복합어의 하위 형태소
+        if t["start_offset"] < skip_until:  # 복합어의 하위 형태소
             continue
         is_noun = str(t.get("leftPOS", "")).startswith(_NOUN_POS)
         if t.get("posType") == "COMPOUND":
@@ -112,8 +115,9 @@ def gold_of(token: str, norm_texts: dict[int, str]) -> list[int]:
     return sorted(cid for cid, t in norm_texts.items() if n in t)
 
 
-def select_candidates(cands: dict[str, str], norm_texts: dict[int, str], other_text: str = "",
-                      max_df: int = GOLD_MAX_DF) -> dict[str, tuple[str, list[int]]]:
+def select_candidates(
+    cands: dict[str, str], norm_texts: dict[int, str], other_text: str = "", max_df: int = GOLD_MAX_DF
+) -> dict[str, tuple[str, list[int]]]:
     """{토큰: 종류} → {토큰: (종류, 정답 조각)} — 정답이 1~max_df개인 것만. 정규화가 같은 토큰('CTI'·'cti')은 하나만.
 
     명사는 다른 테넌트 글(other_text, 정규화해 이은 것)에 한 번이라도 나오면 뺀다 — 여러 회사 문서에 공통으로 나오는 말은
@@ -132,8 +136,9 @@ def select_candidates(cands: dict[str, str], norm_texts: dict[int, str], other_t
     return out
 
 
-def sample_tokens(selected: dict[str, tuple[str, list[int]]], cap: int,
-                  rng: random.Random) -> list[tuple[str, str, list[int]]]:
+def sample_tokens(
+    selected: dict[str, tuple[str, list[int]]], cap: int, rng: random.Random
+) -> list[tuple[str, str, list[int]]]:
     """종류별 균등 배분(cap // 종류 수), 모자란 종류의 몫은 남은 후보에서 채운다(설계 7). 결과는 (종류, 토큰) 순 정렬."""
     by_kind: dict[str, list[str]] = defaultdict(list)
     for token, (kind, _) in sorted(selected.items()):
@@ -147,7 +152,7 @@ def sample_tokens(selected: dict[str, tuple[str, list[int]]], cap: int,
         picked += pool[:quota]
         rest += pool[quota:]
     rng.shuffle(rest)
-    picked += rest[:max(0, cap - len(picked))]
+    picked += rest[: max(0, cap - len(picked))]
     return sorted(((selected[t][0], t, selected[t][1]) for t in picked), key=lambda x: (x[0], x[1]))
 
 
@@ -163,12 +168,24 @@ def make_query(token: str, i: int) -> str:
 
 def build_items(tenant: str, picked: list[tuple[str, str, list[int]]]) -> list[dict]:
     """(종류, 토큰, 정답) → 문항. qid는 테넌트 안에서 순번이라 테넌트를 섞어도 유일하다."""
-    return [{"set": "keyword", "tenant": tenant, "qid": f"kw_{tenant}_{i:03d}", "type": f"keyword_{kind}",
-             "kind": kind, "style": i % 3, "token": token, "query": make_query(token, i), "gold_ids": gold}
-            for i, (kind, token, gold) in enumerate(picked)]
+    return [
+        {
+            "set": "keyword",
+            "tenant": tenant,
+            "qid": f"kw_{tenant}_{i:03d}",
+            "type": f"keyword_{kind}",
+            "kind": kind,
+            "style": i % 3,
+            "token": token,
+            "query": make_query(token, i),
+            "gold_ids": gold,
+        }
+        for i, (kind, token, gold) in enumerate(picked)
+    ]
 
 
 # ----- 색인 읽기 ----------------------------------------------------------
+
 
 async def _analyze_nouns(texts: list[str]) -> list[set[str]]:
     sem = asyncio.Semaphore(ANALYZE_CONCURRENCY)
@@ -177,15 +194,18 @@ async def _analyze_nouns(texts: list[str]) -> list[set[str]]:
         if not _HANGUL_RE.search(text):
             return set()
         async with sem:
-            r = await client().indices.analyze(index=settings.opensearch_index, body={
-                "analyzer": "nori_ko", "text": text, "explain": True, "attributes": ["leftPOS", "posType"]})
+            r = await client().indices.analyze(
+                index=settings.opensearch_index,
+                body={"analyzer": "nori_ko", "text": text, "explain": True, "attributes": ["leftPOS", "posType"]},
+            )
         return noun_terms(r["detail"]["tokenizer"]["tokens"])
 
     return await asyncio.gather(*(_one(t) for t in texts))
 
 
-async def generate_items(tenants: tuple[str, ...] = TENANTS,
-                         cap: int = CAP_PER_TENANT) -> tuple[list[dict], dict[int, str]]:
+async def generate_items(
+    tenants: tuple[str, ...] = TENANTS, cap: int = CAP_PER_TENANT
+) -> tuple[list[dict], dict[int, str]]:
     """질문 생성 → (문항, {chunk_id: 원문}). 원문은 검수 덤프용. 명사의 "다른 테넌트에 없음" 판정 때문에 테넌트들을 함께
     읽는다 — 그래서 tenants를 바꾸면 명사 후보도 바뀐다(기본값 = 측정 테넌트 전부, 시드 고정)."""
     chunks_of = {t: await load_chunks(t) for t in tenants}
@@ -199,16 +219,22 @@ async def generate_items(tenants: tuple[str, ...] = TENANTS,
         cands: dict[str, str] = {}
         nouns = await _analyze_nouns([c["text"] for c in chunks])
         for c, ns in zip(chunks, nouns):
-            for kind, toks in (("code", extract_codes(c["text"])), ("acronym", extract_acronyms(c["text"])), ("noun", ns)):
+            for kind, toks in (
+                ("code", extract_codes(c["text"])),
+                ("acronym", extract_acronyms(c["text"])),
+                ("noun", ns),
+            ):
                 for tok in toks:
-                    cands.setdefault(tok, kind)   # 같은 글자가 두 종류에 걸리면 먼저 잡힌 쪽(코드 > 약어 > 명사)
-        picked = sample_tokens(select_candidates(cands, norm_of[tenant], other_text), cap,
-                               random.Random(f"{SEED}:{tenant}"))
+                    cands.setdefault(tok, kind)  # 같은 글자가 두 종류에 걸리면 먼저 잡힌 쪽(코드 > 약어 > 명사)
+        picked = sample_tokens(
+            select_candidates(cands, norm_of[tenant], other_text), cap, random.Random(f"{SEED}:{tenant}")
+        )
         items += build_items(tenant, picked)
     return items, text_of
 
 
 # ----- 채점 ---------------------------------------------------------------
+
 
 async def score_items(items: list[dict]) -> list[dict]:
     sem = asyncio.Semaphore(CONCURRENCY)
@@ -219,8 +245,13 @@ async def score_items(items: list[dict]) -> list[dict]:
             cands = await retrieve_candidates(None, it["tenant"], it["query"], top_n=20)
         got = [c.chunk_id for c in cands.chunks]
         top = prepare_evidence(cands.chunks, TOP_K)
-        return {**it, **score_one(got, it["gold_ids"]), "in_evidence": evidence_has(top, it["token"]),
-                "got_ids": got, "top_ids": [c.chunk_id for c in top]}
+        return {
+            **it,
+            **score_one(got, it["gold_ids"]),
+            "in_evidence": evidence_has(top, it["token"]),
+            "got_ids": got,
+            "top_ids": [c.chunk_id for c in top],
+        }
 
     return await asyncio.gather(*(_one(it) for it in items))
 
@@ -229,8 +260,10 @@ def summarize(rows: list[dict], by: str | None = None) -> dict:
     groups: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
         groups[str(r[by]) if by else "all"].append(r)
-    return {k: {"n": len(v), **{m: round(sum(r[m] for r in v) / len(v), 3) for m in METRICS}}
-            for k, v in sorted(groups.items())}
+    return {
+        k: {"n": len(v), **{m: round(sum(r[m] for r in v) / len(v), 3) for m in METRICS}}
+        for k, v in sorted(groups.items())
+    }
 
 
 def _snippet(text: str, token: str, width: int = 60) -> str:
@@ -238,7 +271,7 @@ def _snippet(text: str, token: str, width: int = 60) -> str:
     i = text.casefold().find(token.casefold())
     if i < 0:
         return chunk_head(text, width * 2)
-    return chunk_head(text[max(0, i - width):i + len(token) + width], width * 3)
+    return chunk_head(text[max(0, i - width) : i + len(token) + width], width * 3)
 
 
 def write_spot_check(path: Path, items: list[dict], text_of: dict[int, str], n: int = 30) -> None:
@@ -249,8 +282,12 @@ def write_spot_check(path: Path, items: list[dict], text_of: dict[int, str], n: 
         by_kind[it["kind"]].append(it)
     per = max(1, n // len(KINDS))
     sample = [it for k in KINDS for it in rng.sample(by_kind.get(k, []), min(per, len(by_kind.get(k, []))))]
-    lines = ["# 키워드형 질문 검수 표본 — 토큰이 상담원이 물을 만한 말인가 / 정답 조각에 그 토큰이 실제로 있나", "",
-             "판정: ☐ 적합  ☐ 토큰이 일반어(키워드 질의 대상 아님)  ☐ 토큰이 잘못 잘림  ☐ 정답 조각 이상", ""]
+    lines = [
+        "# 키워드형 질문 검수 표본 — 토큰이 상담원이 물을 만한 말인가 / 정답 조각에 그 토큰이 실제로 있나",
+        "",
+        "판정: ☐ 적합  ☐ 토큰이 일반어(키워드 질의 대상 아님)  ☐ 토큰이 잘못 잘림  ☐ 정답 조각 이상",
+        "",
+    ]
     for it in sample:
         lines += [f"## [{it['tenant']}] {it['query']}  ({it['kind']}, 정답 조각 {len(it['gold_ids'])}개)"]
         lines += [f"- [{g}] {_snippet(text_of[g], it['token'])}" for g in it["gold_ids"]]
@@ -259,6 +296,7 @@ def write_spot_check(path: Path, items: list[dict], text_of: dict[int, str], n: 
 
 
 # ----- 진입점 -------------------------------------------------------------
+
 
 async def main() -> None:
     ap = argparse.ArgumentParser()
@@ -276,14 +314,23 @@ async def main() -> None:
     rows = await score_items(items_all)
 
     summary = {by or "all": summarize(rows, by) for by in (None, "tenant", "kind", "style")}
-    fingerprint = {"commit": commit(), "rerank": settings.rerank_enabled,
-                   "hybrid_lexical": settings.hybrid_lexical_enabled, "hybrid_inject": settings.hybrid_lexical_inject,
-                   "ident_channel": settings.ident_channel_enabled, "seed": SEED, "cap": args.cap, "at": stamp}
+    fingerprint = {
+        "commit": commit(),
+        "rerank": settings.rerank_enabled,
+        "hybrid_lexical": settings.hybrid_lexical_enabled,
+        "hybrid_inject": settings.hybrid_lexical_inject,
+        "ident_channel": settings.ident_channel_enabled,
+        "seed": SEED,
+        "cap": args.cap,
+        "at": stamp,
+    }
     out = RESULT_DIR / f"keyword_{stamp}.json"
-    out.write_text(json.dumps({"fingerprint": fingerprint, "summary": summary, "rows": rows},
-                              ensure_ascii=False, indent=1))
+    out.write_text(
+        json.dumps({"fingerprint": fingerprint, "summary": summary, "rows": rows}, ensure_ascii=False, indent=1)
+    )
     (RESULT_DIR / f"keyword_{stamp}_items.jsonl").write_text(
-        "\n".join(json.dumps(it, ensure_ascii=False) for it in items_all))
+        "\n".join(json.dumps(it, ensure_ascii=False) for it in items_all)
+    )
     write_spot_check(RESULT_DIR / f"keyword_{stamp}_spot.md", items_all, text_all, args.spot)
     print(json.dumps(summary, ensure_ascii=False, indent=1))
     print(f"→ {out}")

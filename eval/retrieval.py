@@ -3,15 +3,15 @@ import json
 import re
 import time
 from collections import defaultdict
-from dataclasses import field, dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from sqlalchemy import select
 
 from config import settings
 from database import AsyncSessionLocal
-from rag.search import os_client
 from rag.models import Document
+from rag.search import os_client
 from rag.search.retriever import apply_gate, retrieve_candidates
 
 # 게이트 임계값 sweep 후보 (max_dense_distance)
@@ -28,8 +28,9 @@ RETRIEVAL_TYPES = {"single_fact", "paraphrase", "rare_lexical", "multi_doc"}
 @dataclass
 class Resolved:
     """gold의 안정 키를 현재 id(문서=PG id, 청크=색인 chunk_id)로 변환한 결과 묶음."""
+
     doc_ids: dict[str, int] = field(default_factory=dict)
-    chunk_ids: dict[str, list[int]] = field(default_factory=dict)     # 스니펫당 **첫 매치** 1개 — oracle 주입용(순서 보존)
+    chunk_ids: dict[str, list[int]] = field(default_factory=dict)  # 스니펫당 **첫 매치** 1개 — oracle 주입용(순서 보존)
     # 스니펫을 포함한 청크 **전부** — 검색축 채점용(#209). 같은 문장이 두 쪽에 중복된 문서(타임레포트 5·6쪽, 계획/실적
     # Flow 반복)에서 다른 중복 청크가 1위면 chunk_ids만으론 miss로 찍혔다(#203 sf004·pp001, 재인제스트마다 뒤집힘).
     # oracle엔 쓰지 않는다 — 같은 문장 청크를 두 번 주입하면 토큰 낭비이고 생성 oracle 기준선이 흔들린다.
@@ -38,11 +39,12 @@ class Resolved:
 
 
 def _norm_snippet(text: str) -> str:
-    return re.sub(r"[\s|]+", "", text)     # 검증기와 동일 정규화 (공백+파이프) — PDF/DOCX 추출은 공백 위치가 원본과 다르다
+    return re.sub(r"[\s|]+", "", text)  # 검증기와 동일 정규화 (공백+파이프) — PDF/DOCX 추출은 공백 위치가 원본과 다르다
 
 
-def match_expected_chunks(chunk_rows: list[tuple[int, list[str], str]],
-                          expected_chunks: list[dict]) -> tuple[list[int], set[int], list[str]]:
+def match_expected_chunks(
+    chunk_rows: list[tuple[int, list[str], str]], expected_chunks: list[dict]
+) -> tuple[list[int], set[int], list[str]]:
     """expected_chunks → (주 정답 id 목록, 채점용 id 집합, 못 찾은 스니펫 목록). DB 없는 순수 함수 — 테스트는 튜플만 먹인다.
 
     주 정답 = 스니펫당 하나: heading_path가 일치하는 매치가 있으면 그것, 없으면 첫 매치(현행 규칙 그대로, oracle용).
@@ -58,7 +60,7 @@ def match_expected_chunks(chunk_rows: list[tuple[int, list[str], str]],
         if not hits:
             missing.append(ec["snippet"][:20])
             continue
-        want_hp = ec.get("heading_path")     # v2 스키마엔 없음 (PDF/DOCX 헤딩 미보존)
+        want_hp = ec.get("heading_path")  # v2 스키마엔 없음 (PDF/DOCX 헤딩 미보존)
         primary.append(next((cid for cid, hp in hits if want_hp and hp == want_hp), hits[0][0]))
         all_ids.update(cid for cid, _ in hits)
     return primary, all_ids, missing
@@ -66,13 +68,18 @@ def match_expected_chunks(chunk_rows: list[tuple[int, list[str], str]],
 
 async def _indexed_chunks(document_id: int) -> list[tuple[int, list[str], str]]:
     """문서의 색인 청크 (chunk_id, heading_path, text). 청크는 OpenSearch에만 있다(#139)."""
-    resp = await os_client.client().search(index=settings.opensearch_index, body={
-        "size": 10000,                        # 문서 하나의 청크 수 상한으로 충분 (실문서 최대 86)
-        "_source": ["chunk_id", "heading_path", "text"],
-        "query": {"term": {"document_id": document_id}},
-    })
-    return [(int(h["_source"]["chunk_id"]), list(h["_source"].get("heading_path") or []),
-             h["_source"].get("text") or "") for h in resp["hits"]["hits"]]
+    resp = await os_client.client().search(
+        index=settings.opensearch_index,
+        body={
+            "size": 10000,  # 문서 하나의 청크 수 상한으로 충분 (실문서 최대 86)
+            "_source": ["chunk_id", "heading_path", "text"],
+            "query": {"term": {"document_id": document_id}},
+        },
+    )
+    return [
+        (int(h["_source"]["chunk_id"]), list(h["_source"].get("heading_path") or []), h["_source"].get("text") or "")
+        for h in resp["hits"]["hits"]
+    ]
 
 
 # 안정 키 -> 현재 id
@@ -92,15 +99,16 @@ async def resolve_gold(session, tenant_id, gold_rows) -> Resolved:
 
     # 1) filename -> active/ready doc id  (한 번에 조회)
     # expected_docs 원소는 str 또는 [str,...] (대체 출처 그룹) — 평탄화해 조회
-    filenames = {fn for row in gold_rows for d in row["expected_docs"]
-                 for fn in ([d] if isinstance(d, str) else d)}
-    doc_rows = (await session.execute(
-        select(Document.filename, Document.id)
-        .where(Document.tenant_id == tenant_id)
-        .where(Document.is_active.is_(True))
-        .where(Document.status == "ready")
-        .where(Document.filename.in_(filenames))
-    )).all()
+    filenames = {fn for row in gold_rows for d in row["expected_docs"] for fn in ([d] if isinstance(d, str) else d)}
+    doc_rows = (
+        await session.execute(
+            select(Document.filename, Document.id)
+            .where(Document.tenant_id == tenant_id)
+            .where(Document.is_active.is_(True))
+            .where(Document.status == "ready")
+            .where(Document.filename.in_(filenames))
+        )
+    ).all()
     r.doc_ids = {fn: did for fn, did in doc_rows}
 
     # 2) expected_chunks -> chunk id. 매칭 규칙은 match_expected_chunks가 정의점 — 문서별로 색인 청크를 한 번 읽어 넘긴다.
@@ -148,7 +156,6 @@ def score_one(got_ids: list[int], gold_ids: list[int], ks=(5, 20)) -> dict | Non
     return scores
 
 
-
 # 게이트 임계값별 오거부 판정
 def gate_sweep(cands) -> dict[float, str]:
     """임계값별 게이트 판정. cands 재사용 → DB 재조회 없음 (B0 분리 덕).
@@ -164,9 +171,9 @@ def gate_sweep(cands) -> dict[float, str]:
 
 # 평가 config: 이름 -> (후보검색 함수, 리랭커 모델 or None)
 CONFIG_REGISTRY = {
-    "bge":           (retrieve_candidates,      None),                          # 운영 기본
-    "bge+rerank":    (retrieve_candidates,      "BAAI/bge-reranker-v2-m3"),     # 1.5.C 1라운드
-    "bge+rerank-ko": (retrieve_candidates,      "dragonkue/bge-reranker-v2-m3-ko"),  # 2라운드
+    "bge": (retrieve_candidates, None),  # 운영 기본
+    "bge+rerank": (retrieve_candidates, "BAAI/bge-reranker-v2-m3"),  # 1.5.C 1라운드
+    "bge+rerank-ko": (retrieve_candidates, "dragonkue/bge-reranker-v2-m3-ko"),  # 2라운드
 }
 # 이번 실행에서 돌릴 config (KURE/리랭커 모델 재로딩 줄이려 필요한 것만)
 ACTIVE = ["bge"]
@@ -178,7 +185,7 @@ async def run_config(session, name, gold_rows, resolved, fingerprint):
     rows = []
     elapsed = []
     for row in gold_rows:
-        if row["type"] not in RETRIEVAL_TYPES:              # 검색 지표 subset만
+        if row["type"] not in RETRIEVAL_TYPES:  # 검색 지표 subset만
             continue
         t0 = time.perf_counter()
         # 이중 리랭크 방지: retrieve_candidates 내부 리랭크(settings.rerank_enabled)를 끄고
@@ -189,34 +196,36 @@ async def run_config(session, name, gold_rows, resolved, fingerprint):
             cands = await candidates_fn(session, TENANT, row["query"], top_n=20)
         finally:
             settings.rerank_enabled = prev_rerank
-        if rerank_model:                                    # 후보 순서만 재정렬 (R@20 불변)
-            from rag.search.reranker import rerank                  # 사용 시점에만 import (모듈은 직접 구현 예정)
+        if rerank_model:  # 후보 순서만 재정렬 (R@20 불변)
+            from rag.search.reranker import rerank  # 사용 시점에만 import (모듈은 직접 구현 예정)
+
             cands.chunks = await rerank(row["query"], cands.chunks)
         elapsed.append((time.perf_counter() - t0) * 1000)
         got = [c.chunk_id for c in cands.chunks]
 
         # chunk 정답 우선, 없으면 doc 단위 폴백 (§5.2)
-        gold_ids = sorted(resolved.scoring_ids.get(row["id"]) or [])   # v1 레거시 경로도 집합 채점 (#209)
+        gold_ids = sorted(resolved.scoring_ids.get(row["id"]) or [])  # v1 레거시 경로도 집합 채점 (#209)
         if gold_ids:
             score = score_one(got, gold_ids)
         else:
             got_docs = [c.document_id for c in cands.chunks]
-            doc_gold = [resolved.doc_ids[fn] for fn in row["expected_docs"]
-                        if fn in resolved.doc_ids]
+            doc_gold = [resolved.doc_ids[fn] for fn in row["expected_docs"] if fn in resolved.doc_ids]
             score = score_one(got_docs, doc_gold)
 
-        if score is None:                                   # resolve 실패 → 제외
+        if score is None:  # resolve 실패 → 제외
             continue
 
-        rows.append({
-            "id": row["id"],
-            "type": row["type"],
-            "scores": score,
-            "gate": gate_sweep(cands),                      # 게이트는 top_dense_distance 기준 (리랭크 무관)
-            "has_evidence": row["has_evidence"],
-            "gold_version": "v1",
-            "corpus_fingerprint": fingerprint,
-        })
+        rows.append(
+            {
+                "id": row["id"],
+                "type": row["type"],
+                "scores": score,
+                "gate": gate_sweep(cands),  # 게이트는 top_dense_distance 기준 (리랭크 무관)
+                "has_evidence": row["has_evidence"],
+                "gold_version": "v1",
+                "corpus_fingerprint": fingerprint,
+            }
+        )
     mean_ms = sum(elapsed) / len(elapsed) if elapsed else 0.0
     return rows, mean_ms
 
@@ -229,7 +238,7 @@ async def main():
 
     async with AsyncSessionLocal() as session:
         resolved = await resolve_gold(session, TENANT, gold_rows)
-        if resolved.stale:                                  # 라벨 노후 먼저 경보
+        if resolved.stale:  # 라벨 노후 먼저 경보
             print(f"⚠ 라벨 노후 {len(resolved.stale)}건 (집계 제외):")
             for s in resolved.stale:
                 print("  -", s)
@@ -283,8 +292,10 @@ def summarize(rows):
     for t, ss in by_type.items():
         n = len(ss)
         avg = lambda key: sum(s[key] for s in ss) / n
-        print(f"{t:<14}{n:>4}{avg('recall_at_5'):>7.2f}{avg('recall_at_20'):>7.2f}"
-              f"{avg('hit_at_1'):>7.2f}{avg('mrr'):>7.2f}")
+        print(
+            f"{t:<14}{n:>4}{avg('recall_at_5'):>7.2f}{avg('recall_at_20'):>7.2f}"
+            f"{avg('hit_at_1'):>7.2f}{avg('mrr'):>7.2f}"
+        )
 
     print("\n[threshold별 오거부 (근거 있는데 거부)]")
     ev = [r for r in rows if r["has_evidence"]]

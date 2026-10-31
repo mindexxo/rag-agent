@@ -7,6 +7,7 @@
   python -m eval.scan_quality.retrieval swap <digital|remote|local_min736|local_max|local_min400>   개발계 5건 교체
   python -m eval.scan_quality.retrieval measure <라벨>     → eval/results/scan224/retrieval_<라벨>.jsonl
 """
+
 import asyncio
 import json
 import sys
@@ -17,31 +18,52 @@ from sqlalchemy import select
 
 from eval.scan_quality.scans import OUT, SPECS
 
-_flat = lambda xs: [y for x in xs for y in (x if isinstance(x, list) else [x])]   # noqa: E731
+_flat = lambda xs: [y for x in xs for y in (x if isinstance(x, list) else [x])]  # noqa: E731
 
 
 def _gold():
     from eval.generation import load_gold
+
     names = {s.filename for s in SPECS}
-    return [g for g in load_gold() if g.get('has_evidence') and not g.get('conversation')
-            and set(_flat(g.get('expected_docs') or [])) & names]
+    return [
+        g
+        for g in load_gold()
+        if g.get('has_evidence') and not g.get('conversation') and set(_flat(g.get('expected_docs') or [])) & names
+    ]
 
 
 async def swap(kind: str) -> None:
     """5건을 디지털판 또는 스캔판으로 바꿔 올린다 — 옛 문서는 지우고(DROP drain) 새로 올린다(같은 파일명 재업로드 함정, #222)."""
-    from main import app
     from database import AsyncSessionLocal
+    from main import app
     from rag import outbox
     from rag.models import Document
+
     if kind != 'digital':
         from eval.scan_quality.ocr_variant import install
+
         install(kind)
     for s in SPECS:
         async with AsyncSessionLocal() as db:
-            old = (await db.execute(select(Document.id).where(Document.tenant_id == s.tenant, Document.filename == s.filename,
-                                                                Document.status != 'deleted'))).scalars().all()
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://local',
-                                     headers={'X-Tenant-Id': s.tenant}, timeout=1200) as c:
+            old = (
+                (
+                    await db.execute(
+                        select(Document.id).where(
+                            Document.tenant_id == s.tenant,
+                            Document.filename == s.filename,
+                            Document.status != 'deleted',
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url='http://local',
+            headers={'X-Tenant-Id': s.tenant},
+            timeout=1200,
+        ) as c:
             if old:
                 await c.delete('/kms/documents?' + '&'.join(f'ids={i}' for i in old))
                 # 지운 문서의 행만 — 테넌트 전체 pending을 집으면 공유 개발계에서 다른 세션 업로드까지 이 프로세스가 처리해
@@ -74,6 +96,7 @@ async def measure(label: str) -> None:
     from database import AsyncSessionLocal
     from eval.generation import row_tenant
     from rag.search.retriever import retrieve_candidates
+
     out, by = [], defaultdict(list)
     async with AsyncSessionLocal() as db:
         for g in _gold():
@@ -85,8 +108,10 @@ async def measure(label: str) -> None:
     (OUT / f'retrieval_{label}.jsonl').write_text('\n'.join(json.dumps(r, ensure_ascii=False) for r in out) + '\n')
     for doc, ranks in by.items():
         n = len(ranks)
-        print(f"{label:<14} {doc[:28]:<30} n={n:>2} top1 {sum(r == 1 for r in ranks)/n:.2f} top5 {sum(bool(r) and r <= 5 for r in ranks)/n:.2f} "
-              f"miss20 {sum(r is None for r in ranks)}")
+        print(
+            f"{label:<14} {doc[:28]:<30} n={n:>2} top1 {sum(r == 1 for r in ranks) / n:.2f} top5 {sum(bool(r) and r <= 5 for r in ranks) / n:.2f} "
+            f"miss20 {sum(r is None for r in ranks)}"
+        )
 
 
 if __name__ == '__main__':
@@ -97,5 +122,7 @@ if __name__ == '__main__':
             await (swap(arg) if cmd == 'swap' else measure(arg))
         finally:
             from rag.search import os_client
+
             await os_client.close_client()
+
     asyncio.run(_run())

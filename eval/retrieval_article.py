@@ -23,6 +23,7 @@
 사용: python -m eval.retrieval_article            # 검색 채점
      python -m eval.retrieval_article --answers  # + 문서명 없는 질문 10건·근거에 정답 없는 문항 답변
 """
+
 import argparse
 import asyncio
 import json
@@ -33,7 +34,7 @@ from datetime import datetime
 from pathlib import Path
 
 from config import settings
-from eval.axis_common import chunk_head, commit, load_chunks   # 색인 읽기·지문 — 키워드 축(#248)과 공용
+from eval.axis_common import chunk_head, commit, load_chunks  # 색인 읽기·지문 — 키워드 축(#248)과 공용
 from eval.retrieval import score_one
 from rag.identifiers import chunk_identifiers
 from rag.search.os_client import close_client
@@ -42,19 +43,19 @@ from rag.search.retriever import prepare_evidence, retrieve_candidates
 TENANTS = ("inticube", "article_test")
 RESULT_DIR = Path("eval/results")
 SEED = 238
-TOP_K = 5             # LLM이 받는 근거 수 — eval.generation.TOP_K와 같다
-CONCURRENCY = 6       # TEI 공유 장비 — retrieval_mt와 같은 안전선
+TOP_K = 5  # LLM이 받는 근거 수 — eval.generation.TOP_K와 같다
+CONCURRENCY = 6  # TEI 공유 장비 — retrieval_mt와 같은 안전선
 BARE_N = 10
 
 # 파일명 → 상담원이 부를 이름 (결정 5). 회사명은 상담원이 붙이지 않는다.
 _COMPANY_WORDS = ("주식회사", "(주)", "한솔인티큐브", "인티큐브")
 _NAME_DROP = (
-    re.compile(r"\[[^\]]*\]"),             # [인사 _ 규정] · [인티큐브]
-    re.compile(r"\(\d+\)"),                # 다운로드 사본 표식 (1)
+    re.compile(r"\[[^\]]*\]"),  # [인사 _ 규정] · [인티큐브]
+    re.compile(r"\(\d+\)"),  # 다운로드 사본 표식 (1)
     re.compile(r"\s*Ver\s*[\d.]+", re.I),  # Ver1.8
-    re.compile(r"_\d{6,8}"),               # _20260701
-    re.compile(r"_[\d.]+$"),               # 끝 버전 _8.0
-    re.compile(r"^\d+_"),                  # 앞 번호 4_
+    re.compile(r"_\d{6,8}"),  # _20260701
+    re.compile(r"_[\d.]+$"),  # 끝 버전 _8.0
+    re.compile(r"^\d+_"),  # 앞 번호 4_
 )
 
 
@@ -93,7 +94,7 @@ def _article_num(key: str) -> tuple[int, int]:
 # ----- 질문 생성 (결정 8) -------------------------------------------------
 
 _CHAT_ENDINGS = ("머임", "어케돼요", "내용좀요", "뭐라고 나와있음?", "알려줘용", "확인좀")
-_TYPO_TAILS = (0, 1, 4, 21)   # 받침 없음·ㄱ·ㄴ·ㅇ — 채팅 오타에서 흔한 받침 실수
+_TYPO_TAILS = (0, 1, 4, 21)  # 받침 없음·ㄱ·ㄴ·ㅇ — 채팅 오타에서 흔한 받침 실수
 
 
 def _typo(name: str, rng: random.Random) -> str:
@@ -105,7 +106,7 @@ def _typo(name: str, rng: random.Random) -> str:
     code = ord(name[i]) - 0xAC00
     tail = code % 28
     new_tail = rng.choice([t for t in _TYPO_TAILS if t != tail])
-    return name[:i] + chr(0xAC00 + code - tail + new_tail) + name[i + 1:]
+    return name[:i] + chr(0xAC00 + code - tail + new_tail) + name[i + 1 :]
 
 
 def make_query(doc: str, key: str, style: int, rng: random.Random) -> str:
@@ -113,7 +114,7 @@ def make_query(doc: str, key: str, style: int, rng: random.Random) -> str:
     if style == 0:
         return f"{doc} 제{key}의 내용을 알려주세요"
     if style == 1:
-        return f"{doc} {key} 뭐야"          # 러프·채팅체는 '제'를 뺀다
+        return f"{doc} {key} 뭐야"  # 러프·채팅체는 '제'를 뺀다
     name = _typo(doc, rng) if rng.random() < 0.5 else doc
     sep = "" if rng.random() < 0.5 else " "
     return f"{name}{sep}{key} {rng.choice(_CHAT_ENDINGS)}"
@@ -128,16 +129,24 @@ def build_items(chunks: list[dict], gold: dict, tenant: str) -> list[dict]:
     for i, (doc_id, key) in enumerate(pairs):
         filename = meta[doc_id]
         style = i % 3
-        items.append({
-            "tenant": tenant, "document_id": doc_id, "filename": filename, "article": key,
-            "style": style, "query": make_query(clean_doc_name(filename), key, style, rng),
-            "gold_ids": sorted(gold[(doc_id, key)]),
-            "branch": "의" in key, "format": Path(filename).suffix.lower().lstrip("."),
-        })
+        items.append(
+            {
+                "tenant": tenant,
+                "document_id": doc_id,
+                "filename": filename,
+                "article": key,
+                "style": style,
+                "query": make_query(clean_doc_name(filename), key, style, rng),
+                "gold_ids": sorted(gold[(doc_id, key)]),
+                "branch": "의" in key,
+                "format": Path(filename).suffix.lower().lstrip("."),
+            }
+        )
     return items
 
 
 # ----- 채점 ---------------------------------------------------------------
+
 
 def classify_mix(item: dict, top: list, keys_of: dict) -> dict:
     """상위 TOP_K 중 정답 밖 조각을 같은 문서(이웃 조 포함 여부)/다른 문서로 센다."""
@@ -168,15 +177,28 @@ async def score_items(items: list[dict], keys_of: dict) -> list[dict]:
         # 합격 기준: 생성 모델이 실제로 받는 근거(top)에 정답이 들었나. recall_at_5(리랭크 순 상위 5)와
         # 거의 같지만 prepare_evidence의 접기·자르기 뒤라 운영과 정확히 같은 집합이다.
         in_evidence = float(any(c.chunk_id in set(it["gold_ids"]) for c in top))
-        return {**it, **score_one(got, it["gold_ids"]), **classify_mix(it, top, keys_of),
-                "in_evidence": in_evidence, "gold_packed": packed, "got_ids": got,
-                "top": [{"chunk_id": c.chunk_id, "filename": c.filename,
-                         "articles": keys_of.get(c.chunk_id, []), "head": c.text[:80]} for c in top]}
+        return {
+            **it,
+            **score_one(got, it["gold_ids"]),
+            **classify_mix(it, top, keys_of),
+            "in_evidence": in_evidence,
+            "gold_packed": packed,
+            "got_ids": got,
+            "top": [
+                {
+                    "chunk_id": c.chunk_id,
+                    "filename": c.filename,
+                    "articles": keys_of.get(c.chunk_id, []),
+                    "head": c.text[:80],
+                }
+                for c in top
+            ],
+        }
 
     return await asyncio.gather(*(_one(it) for it in items))
 
 
-METRICS = ("in_evidence", "hit_at_1", "recall_at_5", "recall_at_20", "mrr")   # 합격 기준은 in_evidence
+METRICS = ("in_evidence", "hit_at_1", "recall_at_5", "recall_at_20", "mrr")  # 합격 기준은 in_evidence
 
 
 def summarize(rows: list[dict], by: str | None = None) -> dict:
@@ -186,24 +208,32 @@ def summarize(rows: list[dict], by: str | None = None) -> dict:
     out = {}
     for g, rs in sorted(groups.items(), key=lambda kv: str(kv[0])):
         n = len(rs)
-        out[str(g)] = {"n": n, **{m: round(sum(r[m] for r in rs) / n, 3) for m in METRICS},
-                       "any_mix_same_doc": round(sum(r["mix_same_doc"] > 0 for r in rs) / n, 3),
-                       "any_mix_adjacent": round(sum(r["mix_adjacent"] > 0 for r in rs) / n, 3),
-                       "any_mix_other_doc": round(sum(r["mix_other_doc"] > 0 for r in rs) / n, 3)}
+        out[str(g)] = {
+            "n": n,
+            **{m: round(sum(r[m] for r in rs) / n, 3) for m in METRICS},
+            "any_mix_same_doc": round(sum(r["mix_same_doc"] > 0 for r in rs) / n, 3),
+            "any_mix_adjacent": round(sum(r["mix_adjacent"] > 0 for r in rs) / n, 3),
+            "any_mix_other_doc": round(sum(r["mix_other_doc"] > 0 for r in rs) / n, 3),
+        }
     return out
 
 
 # ----- 사람이 읽을 파일 ----------------------------------------------------
+
 
 def write_failures(path: Path, rows: list[dict], text_of: dict) -> None:
     lines = ["# 조 번호 질문 — 근거 상위 5개에 정답이 없는 사례", ""]
     for r in rows:
         if r["in_evidence"]:
             continue
-        lines += [f"## [{r['tenant']}] {r['query']}  (정답 {r['filename']} {r['article']}, R@5={int(r['recall_at_5'])})",
-                  f"- 정답 조각: " + " / ".join(chunk_head(text_of[g]) for g in r["gold_ids"][:2])]
-        lines += [f"- {i}위 [{t['filename']}] {t['articles'][:4]} {chunk_head(t['head'], 80)}"
-                  for i, t in enumerate(r["top"], 1)]
+        lines += [
+            f"## [{r['tenant']}] {r['query']}  (정답 {r['filename']} {r['article']}, R@5={int(r['recall_at_5'])})",
+            "- 정답 조각: " + " / ".join(chunk_head(text_of[g]) for g in r["gold_ids"][:2]),
+        ]
+        lines += [
+            f"- {i}위 [{t['filename']}] {t['articles'][:4]} {chunk_head(t['head'], 80)}"
+            for i, t in enumerate(r["top"], 1)
+        ]
         lines.append("")
     path.write_text("\n".join(lines))
 
@@ -236,7 +266,8 @@ def pick_bare(gold: dict) -> list[str]:
 
 async def _answer(llm, tenant: str, q: str):
     """운영과 같은 검색 → 생성. (근거 상위 TOP_K, 답변)."""
-    from eval.generation import generate   # 무거운 import(임베딩·심판) — --answers일 때만
+    from eval.generation import generate  # 무거운 import(임베딩·심판) — --answers일 때만
+
     cands = await retrieve_candidates(None, tenant, q, top_n=20)
     chunks = prepare_evidence(cands.chunks, TOP_K)
     return chunks, await generate(llm, q, chunks)
@@ -252,9 +283,16 @@ async def run_bare(llm, tenant: str, gold: dict, keys_of: dict, meta: dict, path
         q = _BARE_FORMS[i % len(_BARE_FORMS)].format(key=key)
         chunks, answer = await _answer(llm, tenant, q)
         owners = sorted(meta[d] for d, k in gold if k == key)
-        lines += [f"## {q}", f"- 이 번호를 가진 문서 {len(owners)}개: {', '.join(owners)}",
-                  f"- 근거 상위 {TOP_K}: {_evidence_line(chunks, keys_of)}",
-                  "", answer, "", "판정: ☐ 단정  ☐ 되물음  ☐ 규정별 제시  ☐ 기타", ""]
+        lines += [
+            f"## {q}",
+            f"- 이 번호를 가진 문서 {len(owners)}개: {', '.join(owners)}",
+            f"- 근거 상위 {TOP_K}: {_evidence_line(chunks, keys_of)}",
+            "",
+            answer,
+            "",
+            "판정: ☐ 단정  ☐ 되물음  ☐ 규정별 제시  ☐ 기타",
+            "",
+        ]
     path.write_text("\n".join(lines))
 
 
@@ -265,18 +303,26 @@ async def run_failed(llm, rows: list[dict], keys_of: dict, path: Path) -> None:
         if r["in_evidence"]:
             continue
         chunks, answer = await _answer(llm, r["tenant"], r["query"])
-        lines += [f"## [{r['tenant']}] {r['query']}  (정답 {r['filename']} {r['article']})",
-                  f"- 근거 상위 {TOP_K}: {_evidence_line(chunks, keys_of)}",
-                  "", answer, "", "판정: ☐ 정답 조만  ☐ 다른 조 섞임  ☐ 다른 규정 섞임  ☐ 다른 조로 답함  ☐ 거절", ""]
+        lines += [
+            f"## [{r['tenant']}] {r['query']}  (정답 {r['filename']} {r['article']})",
+            f"- 근거 상위 {TOP_K}: {_evidence_line(chunks, keys_of)}",
+            "",
+            answer,
+            "",
+            "판정: ☐ 정답 조만  ☐ 다른 조 섞임  ☐ 다른 규정 섞임  ☐ 다른 조로 답함  ☐ 거절",
+            "",
+        ]
     path.write_text("\n".join(lines))
 
 
 # ----- 진입점 -------------------------------------------------------------
 
+
 async def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--answers", action="store_true",
-                    help="문서명 없는 질문 10건 + 근거에 정답 없는 문항의 답변 생성(vLLM 필요)")
+    ap.add_argument(
+        "--answers", action="store_true", help="문서명 없는 질문 10건 + 근거에 정답 없는 문항의 답변 생성(vLLM 필요)"
+    )
     args = ap.parse_args()
 
     RESULT_DIR.mkdir(parents=True, exist_ok=True)
@@ -285,6 +331,7 @@ async def main() -> None:
     llm = None
     if args.answers:
         from rag.llm import create_llm
+
         llm = create_llm()
     for tenant in TENANTS:
         chunks = await load_chunks(tenant)
@@ -299,14 +346,19 @@ async def main() -> None:
             meta = {c["document_id"]: c["filename"] for c in chunks}
             await run_bare(llm, tenant, gold, keys_of, meta, RESULT_DIR / f"article_{stamp}_bare.md")
 
-    summary = {by or "all": summarize(rows, by)
-               for by in (None, "tenant", "style", "format", "branch", "gold_packed")}
-    fingerprint = {"commit": commit(), "rerank": settings.rerank_enabled,
-                   "hybrid_lexical": settings.hybrid_lexical_enabled,
-                   "hybrid_inject": settings.hybrid_lexical_inject, "seed": SEED, "at": stamp}
+    summary = {by or "all": summarize(rows, by) for by in (None, "tenant", "style", "format", "branch", "gold_packed")}
+    fingerprint = {
+        "commit": commit(),
+        "rerank": settings.rerank_enabled,
+        "hybrid_lexical": settings.hybrid_lexical_enabled,
+        "hybrid_inject": settings.hybrid_lexical_inject,
+        "seed": SEED,
+        "at": stamp,
+    }
     out = RESULT_DIR / f"article_{stamp}.json"
-    out.write_text(json.dumps({"fingerprint": fingerprint, "summary": summary, "rows": rows},
-                              ensure_ascii=False, indent=1))
+    out.write_text(
+        json.dumps({"fingerprint": fingerprint, "summary": summary, "rows": rows}, ensure_ascii=False, indent=1)
+    )
     write_failures(RESULT_DIR / f"article_{stamp}_failures.md", rows, text_of)
     write_gold_sample(RESULT_DIR / f"article_{stamp}_gold_sample.md", items_all, text_of)
     if llm:

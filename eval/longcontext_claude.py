@@ -16,24 +16,32 @@
 의존: DB(코퍼스 로드) + TEI(EPCov 임베딩) + claude CLI 로그인. vLLM 불필요.
 실행: python -m eval.longcontext_claude   (SMOKE=n 지원 — 타입별 균등 표본)
 """
+
 import asyncio
 import json
 import os
 import re
 from collections import defaultdict
-from pathlib import Path
 
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
 from eval.claude_client import ClaudeCliClient
-from eval.generation import (GEN_TYPES, GOLD, GOLD_VERSION, RESULT_DIR,
-                             _citation_match, _smoke_sample,
-                             expected_points_coverage, row_tenant, summarize)
+from eval.generation import (
+    GEN_TYPES,
+    GOLD,
+    GOLD_VERSION,
+    RESULT_DIR,
+    _citation_match,
+    _smoke_sample,
+    expected_points_coverage,
+    row_tenant,
+    summarize,
+)
 from rag.models import Document
 
 SMOKE = int(os.getenv("SMOKE", "0")) or None
-CONCURRENCY = 4          # claude -p 서브프로세스 병렬 상한 — vLLM 배칭과 달리 콜=프로세스
+CONCURRENCY = 4  # claude -p 서브프로세스 병렬 상한 — vLLM 배칭과 달리 콜=프로세스
 OUT = RESULT_DIR / "generation_longcontext_claude.jsonl"
 
 # 코퍼스 크기 경고선(문자). 한국어는 대략 1.5~2자/토큰 — 30만 자면 15~20만 토큰으로
@@ -53,6 +61,7 @@ SYSTEM_PROMPT = """당신은 고객센터 상담사를 돕는 지식 어시스�
 
 # ===== 코퍼스 로드 =====================================================
 
+
 async def load_corpus(session, tenant: str) -> str:
     """테넌트의 검색 대상 전체를 하나의 텍스트로 — 색인 파이프라인과 같은 원료.
 
@@ -61,22 +70,29 @@ async def load_corpus(session, tenant: str) -> str:
     (채점기 기대 'FAQ'와 짝 — eval.generation.citation_accuracy v2 참조. 운영 인용은 #278부터 항목별
     'FAQ: 질문'이지만 이 축은 문서 단위 비교라 FAQ를 한 블록으로 둔 채다).
     """
-    doc_rows = (await session.execute(
-        select(Document.id, Document.filename)
-        .where(Document.tenant_id == tenant, Document.status == "ready",
-               Document.is_active, Document.is_searchable)
-        .order_by(Document.filename)
-    )).all()
+    doc_rows = (
+        await session.execute(
+            select(Document.id, Document.filename)
+            .where(Document.tenant_id == tenant, Document.status == "ready", Document.is_active, Document.is_searchable)
+            .order_by(Document.filename)
+        )
+    ).all()
     doc_ids = {d_id: fn for d_id, fn in doc_rows}
 
     # 청크는 색인에만 있다(#139) — 테넌트의 searchable 청크를 전부 읽어 문서별로 모은다.
     # chunk_id = document_id<<20 | chunk_index(FAQ는 음수)라 id 오름차순이 곧 문서·청크 순이다.
     from config import settings
     from rag.search import os_client, os_search
-    resp = await os_client.client().search(index=settings.opensearch_index, body={
-        "size": 10000, "_source": ["chunk_id", "document_id", "faq_id", "text"],
-        "query": os_search.tenant_filter(tenant), "sort": [{"chunk_id": "asc"}],
-    })
+
+    resp = await os_client.client().search(
+        index=settings.opensearch_index,
+        body={
+            "size": 10000,
+            "_source": ["chunk_id", "document_id", "faq_id", "text"],
+            "query": os_search.tenant_filter(tenant),
+            "sort": [{"chunk_id": "asc"}],
+        },
+    )
     hits = [h["_source"] for h in resp["hits"]["hits"]]
 
     parts: list[str] = []
@@ -95,13 +111,13 @@ async def load_corpus(session, tenant: str) -> str:
 
 # ===== 프롬프트·채점 ===================================================
 
+
 def build_user_message(corpus: str, g: dict) -> str:
     """문서 전문 + (원 대화 그대로) + 질문. condense·검색이 없는 것이 이 축의 정의다."""
     blocks = [f"[지식 문서 전체]\n\n{corpus}"]
     conv = g.get("conversation") or []
     if conv:
-        lines = [f"{'상담사' if m['role'] == 'user' else '어시스턴트'}: {m['content']}"
-                 for m in conv]
+        lines = [f"{'상담사' if m['role'] == 'user' else '어시스턴트'}: {m['content']}" for m in conv]
         blocks.append("[이전 대화]\n" + "\n".join(lines))
     blocks.append(f"[질문]\n{g['query']}")
     return "\n\n".join(blocks)
@@ -139,6 +155,7 @@ def filename_citation_accuracy(cited: list[str], expected_docs: list[str]) -> fl
 
 # ===== 메인 ============================================================
 
+
 async def main():
     gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
     gen_gold = [g for g in gold if g["type"] in GEN_TYPES]
@@ -162,19 +179,23 @@ async def main():
 
     async def _run(g):
         async with sem:
-            answer = await client.acomplete([
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": build_user_message(corpora[row_tenant(g)], g)},
-            ])
+            answer = await client.acomplete(
+                [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": build_user_message(corpora[row_tenant(g)], g)},
+                ]
+            )
         cited = parse_cited_files(answer)
         return {
-            "id": g["id"], "type": g["type"], "mode": "longcontext",
+            "id": g["id"],
+            "type": g["type"],
+            "mode": "longcontext",
             "answer": answer,
             "cited_files": cited,
             "scores": {
                 # EPCov는 TEI 임베딩을 쓰는 동기 함수 — 직렬화를 위해 락 밖이 아닌 여기서
                 # 호출하지 않고 아래 채점 루프에서 한다. (answer만 여기서 만든다)
-                "expected_points_coverage": None,   # 채점 루프에서 채움
+                "expected_points_coverage": None,  # 채점 루프에서 채움
                 "citation_accuracy": filename_citation_accuracy(cited, g.get("expected_docs", [])),
             },
             "generator": f"claude:{client.model}",
@@ -188,7 +209,8 @@ async def main():
     by_id = {g["id"]: g for g in gen_gold}
     for r in rows:
         r["scores"]["expected_points_coverage"] = expected_points_coverage(
-            r["answer"], by_id[r["id"]].get("expected_points", []))
+            r["answer"], by_id[r["id"]].get("expected_points", [])
+        )
         # 규칙만으로 채점한다(#221 2단계 심판 없음) — 생성 평가의 심판 반영 EPCov와 섞이지 않게 자기서술
         r["scores"]["expected_points_coverage_rule"] = r["scores"]["expected_points_coverage"]
         r["epcov_judge"] = "rule-only"

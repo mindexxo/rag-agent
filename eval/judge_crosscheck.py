@@ -20,6 +20,7 @@ flaky인지 결과에 남긴다.
 
 실행: python -m eval.judge_crosscheck --audit eval/results/absence_judge_XXXX.jsonl
 """
+
 import argparse
 import asyncio
 import json
@@ -29,12 +30,13 @@ from pathlib import Path
 from eval.absence_judge import judge_absence
 from eval.claude_client import ClaudeCliClient
 
-CONCURRENCY = 4   # claude -p 콜=서브프로세스 (longcontext_claude 선례)
+CONCURRENCY = 4  # claude -p 콜=서브프로세스 (longcontext_claude 선례)
 RESULT_DIR = Path(__file__).resolve().parent / "results"
 
 
-async def _claude_label(claude: ClaudeCliClient, sem: asyncio.Semaphore,
-                        query: str, answer: str) -> tuple[bool | None, str | None]:
+async def _claude_label(
+    claude: ClaudeCliClient, sem: asyncio.Semaphore, query: str, answer: str
+) -> tuple[bool | None, str | None]:
     """Claude judge 판정 → (부재단정 여부, 사유). 어떤 실패든 (None, error)로 흡수한다.
 
     LlmJudgmentFailed(JSON 파싱 실패)뿐 아니라 RuntimeError(타임아웃·좌석 한도, claude_client가
@@ -56,9 +58,17 @@ def _load_audit(path: Path) -> list[dict]:
     중단한다(리뷰 발견 — 지금은 전부 v1이지만 재사용 시 조용히 오염될 구조였다).
     """
     rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
-    kept = [{"id": r["id"], "query": r["query"], "answer": r["answer"],
-             "vllm": r.get("absence"), "vllm_judge_version": r.get("judge_prompt_version")}
-            for r in rows if r.get("answer")]
+    kept = [
+        {
+            "id": r["id"],
+            "query": r["query"],
+            "answer": r["answer"],
+            "vllm": r.get("absence"),
+            "vllm_judge_version": r.get("judge_prompt_version"),
+        }
+        for r in rows
+        if r.get("answer")
+    ]
     versions = {r["vllm_judge_version"] for r in kept}
     if len(versions) > 1:
         raise SystemExit(f"audit에 judge 버전이 섞여 있다 {versions} — 버전별로 분리해 실행할 것.")
@@ -67,8 +77,7 @@ def _load_audit(path: Path) -> list[dict]:
 
 async def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--audit", required=True,
-                    help="기존 absence_judge_*.jsonl (answer 보존분 재활용, GPU 불필요)")
+    ap.add_argument("--audit", required=True, help="기존 absence_judge_*.jsonl (answer 보존분 재활용, GPU 불필요)")
     args = ap.parse_args()
 
     rows = _load_audit(Path(args.audit))
@@ -77,8 +86,7 @@ async def main() -> None:
 
     claude = ClaudeCliClient()
     sem = asyncio.Semaphore(CONCURRENCY)
-    claude_results = await asyncio.gather(*(
-        _claude_label(claude, sem, r["query"], r["answer"]) for r in rows))
+    claude_results = await asyncio.gather(*(_claude_label(claude, sem, r["query"], r["answer"]) for r in rows))
 
     compared, agree, disagree, failed = [], 0, 0, 0
     for r, (claude_label, reason) in zip(rows, claude_results):
@@ -89,7 +97,7 @@ async def main() -> None:
         elif v is None:
             compared.append({**r, "claude": claude_label, "claude_reason": reason, "match": None})
         else:
-            match = (v == claude_label)
+            match = v == claude_label
             agree += match
             disagree += not match
             compared.append({**r, "claude": claude_label, "claude_reason": reason, "match": match})
@@ -98,25 +106,27 @@ async def main() -> None:
     for r in compared:
         if r["match"] is False:
             again, _ = await _claude_label(claude, sem, r["query"], r["answer"])
-            r["claude_flaky"] = (again != r["claude"])   # 재판정에서 뒤집히면 flaky
+            r["claude_flaky"] = again != r["claude"]  # 재판정에서 뒤집히면 flaky
 
     RESULT_DIR.mkdir(exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M")   # 고정 이름 덮어쓰기 사고 방지 (save_audit 관례)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M")  # 고정 이름 덮어쓰기 사고 방지 (save_audit 관례)
     out = RESULT_DIR / f"judge_crosscheck_{stamp}_n{len(compared)}.jsonl"
     out.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in compared) + "\n")
 
     total = agree + disagree
     print(f"\n부재단정 축 — vLLM(judge {ver}) ↔ Claude 판정")
     if total:
-        print(f"  일치 {agree}/{total} = {agree/total:.1%} · 불일치 {disagree} = {disagree/total:.1%}")
+        print(f"  일치 {agree}/{total} = {agree / total:.1%} · 불일치 {disagree} = {disagree / total:.1%}")
     print(f"  Claude 판정 불가 {failed}건")
     if disagree:
-        print(f"\n[불일치 — 사람이 원문을 읽어 어느 쪽이 맞는지 확인할 것]")
+        print("\n[불일치 — 사람이 원문을 읽어 어느 쪽이 맞는지 확인할 것]")
         for r in compared:
             if r["match"] is False:
                 flaky = " [flaky — 재판정에서 뒤집힘]" if r.get("claude_flaky") else ""
-                print(f"  {r['id']}: vLLM={'단정' if r['vllm'] else '정상'} / "
-                      f"Claude={'단정' if r['claude'] else '정상'}{flaky}")
+                print(
+                    f"  {r['id']}: vLLM={'단정' if r['vllm'] else '정상'} / "
+                    f"Claude={'단정' if r['claude'] else '정상'}{flaky}"
+                )
                 print(f"    Q: {r['query'][:50]}")
                 print(f"    A: {r['answer'][:90]!r}")
                 print(f"    Claude 사유: {(r['claude_reason'] or '')[:80]}")

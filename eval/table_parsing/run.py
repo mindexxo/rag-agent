@@ -12,6 +12,7 @@ mismatches.md(틀린 칸 기대↔실제 나란히 + 실제 markdown 행). 변�
 프로세스와 같은 변환기) 한 번으로 L1을 채점하고, 그 문서를 `chunk_file`에 끼워 L2를 낸다(두 번 변환하지 않는다 —
 OCR 시간이 두 배가 된다). L2는 분할기(SentenceSplitter 512·겹침 50) 흔적까지 **색인에 들어간 그대로** 잰다(결정 a).
 """
+
 import argparse
 import json
 import time
@@ -21,12 +22,21 @@ from pathlib import Path
 import rag.chunking as ch
 from eval.table_parsing.build import build_all
 from eval.table_parsing.expected import expected_cells, expected_rows, expected_tables, flat
-from eval.table_parsing.score import (Score, all_row_texts, all_texts, chunk_tables, docling_tables, match_rows,
-                                      match_tables, score_cells, score_rows)
-from eval.table_parsing.specs import BY_ID, PATH_LABEL, paths_of
+from eval.table_parsing.score import (
+    Score,
+    all_row_texts,
+    all_texts,
+    chunk_tables,
+    docling_tables,
+    match_rows,
+    match_tables,
+    score_cells,
+    score_rows,
+)
+from eval.table_parsing.specs import BY_ID, PATH_LABEL
 
 PATHS = ('img', 'pdf', 'docx', 'xlsx')
-_ENGINE = 'triton'          # --engine 값(결과 행 자기서술, #296)
+_ENGINE = 'triton'  # --engine 값(결과 행 자기서술, #296)
 
 
 def _score_pair(spec, path, doc, chunks):
@@ -34,8 +44,10 @@ def _score_pair(spec, path, doc, chunks):
     tables = expected_tables(spec, path, 'l2')
     actuals = docling_tables(doc)
     pool = all_texts(actuals)
-    l1 = [score_cells(expected_cells(t), a, flat(t), pool)
-          for t, a in zip(tables_l1, match_tables([expected_cells(t) for t in tables_l1], actuals))]
+    l1 = [
+        score_cells(expected_cells(t), a, flat(t), pool)
+        for t, a in zip(tables_l1, match_tables([expected_cells(t) for t in tables_l1], actuals))
+    ]
     exp_rows = [expected_rows(spec, t, path) for t in tables]
     found = chunk_tables(chunks, xlsx=path == 'xlsx')
     pool2 = all_row_texts(found)
@@ -47,10 +59,10 @@ def _score_pair(spec, path, doc, chunks):
 def _convert_and_chunk(path_file: Path, path: str):
     doc = ch.convert_process.convert_local(path_file, **({'max_num_pages': 100} if path in ('img', 'pdf') else {}))
     orig = ch.convert_process.docling_convert
-    ch.convert_process.docling_convert = lambda p, **k: doc      # 같은 변환 결과로 청킹(두 번 변환 안 함)
+    ch.convert_process.docling_convert = lambda p, **k: doc  # 같은 변환 결과로 청킹(두 번 변환 안 함)
     try:
         chunks = ch.chunk_file(path_file, description='표') if path == 'xlsx' else ch.chunk_file(path_file)
-    except Exception as e:                                             # noqa: BLE001 — 청킹 실패도 결과다(L2만)
+    except Exception as e:  # noqa: BLE001 — 청킹 실패도 결과다(L2만)
         chunks = e
     finally:
         ch.convert_process.docling_convert = orig
@@ -67,11 +79,28 @@ def _failed(spec, kind: str, err: Exception, path: str = 'docx') -> list[Score]:
 
 
 def _row(spec, path, k, s: Score, layer, seconds, actual_rows=None):
-    return dict(id=spec['id'], axis=spec['axis'], path=path, table=k, layer=layer, seconds=round(seconds, 1), engine=_ENGINE,
-                detected=s.detected, dims_ok=s.dims_ok, clean=s.clean, exp_dims=s.exp_dims, act_dims=s.act_dims,
-                cells=[s.cells_ok, s.cells_total], numeric=[s.numeric_ok, s.numeric_total],
-                spans=[s.span_ok, s.span_total], presence=[s.presence_ok, s.presence_total],
-                header_rows=s.header_rows, kinds=s.kinds, mismatches=s.mismatches, actual_rows=actual_rows)
+    return dict(
+        id=spec['id'],
+        axis=spec['axis'],
+        path=path,
+        table=k,
+        layer=layer,
+        seconds=round(seconds, 1),
+        engine=_ENGINE,
+        detected=s.detected,
+        dims_ok=s.dims_ok,
+        clean=s.clean,
+        exp_dims=s.exp_dims,
+        act_dims=s.act_dims,
+        cells=[s.cells_ok, s.cells_total],
+        numeric=[s.numeric_ok, s.numeric_total],
+        spans=[s.span_ok, s.span_total],
+        presence=[s.presence_ok, s.presence_total],
+        header_rows=s.header_rows,
+        kinds=s.kinds,
+        mismatches=s.mismatches,
+        actual_rows=actual_rows,
+    )
 
 
 def _matrix(rows, layer) -> str:
@@ -81,9 +110,12 @@ def _matrix(rows, layer) -> str:
         if r['layer'] != layer:
             continue
         a = agg[(r['axis'], r['path'])]
-        a['c'][0] += r['cells'][0]; a['c'][1] += r['cells'][1]
-        a['n'][0] += r['numeric'][0]; a['n'][1] += r['numeric'][1]
-        a['present'][0] += r['presence'][0]; a['present'][1] += r['presence'][1]
+        a['c'][0] += r['cells'][0]
+        a['c'][1] += r['cells'][1]
+        a['n'][0] += r['numeric'][0]
+        a['n'][1] += r['numeric'][1]
+        a['present'][0] += r['presence'][0]
+        a['present'][1] += r['presence'][1]
         a['kinds'] |= set(r['kinds'])
         a['clean'] &= r['clean']
     axes = sorted({r['axis'] for r in rows})
@@ -100,10 +132,15 @@ def _matrix(rows, layer) -> str:
             kinds = f" {'·'.join(sorted(a['kinds']))}" if a['kinds'] else ''
             cells.append(f"{mark} {c[0]}/{c[1]} (숫자 {n[0]}/{n[1]}){kinds}")
         lines.append(f'| {ax} | ' + ' | '.join(cells) + ' |')
-    lines += ['', '✅ 표 검출·행열 수·병합 범위·모든 칸 일치 · ⚠️ 글자(띄어쓰기 무시)는 문서 어딘가에 다 있으나 자리·병합·구조가 다름 '
-                  '· ❌ 글자 유실/오독. 괄호는 숫자·금액·날짜 칸 완전 일치.']
+    lines += [
+        '',
+        '✅ 표 검출·행열 수·병합 범위·모든 칸 일치 · ⚠️ 글자(띄어쓰기 무시)는 문서 어딘가에 다 있으나 자리·병합·구조가 다름 '
+        '· ❌ 글자 유실/오독. 괄호는 숫자·금액·날짜 칸 완전 일치.',
+    ]
     if layer == 'l2':
-        lines.append('L2는 청크 분할기 흔적(긴 표의 경계 절단·겹침 중복)까지 색인에 들어간 그대로 잰다 — 긴 표 축의 수치는 표 렌더가 아니라 분할 결과다.')
+        lines.append(
+            'L2는 청크 분할기 흔적(긴 표의 경계 절단·겹침 중복)까지 색인에 들어간 그대로 잰다 — 긴 표 축의 수치는 표 렌더가 아니라 분할 결과다.'
+        )
     return '\n'.join(lines)
 
 
@@ -112,9 +149,11 @@ def _mismatch_report(rows) -> str:
     for r in rows:
         if r['clean']:
             continue
-        out.append(f"## {r['id']} · {r['path']} · 표{r['table']} · L{1 if r['layer'] == 'l1' else 2} — "
-                   f"{'·'.join(r['kinds'])} (기대 {r['exp_dims']} / 실제 {r['act_dims']}, 헤더행 {r['header_rows']}, "
-                   f"존재 {r['presence'][0]}/{r['presence'][1]})")
+        out.append(
+            f"## {r['id']} · {r['path']} · 표{r['table']} · L{1 if r['layer'] == 'l1' else 2} — "
+            f"{'·'.join(r['kinds'])} (기대 {r['exp_dims']} / 실제 {r['act_dims']}, 헤더행 {r['header_rows']}, "
+            f"존재 {r['presence'][0]}/{r['presence'][1]})"
+        )
         for m in r['mismatches'][:40]:
             out.append(f"- ({m['r']},{m['c']}) {m['kind']}: `{m['expected']}` → `{m['actual']}`")
         if r['layer'] == 'l2' and r.get('actual_rows') is not None:
@@ -130,19 +169,28 @@ def main():
     ap.add_argument('--out', default='eval/results/table_parsing/run1')
     ap.add_argument('--only', nargs='*')
     ap.add_argument('--paths', nargs='*', default=list(PATHS))
-    ap.add_argument('--engine', choices=('triton', 'vlm', 'llm'), default='triton',
-                    help="triton=현행(레이아웃+TableFormer+원격 RapidOCR) | vlm=쪽 전체 VLM(#296, PDF·표 이미지만 영향) "
-                         "| llm=운영 상용 OCR(#299, OCR_PROVIDER=llm)")
+    ap.add_argument(
+        '--engine',
+        choices=('triton', 'vlm', 'llm'),
+        default='triton',
+        help="triton=현행(레이아웃+TableFormer+원격 RapidOCR) | vlm=쪽 전체 VLM(#296, PDF·표 이미지만 영향) "
+        "| llm=운영 상용 OCR(#299, OCR_PROVIDER=llm)",
+    )
     args = ap.parse_args()
     global _ENGINE
     if args.engine == 'llm':
-        from eval import vlm_engine
         from config import settings
-        settings.ocr_provider = 'llm'                    # 운영 코드 그대로 — convert_local이 ocr_llm.convert_pdf로 보낸다
+        from eval import vlm_engine
+
+        settings.ocr_provider = 'llm'  # 운영 코드 그대로 — convert_local이 ocr_llm.convert_pdf로 보낸다
         _ENGINE = vlm_engine.label().replace('vlm_', 'ocrllm_', 1)
-        print(f'engine={_ENGINE} max_tokens={settings.ocr_llm_max_tokens} concurrency={settings.ocr_llm_concurrency}', flush=True)
+        print(
+            f'engine={_ENGINE} max_tokens={settings.ocr_llm_max_tokens} concurrency={settings.ocr_llm_concurrency}',
+            flush=True,
+        )
     if args.engine == 'vlm':
         from eval import vlm_engine
+
         _ENGINE = vlm_engine.label()
         vlm_engine.install()
         print(f'engine={vlm_engine.label()} scale={vlm_engine.SCALE} max_tokens={vlm_engine.MAX_TOKENS}', flush=True)
@@ -151,6 +199,7 @@ def main():
     made = build_all(out / 'docs', set(args.only) if args.only else None, set(args.paths))
     rows = []
     with open(out / 'results.jsonl', 'w') as f:
+
         def emit(r):
             rows.append(r)
             f.write(json.dumps(r, ensure_ascii=False) + '\n')
@@ -161,7 +210,7 @@ def main():
             t = time.time()
             try:
                 doc, chunks = _convert_and_chunk(file, path)
-            except Exception as e:                                   # noqa: BLE001 — 변환 실패도 결과다
+            except Exception as e:  # noqa: BLE001 — 변환 실패도 결과다
                 sec = time.time() - t
                 for k, s in enumerate(_failed(spec, '변환실패', e, path)):
                     emit(_row(spec, path, k, s, 'l1', sec))
@@ -173,22 +222,29 @@ def main():
                 if isinstance(chunks, Exception):
                     raise chunks
                 l1, l2, act_rows = _score_pair(spec, path, doc, chunks)
-            except Exception as e:                                   # noqa: BLE001 — 청킹·채점 실패를 결과에 남긴다
+            except Exception as e:  # noqa: BLE001 — 청킹·채점 실패를 결과에 남긴다
                 tables = expected_tables(spec, path, 'l1')
                 actuals = docling_tables(doc)
-                l1 = [score_cells(expected_cells(tb), a, flat(tb), all_texts(actuals))
-                      for tb, a in zip(tables, match_tables([expected_cells(tb) for tb in tables], actuals))]
+                l1 = [
+                    score_cells(expected_cells(tb), a, flat(tb), all_texts(actuals))
+                    for tb, a in zip(tables, match_tables([expected_cells(tb) for tb in tables], actuals))
+                ]
                 l2 = _failed(spec, '청킹실패', e, path)
                 act_rows = [None] * len(l2)
-            for k, s1 in enumerate(l1):                       # L1·L2 표 수가 다를 수 있다(DOCX 중첩: L1 2개, L2 1개)
+            for k, s1 in enumerate(l1):  # L1·L2 표 수가 다를 수 있다(DOCX 중첩: L1 2개, L2 1개)
                 emit(_row(spec, path, k, s1, 'l1', sec))
             for k, s2 in enumerate(l2):
                 emit(_row(spec, path, k, s2, 'l2', sec, act_rows[k]))
-            print(f"{spec_id:16} {path:5} {sec:5.1f}s L1 {sum(s.cells_ok for s in l1)}/{sum(s.cells_total for s in l1)} "
-                  f"L2 {sum(s.cells_ok for s in l2)}/{sum(s.cells_total for s in l2)} "
-                  f"{'·'.join(k for s in l1 for k in s.kinds) or 'ok'}", flush=True)
+            print(
+                f"{spec_id:16} {path:5} {sec:5.1f}s L1 {sum(s.cells_ok for s in l1)}/{sum(s.cells_total for s in l1)} "
+                f"L2 {sum(s.cells_ok for s in l2)}/{sum(s.cells_total for s in l2)} "
+                f"{'·'.join(k for s in l1 for k in s.kinds) or 'ok'}",
+                flush=True,
+            )
     (out / 'matrix_l1.md').write_text('# L1 — docling 추출 정확도(셀 격자 vs 정의)\n\n' + _matrix(rows, 'l1') + '\n')
-    (out / 'matrix_l2.md').write_text('# L2 — 색인 결과 정확도(청크 markdown vs 기대 렌더)\n\n' + _matrix(rows, 'l2') + '\n')
+    (out / 'matrix_l2.md').write_text(
+        '# L2 — 색인 결과 정확도(청크 markdown vs 기대 렌더)\n\n' + _matrix(rows, 'l2') + '\n'
+    )
     (out / 'mismatches.md').write_text(_mismatch_report(rows))
     print('결과:', out)
 

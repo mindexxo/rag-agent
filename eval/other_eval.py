@@ -12,6 +12,7 @@ OTHER 경로(인사·회상·자기소개·잡담)는 정답 문장이 없어 '�
 
 실행: python -m eval.other_eval
 """
+
 import asyncio
 import json
 from collections import defaultdict
@@ -25,7 +26,7 @@ from rag.turn.service import RagService
 GOLD = Path(__file__).resolve().parent / "other_set_v1.jsonl"
 TENANT = "summers"
 CONCURRENCY = 4
-RUNS = 3            # 케이스당 반복 (일관성 측정 — off_scope는 확률적 경계라 흔들릴 수 있음)
+RUNS = 3  # 케이스당 반복 (일관성 측정 — off_scope는 확률적 경계라 흔들릴 수 있음)
 # 역할 복귀/재안내 신호 — 정상 OTHER 응답엔 최소 하나 있고, 순수 역할밖 답변엔 없음
 REDIRECT = ["상담", "문의", "도와", "서비스", "안내", "도움", "어렵", "제공하지", "제공하지 않", "다루지"]
 
@@ -65,15 +66,20 @@ async def compute() -> dict:
         async with sem:
             ans, route = await _answer(c["query"])
         ok, reason = _passes(c, ans)
-        misrouted = route != "other"     # OTHER 라우팅 아니면 이 축 대상 아님 (인텐트축 문제)
-        return {**c, "route": route, "answer": ans, "ok": ok and not misrouted,
-                "reason": "미라우팅(→" + route + ")" if misrouted else reason}
+        misrouted = route != "other"  # OTHER 라우팅 아니면 이 축 대상 아님 (인텐트축 문제)
+        return {
+            **c,
+            "route": route,
+            "answer": ans,
+            "ok": ok and not misrouted,
+            "reason": "미라우팅(→" + route + ")" if misrouted else reason,
+        }
 
     # 케이스 × RUNS 회 실행
     results = await asyncio.gather(*(_one(c, i) for c in cases for i in range(RUNS)))
 
-    per_case = defaultdict(list)         # id -> [pass 여부...]
-    last_fail = {}                       # id -> 마지막 실패 상세
+    per_case = defaultdict(list)  # id -> [pass 여부...]
+    last_fail = {}  # id -> 마지막 실패 상세
     by_id = {c["id"]: c for c in cases}
     for r in results:
         per_case[r["id"]].append(r["ok"])
@@ -90,14 +96,23 @@ async def compute() -> dict:
         by_cat[cat][0] += sum(oks)
         by_cat[cat][1] += len(oks)
 
-    misses = [{"category": by_id[cid]["category"], "query": by_id[cid]["query"],
-               "pass": f"{sum(oks)}/{len(oks)}", "reason": last_fail[cid]["reason"],
-               "answer": last_fail[cid]["answer"]}
-              for cid, oks in per_case.items() if sum(oks) < len(oks)]
+    misses = [
+        {
+            "category": by_id[cid]["category"],
+            "query": by_id[cid]["query"],
+            "pass": f"{sum(oks)}/{len(oks)}",
+            "reason": last_fail[cid]["reason"],
+            "answer": last_fail[cid]["answer"],
+        }
+        for cid, oks in per_case.items()
+        if sum(oks) < len(oks)
+    ]
 
     return {
         "accuracy": passing_runs / total_runs if total_runs else 0.0,
-        "n": len(cases), "runs": RUNS, "flaky": len(flaky),
+        "n": len(cases),
+        "runs": RUNS,
+        "flaky": len(flaky),
         "by_category": {k: v for k, v in by_cat.items()},
         "misses": misses,
     }
@@ -105,7 +120,9 @@ async def compute() -> dict:
 
 async def main() -> None:
     r = await compute()
-    print(f"[OTHER 경계 준수]  케이스 {r['n']} × {r['runs']}회 (off_scope=역할밖 거절 / capability=없는기능 환각방지)\n")
+    print(
+        f"[OTHER 경계 준수]  케이스 {r['n']} × {r['runs']}회 (off_scope=역할밖 거절 / capability=없는기능 환각방지)\n"
+    )
     print(f"{'category':<14}{'정확도':>14}")
     for c, (ok, tot) in sorted(r["by_category"].items()):
         print(f"{c:<14}{f'{ok}/{tot} ({ok / tot:.0%})':>14}")

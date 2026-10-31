@@ -10,6 +10,7 @@ eval/_golden_chunks.py --diff의 "사라진 줄"도 같은 판정(missing_lines)
 "남는다"는 글자 비교다. 공백·표 구분자('|')는 청킹이 모양을 바꾸므로(표 렌더·줄바꿈·SentenceSplitter) 무시한다.
 조각 경계에 걸친 줄(SentenceSplitter 분할)은 본문을 이어 붙인 글에서 찾는다. 제목 경로는 원소 하나씩만 본다.
 """
+
 import re
 
 _IGNORED = re.compile(r'[\s|]+')

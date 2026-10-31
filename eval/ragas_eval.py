@@ -29,26 +29,34 @@ metric — 한 번 실행에 두 집합을 채점한다(#216):
       RAGAS_JUDGE=claude SMOKE=10 python -m eval.ragas_eval   # Claude 교차채점 스모크 (#103)
       (settings judge의 실제 대상 = .env의 LLM_PROVIDER/LLM_BASE_URL — 기본 worker15:18888)
 """
+
 import os
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from langchain_core.embeddings import Embeddings
-
-from ragas import evaluate
-from ragas.metrics import faithfulness, answer_relevancy, LLMContextPrecisionWithoutReference, LLMContextRecall, answer_correctness
-from ragas.llms import LangchainLLMWrapper
+from ragas import EvaluationDataset, evaluate
 from ragas.embeddings import LangchainEmbeddingsWrapper
+from ragas.llms import LangchainLLMWrapper
+from ragas.metrics import (
+    LLMContextPrecisionWithoutReference,
+    LLMContextRecall,
+    answer_correctness,
+    answer_relevancy,
+    faithfulness,
+)
 from ragas.run_config import RunConfig
 
-from rag.search.embeddings import embed_texts_sync, embed_query_sync
 from eval.ragas_adapter import build_samples
-from ragas import EvaluationDataset
+from rag.search.embeddings import embed_query_sync, embed_texts_sync
 
-JUDGE = os.getenv("RAGAS_JUDGE", "settings")   # settings=rag/llm 공급자 설정 | claude=CLI (docstring 참조)
-SMOKE = int(os.getenv("SMOKE", "3"))       # 0이면 전체
-WITH_REF = os.getenv("RAGAS_REF", "1") == "1"   # 기본 on: 정답 대조 2축을 보유 문항에 추가 채점. 0이면 생략(#216 의미 변경)
+JUDGE = os.getenv("RAGAS_JUDGE", "settings")  # settings=rag/llm 공급자 설정 | claude=CLI (docstring 참조)
+SMOKE = int(os.getenv("SMOKE", "3"))  # 0이면 전체
+WITH_REF = (
+    os.getenv("RAGAS_REF", "1") == "1"
+)  # 기본 on: 정답 대조 2축을 보유 문항에 추가 채점. 0이면 생략(#216 의미 변경)
 
 
 class LocalBGEEmbeddings(Embeddings):
@@ -67,10 +75,12 @@ from config import settings
 def _judge(kind: str):
     """(RAGAS judge 래퍼, max_workers). 분기는 여기뿐 — tests/test_eval_llm_adapter.py가 고정한다."""
     from eval.llm_langchain import LlmClientChatModel
+
     if kind == "settings":
         # 설정 공급자(#290). thinking off·max_tokens·temperature는 공급자 구현(rag/llm)이 넣는다 — 예전 langchain 클라이언트를
         # 직접 만들 때 손으로 박던 값(#216: enable_thinking=False, generation_reserve_tokens, 0.2)과 같은 요청 바디다(test_llm_providers 고정).
         from rag.llm import create_llm
+
         # max_workers 32 (8/29): 6은 클라이언트 병목이었다 — 6동시로 돌 때 vLLM 대기 큐 0·KV 캐시 18%로 서버가 놀았다
         # (n450 3축 2시간 6분). 상용 공급자면 벤더 rate limit이 상한이다.
         return LangchainLLMWrapper(LlmClientChatModel(client=create_llm()), bypass_temperature=True), 32
@@ -78,16 +88,23 @@ def _judge(kind: str):
         # Claude 교차채점 (#103) — claude -p 헤드리스를 같은 어댑터로 감싼다. 콜=서브프로세스라 vLLM 연속배칭이 없다.
         # 전체 450은 19~38시간 추정이라 스모크 규모(SMOKE=10 내외)로만 쓴다.
         from eval.claude_client import ClaudeCliClient
-        judge = LangchainLLMWrapper(LlmClientChatModel(client=ClaudeCliClient(model=os.getenv("CLAUDE_MODEL", "sonnet"))))
+
+        judge = LangchainLLMWrapper(
+            LlmClientChatModel(client=ClaudeCliClient(model=os.getenv("CLAUDE_MODEL", "sonnet")))
+        )
         # 4 → 기본 8(#218): 경량 호출(입력 ~3.7k토큰)이라 토큰은 동시성과 무관. 제약은 로컬 메모리 —
         # claude -p 1개 최대 RSS 약 240MB, 16GB 기기에서 여유 약 3.4GB(서버·워커·IDE 상주) → 16은 스왑 위험.
-        return judge, int(os.getenv("CLAUDE_JUDGE_WORKERS", "8"))   # 20까지 실측 근거: 여유 6.3GB 기준 약 4.8GB
+        return judge, int(os.getenv("CLAUDE_JUDGE_WORKERS", "8"))  # 20까지 실측 근거: 여유 6.3GB 기준 약 4.8GB
     raise SystemExit(f"RAGAS_JUDGE={kind} — settings|claude 만 지원")
 
 
 def _progress_tag(kind: str) -> str:
     """진행 파일 키의 심판 부분 — 공급자·모델. settings judge가 vLLM이면 #290 전과 같은 "vllm_<모델>"이라 이어 돌리기가 유지된다."""
-    judge, model = (("claude", os.getenv("CLAUDE_MODEL", "sonnet")) if kind == "claude" else (settings.llm_provider, settings.llm_model))
+    judge, model = (
+        ("claude", os.getenv("CLAUDE_MODEL", "sonnet"))
+        if kind == "claude"
+        else (settings.llm_provider, settings.llm_model)
+    )
     return f"{judge}_{model.replace('/', '_')}"
 
 
@@ -120,15 +137,21 @@ def compute(smoke: int | None = None) -> dict:
     # 결측(NaN)·미채점 칸만 다시 채점하므로 결측 메우기 스크립트가 따로 필요 없다.
     # 진행 파일 키 = 심판·모델·생성 결과 파일 해시 — 답변을 재생성하면 새 파일로 시작한다(옛 점수 재사용 방지).
     import hashlib
-    import pandas as pd
     from datetime import datetime
     from pathlib import Path
+
+    import pandas as pd
+
     # context_precision은 기본 off(#218): 문항당 판정 5회(청크 5개 각각)로 호출의 절반 이상인데, 검색 노이즈 지표라
     # 검색축(Hit@1·R@5·MRR)과 겹치고 '생성기만 교체'하는 상용 비교에선 A·B가 거의 같게 나온다. run_all 이력에도 행이 없다.
     # 필요하면 RAGAS_CTX_PRECISION=1로 켠다.
     with_ctx_precision = os.getenv("RAGAS_CTX_PRECISION", "0") == "1"
-    base_cols = ["faithfulness", "answer_relevancy"] + (["llm_context_precision_without_reference"] if with_ctx_precision else [])
-    base_metrics = [faithfulness, answer_relevancy] + ([LLMContextPrecisionWithoutReference()] if with_ctx_precision else [])
+    base_cols = ["faithfulness", "answer_relevancy"] + (
+        ["llm_context_precision_without_reference"] if with_ctx_precision else []
+    )
+    base_metrics = [faithfulness, answer_relevancy] + (
+        [LLMContextPrecisionWithoutReference()] if with_ctx_precision else []
+    )
     ref_cols = ["context_recall", "answer_correctness"]
     gen_hash = hashlib.sha1(Path("eval/results/generation_retrieved.jsonl").read_bytes()).hexdigest()[:10]
     progress = Path(f"eval/results/ragas_progress_{_progress_tag(JUDGE)}_{gen_hash}.csv")
@@ -141,24 +164,31 @@ def compute(smoke: int | None = None) -> dict:
 
     need_base = [r for r in rows if _missing(r, base_cols)]
     need_ref = [r for r in ref_rows if _missing(r, ref_cols)]
-    print(f"진행 파일 {progress.name}: 3지표 남은 {len(need_base)}/{len(rows)} · 정답대조 남은 {len(need_ref)}/{len(ref_rows)}")
+    print(
+        f"진행 파일 {progress.name}: 3지표 남은 {len(need_base)}/{len(rows)} · 정답대조 남은 {len(need_ref)}/{len(ref_rows)}"
+    )
     batch = int(os.getenv("RAGAS_BATCH", "50"))
 
     def _run(todo: list[dict], metrics: list, cols: list[str], rename: dict | None = None) -> None:
         nonlocal prog
         for i in range(0, len(todo), batch):
-            chunk = todo[i:i + batch]
-            res = evaluate(dataset=EvaluationDataset.from_list([r["sample"] for r in chunk]), metrics=metrics,
-                           llm=judge, embeddings=emb, run_config=run_config)
+            chunk = todo[i : i + batch]
+            res = evaluate(
+                dataset=EvaluationDataset.from_list([r["sample"] for r in chunk]),
+                metrics=metrics,
+                llm=judge,
+                embeddings=emb,
+                run_config=run_config,
+            )
             part = res.to_pandas()
             part.insert(0, "id", [r["id"] for r in chunk])
             part = part.set_index("id")
             keep = [c for c in part.columns if c in cols or c in ("user_input", "response", "reference")]
             part = part[keep]
-            for rid in part.index:                     # 칸 단위 갱신 — 다른 지표 칸은 보존
+            for rid in part.index:  # 칸 단위 갱신 — 다른 지표 칸은 보존
                 for c in part.columns:
                     prog.loc[rid, c] = part.at[rid, c]
-            prog.reset_index(names="id").to_csv(progress, index=False)   # 묶음마다 저장 — 여기까지는 중단돼도 남는다
+            prog.reset_index(names="id").to_csv(progress, index=False)  # 묶음마다 저장 — 여기까지는 중단돼도 남는다
             print(f"  [{'/'.join(cols)[:30]}] {min(i + batch, len(todo))}/{len(todo)} 저장")
 
     if need_base:
@@ -167,11 +197,13 @@ def compute(smoke: int | None = None) -> dict:
         _run(need_ref, [LLMContextRecall(), answer_correctness], ref_cols)
 
     df = prog.reindex([r["id"] for r in rows]).reset_index(names="id")
-    for c in ref_cols:                                  # 모범답안 없는 행은 정답대조 빈값이 정상
+    for c in ref_cols:  # 모범답안 없는 행은 정답대조 빈값이 정상
         if c in df.columns:
             df.loc[~df["id"].isin({r["id"] for r in ref_rows}), c] = float("nan")
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
-    out = Path(f"eval/results/ragas_retrieved_{stamp}_n{len(rows)}.csv")   # 최종 스냅샷(시각·문항수) — 덮어쓰기 사고 방지(07-18)
+    out = Path(
+        f"eval/results/ragas_retrieved_{stamp}_n{len(rows)}.csv"
+    )  # 최종 스냅샷(시각·문항수) — 덮어쓰기 사고 방지(07-18)
     df.to_csv(out, index=False)
 
     def _mean(col):
@@ -185,10 +217,13 @@ def compute(smoke: int | None = None) -> dict:
         "context_recall": _mean("context_recall"),
         "answer_correctness": _mean("answer_correctness"),
         "n": len(rows),
-        "n_ref": len(ref_rows),                          # 정답 대조 2축의 분모(#216)
+        "n_ref": len(ref_rows),  # 정답 대조 2축의 분모(#216)
         # 지표별 결측(NaN) 수 — 0이 아니면 같은 명령을 다시 돌리면 그 칸만 다시 채점한다(#218)
-        "missing": {c: int(df[c].isna().sum()) - (len(rows) - len(ref_rows) if c in ref_cols else 0)
-                    for c in base_cols + ref_cols if c in df.columns},
+        "missing": {
+            c: int(df[c].isna().sum()) - (len(rows) - len(ref_rows) if c in ref_cols else 0)
+            for c in base_cols + ref_cols
+            if c in df.columns
+        },
         "csv": str(out),
         "progress": str(progress),
     }
@@ -199,7 +234,10 @@ def main():
     r = compute()
     print({k: (round(v, 3) if isinstance(v, float) else v) for k, v in r.items() if k not in ("missing",)})
     if any(r["missing"].values()):
-        print("⚠ 결측(판정 실패·타임아웃) — 같은 명령을 다시 돌리면 그 칸만 다시 채점:", {k: v for k, v in r["missing"].items() if v})
+        print(
+            "⚠ 결측(판정 실패·타임아웃) — 같은 명령을 다시 돌리면 그 칸만 다시 채점:",
+            {k: v for k, v in r["missing"].items() if v},
+        )
     print(f"→ saved {r['csv']}")
 
 

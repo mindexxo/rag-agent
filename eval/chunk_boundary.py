@@ -25,6 +25,7 @@ eval/report_chunk_boundary.md). 그래서 두 가지를 센다.
     python -m eval.chunk_boundary --files sample_docs/corpus_v2/goodpeople/goodpeople_18_해외봉사단복무지침.txt
 결과 JSON은 eval/results/chunk_boundary_<시각>/ 에 남긴다(gitignore — 실문서 원문 포함). 화면에는 건수와 파일명만.
 """
+
 import argparse
 import json
 import re
@@ -35,9 +36,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from eval.chunk_invariants import _stitch, norm   # noqa: E402 — 비교 정규화·이어 붙이기의 정의점
-from rag.chunking import TABLE_NOTE   # noqa: E402 — 표 주석 표지의 정의점(#268)
-from rag.identifiers import is_heading_line   # noqa: E402 — 조 제목 판정의 정의점(#233)
+from eval.chunk_invariants import _stitch, norm  # noqa: E402 — 비교 정규화·이어 붙이기의 정의점
+from rag.chunking import TABLE_NOTE  # noqa: E402 — 표 주석 표지의 정의점(#268)
+from rag.identifiers import is_heading_line  # noqa: E402 — 조 제목 판정의 정의점(#233)
 
 # 한국어 문장 끝 — 종결 어미(+마침표) 또는 문장 부호, 닫는 따옴표·괄호 허용
 SENTENCE_END = re.compile(r'(다|요|음|함|됨|임|것|니다|까|죠)[.!?]?["”’)\]]*\s*$|[.!?。]["”’)\]]*\s*$')
@@ -45,9 +46,11 @@ SENTENCE_END = re.compile(r'(다|요|음|함|됨|임|것|니다|까|죠)[.!?]?["
 ITEM = re.compile(r'^\s*(\d+[.)](?!\d)|\(\d+\)|[①-⑳]|[가나다라마바사아자차카타파하][.)]|[-•·]\s)')
 LABEL = re.compile(r'^\s*(\[[^\]]{1,40}\]|[■□◆●▶]|\d+(\.\d+)+\s|<[^>]{1,30}>)')
 LIST_HEAD = re.compile(r'다음 각 호|다음과 같[다이]|아래와 같[다이]|[:：]\s*$')
-NOTE = TABLE_NOTE   # 표 주석 표지 — 운영(rag/chunking, #268)과 같은 정의여야 고친 것을 0건으로 확인할 수 있다
-REFERENCE = re.compile(r'^\s*(이 경우|이때|이 때|단,|다만|그러나|위의|앞의)')   # '해당 …'은 대상을 새로 지시하는 독립 문장이 많아 뺐다
-_MIN_OVERLAP = 5   # 이보다 짧은 일치는 꼬리·머리 글자가 우연히 같은 것(진짜 잘림을 가린다). 오버랩은 마지막 분할 조각을 통째로 싣는 거라 짧을 수 있다 — 실문서에 7자(쉼표 조각 하나)가 있었다(10/18)
+NOTE = TABLE_NOTE  # 표 주석 표지 — 운영(rag/chunking, #268)과 같은 정의여야 고친 것을 0건으로 확인할 수 있다
+REFERENCE = re.compile(
+    r'^\s*(이 경우|이때|이 때|단,|다만|그러나|위의|앞의)'
+)  # '해당 …'은 대상을 새로 지시하는 독립 문장이 많아 뺐다
+_MIN_OVERLAP = 5  # 이보다 짧은 일치는 꼬리·머리 글자가 우연히 같은 것(진짜 잘림을 가린다). 오버랩은 마지막 분할 조각을 통째로 싣는 거라 짧을 수 있다 — 실문서에 7자(쉼표 조각 하나)가 있었다(10/18)
 
 
 def _lines(text: str) -> list[str]:
@@ -142,8 +145,13 @@ def _table_runs(chunks: list[dict]) -> list[list[int]]:
         lines = _lines(c['text'])
         rows = [l for l in lines if _is_row(l)]
         prev = chunks[cur[-1]] if cur else None
-        if prev and rows and prev['heading_path'] == c['heading_path'] and _is_row_part(_lines(prev['text'])[-1]) \
-                and (rows[0] == header or _is_row_part(lines[0]) and not _has_own_header(lines)):
+        if (
+            prev
+            and rows
+            and prev['heading_path'] == c['heading_path']
+            and _is_row_part(_lines(prev['text'])[-1])
+            and (rows[0] == header or _is_row_part(lines[0]) and not _has_own_header(lines))
+        ):
             cur.append(i)
             continue
         if len(cur) >= 2:
@@ -166,16 +174,16 @@ def _table_losses(chunks: list[dict]) -> list[dict]:
         prev = chunks[run[0] - 1] if run[0] > 0 else None
         if prev and prev['heading_path'] == chunks[run[0]]['heading_path']:
             pl = _lines(prev['text'])
-            tail = pl[max((j for j, l in enumerate(pl) if _is_row(l)), default=-1) + 1:]
+            tail = pl[max((j for j, l in enumerate(pl) if _is_row(l)), default=-1) + 1 :]
             lead = tail + [l for l in lead if l not in tail]
         lead = lead[-3:]
         header = first[k]
         last = _lines(chunks[run[-1]]['text'])
-        notes = [l for l in last[max(j for j, l in enumerate(last) if _is_row(l)) + 1:] if NOTE.match(l)]
+        notes = [l for l in last[max(j for j, l in enumerate(last) if _is_row(l)) + 1 :] if NOTE.match(l)]
         if run[-1] + 1 < len(chunks) and chunks[run[-1] + 1]['heading_path'] == chunks[run[-1]]['heading_path']:
             notes += [l for l in _lines(chunks[run[-1] + 1]['text'])[:2] if NOTE.match(l)]
         for i in run:
-            n = norm(chunks[i].get('table_text') or chunks[i]['text'])      # 모델이 받는 글(#257 표 전체)
+            n = norm(chunks[i].get('table_text') or chunks[i]['text'])  # 모델이 받는 글(#257 표 전체)
             out += [{'kind': 'table_lead', 'at': i, 'line': l} for l in lead if norm(l) not in n]
             out += [{'kind': 'table_note', 'at': i, 'line': l} for l in notes if norm(l) not in n]
             if next(l for l in _lines(chunks[i]['text']) if _is_row(l)) != header:
@@ -196,8 +204,14 @@ def census(docs: dict[str, list[dict]]) -> dict:
                 kind = classify_boundary(a['text'], b['text'])
                 bounds[kind] += 1
                 if kind == 'mid_cut':
-                    examples.append({'file': name, 'kind': 'mid_cut', 'line': _lines(a['text'])[-1][-80:],
-                                     'overlap': overlap_chars(a['text'], b['text'])})
+                    examples.append(
+                        {
+                            'file': name,
+                            'kind': 'mid_cut',
+                            'line': _lines(a['text'])[-1][-80:],
+                            'overlap': overlap_chars(a['text'], b['text']),
+                        }
+                    )
         seen = set()
         for x in context_losses(chunks, tables=not sheet):
             if (x['kind'], x['line']) in seen:
@@ -211,6 +225,7 @@ def census(docs: dict[str, list[dict]]) -> dict:
 def gold_spans(docs: dict[str, list[dict]], gold: list[dict]) -> dict:
     """골드 정답 스니펫이 조각 하나 안에 있나 / 이웃 조각을 이어야만 있나(경계에 걸림) / 아예 없나. docs 키는 '<테넌트>/<파일명>'."""
     from eval.generation import row_tenant
+
     out, spans = Counter(), []
     for g in gold:
         for e in g.get('expected_chunks') or []:
@@ -230,6 +245,7 @@ async def _from_index() -> dict[str, list[dict]]:
     from eval.axis_common import load_chunks
     from eval.generation import V2_TENANTS
     from rag.search.os_client import close_client
+
     docs = {}
     try:
         for t in sorted(V2_TENANTS):
@@ -242,9 +258,15 @@ async def _from_index() -> dict[str, list[dict]]:
 
 def _from_files(paths: list[str]) -> dict[str, list[dict]]:
     from rag.chunking import chunk_file
+
     files = sorted({p for t in paths for p in ([Path(t)] if Path(t).is_file() else Path(t).rglob('*.*'))})
-    return {str(p): [{'heading_path': c.heading_path, 'text': c.text, 'table_text': (c.meta or {}).get('table_text')}
-                     for c in chunk_file(p)] for p in files}
+    return {
+        str(p): [
+            {'heading_path': c.heading_path, 'text': c.text, 'table_text': (c.meta or {}).get('table_text')}
+            for c in chunk_file(p)
+        ]
+        for p in files
+    }
 
 
 def main() -> None:
@@ -256,11 +278,14 @@ def main() -> None:
         res = census(docs)
     else:
         import asyncio
+
         from eval.generation import load_gold
+
         docs = asyncio.run(_from_index())
         res = census(docs)
         res['gold_snippets'] = gold_spans(docs, load_gold())
     from eval.axis_common import commit
+
     res['commit'], res['docs'] = commit(), len(docs)
     out = Path(__file__).resolve().parent / 'results' / f"chunk_boundary_{datetime.now():%Y%m%d_%H%M}"
     out.mkdir(parents=True, exist_ok=True)
@@ -269,7 +294,11 @@ def main() -> None:
     print('경계 분류:', res['boundaries'])
     print('맥락 손실 후보:', res['context_losses'])
     if 'gold_snippets' in res:
-        print('골드 스니펫:', {k: v for k, v in res['gold_snippets'].items() if k != 'span_ids'}, res['gold_snippets']['span_ids'][:10])
+        print(
+            '골드 스니펫:',
+            {k: v for k, v in res['gold_snippets'].items() if k != 'span_ids'},
+            res['gold_snippets']['span_ids'][:10],
+        )
     print('파일별:', dict(Counter((x['file'].split('/')[-1], x['kind']) for x in res['examples'])))
     print(f'예시 → {out}/census.json')
 

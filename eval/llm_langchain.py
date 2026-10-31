@@ -19,6 +19,7 @@ _generate(동기)는 RAGAS가 안 부르므로 스텁이다.
 - 제약 의도(schema)를 안 넘긴다 — RAGAS의 JSON 복구 재시도(FixOutputFormat, 프롬프트당 최대 3회)가
   발동할 수 있다. Claude CLI는 서브프로세스라 콜=프로세스 — RunConfig(max_workers)를 낮춘다(ragas_eval.py).
 """
+
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -26,23 +27,23 @@ from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.messages.utils import convert_to_openai_messages
 from langchain_core.outputs import ChatGeneration, ChatResult
 
+
 class LlmClientChatModel(BaseChatModel):
     """LlmClient(acomplete)를 감싼 최소 langchain chat model — RAGAS judge 전용."""
-    client: Any   # rag/llm의 LlmClient 계약(Protocol이라 pydantic isinstance 검사 불가 — Any로 둔다)
+
+    client: Any  # rag/llm의 LlmClient 계약(Protocol이라 pydantic isinstance 검사 불가 — Any로 둔다)
     model_config = {"arbitrary_types_allowed": True}
 
     @property
     def _llm_type(self) -> str:
         return "llm-client"
 
-    async def _agenerate(self, messages: list[BaseMessage], stop=None,
-                         run_manager=None, **kwargs: Any) -> ChatResult:
+    async def _agenerate(self, messages: list[BaseMessage], stop=None, run_manager=None, **kwargs: Any) -> ChatResult:
         # BaseMessage(system/human/ai) → {"role","content"} — LlmClient.acomplete가 받는 형태.
         dict_messages = convert_to_openai_messages(messages)
-        text = await self.client.acomplete(dict_messages)   # 제약 의도 없음 = 스키마 강제 불가
+        text = await self.client.acomplete(dict_messages)  # 제약 의도 없음 = 스키마 강제 불가
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
 
-    def _generate(self, messages: list[BaseMessage], stop=None,
-                  run_manager=None, **kwargs: Any) -> ChatResult:
+    def _generate(self, messages: list[BaseMessage], stop=None, run_manager=None, **kwargs: Any) -> ChatResult:
         # RAGAS evaluate()는 async만 탄다 — 동기 경로는 호출되지 않는다(추상 요건 충족용 스텁).
         raise NotImplementedError("RAGAS judge는 async(_agenerate)만 사용한다")

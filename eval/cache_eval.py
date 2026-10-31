@@ -28,6 +28,7 @@ q1·q2 임베딩은 여기서 한 번씩 만들어 save_answer/get_semantic에 �
 (DB·TEI에 더해). 판정이 LLM이라 경계 문항은 실행마다 ±1건 흔들릴 수 있다 — 케이스
 판단은 오판정 목록의 사유로 하라.
 """
+
 import asyncio
 import json
 from collections import defaultdict
@@ -35,16 +36,16 @@ from pathlib import Path
 
 from sqlalchemy import delete
 
-from database import AsyncSessionLocal
-from rag.turn import cache
-from rag.search.embeddings import embed_query
-from rag.models import AnswerCache as AnswerCacheRow
-from rag.search.retriever import retrieve
-from rag.turn.service import _source_doc_ids
 from config import settings
+from database import AsyncSessionLocal
+from rag.models import AnswerCache as AnswerCacheRow
+from rag.search.embeddings import embed_query
+from rag.search.retriever import retrieve
+from rag.turn import cache
+from rag.turn.service import _source_doc_ids
 
 GOLD = Path(__file__).resolve().parent / "cache_set_v1.jsonl"
-EVAL_TENANT = "__cache_eval__"     # 캐시 저장 격리용 (실테넌트 캐시 불건드림)
+EVAL_TENANT = "__cache_eval__"  # 캐시 저장 격리용 (실테넌트 캐시 불건드림)
 
 # 셋 구성이 바뀌면 눈금이 바뀐다 — run_all이 version_key로 써서 직전 값과의 비교를 차단.
 # 셋을 고칠 때마다 이 문자열을 갱신하라 (#113, 검색축 gold_composition과 같은 메커니즘).
@@ -90,7 +91,8 @@ async def compute() -> dict:
     pairs = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
     rows = []
     from rag.clients import shared_aux_llm
-    llm = shared_aux_llm   # 운영 판정기와 같은 보조 클라이언트(#297)
+
+    llm = shared_aux_llm  # 운영 판정기와 같은 보조 클라이언트(#297)
 
     async with AsyncSessionLocal() as session:
         await _clear(session)
@@ -103,35 +105,46 @@ async def compute() -> dict:
             ids1 = await _docids(session, p["tenant"], p["q1"])
             # 원문(#153)은 질문 자체를 넣는다 — 이 셋의 q1·q2는 자족 단일턴 질의이고,
             # 운영에서 단일턴은 condense를 건너뛰어 원문==재작성문이기 때문이다(service._prepare_knowledge).
-            await cache.save_answer(session, EVAL_TENANT, p["q1"], "더미 답변", [], ids1,
-                                    query_embedding=v1, original_query=p["q1"])
+            await cache.save_answer(
+                session, EVAL_TENANT, p["q1"], "더미 답변", [], ids1, query_embedding=v1, original_query=p["q1"]
+            )
             await session.commit()
             # 2. q2로 조회 — 히트하나?
             ids2 = await _docids(session, p["tenant"], p["q2"])
-            hit = await cache.get_semantic(session, EVAL_TENANT, p["q2"], ids2,
-                                           query_embedding=v2, llm=llm,
-                                           original_query=p["q2"]) is not None
-            await _clear(session)     # 다음 쌍 오염 방지
-            rows.append({**p, "hit": hit, "ok": hit == p["should_hit"],
-                         "similarity": round(similarity, 4),
-                         "failed_guard": (None if hit else
-                                          _failed_guard(similarity, set(ids1) == set(ids2)))})
+            hit = (
+                await cache.get_semantic(
+                    session, EVAL_TENANT, p["q2"], ids2, query_embedding=v2, llm=llm, original_query=p["q2"]
+                )
+                is not None
+            )
+            await _clear(session)  # 다음 쌍 오염 방지
+            rows.append(
+                {
+                    **p,
+                    "hit": hit,
+                    "ok": hit == p["should_hit"],
+                    "similarity": round(similarity, 4),
+                    "failed_guard": (None if hit else _failed_guard(similarity, set(ids1) == set(ids2))),
+                }
+            )
 
     by_kind = defaultdict(lambda: [0, 0])
     for r in rows:
         by_kind[r["kind"]][0] += r["ok"]
         by_kind[r["kind"]][1] += 1
 
-    false_hit = [r for r in rows if not r["should_hit"] and r["hit"]]     # 다른데 재사용
-    false_miss = [r for r in rows if r["should_hit"] and not r["hit"]]    # 같은데 미스
+    false_hit = [r for r in rows if not r["should_hit"] and r["hit"]]  # 다른데 재사용
+    false_miss = [r for r in rows if r["should_hit"] and not r["hit"]]  # 같은데 미스
     neg_n = sum(1 for r in rows if not r["should_hit"])
     pos_n = sum(1 for r in rows if r["should_hit"])
 
     return {
         "accuracy": sum(r["ok"] for r in rows) / len(rows) if rows else 0.0,
         "n": len(rows),
-        "false_hit": len(false_hit), "false_hit_n": neg_n,
-        "false_miss": len(false_miss), "false_miss_n": pos_n,
+        "false_hit": len(false_hit),
+        "false_hit_n": neg_n,
+        "false_miss": len(false_miss),
+        "false_miss_n": pos_n,
         "by_kind": {k: v for k, v in by_kind.items()},
         "misses": [r for r in rows if not r["ok"]],
         "composition": COMPOSITION,
@@ -140,8 +153,10 @@ async def compute() -> dict:
 
 async def main() -> None:
     r = await compute()
-    print(f"[시맨틱 캐시 히트 정확성]  {r['n']}쌍 · 구성 {r['composition']} "
-          f"(negative=재사용안함정답 / positive=재사용정답)\n")
+    print(
+        f"[시맨틱 캐시 히트 정확성]  {r['n']}쌍 · 구성 {r['composition']} "
+        f"(negative=재사용안함정답 / positive=재사용정답)\n"
+    )
     print(f"{'kind':<14}{'정확도':>14}")
     for k, (ok, tot) in sorted(r["by_kind"].items()):
         print(f"{k:<14}{f'{ok}/{tot} ({ok / tot:.0%})':>14}")
@@ -153,8 +168,7 @@ async def main() -> None:
         print("\n[오판정]  (막은 관문: floor=후보 게이트 미달 · docset=근거집합 상이 · verifier=판정 거절)")
         for m in r["misses"]:
             verdict = "재사용함" if m["hit"] else f"미스({m['failed_guard']})"
-            print(f"  [{m['kind']}] sim={m['similarity']:.4f} "
-                  f"{m['q1']!r} ↔ {m['q2']!r} → {verdict}  ({m['note']})")
+            print(f"  [{m['kind']}] sim={m['similarity']:.4f} {m['q1']!r} ↔ {m['q2']!r} → {verdict}  ({m['note']})")
 
 
 if __name__ == "__main__":

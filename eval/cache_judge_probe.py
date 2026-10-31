@@ -34,6 +34,7 @@ eval/cache_eval.py와의 분업:
   (cache_para_deep_aromanica_refill_rate — (a)에서 유일하게 틀리던 쌍이 (b)에서 이미 승인).
   원문 내용과 무관한 효과이므로 #153의 근거로 쓰지 마라.
 """
+
 import asyncio
 import json
 import sys
@@ -44,28 +45,53 @@ from rag.turn.llm_schemas import ReuseJudgment, acomplete_validated
 from rag.turn.prompts import build_cache_reuse_judge_messages
 
 GOLD = Path(__file__).resolve().parent / "cache_set_v1.jsonl"
-CONCURRENCY = 6          # vLLM 안전 운영선(동시 24, #101)보다 훨씬 아래 — 다른 작업과 겹쳐도 안전
+CONCURRENCY = 6  # vLLM 안전 운영선(동시 24, #101)보다 훨씬 아래 — 다른 작업과 겹쳐도 안전
 
 # 원문이 같은데 재작성문이 다른 쌍 — 원문 추가가 오승인을 부르는지 보는 방어 케이스.
 # (라벨, 캐시원문, 캐시재작성문, 신규원문, 신규재작성문, 기대값)
 _GUARD = [
-    ("생략형 — 연차 3일 vs 출장 3일",
-     "3일이요", "연차휴가를 3일 연속으로 사용할 수 있나요?",
-     "3일이요", "출장 기간이 3일인 경우 출장여비는 얼마인가요?", False),
-    ("부정형 — 불량 인정 vs 인정 안 됨",
-     "프린트 크랙", "세탁 후 프린트 크랙이 불량으로 인정되는 경우는?",
-     "프린트 크랙", "세탁 후 프린트 크랙이 불량으로 인정 안 되는 경우는?", False),
-    ("포괄 대 상세 — 환불 규정 vs 개봉 화장품",
-     "환불", "환불 규정은 어떻게 되나요?",
-     "환불", "개봉한 화장품도 환불이 되나요?", False),
+    (
+        "생략형 — 연차 3일 vs 출장 3일",
+        "3일이요",
+        "연차휴가를 3일 연속으로 사용할 수 있나요?",
+        "3일이요",
+        "출장 기간이 3일인 경우 출장여비는 얼마인가요?",
+        False,
+    ),
+    (
+        "부정형 — 불량 인정 vs 인정 안 됨",
+        "프린트 크랙",
+        "세탁 후 프린트 크랙이 불량으로 인정되는 경우는?",
+        "프린트 크랙",
+        "세탁 후 프린트 크랙이 불량으로 인정 안 되는 경우는?",
+        False,
+    ),
+    (
+        "포괄 대 상세 — 환불 규정 vs 개봉 화장품",
+        "환불",
+        "환불 규정은 어떻게 되나요?",
+        "환불",
+        "개봉한 화장품도 환불이 되나요?",
+        False,
+    ),
     # 실사례: 개발계 대화 26496 — 같은 입력이 이력 차이로 다르게 재작성됐다. 이 이슈의 출발점.
-    ("실사례 26496 — 같은 입력, 재작성만 갈림",
-     "인사 규정", "인사 규정은 어떻게 되나요?",
-     "인사 규정", "인사 규정의 주요 내용은 무엇인가요?", True),
+    (
+        "실사례 26496 — 같은 입력, 재작성만 갈림",
+        "인사 규정",
+        "인사 규정은 어떻게 되나요?",
+        "인사 규정",
+        "인사 규정의 주요 내용은 무엇인가요?",
+        True,
+    ),
     # 도입 전 캐시 행: 원문 컬럼이 NULL이다. 현행과 같은 판정이어야 한다(동작 무변경 보장).
-    ("도입 전 행 — 캐시 쪽 원문 없음",
-     None, "인사 규정은 어떻게 되나요?",
-     "인사 규정", "인사 규정의 주요 내용은 무엇인가요?", False),
+    (
+        "도입 전 행 — 캐시 쪽 원문 없음",
+        None,
+        "인사 규정은 어떻게 되나요?",
+        "인사 규정",
+        "인사 규정의 주요 내용은 무엇인가요?",
+        False,
+    ),
 ]
 
 _sem = asyncio.Semaphore(CONCURRENCY)
@@ -77,7 +103,8 @@ async def _judge(cs: str, ns: str, co: str | None, no: str | None) -> bool | Non
     async with _sem:
         try:
             j = await acomplete_validated(
-                shared_aux_llm, build_cache_reuse_judge_messages(cs, ns, co, no), ReuseJudgment)
+                shared_aux_llm, build_cache_reuse_judge_messages(cs, ns, co, no), ReuseJudgment
+            )
             return j.same_answer
         except Exception:
             return None
@@ -109,18 +136,23 @@ async def _regression(n: int) -> dict:
             if p["should_hit"] is False:
                 risky.append(p)
         elif any(bare) and not any(orig):
-            flips.append(p["id"]); mark = "  ← T→F"
+            flips.append(p["id"])
+            mark = "  ← T→F"
         elif len(set(orig)) > 1:
             mark = "  ← 흔들림"
-        print(f'{p["id"]:<44} {p["kind"]:<12} {str(p["should_hit"]):<6} '
-              f'{_fmt(bare):<7} {_fmt(orig)}{mark}')
+        print(f'{p["id"]:<44} {p["kind"]:<12} {str(p["should_hit"]):<6} {_fmt(bare):<7} {_fmt(orig)}{mark}')
 
-    agree = lambda key: sum(1 for p, b, o in rows
-                            if all(x is p["should_hit"] for x in (b if key == "bare" else o)))
+    agree = lambda key: sum(1 for p, b, o in rows if all(x is p["should_hit"] for x in (b if key == "bare" else o)))
     waver = lambda key: sum(1 for p, b, o in rows if len(set(b if key == "bare" else o)) > 1)
-    return {"n": len(rows), "risky": len(risky), "flips": flips,
-            "agree_bare": agree("bare"), "agree_orig": agree("orig"),
-            "waver_bare": waver("bare"), "waver_orig": waver("orig")}
+    return {
+        "n": len(rows),
+        "risky": len(risky),
+        "flips": flips,
+        "agree_bare": agree("bare"),
+        "agree_orig": agree("orig"),
+        "waver_bare": waver("bare"),
+        "waver_orig": waver("orig"),
+    }
 
 
 async def _guards(n: int) -> int:

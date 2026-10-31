@@ -19,6 +19,7 @@
   캡션이 없는 그림(면적 하한 미만 등)은 글자 덩어리가 있으면 전부 누락 → 오류, 없으면 정확(잃은 것이 없다).
 애매한 판정은 ambiguous=True로 표시하고 사람이 다시 본다(이슈의 '2인 교차'를 Claude 1차 + 사람 재판정으로 대신한다).
 """
+
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -26,22 +27,23 @@ from pydantic import BaseModel, Field, field_validator
 TYPES = ('흐름도', '차트', '화면 캡처', '표형 그림', '수식', '사진·장식')
 GRADES = ('정확', '경미', '오류', '위험')
 EXCLUDED_TYPE = '사진·장식'
-MINOR_RATIO = 0.10            # 경미/오류 경계 — 누락+오독 ÷ 글자 덩어리 (결정 6)
+MINOR_RATIO = 0.10  # 경미/오류 경계 — 누락+오독 ÷ 글자 덩어리 (결정 6)
 
 
 class Verdict(BaseModel):
     """판정자(Claude) 출력 계약. 키 이름은 프롬프트에 그대로 적는다(#253 교훈: 키를 안 적으면 다른 이름으로 답한다)."""
-    type: Literal[TYPES]                                   # type: ignore[valid-type]
-    text_units: int = Field(ge=0)                          # 그림 속 글자 덩어리 수(라벨·칸·문장 단위)
+
+    type: Literal[TYPES]  # type: ignore[valid-type]
+    text_units: int = Field(ge=0)  # 그림 속 글자 덩어리 수(라벨·칸·문장 단위)
     missing: int = Field(ge=0)
     misread: int = Field(ge=0)
     number_errors: int = Field(ge=0)
     relation_errors: int | None = Field(default=None, ge=0)
     hallucinations: int = Field(ge=0)
     chatter: int = Field(ge=0)
-    grade: Literal[GRADES]                                 # type: ignore[valid-type]
+    grade: Literal[GRADES]  # type: ignore[valid-type]
     ambiguous: bool = False
-    evidence: list[str] = Field(default_factory=list)      # "누락: …" / "숫자: 원본 3,500 → 캡션 3,800" / "환각: …"
+    evidence: list[str] = Field(default_factory=list)  # "누락: …" / "숫자: 원본 3,500 → 캡션 3,800" / "환각: …"
 
     @field_validator('evidence', mode='before')
     @classmethod

@@ -11,6 +11,7 @@
 캡션이 없는 그림도 목록에 넣는다(이슈 최신화 10/18): 면적 하한(settings.vlm_caption_area_threshold — 결정 17 전 docling 기본 0.05) 미만은
 캡션 대상이 아니라 글자가 있어도 색인에 0이다. 안 보이는 누락이라 판정 대상에 넣는다(rubric: 캡션 없음 = 글자 전부 누락).
 """
+
 import hashlib
 import io
 import re
@@ -18,7 +19,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 _WS = re.compile(r'\s+')
-PLACEHOLDER = '<!-- image -->'      # rag.chunking.docling_elements.PICTURE_PLACEHOLDER — 캡션 대상에서 빠진 그림이 청크에 남기는 표시
+PLACEHOLDER = (
+    '<!-- image -->'  # rag.chunking.docling_elements.PICTURE_PLACEHOLDER — 캡션 대상에서 빠진 그림이 청크에 남기는 표시
+)
 
 
 def norm(text: str) -> str:
@@ -39,30 +42,32 @@ def index_line_ratio(caption: str, index_text: str) -> float:
 
 @dataclass
 class PictureRecord:
-    picture_id: str            # 문서 id + 순번 — 리뷰 HTML·사람 판정 JSON의 키
+    picture_id: str  # 문서 id + 순번 — 리뷰 HTML·사람 판정 JSON의 키
     document_id: int
     filename: str
-    fmt: str                   # pdf | docx | xlsx
-    index: int                 # 문서 안 그림 순서(본문 층 iterate_items 순서)
+    fmt: str  # pdf | docx | xlsx
+    index: int  # 문서 안 그림 순서(본문 층 iterate_items 순서)
     page: int | None
-    area_ratio: float | None   # 쪽 면적 대비(PDF만)
-    in_table: bool             # 표 칸 안 그림(DOCX·XLSX — #220)
-    captioned: bool            # VLM 캡션이 붙었나
-    skip_reason: str           # 캡션이 없는 이유: '면적 하한' | 'XLSX 하한(#249)' | ''
+    area_ratio: float | None  # 쪽 면적 대비(PDF만)
+    in_table: bool  # 표 칸 안 그림(DOCX·XLSX — #220)
+    captioned: bool  # VLM 캡션이 붙었나
+    skip_reason: str  # 캡션이 없는 이유: '면적 하한' | 'XLSX 하한(#249)' | ''
     caption: str
-    in_index: bool | None      # 새 캡션 줄의 95% 이상이 색인 청크에 있나(index_line_ratio, 캡션 없으면 None)
-    crop: str                  # 크롭 PNG 파일명(out/crops/ 아래)
+    in_index: bool | None  # 새 캡션 줄의 95% 이상이 색인 청크에 있나(index_line_ratio, 캡션 없으면 None)
+    crop: str  # 크롭 PNG 파일명(out/crops/ 아래)
     crop_size: tuple[int, int] | None
 
 
 def area_threshold() -> float:
     """docling이 캡션을 요청하는 면적 하한 — 운영 설정값(settings.vlm_caption_area_threshold, #247 결정 17 전에는 docling 기본 0.05)."""
     from config import settings
+
     return settings.vlm_caption_area_threshold
 
 
 def _pdf_crop(pdf_path: Path, page_no: int, bbox, page_h: float, scale: float):
     import pypdfium2
+
     pdf = pypdfium2.PdfDocument(str(pdf_path))
     try:
         image = pdf[page_no - 1].render(scale=scale).to_pil()
@@ -74,6 +79,7 @@ def _pdf_crop(pdf_path: Path, page_no: int, bbox, page_h: float, scale: float):
 
 def _in_table(item, doc) -> bool:
     from docling_core.types.doc import TableItem
+
     parent = item.parent.resolve(doc) if item.parent else None
     while parent is not None:
         if isinstance(parent, TableItem):
@@ -82,11 +88,13 @@ def _in_table(item, doc) -> bool:
     return False
 
 
-def extract_document(document_id: int, filename: str, path: Path, chunk_texts: list[str], crops_dir: Path,
-                     convert=None) -> list[PictureRecord]:
+def extract_document(
+    document_id: int, filename: str, path: Path, chunk_texts: list[str], crops_dir: Path, convert=None
+) -> list[PictureRecord]:
     """문서 하나 → 그림 기록들. convert는 테스트 주입용(기본: 운영 docling_convert — 변환 자식 프로세스, #223)."""
-    from config import settings
     from docling_core.types.doc import PictureItem
+
+    from config import settings
     from rag import chunking as ch
 
     fmt = path.suffix.lower().lstrip('.')
@@ -113,18 +121,34 @@ def extract_document(document_id: int, filename: str, path: Path, chunk_texts: l
         caption = ch.docling_elements.docling_picture_caption(item)
         skip = ''
         if not caption:
-            skip = 'XLSX 하한(#249)' if fmt == 'xlsx' else ('면적 하한' if ratio is not None and ratio < threshold else '기타')
+            skip = (
+                'XLSX 하한(#249)'
+                if fmt == 'xlsx'
+                else ('면적 하한' if ratio is not None and ratio < threshold else '기타')
+            )
         name = f'{document_id}_{i:03d}.png'
         if image is not None:
             buf = io.BytesIO()
             image.convert('RGB').save(buf, format='PNG')
             (crops_dir / name).write_bytes(buf.getvalue())
-        out.append(PictureRecord(
-            picture_id=f'{document_id}-{i:03d}', document_id=document_id, filename=filename, fmt=fmt, index=i,
-            page=page, area_ratio=round(ratio, 5) if ratio is not None else None, in_table=_in_table(item, doc),
-            captioned=bool(caption), skip_reason=skip, caption=caption,
-            in_index=(index_line_ratio(caption, index_text) >= IN_INDEX_RATIO) if caption else None,
-            crop=name if image is not None else '', crop_size=image.size if image is not None else None))
+        out.append(
+            PictureRecord(
+                picture_id=f'{document_id}-{i:03d}',
+                document_id=document_id,
+                filename=filename,
+                fmt=fmt,
+                index=i,
+                page=page,
+                area_ratio=round(ratio, 5) if ratio is not None else None,
+                in_table=_in_table(item, doc),
+                captioned=bool(caption),
+                skip_reason=skip,
+                caption=caption,
+                in_index=(index_line_ratio(caption, index_text) >= IN_INDEX_RATIO) if caption else None,
+                crop=name if image is not None else '',
+                crop_size=image.size if image is not None else None,
+            )
+        )
     return out
 
 

@@ -13,6 +13,7 @@ VLM 주소·모델·키·온도는 캡션 설정(VLM_CAPTION_*)을 그대로 쓴
 
 사용: install() 뒤 rag.chunking.chunk_file / convert_process.convert_local 호출. uninstall()로 원복(스캔 하네스의 디지털 기준 변환이 섞이지 않게).
 """
+
 import os
 import time
 from urllib.parse import urlsplit
@@ -20,17 +21,21 @@ from urllib.parse import urlsplit
 import rag.chunking as C
 from config import settings
 
-PROMPT_V1 = ("이 쪽을 마크다운으로 옮겨 적어라. 표는 마크다운 표(| 칸 | 칸 |)로 — 병합된 칸은 그 값을 해당 칸마다 반복해 적고, 빈 칸은 비워 둔다. "
-             "제목은 #로, 본문은 문단으로. 보이는 글자를 그대로 쓰고 없는 내용을 지어내지 마라. 설명·주석 없이 마크다운만 출력.")
+PROMPT_V1 = (
+    "이 쪽을 마크다운으로 옮겨 적어라. 표는 마크다운 표(| 칸 | 칸 |)로 — 병합된 칸은 그 값을 해당 칸마다 반복해 적고, 빈 칸은 비워 둔다. "
+    "제목은 #로, 본문은 문단으로. 보이는 글자를 그대로 쓰고 없는 내용을 지어내지 마라. 설명·주석 없이 마크다운만 출력."
+)
 # V2(#296): 절 제목 표시를 VLM 판단에 맡기지 않고 규칙으로 못박는다. V1에서 gpt-5-mini가 1쪽 절 제목('2. 증빙 요건')을 평문으로 써서
 # docling 마크다운 해석기가 앞 번호 목록의 6번째 항목으로 합치고 번호를 다시 매겼다('2.'→'6.' — 글자 내용이 바뀐다, 실측 10/25).
 # '## '를 붙이면 목록으로 합쳐지지 않는다. 문서 제목 '#'는 1쪽 맨 위 하나뿐 — 쪽 단위 호출이라 쪽마다 '#'가 생기던 것도 막는다.
-PROMPT_V2 = ("이 쪽을 마크다운으로 옮겨 적어라. 규칙:\n"
-             "1. 문서 제목(문서 맨 앞의 큰 제목)만 '# '로 쓴다. 쪽 중간이나 둘째 쪽 이후의 제목은 문서 제목이 아니다.\n"
-             "2. 절·항 제목은 번호가 있든 없든 반드시 '## '로 시작한다. 예: '## 1. 접수 원칙', '## 2.1 사진 증빙'. 번호는 원문 그대로 쓴다.\n"
-             "3. 목록은 원문 표시 그대로 — 글머리표는 '- ', 번호 목록은 원문 번호 그대로.\n"
-             "4. 표는 마크다운 표(| 칸 | 칸 |)로. 병합된 칸은 그 값을 해당 칸마다 반복해 적고, 빈 칸은 비워 둔다.\n"
-             "5. 보이는 글자를 그대로 쓰고 없는 내용을 지어내지 마라. 설명·주석 없이 마크다운만 출력.")
+PROMPT_V2 = (
+    "이 쪽을 마크다운으로 옮겨 적어라. 규칙:\n"
+    "1. 문서 제목(문서 맨 앞의 큰 제목)만 '# '로 쓴다. 쪽 중간이나 둘째 쪽 이후의 제목은 문서 제목이 아니다.\n"
+    "2. 절·항 제목은 번호가 있든 없든 반드시 '## '로 시작한다. 예: '## 1. 접수 원칙', '## 2.1 사진 증빙'. 번호는 원문 그대로 쓴다.\n"
+    "3. 목록은 원문 표시 그대로 — 글머리표는 '- ', 번호 목록은 원문 번호 그대로.\n"
+    "4. 표는 마크다운 표(| 칸 | 칸 |)로. 병합된 칸은 그 값을 해당 칸마다 반복해 적고, 빈 칸은 비워 둔다.\n"
+    "5. 보이는 글자를 그대로 쓰고 없는 내용을 지어내지 마라. 설명·주석 없이 마크다운만 출력."
+)
 PROMPT = PROMPT_V2 if os.getenv('VLM_PROMPT', 'v2') == 'v2' else PROMPT_V1
 SCALE = 2.0
 MAX_TOKENS = 4000
@@ -43,7 +48,7 @@ _converter = None
 
 def label() -> str:
     """결과 디렉터리·행에 적는 엔진 이름 — 모델명 기준(주소는 키 유출 없이 호스트만)."""
-    host = urlsplit(settings.vlm_caption_url).hostname or 'unknown'   # user:key@host 형태여도 키가 안 섞이게
+    host = urlsplit(settings.vlm_caption_url).hostname or 'unknown'  # user:key@host 형태여도 키가 안 섞이게
     return f"vlm_{settings.vlm_caption_model}@{host}".replace('/', '_').replace(':', '_')
 
 
@@ -53,15 +58,24 @@ def build_converter():
     from docling.datamodel.pipeline_options_vlm_model import ApiVlmOptions, ResponseFormat
     from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling.pipeline.vlm_pipeline import VlmPipeline
+
     opts = ApiVlmOptions(
-        url=settings.vlm_caption_url, headers=C.document_converter.caption_headers(), prompt=PROMPT, response_format=ResponseFormat.MARKDOWN,
-        scale=SCALE, timeout=TIMEOUT, concurrency=1,
+        url=settings.vlm_caption_url,
+        headers=C.document_converter.caption_headers(),
+        prompt=PROMPT,
+        response_format=ResponseFormat.MARKDOWN,
+        scale=SCALE,
+        timeout=TIMEOUT,
+        concurrency=1,
         # 온도는 **옵션 필드**로 줘야 한다 — docling ApiVlmModel이 params 위에 vlm_options.temperature를 덮어쓴다(실측: params에만
         # 1.0을 주니 gpt-5가 0.0 거부 400). 인자 이름은 캡션과 같은 새 표기(#290 결정 3 — gpt-5가 max_tokens 거부)
         temperature=settings.vlm_caption_temperature,
-        params={'model': settings.vlm_caption_model, 'max_completion_tokens': MAX_TOKENS})
+        params={'model': settings.vlm_caption_model, 'max_completion_tokens': MAX_TOKENS},
+    )
     po = VlmPipelineOptions(enable_remote_services=True, vlm_options=opts)
-    return DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(pipeline_cls=VlmPipeline, pipeline_options=po)})
+    return DocumentConverter(
+        format_options={InputFormat.PDF: PdfFormatOption(pipeline_cls=VlmPipeline, pipeline_options=po)}
+    )
 
 
 # 벤더 한도 대응(측정 전용). docling은 429·5xx를 0.1초 배수로 5회만 재시도하고 실패하면 **빈 결과를 돌려준다**(예외 없음 — 그 쪽은 "미검출"로
@@ -82,20 +96,22 @@ def _paced(fn):
             _last_call[0] = time.monotonic()
             r = fn(*a, **kw)
             if getattr(r, 'text', None):
-                RAW.append(r.text)            # VLM 원래 응답(docling 해석 전) — 번호 바뀜이 누구 탓인지 가르는 데 쓴다
+                RAW.append(r.text)  # VLM 원래 응답(docling 해석 전) — 번호 바뀜이 누구 탓인지 가르는 데 쓴다
                 return r
             _retries[0] += 1
             time.sleep(30)
         # 다섯 번 다 비었다 = 한도 소진(무료 티어 일일 20건 등). 한계: 정당하게 빈 쪽(백지)도 같은 판정이 된다 — 현재 측정 문서엔 백지 쪽이 없다.
         # 빈 결과로 두면 그 쪽이 '미검출 0점'으로 채점돼 한도 초과가 품질
         # 저하로 둔갑한다(10/24 실측). 측정을 통째로 멈춘다 — 남은 문서는 --only로 이어 돌린다.
-        print(f'[vlm_engine] 빈 응답 5회 연속 — 한도 소진으로 보고 측정 중단', flush=True)
+        print('[vlm_engine] 빈 응답 5회 연속 — 한도 소진으로 보고 측정 중단', flush=True)
         os._exit(3)
+
     return wrapper
 
 
 def _patch_requests():
     import docling.models.vlm_pipeline_models.api_vlm_model as M
+
     if not getattr(M, '_vlm296_patched', False):
         M.api_image_request = _paced(M.api_image_request)
         M.api_image_request_streaming = _paced(M.api_image_request_streaming)
@@ -112,6 +128,7 @@ def _patch_requests():
 
 def _fix_headings(doc):
     from docling_core.types.doc import DocItemLabel
+
     for item, _ in doc.iterate_items():
         label = item.label.value if hasattr(item.label, 'value') else str(item.label)
         if label == 'title':
@@ -127,6 +144,7 @@ def _convert_vlm(file_path, **kwargs):
             _patch_requests()
             _converter = build_converter()
         from docling.datamodel.base_models import ConversionStatus
+
         result = _converter.convert(str(file_path), raises_on_error=True, **kwargs)
         if result.status != ConversionStatus.SUCCESS or result.errors:
             raise RuntimeError(f'VLM 변환 불완전 — status={result.status.value}, errors={len(result.errors)}')
@@ -136,7 +154,9 @@ def _convert_vlm(file_path, **kwargs):
 
 def install() -> None:
     C.convert_process.convert_local = _convert_vlm
-    C.convert_process.docling_convert = lambda p, **kw: C.convert_process.convert_local(p, **kw)     # 자식 프로세스 대신 이 프로세스에서(설정 교체가 먹게)
+    C.convert_process.docling_convert = lambda p, **kw: C.convert_process.convert_local(
+        p, **kw
+    )  # 자식 프로세스 대신 이 프로세스에서(설정 교체가 먹게)
 
 
 def uninstall() -> None:
@@ -144,7 +164,7 @@ def uninstall() -> None:
     if _retries[0]:
         print(f'[vlm_engine] 빈 응답 재시도 {_retries[0]}회', flush=True)
     _retries[0] = 0
-    RAW.clear()                      # 모드 사이에 누적되지 않게(스캔 대조는 한 프로세스에서 여러 모드를 돈다)
+    RAW.clear()  # 모드 사이에 누적되지 않게(스캔 대조는 한 프로세스에서 여러 모드를 돈다)
     C.convert_process.convert_local = _orig_convert_local
     C.convert_process.docling_convert = _orig_docling_convert
     _converter = None

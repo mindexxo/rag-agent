@@ -15,6 +15,7 @@ generate 스팬은 스트리밍 루프 전체를 감싸서 첫 delta 시각이 �
 의존: 로컬 백엔드(uvicorn) + vLLM + TEI + DB. 실행: python -m eval.perf_probe
   [--base-url http://localhost:8000] [--tenant summers] [--n 30]
 """
+
 import argparse
 import asyncio
 import json
@@ -51,7 +52,8 @@ async def probe_turn(client: httpx.AsyncClient, base: str, tenant: str, query: s
     answer_chars = 0
     done: dict = {}
     async with client.stream(
-        "POST", f"{base}/kms/query",
+        "POST",
+        f"{base}/kms/query",
         headers={"X-Tenant-Id": tenant},
         json={"query": query},
     ) as resp:
@@ -72,11 +74,15 @@ async def probe_turn(client: httpx.AsyncClient, base: str, tenant: str, query: s
                 elif event == "done":
                     done = json.loads(line.split(":", 1)[1])
     stream_s = (last_delta_t - t0) * 1000 / 1000 - (ttft_ms or 0) / 1000 if last_delta_t else 0
-    return {"ttft_ms": ttft_ms, "total_ms": (time.monotonic() - t0) * 1000,
-            "answer_chars": answer_chars,
-            "gen_cps": answer_chars / stream_s if stream_s > 0.1 else None,   # 한 delta짜리 답은 속도 무의미
-            "max_gap_ms": max_gap_ms or None,
-            "citations": done.get("citations", []), "finish": done.get("finish_reason")}
+    return {
+        "ttft_ms": ttft_ms,
+        "total_ms": (time.monotonic() - t0) * 1000,
+        "answer_chars": answer_chars,
+        "gen_cps": answer_chars / stream_s if stream_s > 0.1 else None,  # 한 delta짜리 답은 속도 무의미
+        "max_gap_ms": max_gap_ms or None,
+        "citations": done.get("citations", []),
+        "finish": done.get("finish_reason"),
+    }
 
 
 async def main() -> None:
@@ -100,11 +106,20 @@ async def main() -> None:
             # 캐시 히트 판별: 콜드가 인용을 남겼을 때만 2회차가 히트 후보다 (모듈 docstring).
             # 서버가 히트 여부를 직접 노출하지 않으므로 "웜이 TTFT 없이(스트리밍 없이)
             # 즉시 done"인지도 함께 기록해 사람이 검산할 수 있게 남긴다.
-            rows.append({"id": g["id"], "type": g["type"], "tenant": tenant,
-                         "cold": cold, "warm": warm,
-                         "cacheable": bool(cold["citations"])})
-            print(f"[{i}/{len(sample)}] {g['id']}: cold ttft={cold['ttft_ms'] and f'{cold['ttft_ms']:.0f}ms'}"
-                  f" total={cold['total_ms']:.0f}ms / warm total={warm['total_ms']:.0f}ms")
+            rows.append(
+                {
+                    "id": g["id"],
+                    "type": g["type"],
+                    "tenant": tenant,
+                    "cold": cold,
+                    "warm": warm,
+                    "cacheable": bool(cold["citations"]),
+                }
+            )
+            print(
+                f"[{i}/{len(sample)}] {g['id']}: cold ttft={cold['ttft_ms'] and f'{cold['ttft_ms']:.0f}ms'}"
+                f" total={cold['total_ms']:.0f}ms / warm total={warm['total_ms']:.0f}ms"
+            )
 
     RESULT_DIR.mkdir(exist_ok=True)
     OUT.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows))
@@ -115,12 +130,12 @@ async def main() -> None:
     chars = [r["cold"]["answer_chars"] for r in rows]
     cps = [r["cold"]["gen_cps"] for r in rows if r["cold"]["gen_cps"]]
     gaps = [r["cold"]["max_gap_ms"] for r in rows if r["cold"]["max_gap_ms"]]
-    print(f"\n콜드 TTFT   p50 {_pct(cold_ttft, .5):,.0f}ms · p95 {_pct(cold_ttft, .95):,.0f}ms (n={len(cold_ttft)})")
-    print(f"콜드 완료   p50 {_pct(cold_total, .5):,.0f}ms · p95 {_pct(cold_total, .95):,.0f}ms (n={len(cold_total)})")
-    print(f"캐시 후보 웜 p50 {_pct(warm_hit, .5):,.0f}ms · p95 {_pct(warm_hit, .95):,.0f}ms (n={len(warm_hit)})")
-    print(f"답변 길이   p50 {_pct(chars, .5):,.0f}자 (지연 해석용 — 길이 비례)")
-    print(f"생성 속도   p50 {_pct(cps, .5):,.0f}자/초 · p5 {_pct(cps, .05):,.0f}자/초 (n={len(cps)})")
-    print(f"delta 최대 간격 p50 {_pct(gaps, .5):,.0f}ms · p95 {_pct(gaps, .95):,.0f}ms (stall 감시)")
+    print(f"\n콜드 TTFT   p50 {_pct(cold_ttft, 0.5):,.0f}ms · p95 {_pct(cold_ttft, 0.95):,.0f}ms (n={len(cold_ttft)})")
+    print(f"콜드 완료   p50 {_pct(cold_total, 0.5):,.0f}ms · p95 {_pct(cold_total, 0.95):,.0f}ms (n={len(cold_total)})")
+    print(f"캐시 후보 웜 p50 {_pct(warm_hit, 0.5):,.0f}ms · p95 {_pct(warm_hit, 0.95):,.0f}ms (n={len(warm_hit)})")
+    print(f"답변 길이   p50 {_pct(chars, 0.5):,.0f}자 (지연 해석용 — 길이 비례)")
+    print(f"생성 속도   p50 {_pct(cps, 0.5):,.0f}자/초 · p5 {_pct(cps, 0.05):,.0f}자/초 (n={len(cps)})")
+    print(f"delta 최대 간격 p50 {_pct(gaps, 0.5):,.0f}ms · p95 {_pct(gaps, 0.95):,.0f}ms (stall 감시)")
     print(f"→ {OUT}")
 
 

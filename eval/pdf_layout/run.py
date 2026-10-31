@@ -19,6 +19,7 @@
 용법: python -m eval.pdf_layout.run [--out eval/results/pdf_layout] [--only L01_two_col_narrow ...]
 산출물: <out>/docs/*.pdf, results.jsonl(건별 — 실제 순서·조각 글 포함), matrix.md(유형 × 지표).
 """
+
 import argparse
 import json
 import re
@@ -27,8 +28,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from eval.pdf_layout.build import build_all          # noqa: E402
-from eval.pdf_layout.specs import SPECS, expected_order, paragraph_bodies   # noqa: E402
+from eval.pdf_layout.build import build_all  # noqa: E402
+from eval.pdf_layout.specs import SPECS, expected_order, paragraph_bodies  # noqa: E402
 
 TOKEN = re.compile(r'\[(P\d+)\]')
 
@@ -47,8 +48,14 @@ def order_score(expected: list[str], got: list[str]) -> dict:
         if t not in seen:
             first.append(t)
         seen.add(t)
-    displaced = sum(1 for i, t in enumerate(first) if abs(pos[t] - i) >= 2)   # 정답 자리에서 2칸 이상 떨어진 표식
-    return {'inversions': inv, 'displaced': displaced, 'lost': [t for t in expected if t not in seen], 'dup': dup, 'n': len(expected)}
+    displaced = sum(1 for i, t in enumerate(first) if abs(pos[t] - i) >= 2)  # 정답 자리에서 2칸 이상 떨어진 표식
+    return {
+        'inversions': inv,
+        'displaced': displaced,
+        'lost': [t for t in expected if t not in seen],
+        'dup': dup,
+        'n': len(expected),
+    }
 
 
 def _norm(s: str) -> str:
@@ -87,8 +94,9 @@ def chunk_mixing(expected: list[str], chunks: list[list[str]]) -> dict:
 def evaluate(spec: dict, pdf: Path) -> dict:
     import rag.chunking as ch
     from config import settings
+
     ocr = settings.docling_do_ocr
-    settings.docling_do_ocr = False            # 순서 판정과 무관 — 원격 OCR 의존을 뺀다(끝나면 복구)
+    settings.docling_do_ocr = False  # 순서 판정과 무관 — 원격 OCR 의존을 뺀다(끝나면 복구)
     try:
         doc = ch.convert_process.convert_local(pdf, max_num_pages=settings.docling_max_num_pages)
     finally:
@@ -103,7 +111,9 @@ def evaluate(spec: dict, pdf: Path) -> dict:
         toks = tokens_in(text)
         merged += len(toks) > 1
         got += toks
-    labels = [(label, tokens_in(text), (text or '')[:60]) for label, text, _, _ in elements]   # 요소마다 표식 전부(합쳐짐 확인용)
+    labels = [
+        (label, tokens_in(text), (text or '')[:60]) for label, text, _, _ in elements
+    ]  # 요소마다 표식 전부(합쳐짐 확인용)
     fate = paragraph_fate(bodies, [t for _, t, _, _ in elements])
     furniture = [f for f in spec.get('furniture', []) if f != '쪽' and any(f in (t or '') for _, t, _, _ in elements)]
 
@@ -117,23 +127,39 @@ def evaluate(spec: dict, pdf: Path) -> dict:
     # 조각 본문의 표식만 본다 — 헤딩으로 올라간 문단(docling이 표 도입 문장을 section_header로 내기도 한다, L04)은 제목 경로에
     # 있어 순서와 무관하고, 본문 앞에 붙이면 거짓 내림이 난다
     chunk_toks = [tokens_in(c.text) for c in chunks]
-    return {'id': spec['id'], 'layout': spec['layout'], 'pages': len(doc.pages), 'expected': expected, 'got': got,
-            'order': order_score(expected, got), 'merged_elements': merged, 'furniture_in_body': furniture,
-            'fate': fate, 'mixed': sorted(t for t, f in fate.items() if f == 'mixed'), 'split': sorted(t for t, f in fate.items() if f == 'split'),
-            'chunk_fate': paragraph_fate(body_only, [c.text for c in chunks]),
-            'chunks': chunk_mixing(expected, chunk_toks), 'n_chunks': len(chunks),
-            'pictures': sum(1 for l, *_ in elements if l == 'picture'),
-            'elements': labels, 'chunk_texts': [c.text for c in chunks]}
+    return {
+        'id': spec['id'],
+        'layout': spec['layout'],
+        'pages': len(doc.pages),
+        'expected': expected,
+        'got': got,
+        'order': order_score(expected, got),
+        'merged_elements': merged,
+        'furniture_in_body': furniture,
+        'fate': fate,
+        'mixed': sorted(t for t, f in fate.items() if f == 'mixed'),
+        'split': sorted(t for t, f in fate.items() if f == 'split'),
+        'chunk_fate': paragraph_fate(body_only, [c.text for c in chunks]),
+        'chunks': chunk_mixing(expected, chunk_toks),
+        'n_chunks': len(chunks),
+        'pictures': sum(1 for l, *_ in elements if l == 'picture'),
+        'elements': labels,
+        'chunk_texts': [c.text for c in chunks],
+    }
 
 
 def matrix(rows: list[dict]) -> str:
-    out = ['| 배치 | 쪽 | 문단 | **섞임(mixed)** | 분리(split) | 순서 뒤집힘 | 멀리 밀림 | 소실 | 합쳐짐 | 조각 수 | 순서 섞인 조각 | 머리글 오염 | 그림 |',
-           '|---|---|---|---|---|---|---|---|---|---|---|---|---|']
+    out = [
+        '| 배치 | 쪽 | 문단 | **섞임(mixed)** | 분리(split) | 순서 뒤집힘 | 멀리 밀림 | 소실 | 합쳐짐 | 조각 수 | 순서 섞인 조각 | 머리글 오염 | 그림 |',
+        '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+    ]
     for r in rows:
         o = r['order']
-        out.append(f"| {r['id']} | {r['pages']} | {o['n']} | **{len(r['mixed'])}** | {len(r['split'])} | {o['inversions']} | {o['displaced']} | "
-                   f"{len(o['lost'])} | {r['merged_elements']} | {r['n_chunks']} | {len(r['chunks']['mixed'])}/{r['chunks']['chunks_checked']} | "
-                   f"{len(r['furniture_in_body'])} | {r['pictures']} |")
+        out.append(
+            f"| {r['id']} | {r['pages']} | {o['n']} | **{len(r['mixed'])}** | {len(r['split'])} | {o['inversions']} | {o['displaced']} | "
+            f"{len(o['lost'])} | {r['merged_elements']} | {r['n_chunks']} | {len(r['chunks']['mixed'])}/{r['chunks']['chunks_checked']} | "
+            f"{len(r['furniture_in_body'])} | {r['pictures']} |"
+        )
     return '\n'.join(out)
 
 
@@ -150,11 +176,18 @@ def main() -> None:
         for spec in specs:
             r = evaluate(spec, pdfs[spec['id']])
             rows.append(r)
-            fp.write(json.dumps(r, ensure_ascii=False) + '\n'); fp.flush()
+            fp.write(json.dumps(r, ensure_ascii=False) + '\n')
+            fp.flush()
             o = r['order']
-            print(f"{r['id']:20} 섞임 {len(r['mixed']):2}/{o['n']:2}  분리 {len(r['split']):2}  뒤집힘 {o['inversions']} 밀림 {o['displaced']} 소실 {len(o['lost'])} 합쳐짐 {r['merged_elements']} 그림 {r['pictures']}", flush=True)
+            print(
+                f"{r['id']:20} 섞임 {len(r['mixed']):2}/{o['n']:2}  분리 {len(r['split']):2}  뒤집힘 {o['inversions']} 밀림 {o['displaced']} 소실 {len(o['lost'])} 합쳐짐 {r['merged_elements']} 그림 {r['pictures']}",
+                flush=True,
+            )
     from eval.axis_common import commit
-    (out / 'matrix.md').write_text(f'# #244 배치 유형별 읽기 순서 (커밋 {commit()})\n\n{matrix(rows)}\n', encoding='utf-8')
+
+    (out / 'matrix.md').write_text(
+        f'# #244 배치 유형별 읽기 순서 (커밋 {commit()})\n\n{matrix(rows)}\n', encoding='utf-8'
+    )
     print('→', out / 'matrix.md')
 
 

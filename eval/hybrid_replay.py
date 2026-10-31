@@ -15,17 +15,18 @@ tests/test_hybrid_replay가 같은 비교를 합성 데이터로 하고, 일부�
 레코드(캡처 1줄, dict): set·qid·tenant·type·query·gold_ids·token(키워드 축만)·dense30[[id,거리]]·dense100·bm25_30[id]·
 bm25_100[[id,점수]]·ident_tokens·ident[id]·rerank{id:점수}. 조각은 {chunk_id: RetrievedChunk} 한 벌을 따로 둔다.
 """
+
 import random
 from collections import defaultdict
 from dataclasses import dataclass
 
-from eval.retrieval import score_one
 from eval.axis_common import evidence_has
+from eval.retrieval import score_one
 from rag.search.retrieval_types import RetrievedChunk
-from rag.search.retriever import table_identity, apply_identifier_boost, prepare_evidence
+from rag.search.retriever import apply_identifier_boost, prepare_evidence, table_identity
 
-TOP_N = 20      # 운영 retrieve_candidates 기본 — rag.search.retriever.DEFAULT_TOP_N
-TOP_K = 5       # 모델이 받는 근거 수 — eval.generation.TOP_K
+TOP_N = 20  # 운영 retrieve_candidates 기본 — rag.search.retriever.DEFAULT_TOP_N
+TOP_K = 5  # 모델이 받는 근거 수 — eval.generation.TOP_K
 
 
 class PoolCoverageError(RuntimeError):
@@ -43,6 +44,7 @@ class Condition:
       BM25 정규화 = 그 질문의 BM25 점수 / 그 질문 BM25 1위 점수(0~1). BM25 상위 100 밖 후보는 0.
       w는 질문이 '키워드형'(숫자 포함 또는 15자 이하 — 다른 팀 규칙 그대로)이면 w_key, 아니면 w_desc.
     식별자 가산은 혼합 뒤에 그대로 더한다(운영 순서: 리랭크 → 가산)."""
+
     name: str
     dense_n: int = 30
     lex_n: int = 30
@@ -55,14 +57,16 @@ class Condition:
 
 
 BASELINE = Condition("baseline")
-NO_LEXICAL = Condition("키워드주입_0", lex_inject=0)   # 하이브리드 기여도 진단용 — 후보 아님(현행에서 키워드 채널만 끈 것)
+NO_LEXICAL = Condition(
+    "키워드주입_0", lex_inject=0
+)  # 하이브리드 기여도 진단용 — 후보 아님(현행에서 키워드 채널만 끈 것)
 # 3단계 후보(결정 11) — 결과를 보기 전에 고정한 목록이다(여러 조건 중 우연히 이긴 것을 고르는 착시를 막는다).
 CANDIDATES = (
     Condition("add_0.1", blend="add", w_key=0.1, w_desc=0.1),
     Condition("add_0.2", blend="add", w_key=0.2, w_desc=0.2),
     Condition("add_0.3", blend="add", w_key=0.3, w_desc=0.3),
     Condition("add_동적_0.3_0.1", blend="add", w_key=0.3, w_desc=0.1),
-    Condition("convex_동적_70_40", blend="convex", w_key=0.7, w_desc=0.4),    # 다른 팀 규칙: 키워드형 70:30, 서술형 40:60
+    Condition("convex_동적_70_40", blend="convex", w_key=0.7, w_desc=0.4),  # 다른 팀 규칙: 키워드형 70:30, 서술형 40:60
 )
 
 
@@ -87,7 +91,7 @@ def _blend(rec: dict, pool: list[RetrievedChunk], scores: list[float], cond: Con
 
 def _dense_ids(rec: dict, n: int) -> list[int]:
     if n == 30:
-        return [cid for cid, _ in rec["dense30"]]   # 운영 크기는 따로 받은 것(설계 2 — 근사 탐색에서 100의 앞 30 ≠ 30)
+        return [cid for cid, _ in rec["dense30"]]  # 운영 크기는 따로 받은 것(설계 2 — 근사 탐색에서 100의 앞 30 ≠ 30)
     if n > len(rec["dense100"]) and len(rec["dense100"]) == 100:
         raise PoolCoverageError(f"벡터 {n}개는 캡처(100) 밖")
     return [cid for cid, _ in rec["dense100"][:n]]
@@ -108,27 +112,31 @@ def build_pool(rec: dict, cond: Condition = BASELINE) -> list[int]:
     if not top:
         return []
     seen = set(top)
-    top = top + [cid for cid in _bm25_ids(rec, cond.lex_n) if cid not in seen][:cond.lex_inject]
+    top = top + [cid for cid in _bm25_ids(rec, cond.lex_n) if cid not in seen][: cond.lex_inject]
     if rec["ident_tokens"]:
         seen = set(top)
-        top = top + [cid for cid in rec["ident"] if cid not in seen][:cond.ident_inject]
+        top = top + [cid for cid in rec["ident"] if cid not in seen][: cond.ident_inject]
     return top
 
 
-def assemble(rec: dict, chunks: dict[int, RetrievedChunk], cond: Condition = BASELINE,
-             top_n: int = TOP_N) -> list[RetrievedChunk]:
+def assemble(
+    rec: dict, chunks: dict[int, RetrievedChunk], cond: Condition = BASELINE, top_n: int = TOP_N
+) -> list[RetrievedChunk]:
     """조건으로 최종 후보 top_n — 운영 retrieve_candidates(리랭크 on, 단일 질의)의 결과와 같아야 한다."""
-    pool = [chunks[cid] for cid in build_pool(rec, cond) if cid in chunks]   # 본문 조회에서 빠진 id는 운영처럼 조용히 빠진다
+    pool = [
+        chunks[cid] for cid in build_pool(rec, cond) if cid in chunks
+    ]  # 본문 조회에서 빠진 id는 운영처럼 조용히 빠진다
     try:
         scores = [rec["rerank"][str(c.chunk_id)] for c in pool]
     except KeyError as e:
         raise PoolCoverageError(f"{rec['qid']}: 리랭커 점수 없는 후보 {e}") from None
     scores = _blend(rec, pool, scores, cond)
-    order = sorted(range(len(pool)), key=lambda i: -scores[i])       # rag.search.reranker.rerank_maxpool과 같은 안정 정렬
+    order = sorted(range(len(pool)), key=lambda i: -scores[i])  # rag.search.reranker.rerank_maxpool과 같은 안정 정렬
     ranked, ranked_scores = [pool[i] for i in order], [scores[i] for i in order]
     if rec["ident_tokens"]:
-        ranked, _, _ = apply_identifier_boost(ranked, ranked_scores, [0] * len(ranked), rec["ident_tokens"],
-                                              cond.ident_boost)
+        ranked, _, _ = apply_identifier_boost(
+            ranked, ranked_scores, [0] * len(ranked), rec["ident_tokens"], cond.ident_boost
+        )
     return ranked[:top_n]
 
 
@@ -144,12 +152,15 @@ def evaluate(rec: dict, final: list[RetrievedChunk], chunks: dict[int, Retrieved
     else:
         gold = set(rec["gold_ids"])
         tables = {table_identity(c) for c in evidence if c.is_table}
-        in_ev = float(any(c.chunk_id in gold for c in evidence)
-                      or any(g in chunks and chunks[g].is_table and table_identity(chunks[g]) in tables for g in gold))
+        in_ev = float(
+            any(c.chunk_id in gold for c in evidence)
+            or any(g in chunks and chunks[g].is_table and table_identity(chunks[g]) in tables for g in gold)
+        )
     return {**score_one([c.chunk_id for c in final], rec["gold_ids"]), "in_evidence": in_ev}
 
 
 # ----- 진단 (2단계, 가중치 없이) -----------------------------------------------
+
 
 def diagnose(rec: dict, chunks: dict[int, RetrievedChunk]) -> dict:
     """현행 조건에서 문항이 어디서 놓치나 — 배타적 셋 중 하나.
@@ -167,13 +178,17 @@ def diagnose(rec: dict, chunks: dict[int, RetrievedChunk]) -> dict:
         return next((i + 1 for i, c in enumerate(ids) if c in gold), None)
 
     d, b = rank([c for c, _ in rec["dense100"]]), rank([c for c, _ in rec["bm25_100"]])
-    return {"status": status, "hit_at_1": ev["hit_at_1"],
-            "in_dense30": bool(gold & {c for c, _ in rec["dense30"]}),
-            **{f"in_bm25_{n}": bool(gold & set(_bm25_ids(rec, n))) for n in (30, 50, 100)},
-            # 하이브리드 기여도 — 키워드 주입을 끄면 근거에서 빠지나(+1)/새로 들어오나(−1). 리랭커가 있어도 '후보 찾기'는 키워드가 한다
-            "lexical_saves": int(ev["in_evidence"] > no_inject) - int(ev["in_evidence"] < no_inject),
-            # 채널 단독 세기(리랭커 없이) — BM25가 강한 구간이 어디인가
-            "dense_rank": d, "bm25_rank": b}
+    return {
+        "status": status,
+        "hit_at_1": ev["hit_at_1"],
+        "in_dense30": bool(gold & {c for c, _ in rec["dense30"]}),
+        **{f"in_bm25_{n}": bool(gold & set(_bm25_ids(rec, n))) for n in (30, 50, 100)},
+        # 하이브리드 기여도 — 키워드 주입을 끄면 근거에서 빠지나(+1)/새로 들어오나(−1). 리랭커가 있어도 '후보 찾기'는 키워드가 한다
+        "lexical_saves": int(ev["in_evidence"] > no_inject) - int(ev["in_evidence"] < no_inject),
+        # 채널 단독 세기(리랭커 없이) — BM25가 강한 구간이 어디인가
+        "dense_rank": d,
+        "bm25_rank": b,
+    }
 
 
 def summarize_diagnosis(rows: list[dict], key: str = "type") -> dict:
@@ -187,18 +202,27 @@ def summarize_diagnosis(rows: list[dict], key: str = "type") -> dict:
     out = {}
     for k, rs in sorted(groups.items()):
         n = len(rs)
-        out[k] = {"n": n, **{s: sum(r["status"] == s for r in rs) for s in ("hit", "rerank_miss", "pool_miss")},
-                  "top1_miss": sum(not r["hit_at_1"] for r in rs),
-                  **{f"upside_bm25_{n_}": sum(r["status"] == "pool_miss" and r[f"in_bm25_{n_}"] for r in rs)
-                     for n_ in (30, 50, 100)},
-                  "lexical_saves": sum(r["lexical_saves"] > 0 for r in rs),
-                  "lexical_hurts": sum(r["lexical_saves"] < 0 for r in rs),
-                  **{f"{ch}_top{k_}": round(sum((r[f"{ch}_rank"] or 999) <= k_ for r in rs) / n, 3)
-                     for ch in ("dense", "bm25") for k_ in (1, 5)}}
+        out[k] = {
+            "n": n,
+            **{s: sum(r["status"] == s for r in rs) for s in ("hit", "rerank_miss", "pool_miss")},
+            "top1_miss": sum(not r["hit_at_1"] for r in rs),
+            **{
+                f"upside_bm25_{n_}": sum(r["status"] == "pool_miss" and r[f"in_bm25_{n_}"] for r in rs)
+                for n_ in (30, 50, 100)
+            },
+            "lexical_saves": sum(r["lexical_saves"] > 0 for r in rs),
+            "lexical_hurts": sum(r["lexical_saves"] < 0 for r in rs),
+            **{
+                f"{ch}_top{k_}": round(sum((r[f"{ch}_rank"] or 999) <= k_ for r in rs) / n, 3)
+                for ch in ("dense", "bm25")
+                for k_ in (1, 5)
+            },
+        }
     return out
 
 
 # ----- 통계 (3단계) ----------------------------------------------------------
+
 
 def paired_bootstrap(base: list[float], cand: list[float], n: int = 10_000, seed: int = 248) -> dict:
     """같은 문항끼리 짝지은 차이(후보 − 기준)의 평균과 95% 신뢰구간(재표본 n회, 퍼센타일), 승·패·무 문항 수(설계 7)."""
@@ -210,13 +234,26 @@ def paired_bootstrap(base: list[float], cand: list[float], n: int = 10_000, seed
     rng = random.Random(seed)
     m = len(diffs)
     means = sorted(sum(diffs[rng.randrange(m)] for _ in range(m)) / m for _ in range(n))
-    return {"n": m, "mean_diff": sum(diffs) / m, "ci95": (means[int(0.025 * n)], means[int(0.975 * n) - 1]),
-            "wins": sum(d > 0 for d in diffs), "losses": sum(d < 0 for d in diffs), "ties": sum(d == 0 for d in diffs)}
+    return {
+        "n": m,
+        "mean_diff": sum(diffs) / m,
+        "ci95": (means[int(0.025 * n)], means[int(0.975 * n) - 1]),
+        "wins": sum(d > 0 for d in diffs),
+        "losses": sum(d < 0 for d in diffs),
+        "ties": sum(d == 0 for d in diffs),
+    }
 
 
-def compare(recs: list[dict], chunks: dict[int, RetrievedChunk], conds=CANDIDATES, key: str = "set",
-            metrics=("in_evidence", "hit_at_1"), n_boot: int = 10_000) -> dict:
+def compare(
+    recs: list[dict],
+    chunks: dict[int, RetrievedChunk],
+    conds=CANDIDATES,
+    key: str = "set",
+    metrics=("in_evidence", "hit_at_1"),
+    n_boot: int = 10_000,
+) -> dict:
     """후보 조건 × 묶음(key) × 지표 → 현행 대비 짝 부트스트랩. 문항별 결과(이긴·진 문항 id)도 함께 — 원문과 나란히 볼 대상."""
+
     def scores_of(cond):
         return {r["qid"]: evaluate(r, assemble(r, chunks, cond), chunks) for r in recs}
 
@@ -230,8 +267,12 @@ def compare(recs: list[dict], chunks: dict[int, RetrievedChunk], conds=CANDIDATE
         got = scores_of(cond)
         out[cond.name] = {}
         for g, qids in sorted(groups.items()):
-            out[cond.name][g] = {m: {**paired_bootstrap([base[q][m] for q in qids], [got[q][m] for q in qids], n=n_boot),
-                                     "won": [q for q in qids if got[q][m] > base[q][m]],
-                                     "lost": [q for q in qids if got[q][m] < base[q][m]]}
-                                 for m in metrics}
+            out[cond.name][g] = {
+                m: {
+                    **paired_bootstrap([base[q][m] for q in qids], [got[q][m] for q in qids], n=n_boot),
+                    "won": [q for q in qids if got[q][m] > base[q][m]],
+                    "lost": [q for q in qids if got[q][m] < base[q][m]],
+                }
+                for m in metrics
+            }
     return out

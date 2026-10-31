@@ -10,13 +10,13 @@
 - xlsx(openpyxl): 병합은 merge_cells, 줄바꿈은 wrap_text, 세로쓰기는 textRotation=90, 날짜·숫자는 **값 타입 그대로**(xlsx_types 축 — 수식은 openpyxl이 캐시값을 못 써 제외).
   '나란히' 축은 한 시트에 빈 열 2개를 두고 두 표를 놓는다(docling gap_tolerance=0이 둘을 가른다 — #220 결정 9).
 """
+
 import datetime as dt
 import sys
 from pathlib import Path
 
-from docx import Document as DocxDocument
-from docx.shared import Pt
 import openpyxl
+from docx import Document as DocxDocument
 from openpyxl.styles import Alignment, PatternFill
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -24,7 +24,8 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-from reportlab.platypus import Image as RLImage, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Image as RLImage
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from eval.table_parsing.render_image import cell_text, render_spec
 from eval.table_parsing.specs import SPECS, paths_of, tables_of
@@ -32,7 +33,7 @@ from eval.table_parsing.specs import SPECS, paths_of, tables_of
 pdfmetrics.registerFont(UnicodeCIDFont('HYGothic-Medium'))
 _BODY = ParagraphStyle('b', fontName='HYGothic-Medium', fontSize=10, leading=14)
 _CELL = ParagraphStyle('c', fontName='HYGothic-Medium', fontSize=9, leading=12)
-_INTRO = '아래 표는 사내 기준을 정리한 것이다.'   # 쪽에 글자가 표만 있으면 레이아웃 모델이 흔들려 짧은 본문을 둔다
+_INTRO = '아래 표는 사내 기준을 정리한 것이다.'  # 쪽에 글자가 표만 있으면 레이아웃 모델이 흔들려 짧은 본문을 둔다
 
 
 def _span_cells(rows):
@@ -47,21 +48,35 @@ def _span_cells(rows):
 
 _H1 = ParagraphStyle('h1', fontName='HYGothic-Medium', fontSize=16, leading=22, spaceAfter=4)
 _H2 = ParagraphStyle('h2', fontName='HYGothic-Medium', fontSize=12.5, leading=17, spaceBefore=10, spaceAfter=4)
-_CAPS = ParagraphStyle('caps', fontName='HYGothic-Medium', fontSize=9, leading=12, alignment=1, spaceBefore=2, spaceAfter=6)
+_CAPS = ParagraphStyle(
+    'caps', fontName='HYGothic-Medium', fontSize=9, leading=12, alignment=1, spaceBefore=2, spaceAfter=6
+)
 
 
 def _ctx_story(spec, body: list) -> list:
     """--context 문서(#247): 제목·목적·절 제목·도입 문장 → 표(body) → 표 제목 줄·해설·문의. 문맥에는 표 값을 쓰지 않는다(context.py)."""
     from eval.table_parsing.context import blocks
+
     b = blocks(spec['id'])
-    head = [Paragraph(b['title'], _H1), Paragraph(b['meta'], _BODY), Paragraph('1. 목적', _H2), Paragraph(b['purpose'], _BODY),
-            Paragraph(b['section'], _H2), Paragraph(b['lead'], _BODY), Spacer(1, 4)]
-    tail = ([Paragraph(b['caption'], _CAPS)] if b['caption'] else []) + [Paragraph(b['after'], _BODY),
-                                                                           Paragraph('3. 문의', _H2), Paragraph(b['contact'], _BODY)]
+    head = [
+        Paragraph(b['title'], _H1),
+        Paragraph(b['meta'], _BODY),
+        Paragraph('1. 목적', _H2),
+        Paragraph(b['purpose'], _BODY),
+        Paragraph(b['section'], _H2),
+        Paragraph(b['lead'], _BODY),
+        Spacer(1, 4),
+    ]
+    tail = ([Paragraph(b['caption'], _CAPS)] if b['caption'] else []) + [
+        Paragraph(b['after'], _BODY),
+        Paragraph('3. 문의', _H2),
+        Paragraph(b['contact'], _BODY),
+    ]
     return head + body + tail
 
 
 # ── img: PNG를 PDF에 붙인다 ─────────────────────────────────────────────────────
+
 
 def build_img_pdf(spec, out: Path, png_dir: Path, context: bool = False) -> Path:
     im = render_spec(spec)
@@ -69,16 +84,19 @@ def build_img_pdf(spec, out: Path, png_dir: Path, context: bool = False) -> Path
     im.save(png)
     width = A4[0] * 0.8
     height = width * im.height / im.width
-    if height > A4[1] * 0.75:                       # 긴 표 이미지는 쪽 높이에 맞춘다
+    if height > A4[1] * 0.75:  # 긴 표 이미지는 쪽 높이에 맞춘다
         height = A4[1] * 0.75
         width = height * im.width / im.height
     p = out / f"{spec['id']}.img.pdf"
     img = [RLImage(str(png), width=width, height=height)]
-    SimpleDocTemplate(str(p), pagesize=A4).build(_ctx_story(spec, img) if context else [Paragraph(_INTRO, _BODY), Spacer(1, 6), *img])
+    SimpleDocTemplate(str(p), pagesize=A4).build(
+        _ctx_story(spec, img) if context else [Paragraph(_INTRO, _BODY), Spacer(1, 6), *img]
+    )
     return p
 
 
 # ── pdf: reportlab 네이티브 표 ──────────────────────────────────────────────────
+
 
 def _rl_table(rows, *, nested_ok=True, style_kind='grid'):
     """style_kind: grid(격자) · hlines(가로선만 — 테두리 없는 표) · striped(헤더 음영 + 짝수 행 연한 회색)."""
@@ -124,11 +142,14 @@ def build_text_pdf(spec, out: Path, context: bool = False) -> Path:
     if spec.get('note'):
         story += [Spacer(1, 4), Paragraph(spec['note'], _BODY)]
     p = out / f"{spec['id']}.pdf.pdf"
-    SimpleDocTemplate(str(p), pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm).build(_ctx_story(spec, story) if context else story)
+    SimpleDocTemplate(str(p), pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm).build(
+        _ctx_story(spec, story) if context else story
+    )
     return p
 
 
 # ── docx ────────────────────────────────────────────────────────────────────────
+
 
 def _docx_fill(table, rows):
     for r, row in enumerate(rows):
@@ -154,6 +175,7 @@ def build_docx(spec, out: Path, context: bool = False) -> Path:
     d = DocxDocument()
     if context:
         from eval.table_parsing.context import blocks
+
         cb = blocks(spec['id'])
         d.add_heading(cb['title'], level=1)
         d.add_paragraph(cb['meta'])
@@ -167,14 +189,17 @@ def build_docx(spec, out: Path, context: bool = False) -> Path:
         d.add_paragraph(spec['title'])
     rows = spec['rows']
     t = d.add_table(rows=len(rows), cols=max(len(r) for r in rows))
-    t.style = 'Table Grid' if spec.get('style', 'grid') == 'grid' else None     # 격자 없음·음영: 테두리 없는 표(Word 기본)
+    t.style = 'Table Grid' if spec.get('style', 'grid') == 'grid' else None  # 격자 없음·음영: 테두리 없는 표(Word 기본)
     _docx_fill(t, rows)
     if spec.get('style') == 'striped':
         from docx.oxml import OxmlElement
         from docx.oxml.ns import qn
+
         for r in range(2, len(rows), 2):
             for cell in t.rows[r].cells:
-                shd = OxmlElement('w:shd'); shd.set(qn('w:val'), 'clear'); shd.set(qn('w:fill'), 'F2F2F2')
+                shd = OxmlElement('w:shd')
+                shd.set(qn('w:val'), 'clear')
+                shd.set(qn('w:fill'), 'F2F2F2')
                 cell._tc.get_or_add_tcPr().append(shd)
     if spec.get('note'):
         d.add_paragraph(spec['note'])
@@ -191,12 +216,13 @@ def build_docx(spec, out: Path, context: bool = False) -> Path:
 
 # ── xlsx ────────────────────────────────────────────────────────────────────────
 
+
 def _xlsx_value(cell, typed: bool):
     if cell is None:
         return None
     raw = cell.get('t') if isinstance(cell, dict) else cell
     if typed and isinstance(raw, str) and len(raw) == 10 and raw[4] == '-' and raw[7] == '-':
-        return dt.date.fromisoformat(raw)               # 날짜 타입 셀
+        return dt.date.fromisoformat(raw)  # 날짜 타입 셀
     return raw if raw != '' else None
 
 
@@ -212,13 +238,17 @@ def _xlsx_fill(ws, rows, *, typed: bool, col_offset: int = 0, striped: bool = Fa
                     x.fill = PatternFill('solid', fgColor=cell['bg'].lstrip('#'))
                 if cell.get('v'):
                     x.alignment = Alignment(textRotation=90)
-            if striped and r - row_offset > 1 and (r - row_offset) % 2 == 1:                        # 짝수 데이터 행 음영(0-base r-1이 짝수)
+            if striped and r - row_offset > 1 and (r - row_offset) % 2 == 1:  # 짝수 데이터 행 음영(0-base r-1이 짝수)
                 x.fill = PatternFill('solid', fgColor='F2F2F2')
             if isinstance(v, str) and '\n' in v:
                 x.alignment = Alignment(wrap_text=True)
     for r, c, rs, cs in _span_cells(rows):
-        ws.merge_cells(start_row=r + 1 + row_offset, start_column=c + 1 + col_offset, end_row=r + rs + row_offset,
-                       end_column=c + cs + col_offset)
+        ws.merge_cells(
+            start_row=r + 1 + row_offset,
+            start_column=c + 1 + col_offset,
+            end_row=r + rs + row_offset,
+            end_column=c + cs + col_offset,
+        )
 
 
 def build_xlsx(spec, out: Path, context: bool = False) -> Path:
@@ -227,8 +257,9 @@ def build_xlsx(spec, out: Path, context: bool = False) -> Path:
     ws.title = '표'
     typed = bool(spec.get('xlsx_types'))
     top = 0
-    if context:                                   # 제목·시행일 행 → 빈 행 → 표 → 빈 행 → 해설·문의 (빈 행: docling은 붙은 칸을 한 표로 묶는다)
+    if context:  # 제목·시행일 행 → 빈 행 → 표 → 빈 행 → 해설·문의 (빈 행: docling은 붙은 칸을 한 표로 묶는다)
         from eval.table_parsing.context import blocks
+
         cb = blocks(spec['id'])
         ws.cell(row=1, column=1, value=cb['title'])
         ws.cell(row=2, column=1, value=cb['meta'])
@@ -250,12 +281,17 @@ def build_xlsx(spec, out: Path, context: bool = False) -> Path:
     return p
 
 
-BUILDERS = {'img': lambda s, o, context=False: build_img_pdf(s, o, o / 'png', context), 'pdf': build_text_pdf,
-            'docx': build_docx, 'xlsx': build_xlsx}
+BUILDERS = {
+    'img': lambda s, o, context=False: build_img_pdf(s, o, o / 'png', context),
+    'pdf': build_text_pdf,
+    'docx': build_docx,
+    'xlsx': build_xlsx,
+}
 
 
-def build_all(out: Path, only: set[str] | None = None, paths: set[str] | None = None,
-              context: bool = False) -> list[tuple[str, str, Path]]:
+def build_all(
+    out: Path, only: set[str] | None = None, paths: set[str] | None = None, context: bool = False
+) -> list[tuple[str, str, Path]]:
     out.mkdir(parents=True, exist_ok=True)
     (out / 'png').mkdir(exist_ok=True)
     made = []

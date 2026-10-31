@@ -13,6 +13,7 @@ dense·어휘·식별자 채널과 멀티쿼리·리랭크 on/off를 함께 덮�
     python -m eval._golden_order > after.json      # 변경 후
     diff before.json after.json                    # 무변경이면 출력 없음
 """
+
 import asyncio
 import hashlib
 import json
@@ -75,10 +76,7 @@ async def main():
     async def _fake_scores(query: str, chunks: list):
         # query·청크쌍마다 결정적 점수. 순위가 dense 순서와 확실히 달라지게 섞는다.
         return [
-            int.from_bytes(
-                hashlib.sha256(f'{query}|{c.chunk_id}'.encode()).digest()[:4], 'big'
-            ) / 2**32
-            for c in chunks
+            int.from_bytes(hashlib.sha256(f'{query}|{c.chunk_id}'.encode()).digest()[:4], 'big') / 2**32 for c in chunks
         ]
 
     rr.rerank_scores = _fake_scores
@@ -87,19 +85,17 @@ async def main():
     Session = async_sessionmaker(engine, expire_on_commit=False)
     out = {}
     async with Session() as session:
-        tenants = (await session.execute(
-            select(Document.tenant_id).distinct().order_by(Document.tenant_id)
-        )).scalars().all()
+        tenants = (
+            (await session.execute(select(Document.tenant_id).distinct().order_by(Document.tenant_id))).scalars().all()
+        )
         for tenant in tenants:
             for q in QUERIES:
                 for label, exp in (('single', None), ('multi', EXPANDED.get(q))):
                     if label == 'multi' and not exp:
                         continue
                     for rerank_on in (False, True):
-                        settings.rerank_enabled = rerank_on   # 호출 시점마다 읽히는지도 함께 검증
-                        cands = await rt.retrieve_candidates(
-                            session, tenant, q, top_n=20, expanded_queries=exp
-                        )
+                        settings.rerank_enabled = rerank_on  # 호출 시점마다 읽히는지도 함께 검증
+                        cands = await rt.retrieve_candidates(session, tenant, q, top_n=20, expanded_queries=exp)
                         key = f'{tenant}|{q}|{label}|rerank={rerank_on}'
                         out[key] = {
                             'ids': [c.chunk_id for c in cands.chunks],

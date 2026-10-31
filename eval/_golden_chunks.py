@@ -18,16 +18,15 @@ TEI·DB 불필요. 건수·소요 시간은 적지 않는다 — 문서가 늘 �
 "사라진 줄"은 전 청크의 줄 중 후 청크의 제목 경로·본문 어디에도 없는 것이다. 판정은 eval/chunk_invariants
 (원문 소실 0의 정의점)와 같은 함수다 — 테스트와 이 도구가 "소실"을 다르게 세면 PR 수치를 테스트로 재현할 수 없다.
 """
+
 import argparse
 import json
 import sys
 from pathlib import Path
-import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from eval.chunk_invariants import missing_lines   # noqa: E402 — "소실"의 정의점(위 docstring)
-
+from eval.chunk_invariants import missing_lines  # noqa: E402 — "소실"의 정의점(위 docstring)
 
 ROOTS = ('sample_docs', 'docs')
 EXTS = ('.pdf', '.docx', '.md', '.txt', '.xlsx')
@@ -36,6 +35,7 @@ EXTS = ('.pdf', '.docx', '.md', '.txt', '.xlsx')
 def chunks_for(path: Path):
     """운영과 같은 진입점 — chunk_file이 5형식을 전부 처리한다."""
     from rag.chunking import chunk_file
+
     return chunk_file(path)
 
 
@@ -43,20 +43,22 @@ def capture(targets: list[str] | None = None) -> dict:
     base = Path(__file__).resolve().parent.parent
     out = {}
     roots = [Path(t).resolve() for t in targets] if targets else [base / root for root in ROOTS]
-    files = sorted({
-        p for root in roots for p in ([root] if root.is_file() else root.rglob('*'))
-        if p.suffix.lower() in EXTS and p.is_file()
-    })
+    files = sorted(
+        {
+            p
+            for root in roots
+            for p in ([root] if root.is_file() else root.rglob('*'))
+            if p.suffix.lower() in EXTS and p.is_file()
+        }
+    )
     for p in files:
         rel = str(p.relative_to(base)) if p.is_relative_to(base) else str(p)
         try:
             cs = chunks_for(p)
             out[rel] = [
-                {'i': c.chunk_index, 'h': c.heading_path, 'p': c.page,
-                 'm': c.meta or {}, 't': c.text}
-                for c in cs
+                {'i': c.chunk_index, 'h': c.heading_path, 'p': c.page, 'm': c.meta or {}, 't': c.text} for c in cs
             ]
-        except Exception as e:                    # 파싱 실패도 골든의 일부 — 전후가 같아야 한다
+        except Exception as e:  # 파싱 실패도 골든의 일부 — 전후가 같아야 한다
             out[rel] = {'error': f'{type(e).__name__}: {e}'}
     # 전부 실패했으면 골든이 아니라 환경 문제다. 조용히 넘기면 오류 목록이 데이터처럼
     # 보이고 diff가 '변화 없음'으로 나와 회귀를 놓친다 (실제로 한 번 겪었다).
@@ -68,7 +70,7 @@ def capture(targets: list[str] | None = None) -> dict:
 def show_diff(before_path: str, after_path: str) -> None:
     b = json.load(open(before_path, encoding='utf-8'))
     a = json.load(open(after_path, encoding='utf-8'))
-    by_ext: dict[str, list[int]] = {}             # [파일수, 변한 파일수, 전 청크, 후 청크]
+    by_ext: dict[str, list[int]] = {}  # [파일수, 변한 파일수, 전 청크, 후 청크]
     changed_files = []
     for rel in sorted(set(b) | set(a)):
         ext = Path(rel).suffix.lower()
@@ -98,7 +100,9 @@ def show_diff(before_path: str, after_path: str) -> None:
             print(f'  {rel}: {"새 파일" if bv is None else "없어진 파일"}')
             continue
         if not (isinstance(bv, list) and isinstance(av, list)):
-            print(f'  {rel}: 파싱 오류 {bv if isinstance(bv, dict) else "정상"} → {av if isinstance(av, dict) else "정상"}')
+            print(
+                f'  {rel}: 파싱 오류 {bv if isinstance(bv, dict) else "정상"} → {av if isinstance(av, dict) else "정상"}'
+            )
             continue
         lines = [x for c in bv for x in (*c['h'], *c['t'].split('\n'))]
         lost = missing_lines(lines, [h for c in av for h in c['h']], [c['t'] for c in av])

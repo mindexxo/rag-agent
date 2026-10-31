@@ -17,6 +17,7 @@ eval 풀런이 도는 동안의 턴은 GPU 경합으로 지연이 부풀어 있�
 의존: Phoenix HTTP(OTEL_ENDPOINT의 호스트)만. DB·LLM·TEI 불필요.
 실행: python -m eval.perf_report [--since 2026-08-20] [--until 2026-08-29]
 """
+
 import argparse
 import json
 from collections import Counter, defaultdict
@@ -72,8 +73,7 @@ def _pct(values: list[float], q: float) -> float:
 
 
 def _fmt_row(name: str, values: list[float]) -> str:
-    return (f"| {name} | {len(values)} | {_pct(values, 0.5):,.0f} | "
-            f"{_pct(values, 0.95):,.0f} | {max(values):,.0f} |")
+    return f"| {name} | {len(values)} | {_pct(values, 0.5):,.0f} | {_pct(values, 0.95):,.0f} | {max(values):,.0f} |"
 
 
 def main() -> None:
@@ -94,12 +94,12 @@ def main() -> None:
 
     # 경로 분리 (#21 참고 반영): retrieve 자식 유무가 곧 경로다 — KNOWLEDGE(검색+생성)와
     # OTHER(검색 스킵, 인사·회상류)는 지연 분포가 달라서 섞으면 "지식 질문 기준 X초"를 못 말한다.
-    kn_total: list[float] = []               # KNOWLEDGE 완주 턴 총 시간
-    ot_total: list[float] = []               # OTHER 완주 턴 총 시간
-    stage_ms: dict[str, list[float]] = defaultdict(list)      # KNOWLEDGE 턴의 단계 분해
-    ot_generate: list[float] = []            # OTHER 턴의 생성 시간 (참고용)
-    shapes = Counter()                       # (status, intent, 자식 구성) 분포 — 경로 파악용
-    nogen_total: dict[str, list[float]] = defaultdict(list)   # 비생성 done 턴 총 시간 (모양별)
+    kn_total: list[float] = []  # KNOWLEDGE 완주 턴 총 시간
+    ot_total: list[float] = []  # OTHER 완주 턴 총 시간
+    stage_ms: dict[str, list[float]] = defaultdict(list)  # KNOWLEDGE 턴의 단계 분해
+    ot_generate: list[float] = []  # OTHER 턴의 생성 시간 (참고용)
+    shapes = Counter()  # (status, intent, 자식 구성) 분포 — 경로 파악용
+    nogen_total: dict[str, list[float]] = defaultdict(list)  # 비생성 done 턴 총 시간 (모양별)
 
     rows_raw = []
     for spans_t in by_trace.values():
@@ -112,10 +112,17 @@ def main() -> None:
         shape = f"status={status} intent={intent} children={'+'.join(children) or '-'}"
         shapes[shape] += 1
         total = _dur_ms(root)
-        rows_raw.append({"trace_id": root["context"]["trace_id"], "start": root["start_time"],
-                         "total_ms": total, "status": status, "intent": intent,
-                         "children": children,
-                         "stages": {s["name"]: _dur_ms(s) for s in spans_t if s["name"] in STAGES}})
+        rows_raw.append(
+            {
+                "trace_id": root["context"]["trace_id"],
+                "start": root["start_time"],
+                "total_ms": total,
+                "status": status,
+                "intent": intent,
+                "children": children,
+                "stages": {s["name"]: _dur_ms(s) for s in spans_t if s["name"] in STAGES},
+            }
+        )
         if "generate" in children and status == "done":
             if "retrieve" in children:
                 kn_total.append(total)
@@ -131,23 +138,34 @@ def main() -> None:
     RESULT_DIR.mkdir(exist_ok=True)
     OUT_RAW.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows_raw))
 
-    lines = [f"# 성능 리포트 (Phoenix 스팬, {args.since or '전체'}~{args.until or '현재'})",
-             f"\n트레이스 {len(by_trace)}건 / 완주 턴: KNOWLEDGE {len(kn_total)}·OTHER {len(ot_total)}\n",
-             "## KNOWLEDGE 완주 턴 (검색+생성) — 단계별 지연 (ms)\n",
-             "| 구간 | n | p50 | p95 | max |", "|---|---|---|---|---|",
-             _fmt_row("**턴 전체**", kn_total)]
+    lines = [
+        f"# 성능 리포트 (Phoenix 스팬, {args.since or '전체'}~{args.until or '현재'})",
+        f"\n트레이스 {len(by_trace)}건 / 완주 턴: KNOWLEDGE {len(kn_total)}·OTHER {len(ot_total)}\n",
+        "## KNOWLEDGE 완주 턴 (검색+생성) — 단계별 지연 (ms)\n",
+        "| 구간 | n | p50 | p95 | max |",
+        "|---|---|---|---|---|",
+        _fmt_row("**턴 전체**", kn_total),
+    ]
     lines += [_fmt_row(st, stage_ms[st]) for st in STAGES if stage_ms[st]]
-    lines += ["\n## OTHER 완주 턴 (검색 스킵 — 인사·회상류) — (ms)\n",
-              "| 구간 | n | p50 | p95 | max |", "|---|---|---|---|---|"]
+    lines += [
+        "\n## OTHER 완주 턴 (검색 스킵 — 인사·회상류) — (ms)\n",
+        "| 구간 | n | p50 | p95 | max |",
+        "|---|---|---|---|---|",
+    ]
     if ot_total:
         lines += [_fmt_row("턴 전체", ot_total), _fmt_row("generate", ot_generate)]
-    lines += ["\n## 비생성 done 턴 (캐시 히트·차단·거절 계열) — 총 시간 (ms)\n",
-              "| 모양 | n | p50 | p95 | max |", "|---|---|---|---|---|"]
+    lines += [
+        "\n## 비생성 done 턴 (캐시 히트·차단·거절 계열) — 총 시간 (ms)\n",
+        "| 모양 | n | p50 | p95 | max |",
+        "|---|---|---|---|---|",
+    ]
     lines += [_fmt_row(shape, vs) for shape, vs in sorted(nogen_total.items())]
     lines += ["\n## 턴 모양 분포 (경로 검산용)\n"]
     lines += [f"- {n:>4}× {shape}" for shape, n in shapes.most_common()]
-    lines += ["\n주의: TTFT(첫 토큰)는 이 표에 없다 — eval/perf_probe.py 실측으로 별도 확보.",
-              "표본은 개발계 트래픽이다 — eval 풀런 시간대 포함 여부를 --since/--until로 통제했는지 확인."]
+    lines += [
+        "\n주의: TTFT(첫 토큰)는 이 표에 없다 — eval/perf_probe.py 실측으로 별도 확보.",
+        "표본은 개발계 트래픽이다 — eval 풀런 시간대 포함 여부를 --since/--until로 통제했는지 확인.",
+    ]
 
     OUT_MD.write_text("\n".join(lines))
     print("\n".join(lines))

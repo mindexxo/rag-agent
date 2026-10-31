@@ -8,6 +8,7 @@
 따로 센다. 판정자는 기본 Claude(`TABLE_JUDGE=claude`, CLI 필요), `TABLE_JUDGE=vllm`이면 사내 vLLM — #221에서 vLLM 판정이
 관대하게 틀렸다. 답을 만든 모델(14B)과 판정자가 다르다는 점을 결과에 남긴다(judge 필드).
 """
+
 import asyncio
 import os
 from typing import Literal
@@ -17,11 +18,13 @@ from pydantic import AliasChoices, BaseModel, Field
 from rag.turn.llm_schemas import acomplete_validated
 
 DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
-PROMPT_VERSION = "v2"   # v1은 JSON 키를 안 적어 Claude가 "verdict"로 답했다(22/22 검증 실패)
+PROMPT_VERSION = "v2"  # v1은 JSON 키를 안 적어 Claude가 "verdict"로 답했다(22/22 검증 실패)
 
 
 class AnswerJudgment(BaseModel):
-    label: Literal["correct", "wrong", "ungrounded", "not_answered"] = Field(validation_alias=AliasChoices("label", "verdict"))
+    label: Literal["correct", "wrong", "ungrounded", "not_answered"] = Field(
+        validation_alias=AliasChoices("label", "verdict")
+    )
     reason: str = ""
 
 
@@ -41,6 +44,7 @@ def judge_spec() -> tuple[str, str]:
         return backend, os.getenv("TABLE_JUDGE_MODEL", DEFAULT_CLAUDE_MODEL)
     if backend == "vllm":
         from config import settings
+
         return backend, settings.llm_model
     raise SystemExit(f"TABLE_JUDGE={backend} — claude|vllm 만 지원")
 
@@ -54,18 +58,26 @@ def judge_llm():
     backend, model = judge_spec()
     if backend == "claude":
         import shutil
+
         if not shutil.which("claude"):
             raise SystemExit("판정자가 claude(기본)인데 claude CLI가 PATH에 없다 — 설치·로그인하거나 TABLE_JUDGE=vllm")
         from eval.claude_client import ClaudeCliClient
+
         return ClaudeCliClient(model=model)
     from rag.llm import create_llm
+
     return create_llm()
 
 
 def build_messages(question: str, expected: str, answer: str, chunks: list[str]) -> list[dict]:
     ctx = "\n\n".join(chunks)[:6000] or "(색인 청크 없음)"
-    return [{"role": "system", "content": _SYSTEM},
-            {"role": "user", "content": f"질문: {question}\n정답 값: {expected}\n\n시스템 답변:\n{answer}\n\n색인 청크:\n{ctx}"}]
+    return [
+        {"role": "system", "content": _SYSTEM},
+        {
+            "role": "user",
+            "content": f"질문: {question}\n정답 값: {expected}\n\n시스템 답변:\n{answer}\n\n색인 청크:\n{ctx}",
+        },
+    ]
 
 
 async def judge_answer(llm, question: str, expected: str, answer: str, chunks: list[str]) -> AnswerJudgment:
@@ -83,12 +95,18 @@ async def rejudge(rows: list[dict], chunks_by_doc: dict, *, llm=None, concurrenc
     async def _one(r):
         async with sem:
             try:
-                v = await judge_answer(llm, r['question'], r['expected'], r['answer'],
-                                       [c['text'] for c in chunks_by_doc.get((r['id'], r['path']), [])])
+                v = await judge_answer(
+                    llm,
+                    r['question'],
+                    r['expected'],
+                    r['answer'],
+                    [c['text'] for c in chunks_by_doc.get((r['id'], r['path']), [])],
+                )
                 r['llm_label'], r['llm_reason'], r['llm_error'] = v.label, v.reason, None
-            except Exception as exc:                       # noqa: BLE001 — 판정 불가는 기계 판정 유지
+            except Exception as exc:  # noqa: BLE001 — 판정 불가는 기계 판정 유지
                 r['llm_label'], r['llm_reason'], r['llm_error'] = None, None, f"{type(exc).__name__}: {exc}"[:200]
             r['judge'] = label
+
     await asyncio.gather(*(_one(r) for r in targets))
     return targets
 

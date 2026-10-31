@@ -23,6 +23,7 @@
 - **중간층(조합)**: `rag/citation_labels.py`, `rag/clients.py`, `rag/llm_schemas.py`,
   `rag/turn_state.py`, `rag/cache.py`, `rag/reranker.py`, `rag/retriever.py`,
   `rag/stream_resume.py`, `rag/cancellation.py`, `rag/citation_tail.py`, `rag/documents.py`, `rag/ingestion.py`,
+  `rag/prepared.py`,
   `rag/prompts.py`, `rag/conversation.py`, `rag/guardrail.py`, `rag/outbox.py`,
   `rag/os_search.py`, `rag/os_index.py`, `rag/os_reconcile.py`, `rag/xlsx_chunking.py`(톱레벨에서 `chunking`을 쓴다 —
   그래서 `chunking`이 함수 안에서 되부른다), `rag/conversation_search.py`(`models`만 쓴다)
@@ -95,7 +96,7 @@ TEI→인덱싱·검색·캐시(`EMBED_PROVIDER`·`RERANK_PROVIDER`가 tei가 �
   `Message.cited_docs`(실인용 **문서** 파일명 — FAQ 항목 인용은 `Message.cited_faq_ids`에 id로, #278) /
   `PreparedRag.sources`(인메모리 후보)
   / `ConversationMessage.citations`(API 응답 필터 결과) / SSE `done.citations`(생성 시점 재계산).
-  다섯이 네 파일에 흩어져 있고(`rag/models.py`·`rag/service.py`·`schemas/conversations.py`·
+  다섯이 네 파일에 흩어져 있고(`rag/models.py`·`rag/prepared.py`·`schemas/conversations.py`·
   `rag/streaming.py`) 이 구분 자체를 설명하는 문장은 코드에 없다 — 여기가 유일한 설명이다.
   헷갈리면 각 정의 위치를 직접 열어 확인하라. (별개로 `rag/citation_labels.py`는 "인용 번호
   순서"의 정의점이다 — 이름이 비슷하지만 다른 문제를 다룬다.)
@@ -105,7 +106,7 @@ TEI→인덱싱·검색·캐시(`EMBED_PROVIDER`·`RERANK_PROVIDER`가 tei가 �
   나가지 않고 지표 `kms_llm_finish_reason_total`·스팬 속성 전용, #129). 이름이 같지만 다른 축.
 - `Message.intent`(DB 저장값) ≠ `RouteDecision.intent`(LLM 출력, RETRY는 저장 전 소멸)
   ≠ `PreparedRag.intent_label`(파생).
-- 질의 4형제: `request.query` ≠ `original_query` ≠ `standalone_query` ≠ `display_query`.
+- 질의 3형제: `request.query` ≠ `original_query`(RETRY면 직전 실질 질문으로 치환) ≠ `standalone_query`(재작성).
 - `schemas/query.py`의 `QueryRequest`·`QueryResponse`는 **죽은 레거시**다(참조처 0). 새 코드에서
   쓰지 마라. 실제로 쓰는 건 `schemas/kms.py`의 `KmsQueryRequest`.
 

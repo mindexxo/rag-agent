@@ -32,7 +32,8 @@ from rag import cancellation, limiter, metrics, otel, stream_resume
 from rag.citation_tail import TailSplitter, resolve_citations
 from rag.limiter import Lease
 from rag.models import TurnStatus
-from rag.service import PreparedRag, RagService
+from rag.prepared import PreparedRag
+from rag.service import RagService
 from schemas.kms import SourceCitation
 
 logger = logging.getLogger(__name__)

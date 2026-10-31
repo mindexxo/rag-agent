@@ -5,7 +5,7 @@
 
 번호 불변식: sources_from_chunks(chunks)의 출처 순서대로 1부터, 이어서 첨부 파일 순서. 첨부는 검색 출처가
 아니라 빠뜨리기 쉬운데, 꼬리 강제가 걸려 있어 후보를 적게 세면 누락이 아니라 범위 안 다른 문서로의 오답이
-된다 — 후보 목록 파생은 PreparedRag.citation_candidates(rag/service.py) 한 곳에서 한다.
+된다 — 후보 목록 파생은 PreparedRag.citation_candidates(rag/prepared.py) 한 곳에서 한다.
 """
 
 from typing import NamedTuple

@@ -401,9 +401,9 @@ class TestConverterOptions:
     def test_워드_엑셀_캡션_설정이_PDF와_같다(self):
         # 조용히 무시되는 설정을 잡는 테스트(#151 교훈) — 한 형식만 캡션이 빠지거나 다른 프롬프트로 돌면 에러 없이 품질만 갈린다
         from docling.datamodel.base_models import InputFormat
-        from rag.chunking import _docling_runtime
+        from rag.chunking.runtime import docling_runtime
 
-        converter = _docling_runtime()
+        converter = docling_runtime()
         pdf = converter.format_to_options[InputFormat.PDF].pipeline_options
         for fmt in (InputFormat.DOCX, InputFormat.XLSX):
             opts = converter.format_to_options[fmt].pipeline_options

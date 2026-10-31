@@ -14,7 +14,7 @@
 (모든 모듈이 층에 있는지·0층 예외·진입점·지연 import 목록·순환).
 
 - **0층(leaf, 다른 `rag/` 모듈을 안 씀)**: `config.py`, `rag/models.py`, `rag/tokens.py`,
-  `rag/prompt_texts.py`, `rag/llm/`(공급자별 구현 — `base.py`·`openai_compat.py`·`vllm.py`·`litellm.py`, #287·#288), `rag/embeddings.py`, `rag/chunking/`(청킹 패키지 — `types`·`tables`·`errors` 하위 모듈과 본체 `__init__`),
+  `rag/prompt_texts.py`, `rag/llm/`(공급자별 구현 — `base.py`·`openai_compat.py`·`vllm.py`·`litellm.py`, #287·#288), `rag/embeddings.py`, `rag/chunking/`(청킹 패키지 — `types`·`tables`·`errors`·`plain`·`sections`·`split`·`runtime` 하위 모듈과 본체 `__init__`),
   `rag/index_text.py`, `rag/lexical.py`, `rag/limiter.py`, `rag/otel.py`, `rag/metrics.py`,
   `rag/faq_indexing.py`, `rag/retrieval_types.py`, `rag/identifiers.py`, `rag/os_client.py`(톱레벨은 `config`만 —
   `opensearchpy`는 `client()` 안에서 지연 import한다: 매핑 상수만 보는 테스트가 그 패키지 없이도 import할 수 있게).

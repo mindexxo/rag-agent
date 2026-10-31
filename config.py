@@ -276,7 +276,7 @@ class Settings(BaseSettings):
     docling_max_pictures: int = 100           # 문서당 캡션 대상 그림 상한(#223 결정 4). **넘으면 문서를 거부한다**(결정적 실패 —
                                               # 앞 N장만 캡션하고 나머지를 자리표시로 두는 안은 조용한 불완전 색인이라 기각).
                                               # 대상 = docling이 VLM에 보낼 그림(면적 하한 picture_area_threshold 통과분) — 로고·아이콘은
-                                              # 안 센다. 셈은 rag/chunking._PictureGuard. 전 형식 공통(PDF·DOCX·XLSX).
+                                              # 안 센다. 셈은 rag/chunking/runtime.PictureGuard. 전 형식 공통(PDF·DOCX·XLSX).
                                               # 값 근거: 그림 100장 DOCX 캡션 199~214초(2026-10-15 실측, 동시 1) — PDF 100쪽 최악(약 610초)과
                                               # 합쳐 약 810초 < 마감 900초. 실문서는 문서당 1~2장, 화면 캡처 매뉴얼(수십 장)까지 받는다.
     docling_artifacts_path: str | None = None # 모델 가중치 디렉터리. None이면 첫 변환 때 HF에서 내려받는다 —
@@ -319,7 +319,7 @@ class Settings(BaseSettings):
     # 타지 않는다(실측 2026-09-14: 표 이미지 PDF → PictureItem 0·TableItem 1). 그쪽은 위 ocr_kserve_*의 원격 OCR이 읽는다(#168).
     # VLM이 죽어도 docling은 예외를 삼키고 빈 캡션을 준다(실측: 닫힌 포트 조준 → 예외 없이 7.5초, 캡션 0개).
     # #223 전까지는 그대로 자리표시로 ready가 됐다 — 그림 내용이 빠진 문서가 "완료"로 보이는 조용한 불완전 색인.
-    # 이제 rag/chunking._PictureGuard가 빈 캡션을 CaptionFailedError(일시 실패)로 올려 문서를 백오프 재시도한다 —
+    # 이제 rag/chunking/runtime.PictureGuard가 빈 캡션을 CaptionFailedError(일시 실패)로 올려 문서를 백오프 재시도한다 —
     # VLM이 살아나면 저절로 ready가 된다. **on/off 스위치는 두지 않는다**(사용자 결정, #162).
     vlm_caption_url: str = "http://localhost:18892/v1/chat/completions"   # **base가 아니라 전체 엔드포인트다**
                                               # — docling이 이 값을 그대로 POST 대상으로 쓴다. 실주소는 .env
@@ -340,7 +340,7 @@ class Settings(BaseSettings):
     vlm_caption_timeout_seconds: float = 45.0 # 요청 하나의 상한. docling은 읽기 타임아웃을 **재시도하지 않는다**(Retry read=0)
                                               # — 넘기면 빈 캡션 → CaptionFailedError로 문서째 재시도(#223). 기본 20초에서 3회 변환 중
                                               # 1회 1건이 터져 45초로(#209). 실패가 보인 그림에서 멈춘다(동시 1이라 배치 안에서도 순서대로라
-                                              # 첫 실패 뒤 요청이 없다) — VLM이 멈췄을 때의 비용은 이 값 한 번이다(rag/chunking._PictureGuard).
+                                              # 첫 실패 뒤 요청이 없다) — VLM이 멈췄을 때의 비용은 이 값 한 번이다(rag/chunking/runtime.PictureGuard).
     vlm_caption_area_threshold: float = 0.01  # 캡션을 요청할 그림의 최소 면적(쪽 면적 대비, #247 결정 17). docling 기본 0.05에서는 실문서 그림
                                               # 29장 중 13장이 캡션 없이 자리표시만 남았고, 그중 3장은 내용이 있는 작은 캡처였다('총 23시간·휴게
                                               # 1시간' 1.2%, 도형 라벨 8개 1.8%, 요일·시간 칸 12개 4.6%) — 하류 질문 '확인 불가'로 실측. 아이콘·버튼은

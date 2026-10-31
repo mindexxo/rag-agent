@@ -79,18 +79,18 @@ class TestRouting:
         assert Settings.model_fields['ocr_provider'].default == 'triton'
 
     def test_triton_모드는_상용_경로를_안_탄다(self, monkeypatch, tmp_path):
-        # 사내 모드 불변(결정 1) — PDF도 예전 그대로 _docling_runtime 하나로 변환한다
+        # 사내 모드 불변(결정 1) — PDF도 예전 그대로 runtime.docling_runtime 하나로 변환한다
         monkeypatch.setattr(settings, 'ocr_provider', 'triton')
         monkeypatch.setattr(ch, '_convert_pdf_llm', lambda *a, **k: pytest.fail('상용 경로를 탔다'))
-        monkeypatch.setattr(ch, '_convert_with', lambda conv, p, **k: ('기존', conv))
-        monkeypatch.setattr(ch, '_docling_runtime', lambda: 'standard')
+        monkeypatch.setattr(ch.runtime, 'convert_with', lambda conv, p, **k: ('기존', conv))
+        monkeypatch.setattr(ch.runtime, 'docling_runtime', lambda: 'standard')
         assert ch._convert_local(tmp_path / 'a.pdf') == ('기존', 'standard')
 
     def test_llm_모드도_PDF만_상용_경로다(self, monkeypatch, tmp_path):
         monkeypatch.setattr(settings, 'ocr_provider', 'llm')
         monkeypatch.setattr(ch, '_convert_pdf_llm', lambda p, **k: '상용')
-        monkeypatch.setattr(ch, '_convert_with', lambda conv, p, **k: '기존')
-        monkeypatch.setattr(ch, '_docling_runtime', lambda: 'standard')
+        monkeypatch.setattr(ch.runtime, 'convert_with', lambda conv, p, **k: '기존')
+        monkeypatch.setattr(ch.runtime, 'docling_runtime', lambda: 'standard')
         assert ch._convert_local(tmp_path / 'a.PDF') == '상용'
         assert ch._convert_local(tmp_path / 'a.docx') == '기존'
 
@@ -99,12 +99,12 @@ class TestRouting:
         from docling.datamodel.base_models import InputFormat
         monkeypatch.setattr(settings, 'docling_do_ocr', True)
         # 부모 프로세스의 변환기·그림 가드 목록은 테스트 뒤 되돌린다 — 다른 테스트가 만든 것을 버리거나 가드를 쌓지 않게(리뷰 반영)
-        monkeypatch.setattr(ch, '_docling_converter', ch._docling_converter)
-        monkeypatch.setattr(ch, '_picture_guards', list(ch._picture_guards))
+        monkeypatch.setattr(ch.runtime, '_docling_converter', ch.runtime._docling_converter)
+        monkeypatch.setattr(ch.runtime, '_picture_guards', list(ch.runtime._picture_guards))
         for provider, expected in (('triton', True), ('llm', False)):
             monkeypatch.setattr(settings, 'ocr_provider', provider)
-            ch._docling_converter = None
-            opts = ch._docling_runtime().format_to_options[InputFormat.PDF].pipeline_options
+            ch.runtime._docling_converter = None
+            opts = ch.runtime.docling_runtime().format_to_options[InputFormat.PDF].pipeline_options
             assert opts.do_ocr is expected, provider
 
 

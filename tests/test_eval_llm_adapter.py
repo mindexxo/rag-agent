@@ -12,25 +12,25 @@ import importlib.util
 import pytest
 
 from config import settings
-from rag.chunking import _caption_headers
+from rag.chunking.runtime import caption_headers
 
 
 class TestCaptionHeaders:
     def test_빈_키는_헤더_없음(self, monkeypatch):
         monkeypatch.setattr(settings, "vlm_caption_api_key", "")
-        assert _caption_headers() == {}
+        assert caption_headers() == {}
 
     def test_키가_있으면_bearer(self, monkeypatch):
         monkeypatch.setattr(settings, "vlm_caption_api_key", "k-test")
-        assert _caption_headers() == {"Authorization": "Bearer k-test"}
+        assert caption_headers() == {"Authorization": "Bearer k-test"}
 
     def test_키가_docling_옵션까지_닿는다(self, monkeypatch):
         """헬퍼가 아니라 파이프라인 옵션에 실리는지 — 호출부가 headers= 를 빠뜨리면 사내에선 티가 안 난다(리뷰 4)."""
         from docling.datamodel.base_models import InputFormat
         import rag.chunking as ch
         monkeypatch.setattr(settings, "vlm_caption_api_key", "k-test")
-        monkeypatch.setattr(ch, "_docling_converter", None)   # 프로세스당 1회 캐시 — 키 바꾼 뒤 다시 만들게 (운영은 기동 시 설정 고정)
-        conv = ch._docling_runtime()
+        monkeypatch.setattr(ch.runtime, "_docling_converter", None)   # 프로세스당 1회 캐시 — 키 바꾼 뒤 다시 만들게 (운영은 기동 시 설정 고정)
+        conv = ch.runtime.docling_runtime()
         for fmt in (InputFormat.PDF, InputFormat.DOCX, InputFormat.XLSX):
             assert conv.format_to_options[fmt].pipeline_options.picture_description_options.headers == {"Authorization": "Bearer k-test"}
 

@@ -57,6 +57,61 @@ def test_옮긴_이름은_옛_경로로_패치하지_않는다() -> None:
     assert not bad, '\n'.join(bad)
 
 
+def _bound_directly() -> dict[str, dict[str, set[str]]]:
+    """정의 모듈 → {이름: 그 이름을 `from rag.chunking.X import 이름`으로 직접 바인딩한 패키지 모듈들}.
+
+    바인딩한 모듈은 자기 전역을 읽으므로 정의 모듈에 패치해도 닿지 않는다 — 그런 이름은 소비 모듈의 전역을 패치해야 한다.
+    """
+    out: dict[str, dict[str, set[str]]] = {}
+    for f in PKG.glob('*.py'):
+        for node in ast.parse(f.read_text(encoding='utf-8')).body:
+            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith('rag.chunking.'):
+                sub = node.module.rsplit('.', 1)[1]
+                for a in node.names:
+                    out.setdefault(sub, {}).setdefault(a.asname or a.name, set()).add(f.stem)
+    return out
+
+
+def _submodule_aliases(src: str, pkg_aliases: set[str], subs: set[str]) -> dict[str, str]:
+    """패치 대상 표현식 → 하위 모듈 이름. `from rag.chunking import split as S`·`import rag.chunking.split as S`·`ch.split`·`rag.chunking.split`."""
+    out: dict[str, str] = {}
+    for sub in subs:
+        for head in pkg_aliases | {'rag.chunking'}:
+            out[f'{head}.{sub}'] = sub
+        for m in re.finditer(rf'import rag\.chunking\.{sub} as (\w+)', src):
+            out[m.group(1)] = sub
+        for m in re.finditer(rf'from rag\.chunking import ([^\n]*)\b{sub}\b(?: as (\w+))?', src):
+            out[m.group(2) or sub] = sub
+    return out
+
+
+def _defining_module_patches(src: str, aliases: dict[str, str], bound: dict[str, dict[str, set[str]]]) -> list[str]:
+    hits = []
+    for expr, sub in aliases.items():
+        a = re.escape(expr)
+        names = re.findall(rf'setattr\(\s*{a}\s*,\s*[\'"](\w+)[\'"]', src) + re.findall(
+            rf'(?m)^\s*{a}\.(\w+)\s*=[^=]', src
+        )
+        for name in names:
+            users = bound.get(sub, {}).get(name)
+            if users:
+                where = '·'.join(f'rag.chunking.{u}' if u != '__init__' else 'rag.chunking' for u in sorted(users))
+                hits.append(f'{expr}.{name} 패치는 {where}에 닿지 않는다(직접 바인딩) — 소비 모듈의 전역을 패치하라')
+    return hits
+
+
+def test_직접_바인딩된_이름은_정의_모듈에_패치하지_않는다() -> None:
+    bound = _bound_directly()
+    assert bound, '하위 모듈 사이의 직접 바인딩이 없다 — 패키지 분리 상태를 확인하라'
+    bad = []
+    for f in [*(ROOT / 'tests').glob('*.py'), *(ROOT / 'eval').rglob('*.py')]:
+        src = f.read_text(encoding='utf-8')
+        aliases = _submodule_aliases(src, _chunking_aliases(src), set(bound))
+        for hit in _defining_module_patches(src, aliases, bound):
+            bad.append(f'{f.relative_to(ROOT)}: {hit}')
+    assert not bad, '\n'.join(bad)
+
+
 def test_하위_모듈은_서로를_절대_경로로만_쓴다() -> None:
     """상대 import는 계층 검사(test_architecture)를 우회한다."""
     for f in PKG.glob('*.py'):

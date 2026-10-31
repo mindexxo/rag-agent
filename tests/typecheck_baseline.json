@@ -78,6 +78,7 @@
  "rag/cancellation.py",
  "rag/chunking/__init__.py",
  "rag/chunking/plain.py",
+ "rag/chunking/runtime.py",
  "rag/chunking/sections.py",
  "rag/chunking/split.py",
  "rag/citation_labels.py",

@@ -4,15 +4,30 @@
 """
 
 import threading
+from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict, Unpack, cast
+
+from pydantic import AnyUrl
 
 from config import settings
 from rag.chunking.errors import CaptionFailedError, PictureLimitError
 
 if TYPE_CHECKING:
+    from docling.datamodel.base_models import ItemAndImageEnrichmentElement
+    from docling.datamodel.pipeline_options import PdfPipelineOptions, TableStructureOptions
     from docling.document_converter import DocumentConverter
-    from docling_core.types.doc import DoclingDocument
+    from docling.models.base_model import BaseEnrichmentModel
+    from docling.models.picture_description_base_model import PictureDescriptionBaseModel
+    from docling_core.types.doc import DoclingDocument, NodeItem, PictureMeta
+
+
+class ConvertKwargs(TypedDict, total=False):
+    """converter.convert에 그대로 넘기는 선택 인자 — PDF만 쪽 상한·쪽 범위를 준다."""
+
+    max_num_pages: int
+    page_range: tuple[int, int]
+
 
 # Triton OCR 상수 — 서버(serving/triton-ocr/model_repository/ocr/1/model.py)와 짝이라 설정으로 빼지 않는다.
 OCR_LANG = 'korean'  # docling 기본은 ['chinese'] — 한글 표를 틀린 값으로 채운다
@@ -49,17 +64,19 @@ class PictureGuard:
     문서 경계는 convert_with가 arm()으로 알린다 — id(doc)로 가르면 해제된 문서의 id가 재사용될 수 있다.
     """
 
-    def __init__(self, inner):
+    def __init__(self, inner: 'PictureDescriptionBaseModel') -> None:
         self._inner = inner
         self._counted = False
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> object:  # 나머지 속성은 원본 모델에 그대로 위임한다
         return getattr(self._inner, name)
 
     def arm(self) -> None:
         self._counted = False
 
-    def __call__(self, doc, element_batch):
+    def __call__(
+        self, doc: 'DoclingDocument', element_batch: Iterable['ItemAndImageEnrichmentElement']
+    ) -> Iterator['NodeItem']:
         if not self._counted:
             self._counted = True
             n = _captionable_count(doc, self._inner.options.picture_area_threshold)
@@ -68,13 +85,14 @@ class PictureGuard:
                     f'그림 {n}장 — 문서당 {settings.docling_max_pictures}장을 넘는 문서는 받지 않는다'
                 )
         for item in self._inner(doc, element_batch):
-            desc = item.meta.description if item.meta is not None else None
+            meta = cast('PictureMeta | None', item.meta)  # 캡션 모델이 내는 항목은 그림이다
+            desc = meta.description if meta is not None else None
             if desc is not None and not (desc.text or '').strip():
                 raise CaptionFailedError('그림 캡션 실패(VLM 응답 없음·오류) — 나중에 다시 시도한다')
             yield item
 
 
-def _captionable_count(doc, area_threshold: float) -> int:
+def _captionable_count(doc: 'DoclingDocument', area_threshold: float) -> int:
     """docling이 캡션을 요청할 그림 수 — PictureDescriptionBaseModel.__call__의 면적 판정을 그대로 따른다.
 
     순회도 docling과 같은 doc.iterate_items()다(doc.pictures는 머리글 등 furniture까지 담아 더 크다).
@@ -101,7 +119,7 @@ _XLSX_PICTURE_AREA_THRESHOLD = 0.0  # 엑셀 그림 캡션 면적 하한 — 근
 _picture_guards: list[PictureGuard] = []
 
 
-def _guard_picture_models(converter) -> None:
+def _guard_picture_models(converter: 'DocumentConverter') -> None:
     """세 형식의 파이프라인을 미리 띄우고 캡션 모델을 PictureGuard로 바꿔 끼운다.
 
     initialized_pipelines는 DocumentConverter의 파이프라인 캐시다. XLSX는 캡션 면적 하한이 달라 DOCX와 파이프라인을
@@ -116,7 +134,7 @@ def _guard_picture_models(converter) -> None:
         for i, model in enumerate(pipeline.enrichment_pipe):
             if isinstance(model, PictureDescriptionBaseModel):
                 guard = PictureGuard(model)
-                pipeline.enrichment_pipe[i] = guard
+                pipeline.enrichment_pipe[i] = cast('BaseEnrichmentModel', guard)  # 원본 모델 자리에 대리 객체
                 _picture_guards.append(guard)
 
 
@@ -124,6 +142,11 @@ def caption_headers() -> dict[str, str]:
     """캡션·OCR 요청에 붙일 HTTP 헤더 — 키가 있을 때만 Bearer(사내 VLM은 키가 없다)."""
     key = settings.vlm_caption_api_key
     return {'Authorization': f'Bearer {key}'} if key else {}
+
+
+def _table_options(opts: 'PdfPipelineOptions') -> 'TableStructureOptions':
+    """table_structure_options의 실제 값은 TableStructureOptions다 — 선언 타입이 그 부모라 좁혀 준다."""
+    return cast('TableStructureOptions', opts.table_structure_options)
 
 
 def docling_converter() -> 'DocumentConverter':
@@ -169,10 +192,10 @@ def docling_converter() -> 'DocumentConverter':
                     timeout=settings.ocr_kserve_timeout_seconds,
                 )
             opts.do_table_structure = True
-            opts.table_structure_options.mode = (
+            _table_options(opts).mode = (
                 TableFormerMode.FAST if settings.docling_table_mode == 'fast' else TableFormerMode.ACCURATE
             )
-            opts.table_structure_options.do_cell_matching = settings.docling_do_cell_matching
+            _table_options(opts).do_cell_matching = settings.docling_do_cell_matching
             # opts.document_timeout은 걸지 않는다 — 문서 마감은 convert_process.ConvertProcess가 프로세스째 끊는다. docling의 것은
             # PDF 쪽 루프에서만 검사하고 PARTIAL_SUCCESS(→ 결정적 실패)로 끝나 "마감 초과 = 일시 실패"와 어긋난다.
             opts.accelerator_options = AcceleratorOptions(
@@ -180,7 +203,7 @@ def docling_converter() -> 'DocumentConverter':
             )
             # enable_remote_services를 안 켜면 do_picture_description이 설정 단계에서 OperationNotAllowed로 죽는다.
             caption_opts = PictureDescriptionApiOptions(
-                url=settings.vlm_caption_url,
+                url=AnyUrl(settings.vlm_caption_url),
                 params={
                     'model': settings.vlm_caption_model,
                     'temperature': settings.vlm_caption_temperature,  # params는 요청 body에 그대로 들어간다
@@ -222,7 +245,9 @@ def docling_converter() -> 'DocumentConverter':
     return _converter
 
 
-def convert_with(converter: 'DocumentConverter', file_path: str | Path, **kwargs) -> 'DoclingDocument':
+def convert_with(
+    converter: 'DocumentConverter', file_path: str | Path, **kwargs: Unpack[ConvertKwargs]
+) -> 'DoclingDocument':
     """변환기 하나로 변환 + 불완전 결과 가드의 정의점.
 
     raises_on_error=True만으로는 부족하다 — docling은 PARTIAL_SUCCESS(원격 OCR 실패 등)에 예외를 안 던지므로 status와

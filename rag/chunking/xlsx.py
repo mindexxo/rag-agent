@@ -18,8 +18,11 @@
 
 import logging
 import math
+from collections.abc import Iterator
 from contextlib import closing
 from io import BytesIO
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import openpyxl
 
@@ -28,6 +31,10 @@ from rag.chunking import convert_process, docling_elements
 from rag.chunking.tables import TABLE_BATCH_TOKENS, TABLE_MAX_TOKENS, batch_table_rows, to_markdown_table
 from rag.chunking.types import ChunkData, TableBlock
 from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN, estimate_tokens_conservative
+
+if TYPE_CHECKING:
+    from docling_core.types.doc import DoclingDocument
+    from openpyxl import Workbook
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +49,7 @@ class XlsxUploadRejected(Exception):
 class XlsxTableTooLarge(XlsxUploadRejected):
     """시트 표가 크기 상한을 넘었다. 문구는 토큰을 말하지 않고, 나눠 올리라고 하지 않는다(모듈 docstring)."""
 
-    def __init__(self, sheet: str, percent: int, rows: int, cols: int):
+    def __init__(self, sheet: str, percent: int, rows: int, cols: int) -> None:
         self.sheet, self.percent, self.rows, self.cols = sheet, percent, rows, cols
         super().__init__(
             f"시트 '{sheet}'의 표가 허용 크기의 {percent}%입니다(현재 {rows}행 × {cols}열). "
@@ -56,15 +63,15 @@ class XlsxDescriptionRequired(XlsxUploadRejected):
     이번 요청에 안 보냈어도 직전 버전에서 계승되면 통과한다 — 계승 판정은 라우터가 끝낸 뒤 최종값만 넘긴다.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__('xlsx 업로드에는 표 설명이 필요합니다 (검색 정확도를 위해 필수).')
 
 
-def _cell(value) -> str:
+def _cell(value: object) -> str:
     return '' if value is None else str(value)
 
 
-def _has_value(value) -> bool:
+def _has_value(value: object) -> bool:
     """공백만 든 칸은 빈칸이다 — docling과 기준이 다르면 openpyxl만 센 시트를 docling이 비워 내 색인이 실패한다."""
     return value is not None and str(value).strip() != ''
 
@@ -84,7 +91,7 @@ def _check_sheet_size(title: str, header: list, body: list) -> None:
         raise XlsxTableTooLarge(title, math.ceil(tokens * 100 / TABLE_MAX_TOKENS), len(body), len(header))
 
 
-def _iter_sheets(wb):
+def _iter_sheets(wb: 'Workbook') -> Iterator[tuple[str, list[str], list[list[str]]]]:
     """시트별 (시트명, 헤더행, 데이터행들) — 완전 빈 행은 제외한다.
 
     업로드 검증·색인·첨부가 모두 이 함수로 시트를 읽는다 — 재는 규칙이 두 벌이면 "업로드 통과·색인 거절"이 난다.
@@ -156,7 +163,7 @@ def _sheet_chunks(title: str, blocks: list[Block], description: str, start: int)
     ]
 
 
-def _plain_sheets(file_path, *, check_size: bool = True) -> list[tuple[str, list[list[str]]]]:
+def _plain_sheets(file_path: str | Path, *, check_size: bool = True) -> list[tuple[str, list[list[str]]]]:
     with closing(openpyxl.load_workbook(file_path, read_only=True, data_only=True)) as wb:
         out = []
         for title, header, body in _iter_sheets(wb):
@@ -166,7 +173,7 @@ def _plain_sheets(file_path, *, check_size: bool = True) -> list[tuple[str, list
         return out
 
 
-def xlsx_plain_text(file_path) -> str:
+def xlsx_plain_text(file_path: str | Path) -> str:
     """채팅 첨부용 — 시트별 표 markdown을 묶지 않고 그대로 잇는다.
 
     색인용 크기 상한은 걸지 않는다 — 첨부에는 더 좁은 자체 상한(schemas.kms.ATTACHMENT_MAX_TEXT_CHARS)이 있고, 여기서
@@ -175,12 +182,12 @@ def xlsx_plain_text(file_path) -> str:
     return '\n'.join(_render(TableBlock(rows)) for _, rows in _plain_sheets(file_path, check_size=False))
 
 
-def _check_workbook_size(file_path) -> list[str]:
+def _check_workbook_size(file_path: str | Path) -> list[str]:
     """크기 상한 검사(위반이면 XlsxTableTooLarge) 후 셀이 있는 시트 이름을 문서 순서로 돌려준다."""
     return [title for title, _ in _plain_sheets(file_path)]
 
 
-def _docling_sheet_blocks(doc) -> dict[str, list[Block]]:
+def _docling_sheet_blocks(doc: 'DoclingDocument') -> dict[str, list[Block]]:
     """docling 엑셀 문서 → {시트명: [블록, …]}(읽기 순서). 시트는 docling의 'sheet' 그룹이고 그룹 이름이 시트명이다.
 
     한 시트에 표가 여럿이면 표마다 자기 헤더를 가진 블록이 된다(시트당 표 1개는 강제하지 않는다). 숨긴 시트의 그룹은
@@ -204,7 +211,7 @@ def _docling_sheet_blocks(doc) -> dict[str, list[Block]]:
     return sheets
 
 
-def chunk_xlsx(file_path, description: str = '') -> list[ChunkData]:
+def chunk_xlsx(file_path: str | Path, description: str = '') -> list[ChunkData]:
     """시트별 행 묶음 청크. description(표 설명)이 있으면 각 묶음 앞에 병합한다.
 
     크기 상한은 docling 변환 전에 openpyxl로 먼저 잰다(위반이면 XlsxTableTooLarge). openpyxl이 셀을 본 시트를 docling이

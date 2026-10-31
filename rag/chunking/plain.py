@@ -7,7 +7,7 @@ import pdfplumber
 from rag.chunking.types import Section
 
 
-def read_text(file_path) -> str:
+def read_text(file_path: str | Path) -> str:
     """텍스트 파일 읽기 — utf-8 → cp949(국내 txt에 흔함) → utf-8 replace 순으로 시도한다."""
     raw = Path(file_path).read_bytes()
     for enc in ('utf-8', 'cp949'):

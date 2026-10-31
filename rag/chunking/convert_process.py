@@ -7,16 +7,19 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Unpack
 
 from config import settings
 from rag.chunking import document_converter, ocr_llm
+from rag.chunking.document_converter import ConvertKwargs
 
 if TYPE_CHECKING:
+    from multiprocessing.connection import Connection
+
     from docling_core.types.doc import DoclingDocument
 
 
-def convert_local(file_path: str | Path, **kwargs) -> 'DoclingDocument':
+def convert_local(file_path: str | Path, **kwargs: Unpack[ConvertKwargs]) -> 'DoclingDocument':
     """이 프로세스에서 docling 변환 한 번 → DoclingDocument. 변환 프로세스(_convert_child_main)가 부른다.
 
     상용 OCR(OCR_PROVIDER=llm)의 PDF는 ocr_llm.convert_pdf으로, 나머지는 기본 변환기로 document_converter.convert_with를 거친다.
@@ -78,7 +81,7 @@ CHILD_SETTING_PREFIXES = (
 )
 
 
-def _child_settings() -> dict:
+def _child_settings() -> dict[str, object]:
     return {k: v for k, v in settings.model_dump().items() if k.startswith(CHILD_SETTING_PREFIXES)}
 
 
@@ -94,24 +97,26 @@ class ConvertProcess:
     - 설정 스냅숏이 바뀌면 재기동한다 — 자식은 기동 때의 설정으로 변환기를 만든다.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._proc: subprocess.Popen | None = None
-        self._conn = None
-        self._snapshot: dict | None = None
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._conn: Connection | None = None
+        self._snapshot: dict[str, object] | None = None
 
-    def convert(self, file_path: str | Path, kwargs: dict) -> 'DoclingDocument':
+    def convert(self, file_path: str | Path, kwargs: ConvertKwargs) -> 'DoclingDocument':
         with self._lock:
             snapshot = _child_settings()
             if self._proc is None or self._proc.poll() is not None or snapshot != self._snapshot:
                 self._start(snapshot)
+            conn = self._conn
+            assert conn is not None  # _start가 만들었다
             deadline = settings.docling_document_timeout_seconds
-            self._conn.send((str(Path(file_path).resolve()), kwargs))  # 자식의 cwd는 저장소 루트다
-            if not self._conn.poll(deadline):
+            conn.send((str(Path(file_path).resolve()), kwargs))  # 자식의 cwd는 저장소 루트다
+            if not conn.poll(deadline):
                 self._stop()
                 raise TimeoutError(f'docling 변환이 {deadline:.0f}초를 넘겨 중단했다(변환 프로세스 재기동)')
             try:
-                kind, value = self._conn.recv()
+                kind, value = conn.recv()
             except EOFError:  # 자식이 죽었다(OOM kill 등) — poll은 EOF에도 True다
                 code = self._exit_code()
                 self._stop()
@@ -169,7 +174,8 @@ class ConvertProcess:
         if proc is not None and proc.poll() is None:
             proc.kill()
 
-    def _exit_code(self):
+    def _exit_code(self) -> int | None:
+        assert self._proc is not None
         try:
             return self._proc.wait(5)
         except subprocess.TimeoutExpired:
@@ -192,7 +198,7 @@ def abort_conversion() -> None:
     process.abort()
 
 
-def docling_convert(file_path: str | Path, **kwargs):
+def docling_convert(file_path: str | Path, **kwargs: Unpack[ConvertKwargs]) -> 'DoclingDocument':
     """docling 변환 한 번 → DoclingDocument(변환 프로세스에 맡긴다). PDF·DOCX·MD·XLSX가 공유한다.
 
     실패 분류(outbox.is_transient): TimeoutError·CaptionFailedError·LlmReadFailedError는 일시,

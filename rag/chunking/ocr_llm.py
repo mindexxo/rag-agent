@@ -10,16 +10,20 @@ page_range로 변환해도 쪽 번호는 원래 번호다). 묶음 경계에서 
 
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, Unpack, cast
 
 import pdfplumber
+from pydantic import AnyUrl
 
 from config import settings
 from rag.chunking import document_converter
+from rag.chunking.document_converter import ConvertKwargs
 from rag.chunking.errors import LlmReadFailedError
 
 if TYPE_CHECKING:
-    from docling_core.types.doc import DoclingDocument
+    from docling.document_converter import DocumentConverter
+    from docling_core.types.doc import DocItem, DoclingDocument, TableItem
+    from PIL.Image import Image
 
 # 스캔 쪽 판정 — 둘 다 만족해야 스캔이다. 글자 하한이 0이 아닌 것은 스캔본에도 쪽 번호·도장 몇 글자가 글자층으로 박혀서다.
 # 사진 조건은 글자 없는 표지·빈 쪽을 거른다. 보이지 않는 글자층을 깐 스캔본은 디지털로 판정돼 그 글자층이 색인된다.
@@ -101,7 +105,7 @@ def page_runs(scan_flags: list[bool]) -> list[tuple[bool, int, int]]:
     return runs
 
 
-def _vlm_converter():
+def _vlm_converter() -> 'DocumentConverter':
     """프로세스당 1회: 스캔 쪽용 VlmPipeline 변환기. 연결은 캡션 설정을 공유한다(config.py ocr_provider 주석)."""
     global _converter
     with document_converter.DOCLING_LOCK:
@@ -113,7 +117,7 @@ def _vlm_converter():
             from docling.pipeline.vlm_pipeline import VlmPipeline
 
             vlm_opts = ApiVlmOptions(
-                url=settings.vlm_caption_url,
+                url=AnyUrl(settings.vlm_caption_url),
                 headers=document_converter.caption_headers(),
                 prompt=_SCAN_PAGE_PROMPT,
                 response_format=ResponseFormat.MARKDOWN,
@@ -135,7 +139,7 @@ def _vlm_converter():
     return _converter
 
 
-def convert_pdf(file_path: str | Path, **kwargs) -> 'DoclingDocument':
+def convert_pdf(file_path: str | Path, **kwargs: Unpack[ConvertKwargs]) -> 'DoclingDocument':
     """상용 OCR의 PDF 변환 — 쪽 묶음마다 경로를 골라 변환하고 합친다(모듈 docstring). 실패 분류는 document_converter.convert_with·LlmReadFailedError."""
     pages = scan_profile(file_path, kwargs.get('max_num_pages'))
     if not pages:  # 쪽 상한 초과(None)·빈 PDF — docling이 기본 경로와 같은 방식으로 거절·처리한다
@@ -158,7 +162,7 @@ def convert_pdf(file_path: str | Path, **kwargs) -> 'DoclingDocument':
     return DoclingDocument.concatenate(parts)
 
 
-def require_pages(doc, first: int, last: int) -> None:
+def require_pages(doc: 'DoclingDocument', first: int, last: int) -> None:
     """스캔 쪽마다 글 요소가 하나는 있어야 한다 — LLM 빈 응답(docling이 오류를 빈 글자로 삼킨다)은 그 쪽이 통째로 빈다."""
     seen = {prov.page_no for item, _ in doc.iterate_items() for prov in (getattr(item, 'prov', None) or [])}
     missing = [n for n in range(first, last + 1) if n not in seen]
@@ -166,17 +170,18 @@ def require_pages(doc, first: int, last: int) -> None:
         raise LlmReadFailedError(f'스캔 쪽 {missing} LLM 응답 없음(오류·한도 초과) — 나중에 다시 시도한다')
 
 
-def _titles_to_section_headers(doc) -> None:
+def _titles_to_section_headers(doc: 'DoclingDocument') -> None:
     """title 라벨을 section_header로 바꾼다 — LLM이 '#'로 쓴 줄은 title이 되는데 PDF 섹션 조립
     (docling_elements.sections_from_docling_elements)은 section_header만 헤딩으로 봐서, 그대로면 문서 제목이 본문 줄로 떨어진다."""
     from docling_core.types.doc import DocItemLabel  # 지연 import — docling은 톱레벨에 안 들인다
 
-    for item, _ in doc.iterate_items():
+    for node, _ in doc.iterate_items():
+        item = cast('DocItem', node)  # 기본 순회는 DocItem만 낸다 — 타입만 좁힌다
         if item.label == DocItemLabel.TITLE:
             item.label = DocItemLabel.SECTION_HEADER
 
 
-def _fill_photo_tables(doc, file_path: str | Path, pages: list[PdfPage]) -> None:
+def _fill_photo_tables(doc: 'DoclingDocument', file_path: str | Path, pages: list[PdfPage]) -> None:
     """글자 칸이 하나도 없는 표(= OCR을 끈 경로의 사진 표)를 LLM으로 채운다. 표 밖 줄(제목)은 표 바로 앞 글로 넣는다."""
     from concurrent.futures import ThreadPoolExecutor
 
@@ -192,7 +197,7 @@ def _fill_photo_tables(doc, file_path: str | Path, pages: list[PdfPage]) -> None
     crops = _photo_crops(doc, file_path, pages, targets)
     with ThreadPoolExecutor(max_workers=max(1, settings.ocr_llm_concurrency)) as pool:
         replies = list(pool.map(_read_photo_table, crops))
-    for item, reply in zip(targets, replies):
+    for item, reply in zip(targets, replies, strict=True):  # 표마다 자른 그림 하나
         outside, rows = split_table_reply(reply)
         if rows:
             _fill_table_cells(item, rows)
@@ -204,27 +209,31 @@ def photo_box(
     table: tuple[float, float, float, float], images: tuple[tuple[float, float, float, float], ...]
 ) -> tuple[float, float, float, float]:
     """잘라 보낼 영역 — 표를 담은 사진 중 가장 작은 것(면적 상한 안), 없으면 표 영역 그대로. 좌표는 왼쪽 위 원점 pt."""
-    l, t, r, b = table
-    limit = _PHOTO_MAX_AREA_RATIO * (r - l) * (b - t)
+    left, top, right, bottom = table
+    limit = _PHOTO_MAX_AREA_RATIO * (right - left) * (bottom - top)
     tol = _PHOTO_BBOX_TOL
     holders = [
         box
         for box in images
-        if box[0] <= l + tol
-        and box[1] <= t + tol
-        and box[2] >= r - tol
-        and box[3] >= b - tol
+        if box[0] <= left + tol
+        and box[1] <= top + tol
+        and box[2] >= right - tol
+        and box[3] >= bottom - tol
         and (box[2] - box[0]) * (box[3] - box[1]) <= limit
     ]
     return min(holders, key=lambda x: (x[2] - x[0]) * (x[3] - x[1])) if holders else table
 
 
-def _photo_crops(doc, file_path: str | Path, pages: list[PdfPage], targets) -> list:
+def _photo_crops(
+    doc: 'DoclingDocument', file_path: str | Path, pages: list[PdfPage], targets: list['TableItem']
+) -> list['Image']:
     """표마다 잘라 보낼 이미지(PIL). pypdfium2로 쪽 하나씩 렌더해 자르고 버린다 — docling generate_page_images는
     쪽 이미지를 문서 내내 들고 있어 큰 문서에서 수백 MB가 된다."""
     import pypdfium2  # 지연 import — docling 의존성이고 상용 OCR에서만 쓴다
 
-    crops, rendered_no, rendered = [], None, None
+    crops: list[Image] = []
+    rendered_no: int | None = None
+    rendered: Image | None = None
     pdf = pypdfium2.PdfDocument(str(file_path))
     try:
         for item in targets:
@@ -232,15 +241,16 @@ def _photo_crops(doc, file_path: str | Path, pages: list[PdfPage], targets) -> l
             page = pages[prov.page_no - 1]
             bb = prov.bbox.to_top_left_origin(doc.pages[prov.page_no].size.height)
             box = photo_box((bb.l, bb.t, bb.r, bb.b), page.images)
-            if rendered_no != prov.page_no:
+            if rendered is None or rendered_no != prov.page_no:
                 rendered_no, rendered = prov.page_no, pdf[prov.page_no - 1].render(scale=_OCR_LLM_SCALE).to_pil()
-            crops.append(rendered.crop(tuple(round(v * _OCR_LLM_SCALE) for v in box)))
+            left, top, right, bottom = (round(v * _OCR_LLM_SCALE) for v in box)
+            crops.append(rendered.crop((left, top, right, bottom)))
     finally:
         pdf.close()
     return crops
 
 
-def _read_photo_table(image) -> str:
+def _read_photo_table(image: 'Image') -> str:
     """사진 표 하나를 LLM에 보낸다(docling api_image_request). 빈 응답이면 일시 실패(LlmReadFailedError).
 
     출력이 상한에서 잘렸거나(length) 벤더가 걸렀으면 결정적 실패(RuntimeError) — 잘린 표가 행이 빠진 채 색인되지 않게,
@@ -252,7 +262,7 @@ def _read_photo_table(image) -> str:
     reply = api_image_request(
         image=image,
         prompt=_PHOTO_TABLE_PROMPT,
-        url=settings.vlm_caption_url,
+        url=AnyUrl(settings.vlm_caption_url),
         timeout=settings.ocr_llm_timeout_seconds,
         headers=document_converter.caption_headers(),
         model=settings.vlm_caption_model,
@@ -292,7 +302,7 @@ def split_table_reply(text: str) -> tuple[str, list[list[str]]]:
     return ' '.join(o for o in outside if o), [r + [''] * (width - len(r)) for r in rows]
 
 
-def _fill_table_cells(item, rows: list[list[str]]) -> None:
+def _fill_table_cells(item: 'TableItem', rows: list[list[str]]) -> None:
     """표 요소의 칸을 행 목록으로 바꾼다 — 첫 행이 머리글(docling_grid_rows가 첫 행을 헤더로 쓴다)."""
     from docling_core.types.doc import TableCell, TableData  # 지연 import — docling은 톱레벨에 안 들인다
 

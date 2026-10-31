@@ -1,6 +1,7 @@
 """섹션 조립과 묶기 — 형식별 파서가 흘린 (쪽, 글/표, 헤딩 레벨) 항목을 섹션으로 조립하고 예산까지 묶는다."""
 
 import re
+from typing import cast
 
 from rag.chunking.types import Item, Section, TableBlock, blocks_of, join_blocks
 
@@ -68,10 +69,10 @@ def build_sections(items: list[Item]) -> list[Section]:
         if level is not None:
             flush(stack)
             cut = max(emitted, level - 1)  # 걷어낼 헤딩 중 경로로 한 번도 안 나간 것
-            orphans.extend(zip(stack_pos[cut:], stack[cut:]))
+            orphans.extend(zip(stack_pos[cut:], stack[cut:], strict=True))  # 둘은 같이 늘고 준다
             emitted = min(emitted, level - 1)
             del stack[level - 1 :], stack_pos[level - 1 :]
-            stack.append(text)
+            stack.append(cast(str, text))  # 헤딩은 글이다 — 표 블록은 level 없이 온다
             stack_pos.append(pos)
         else:
             # 섹션의 page는 첫 본문 줄의 쪽이다 — 헤딩이 쪽 끝에 걸려도 인용은 본문이 있는 쪽을 가리켜야 한다.
@@ -85,7 +86,7 @@ def build_sections(items: list[Item]) -> list[Section]:
         flush(stack)
     elif sections:  # 문서가 본문 없는 헤딩으로 끝났다 — 버리지 않고 본문으로(경로는 이미 나간 앞부분)
         start_page = last_page
-        for _, heading in sorted([*orphans, *zip(stack_pos[emitted:], stack[emitted:])]):
+        for _, heading in sorted([*orphans, *zip(stack_pos[emitted:], stack[emitted:], strict=True)]):
             add(heading, last_page)
         flush(stack[:emitted])
     return sections

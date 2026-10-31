@@ -134,7 +134,7 @@ def chunk_file(file_path: str | Path, *, description: str = '') -> list[ChunkDat
             # 이 조각에 실린 헤딩만 — 색인이 식별자 사전으로, 근거 준비가 구간 경계로 쓴다.
             lines = {line.strip() for line in text.split('\n')}
             heads = [h for h in section.headings if h.strip() in lines]
-            meta = {'headings': heads} if heads else {}
+            meta: dict[str, object] = {'headings': heads} if heads else {}
             if table is not None:
                 key = table_keys.setdefault((si, table.block), f't{len(table_keys) + 1}')
                 meta |= {'is_table': True, 'table_key': key, 'table_text': table.text}

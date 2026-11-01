@@ -20,7 +20,7 @@ DB·LLM 없음 — Message는 세션 없이 transient로만 쓰고, LLM은 conft
 
 import pytest
 
-from eval._gold_history import DEFAULT_STATUS, messages_from_conversation
+from eval.gold_history import DEFAULT_STATUS, messages_from_conversation
 from rag.models import Message
 from rag.turn.conversation import build_prior_turns, condense_query, condense_to_queries
 from rag.turn.prompt_texts import CANCELLED_TURN_EMPTY, CANCELLED_TURN_SUFFIX, FAILED_TURN_EMPTY
@@ -104,7 +104,7 @@ class TestSmokeSample:
     """
 
     def test_작은_스모크에도_모든_타입이_들어온다(self):
-        from eval.generation import GEN_TYPES, _smoke_sample
+        from eval.generation import GEN_TYPES, smoke_sample
 
         # 타입이 블록으로 뭉친 모양을 만든다 — gold가 그렇게 생겼고, 앞에서 자르면 뒤쪽 타입이
         # 통째로 빠지는 상황이 이 테스트가 재현하려는 것이다.
@@ -112,12 +112,12 @@ class TestSmokeSample:
         # 합류시킨 뒤로 이 픽스처만 5종에 머물러, 통과할 수 없는 단언이 2주 넘게 빨간 채였다(#173).
         rows = [{'type': t} for t in sorted(GEN_TYPES) for _ in range(10)]
         for n in (1, 5, 10):
-            got = {r['type'] for r in _smoke_sample(rows, n)}
+            got = {r['type'] for r in smoke_sample(rows, n)}
             assert got == GEN_TYPES, f'SMOKE={n}에서 누락: {GEN_TYPES - got}'
 
     def test_원래_순서를_유지한다(self):
         """결과 파일을 회차 간 비교하기 쉬우려면 순서가 흔들리지 않아야 한다."""
-        from eval.generation import _smoke_sample
+        from eval.generation import smoke_sample
 
         rows = [{'type': 'a', 'i': 0}, {'type': 'b', 'i': 1}, {'type': 'a', 'i': 2}]
-        assert [r['i'] for r in _smoke_sample(rows, 4)] == [0, 1, 2]
+        assert [r['i'] for r in smoke_sample(rows, 4)] == [0, 1, 2]

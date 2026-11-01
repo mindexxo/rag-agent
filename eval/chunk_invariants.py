@@ -24,7 +24,7 @@ def norm(text: str) -> str:
     return _IGNORED.sub('', text)
 
 
-def _stitch(pieces: list[str]) -> str:
+def stitch(pieces: list[str]) -> str:
     """이웃 조각을 겹침(SentenceSplitter overlap) 없이 잇는다 — 앞 글의 꼬리와 뒤 글의 머리가 같은 가장 긴 부분을 한 번만."""
     out = ''
     for p in pieces:
@@ -38,7 +38,7 @@ def missing_lines(lines: Iterable[str], heads: list[str], bodies: list[str]) -> 
     pieces = [norm(h) for h in (*heads, *bodies)]
     # 경계에 걸친 줄은 본문끼리만 이어 붙여 찾는다 — 제목 경로까지 이으면 "제98조(보상)"(제목으로 잘못 올라감) + "에 따라
     # 지급한다"(본문)가 이어져 **깨진 문장이 멀쩡해 보인다**.
-    joined = _stitch([norm(b) for b in bodies])
+    joined = stitch([norm(b) for b in bodies])
     out = []
     for line in lines:
         n = norm(line)

@@ -91,7 +91,7 @@ async def load_recent_messages(
     # 격리는 프롬프트 재료에서만 한다(조회 API는 그대로 노출). cancelled·failed는 남겨야 화면과
     # 모델이 보는 이력이 맞아 "다시"의 지시대상이 밀리지 않는다. 격리 집합의 정의는 turn_state.HISTORY_ISOLATED.
     # user·assistant 짝을 함께 뺀다 — 한쪽만 빼면 build_prior_turns의 짝짓기가 밀린다.
-    # 바꾸면 eval/_gold_history.py도 확인할 것.
+    # 바꾸면 eval/gold_history.py도 확인할 것.
     dropped_questions = {
         m.question_message_id for m in messages if m.role == 'assistant' and m.status in HISTORY_ISOLATED
     }
@@ -108,7 +108,7 @@ def _history_content(message: Message) -> str:
 
     표식은 조립 시점에만 붙이고 저장본(Message.content)은 바꾸지 않는다. build_prior_turns와
     _condense_call이 함께 써야 두 이력이 어긋나지 않는다. message의 새 속성을 읽기 시작하면
-    eval/_gold_history.py도 확인할 것 — eval이 그 속성을 안 채우면 조용히 다른 분기를 탄다.
+    eval/gold_history.py도 확인할 것 — eval이 그 속성을 안 채우면 조용히 다른 분기를 탄다.
     """
     if message.role == 'assistant' and message.status == TurnStatus.CANCELLED:
         return message.content + CANCELLED_TURN_SUFFIX if message.content else CANCELLED_TURN_EMPTY

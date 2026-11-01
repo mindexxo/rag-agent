@@ -28,7 +28,7 @@ class TestCheckContains:
         assert _check({"expect_contains": ["5만원"]}, _obs(answer="기준은 5만원입니다")) == []
 
     def test_콤마_표기_흡수(self):
-        # 답변이 "129,000원"이어도 "129000" 기대가 통과 (_contains_point 콤마 규칙)
+        # 답변이 "129,000원"이어도 "129000" 기대가 통과 (contains_point 콤마 규칙)
         assert _check({"expect_contains": ["129000"]}, _obs(answer="금액은 129,000원")) == []
 
     def test_금지_문구_숫자경계(self):

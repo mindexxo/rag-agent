@@ -32,11 +32,11 @@ from collections import defaultdict
 from pathlib import Path
 
 from database import AsyncSessionLocal
-from eval._turn_cleanup import discard_turn
 from eval.absence_judge import JUDGE_PROMPT_VERSION, judge_absence, judge_llm, save_audit
 from eval.generation import load_gold, must_not_contain_violations, row_tenant
 from eval.misinfo_judge import JUDGE_PROMPT_VERSION as MISINFO_JUDGE_VERSION
 from eval.misinfo_judge import confirm_violations
+from eval.turn_cleanup import discard_turn
 from rag.turn.citation_tail import TailSplitter, resolve_citations
 from rag.turn.conversation import ensure_conversation
 from rag.turn.prepared import PreparedRag
@@ -48,7 +48,7 @@ SHOULD_REFUSE = {"no_evidence"}  # 거절이 정답
 SHOULD_ANSWER = {"trap"}  # 답변이 정답 (근거 있는 유도)
 
 
-def _citations(prepared: PreparedRag, answer: str) -> list:
+def answer_citations(prepared: PreparedRag, answer: str) -> list:
     """답변의 실인용 — 운영 두 경로와 같은 방식으로 구한다.
 
     규약의 정의점은 rag/turn/citation_tail.py 모듈 docstring — 여기서는 그 규약을 적용만 한다.
@@ -94,7 +94,7 @@ async def _refused(tenant: str, query: str) -> tuple[bool, str, str]:
             answer = "".join([tok async for tok in svc.generate(prepared)])
         finally:
             await discard_turn(session, tenant, conversation.id)
-    return not _citations(prepared, answer), answer, prepared.route
+    return not answer_citations(prepared, answer), answer, prepared.route
 
 
 async def compute() -> dict:

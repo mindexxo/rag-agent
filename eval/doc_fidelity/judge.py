@@ -19,11 +19,11 @@ if TYPE_CHECKING:
     from eval.claude_client import ClaudeCliClient
 
 DEFAULT_MODEL = 'claude-sonnet-4-5-20250929'  # 표 파싱 재판정자와 같은 모델(eval/table_parsing/llm_judge.py)
-_JSON = re.compile(r'\{.*\}', re.S)
+JSON_OBJECT = re.compile(r'\{.*\}', re.S)
 
 
 def parse(text: str) -> Verdict:
-    m = _JSON.search(text or '')
+    m = JSON_OBJECT.search(text or '')
     if not m:
         raise ValueError(f'JSON 없음: {text[:120]!r}')
     return Verdict.model_validate(json.loads(m.group(0)))

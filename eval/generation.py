@@ -29,8 +29,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from database import AsyncSessionLocal
 from eval import epcov_judge
-from eval._gold_history import messages_from_conversation
 from eval.absence_judge import judge_llm
+from eval.gold_history import messages_from_conversation
 from eval.misinfo_judge import confirm_violations
 from eval.retrieval import Resolved, resolve_gold
 from eval.rows import GoldRow
@@ -254,7 +254,7 @@ def expected_points_coverage(answer: str, points: list[str]) -> float | None:
     마크다운 강조(`**`·`__`·백틱)를 지우고 비교한다.
 
     이 함수는 규칙 판정만 한다. run_mode의 `expected_points_coverage`는 **규칙 + 2단계 심판** 값이고
-    규칙만의 값은 `expected_points_coverage_rule`에 남는다(_epcov_scores).
+    규칙만의 값은 `expected_points_coverage_rule`에 남는다(epcov_scores).
     """
     if not points:
         return None
@@ -271,7 +271,7 @@ def expected_points_hits(answer: str, points: list[str]) -> list[bool]:
     norm_answer = re.sub(r"\s+", "", _MD_EMPHASIS.sub("", answer))
     # 포인트 쪽도 같이 지운다 — 골드 일부는 포인트 자체에 '**SK-250 베이비**'처럼 강조가 있다.
     # 답변만 지우면 그 포인트들이 부분문자열 단계에서 영영 안 맞는다.
-    hits = [_contains_point(norm_answer, re.sub(r"\s+", "", _MD_EMPHASIS.sub("", p))) for p in points]
+    hits = [contains_point(norm_answer, re.sub(r"\s+", "", _MD_EMPHASIS.sub("", p))) for p in points]
 
     remaining_idx = [i for i, h in enumerate(hits) if not h]
     # 금액 게이트: 포인트에 "원(₩) 단위 금액"이 있으면 그 값이 답변에 실재할 때만
@@ -323,7 +323,7 @@ def _normalize_number_notation(s: str) -> str:
     return _MAN_RE.sub(lambda m: str(int(float(m.group(1)) * 10000)), s)
 
 
-def _contains_point(norm_answer: str, norm_point: str) -> bool:
+def contains_point(norm_answer: str, norm_point: str) -> bool:
     """숫자 경계를 지키는 부분문자열 매칭 — '30분'이 '130분'/'305분'에 오탐되는 것 방지.
     콤마·만원 표기를 양쪽에서 정규화 — '38,000원'·'3만원'과 xlsx 숫자셀('38000'·'30000')의 표기 차이 흡수."""
     norm_answer = _normalize_number_notation(norm_answer)
@@ -350,7 +350,7 @@ def must_not_contain_violations(answer: str, forbidden: list[str]) -> list[str] 
 
     condense.py도 같은 필드명 must_not_contain을 쓰지만 매칭이 다르다 — condense는
     공백만 지우는 짧은 재작성문 비교(_norm)이고, 여기는 자유생성 긴 답변이라
-    expected_points와 같은 숫자 경계·콤마 정규화(_contains_point)를 재사용한다.
+    expected_points와 같은 숫자 경계·콤마 정규화(contains_point)를 재사용한다.
     필드명은 같지만 정의점은 둘로 갈린다 — 헷갈리면 이 문단이 유일한 설명이다.
 
     임베딩 폴백을 일부러 안 쓴다. EPCov는 위음성(사실이 있는데 놓침)이 위험해 폴백을
@@ -363,10 +363,10 @@ def must_not_contain_violations(answer: str, forbidden: list[str]) -> list[str] 
     if not forbidden:
         return None
     norm_answer = re.sub(r"\s+", "", answer)
-    return [f for f in forbidden if _contains_point(norm_answer, re.sub(r"\s+", "", f))]
+    return [f for f in forbidden if contains_point(norm_answer, re.sub(r"\s+", "", f))]
 
 
-def _citation_match(core: str, stem: str) -> bool:
+def citation_match(core: str, stem: str) -> bool:
     """인용 토큰 코어 ↔ 기대 파일명 stem 매칭.
 
     허용: 정확 일치 / 언더스코어 마지막 조각 일치(kms_03_배송지연대응 ↔ 배송지연대응) /
@@ -415,7 +415,7 @@ def citation_accuracy(answer: str, expected_docs: list[str], chunks: list[Retrie
     covered = 0
     for group in groups:
         stems = [re.sub(r"\.(pdf|docx|xlsx|txt|md)$", "", d) for d in group]
-        if any(_citation_match(core, stem) for stem in stems for core in cores):
+        if any(citation_match(core, stem) for stem in stems for core in cores):
             covered += 1
     return covered / len(groups)
 
@@ -465,7 +465,7 @@ EPCOV_JUDGE_WORKERS = int(
 )  # 심판 동시 호출 — Claude는 호출=프로세스라 너무 올리면 한도에 빨리 닿는다
 
 
-async def _epcov_scores(
+async def epcov_scores(
     judge: LlmClient | None, sem: asyncio.Semaphore, answer: str, points: list[str], rule_hits: list[bool]
 ) -> dict:
     """EPCov 2단계: 규칙 히트(rule_hits) → 미적중이면서 금액 게이트를 통과한 포인트만 심판 확인.
@@ -574,7 +574,7 @@ async def run_mode(
     points_l = [g.get("expected_points", []) for g, _ in work]
     rule_l = [expected_points_hits(a, p) if p else [] for a, p in zip(answers, points_l, strict=False)]
     epcov_l = await asyncio.gather(
-        *(_epcov_scores(epcov_llm, epcov_sem, a, p, h) for a, p, h in zip(answers, points_l, rule_l, strict=False))
+        *(epcov_scores(epcov_llm, epcov_sem, a, p, h) for a, p, h in zip(answers, points_l, rule_l, strict=False))
     )
 
     # ⑤ 채점·행 구성 — 직렬
@@ -610,7 +610,7 @@ async def run_mode(
     return rows
 
 
-def _smoke_sample[R: Mapping[str, object]](rows: list[R], n: int) -> list[R]:
+def smoke_sample[R: Mapping[str, object]](rows: list[R], n: int) -> list[R]:
     """스모크셋 — 타입별로 고르게 뽑는다.
 
     gold는 테넌트 블록이 이어진 순서라 앞에서 자르면(`rows[:n]`) 앞쪽 타입만 들어온다 —
@@ -637,7 +637,7 @@ async def main() -> None:
     gold = load_gold()
     gen_gold = [g for g in gold if g["type"] in GEN_TYPES]
     if SMOKE:
-        gen_gold = _smoke_sample(gen_gold, SMOKE)
+        gen_gold = smoke_sample(gen_gold, SMOKE)
     RESULT_DIR.mkdir(exist_ok=True)
 
     llm = create_llm()

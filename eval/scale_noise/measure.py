@@ -11,7 +11,7 @@
 
 import json
 import time
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from contextlib import contextmanager
 from datetime import datetime
 
@@ -57,6 +57,11 @@ def _exact(tenant: str, vector: list[float], n: int) -> dict:
     }
 
 
+def _first_rank(ranked: list[int], gold: Collection[int]) -> int | None:
+    """정답 청크가 처음 나오는 순위(1부터). 없으면 None."""
+    return next((i + 1 for i, c in enumerate(ranked) if c in gold), None)
+
+
 async def _pool_compare(gold_rows: list[dict], gold_ids: dict[str, set[int]]) -> list[dict]:
     """ⓐ — 문항마다 근사·정확 상위 30."""
     out = []
@@ -76,14 +81,13 @@ async def _pool_compare(gold_rows: list[dict], gold_ids: dict[str, set[int]]) ->
         te = time.time() - t
         aa = [int(h['_source']['chunk_id']) for h in a['hits']['hits']]
         ee = [int(h['_source']['chunk_id']) for h in e['hits']['hits']]
-        rank = lambda lst: next((i + 1 for i, c in enumerate(lst) if c in ids), None)  # noqa: E731
         out.append(
             {
                 'id': g['id'],
                 'overlap': len(set(aa) & set(ee)),
                 'top1_same': bool(aa and ee and aa[0] == ee[0]),
-                'gold_rank_approx': rank(aa),
-                'gold_rank_exact': rank(ee),
+                'gold_rank_approx': _first_rank(aa, ids),
+                'gold_rank_exact': _first_rank(ee, ids),
                 'noise_in_pool': sum(1 for c in aa if (c >> 20) >= NOISE_DOC_ID_BASE),
                 'ms_approx': round(ta * 1000),
                 'ms_exact': round(te * 1000),

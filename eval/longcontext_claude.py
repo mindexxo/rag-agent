@@ -33,10 +33,10 @@ from eval.generation import (
     GOLD,
     GOLD_VERSION,
     RESULT_DIR,
-    _citation_match,
-    _smoke_sample,
+    citation_match,
     expected_points_coverage,
     row_tenant,
+    smoke_sample,
     summarize,
 )
 from eval.rows import GoldRow
@@ -150,7 +150,7 @@ def filename_citation_accuracy(cited: list[str], expected_docs: list[str]) -> fl
     covered = 0
     for group in groups:
         stems = [re.sub(r"\.(pdf|docx|xlsx|txt|md)$", "", d) for d in group]
-        if any(_citation_match(core, stem) for stem in stems for core in cores):
+        if any(citation_match(core, stem) for stem in stems for core in cores):
             covered += 1
     return covered / len(groups)
 
@@ -162,7 +162,7 @@ async def main() -> None:
     gold = [json.loads(line) for line in GOLD.read_text().splitlines() if line.strip()]
     gen_gold = [g for g in gold if g["type"] in GEN_TYPES]
     if SMOKE:
-        gen_gold = _smoke_sample(gen_gold, SMOKE)
+        gen_gold = smoke_sample(gen_gold, SMOKE)
     RESULT_DIR.mkdir(exist_ok=True)
 
     client = ClaudeCliClient(model=os.getenv("CLAUDE_MODEL", "sonnet"))

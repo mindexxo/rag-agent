@@ -22,7 +22,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from config import settings
-from eval._gold_history import messages_from_conversation
+from eval.gold_history import messages_from_conversation
 from rag.llm import create_aux_llm
 from rag.turn.conversation import condense_query, condense_to_queries, trim_messages_for_condense
 

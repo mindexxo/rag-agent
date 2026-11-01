@@ -4,7 +4,7 @@
 "물을 때마다 답이 다르면 못 쓴다"이다.
 
 측정 정의:
-- 표본: 골드셋 생성 타입에서 타입 균등 N문항(기본 50, _smoke_sample — 무작위 없음·재현 가능).
+- 표본: 골드셋 생성 타입에서 타입 균등 N문항(기본 50, smoke_sample — 무작위 없음·재현 가능).
 - 각 문항을 retrieved 모드(운영 경로 그대로: condense→검색→리랭크→생성)로 R회(기본 5) 반복.
   검색까지 매번 다시 탄다 — 재는 것은 생성 LLM 단독이 아니라 **시스템 전체의 재현성**이다
   (TEI 임베딩·리랭커도 콜마다 비결정적이다: 1e-4 오더).
@@ -26,7 +26,7 @@ import os
 from collections import defaultdict
 
 from database import AsyncSessionLocal
-from eval.generation import GEN_TYPES, RESULT_DIR, _smoke_sample, expected_points_hits, load_gold, run_mode
+from eval.generation import GEN_TYPES, RESULT_DIR, expected_points_hits, load_gold, run_mode, smoke_sample
 from eval.retrieval import Resolved
 from rag.llm import create_llm
 
@@ -39,7 +39,7 @@ async def main() -> None:
     # load_gold()라야 사내 실문서가 모수에 들어온다 — 정본 직독이면 표본 50문항이
     # 모의 6테넌트에서만 뽑힌다. 타입 균등 표본이라 모수가 넓어지면 구성이 바뀐다.
     gold = load_gold()
-    sample = _smoke_sample([g for g in gold if g["type"] in GEN_TYPES], N)
+    sample = smoke_sample([g for g in gold if g["type"] in GEN_TYPES], N)
     points_by_id = {g["id"]: g.get("expected_points", []) for g in sample}
 
     llm = create_llm()

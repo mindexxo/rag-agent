@@ -35,7 +35,7 @@ gold가 값을 실었으면 그대로 통과시킨다 — 어댑터를 안 고�
 타면서 통과한다. 크래시가 없어 회귀 테스트도 신호를 안 준다. 막으려면 gold 스키마 쪽
 래칫이 필요하다(eval/validate_gold_v2.py의 REQUIRED_KEYS를 conversation 내부 키까지 확장).
 
-실행: python -m eval._gold_history        # 계약 스모크 (DB·LLM 불필요)
+실행: python -m eval.gold_history        # 계약 스모크 (DB·LLM 불필요)
 """
 
 from rag.models import Message

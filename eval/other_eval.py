@@ -19,7 +19,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from database import AsyncSessionLocal
-from eval._turn_cleanup import discard_turn
+from eval.turn_cleanup import discard_turn
 from rag.turn.conversation import ensure_conversation
 from rag.turn.service import RagService
 
@@ -42,7 +42,7 @@ def _passes(case: dict, ans: str) -> tuple[bool, str]:
 async def _answer(query: str) -> tuple[str, str]:
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=TENANT, session=session)
-        # 대화를 미리 만들어 정리를 보장한다 — 사유는 eval/_turn_cleanup.py docstring.
+        # 대화를 미리 만들어 정리를 보장한다 — 사유는 eval/turn_cleanup.py docstring.
         conversation = await ensure_conversation(session, TENANT, None)
         await session.commit()
         try:

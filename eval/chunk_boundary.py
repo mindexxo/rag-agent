@@ -36,7 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from eval.chunk_invariants import _stitch, norm  # noqa: E402 — 비교 정규화·이어 붙이기의 정의점
+from eval.chunk_invariants import norm, stitch  # noqa: E402 — 비교 정규화·이어 붙이기의 정의점
 from rag.chunking import TABLE_NOTE  # noqa: E402 — 표 주석 표지의 정의점
 from rag.identifiers import is_heading_line  # noqa: E402 — 조 제목 판정의 정의점
 
@@ -236,7 +236,7 @@ def gold_spans(docs: dict[str, list[dict]], gold: list[dict]) -> dict:
             if not sn or chunks is None:
                 continue
             texts = [norm(c['text']) for c in chunks]
-            kind = 'inside' if any(sn in t for t in texts) else 'spans' if sn in _stitch(texts) else 'missing'
+            kind = 'inside' if any(sn in t for t in texts) else 'spans' if sn in stitch(texts) else 'missing'
             out[kind] += 1
             if kind == 'spans':
                 spans.append(g['id'])

@@ -118,7 +118,7 @@ async def phase_judge(out: Path, concurrency: int, retry_errors: bool = False) -
 
 async def phase_coverage(tenant: str, out: Path, concurrency: int) -> None:
     from eval.claude_client import ClaudeCliClient
-    from eval.doc_fidelity.judge import _JSON, DEFAULT_MODEL
+    from eval.doc_fidelity.judge import DEFAULT_MODEL, JSON_OBJECT
 
     client = ClaudeCliClient(model=DEFAULT_MODEL)
     sem = asyncio.Semaphore(concurrency)
@@ -146,7 +146,7 @@ async def phase_coverage(tenant: str, out: Path, concurrency: int) -> None:
                     )
                 except RuntimeError as e:  # 호출 실패는 그 단위만 '판정 실패'로 — 실행 전체를 멈추지 않는다
                     return {**u, 'loss_label': '판정 실패', 'loss_note': f'호출 실패: {str(e)[:200]}'}
-            m = _JSON.search(raw or '')
+            m = JSON_OBJECT.search(raw or '')
             try:
                 j = json.loads(m.group(0)) if m else {}
             except ValueError:

@@ -264,7 +264,7 @@ async def _answers(cond: str, rows: list[dict], gold: dict, run: int) -> list[di
     """맥락 셋 문항 — 운영 retrieve(근거 준비 포함) → 운영 생성 → EPCov."""
     from database import AsyncSessionLocal
     from eval import epcov_judge
-    from eval.generation import _epcov_scores, expected_points_hits, row_tenant
+    from eval.generation import epcov_scores, expected_points_hits, row_tenant
     from rag.llm import create_llm
     from rag.search.retriever import retrieve
     from rag.turn.prompts import build_knowledge_generation_prompt
@@ -283,7 +283,7 @@ async def _answers(cond: str, rows: list[dict], gold: dict, run: int) -> list[di
                 build_knowledge_generation_prompt(g['query'], evid[gid], standalone_query=g['query'])
             )
         pts = g.get('expected_points') or []
-        sc = await _epcov_scores(judge, jsem, ans, pts, expected_points_hits(ans, pts))
+        sc = await epcov_scores(judge, jsem, ans, pts, expected_points_hits(ans, pts))
         return {
             'id': gid,
             'cond': cond,

@@ -10,7 +10,7 @@
 토큰 없이 반복 실험할 때. 판정자가 다른 수치는 서로 비교하지 않는다: 결과 행의 `epcov_judge`(판정자·모델·프롬프트 버전)로 가른다.
 
 **금액 게이트를 심판에도 건다** — 포인트의 원 단위 금액이 답변에 없으면 심판에 넘기지 않고 미적중을 유지한다.
-위 vLLM의 9,600/9,000 오판이 정확히 이 경우다(호출부 `eval.generation._epcov_scores`가 판정 대상을 거른다).
+위 vLLM의 9,600/9,000 오판이 정확히 이 경우다(호출부 `eval.generation.epcov_scores`가 판정 대상을 거른다).
 
 판정 실패(LlmJudgmentFailed·한도·타임아웃)는 **미적중 유지**(fail-closed) — misinfo_judge·absence_judge와 같은 원칙.
 사유·오류는 감사 행으로 결과에 남는다.

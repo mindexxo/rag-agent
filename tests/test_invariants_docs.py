@@ -114,8 +114,8 @@ async def _failed_document(client, filename) -> Document:
 
 
 def _break_upload_commit(monkeypatch):
-    """업로드 라우터의 session.commit만 실패시킨다 — handle_upload가 끝난 바로 그 세션에 한정."""
-    import routers.documents as rd
+    """업로드 저장(rag/upload.py)의 session.commit만 실패시킨다 — handle_upload가 끝난 바로 그 세션에 한정."""
+    import rag.upload as rd
 
     real = rd.handle_upload
 

@@ -1,6 +1,6 @@
 """failed 문서는 사용자에게 "없는 문서"다 — 재업로드는 새 version 대신 그 행을 되살린다 (#161).
 
-exists·_current_version·handle_upload 셋이 한 기준(ALIVE_DOCUMENT_STATUSES)으로 답해야 하고,
+exists·current_version·handle_upload 셋이 한 기준(ALIVE_DOCUMENT_STATUSES)으로 답해야 하고,
 되살릴 때 잔여 청크·캐시·경합까지 함께 정리된다. 규칙의 정의점은 rag/documents.py의 handle_upload.
 공용 헬퍼는 tests/helpers_documents.py.
 """
@@ -39,7 +39,7 @@ async def _make_failed(doc_id: int) -> None:
 
 @pytest.mark.asyncio
 async def test_failed만_있으면_없는_문서로_본다(client, tenant_id, fake_queue, blob_tmp):
-    """exists=false, expect_version=0 통과 — 확인창이 뜨지 않는다. 세 판정(exists·_current_version·
+    """exists=false, expect_version=0 통과 — 확인창이 뜨지 않는다. 세 판정(exists·current_version·
     handle_upload)이 같은 기준이어야 하는 것을 이 테스트가 앞의 둘에서 고정한다."""
     doc = await upload(client, '환불정책.md', MD)
     await _make_failed(doc['document_id'])

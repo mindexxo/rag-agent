@@ -220,7 +220,7 @@ async def test_C1_failed_버전이_더_높아도_살아있는_버전에서_계�
 
 @pytest.mark.asyncio
 async def test_C2_전부_deleted면_아무것도_계승하지_않는다(client, tenant_id, fake_queue, blob_tmp):
-    """exists·_current_version은 deleted를 "없음"으로 답한다 — 사용자에겐 신규 등록인데
+    """exists·current_version은 deleted를 "없음"으로 답한다 — 사용자에겐 신규 등록인데
     지운 문서의 폴더·설명이 묻어오면 안 된다."""
     fa = await make_folder(client, 'A')
     v1 = await upload(client, '환불정책.md', MD, extra_parts=doc_data(folder_id=fa, description='X'))

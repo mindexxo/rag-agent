@@ -56,7 +56,7 @@ def check(doc_text: str, gold: list[dict], tenant: str = TENANT) -> dict | None:
 
 def run() -> None:
     gold = load_gold()
-    rows = [json.loads(l) for l in MANIFEST.read_text(encoding='utf-8').splitlines() if l.strip()]
+    rows = [json.loads(line) for line in MANIFEST.read_text(encoding='utf-8').splitlines() if line.strip()]
     kept, dropped = [], []
     for r in rows:
         if r.get('finish') != 'stop':

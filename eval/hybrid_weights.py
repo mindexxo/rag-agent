@@ -41,7 +41,7 @@ from eval import hybrid_replay as hr
 from eval.axis_common import commit, load_chunks
 from rag.identifiers import normalize_identifiers
 from rag.search import os_search
-from rag.search.embeddings import Embedding, embed_texts
+from rag.search.embeddings import Embedding, Kind, embed_texts
 from rag.search.os_client import NORI_FIELD, client, close_client
 from rag.search.retrieval_types import DenseHit, DenseHits, RetrievedChunk
 
@@ -185,7 +185,7 @@ async def capture_one(it: dict, vec: list[float]) -> tuple[dict, dict[int, Retri
     scores = await rag.search.reranker.rerank_scores(query, pool) if pool else []
     if scores is None:
         raise RuntimeError(f"{it['qid']}: 리랭커 실패 — 부분 성공은 쓰지 않는다(rerank_maxpool과 같은 규율)")
-    rec["rerank"] = {str(c.chunk_id): float(s) for c, s in zip(pool, scores)}
+    rec["rerank"] = {str(c.chunk_id): float(s) for c, s in zip(pool, scores, strict=False)}
     return rec, chunk_map
 
 
@@ -206,7 +206,7 @@ async def capture(sets: list[str], limit: int | None) -> Path:
     sem = asyncio.Semaphore(CONCURRENCY)
     done = 0
 
-    async def _one(it, vec):
+    async def _one(it: dict, vec: list[float]) -> tuple[dict, dict[int, RetrievedChunk]]:
         nonlocal done
         async with sem:
             r = await capture_one(it, vec)
@@ -215,7 +215,7 @@ async def capture(sets: list[str], limit: int | None) -> Path:
             print(f"  캡처 {done}/{len(items)}", flush=True)
         return r
 
-    results = await asyncio.gather(*(_one(it, v) for it, v in zip(items, vecs)))
+    results = await asyncio.gather(*(_one(it, v) for it, v in zip(items, vecs, strict=False)))
     chunks: dict[int, RetrievedChunk] = {}
     for _, cm in results:
         chunks.update(cm)
@@ -239,25 +239,28 @@ async def capture(sets: list[str], limit: int | None) -> Path:
         "\n".join(json.dumps(dataclasses.asdict(c), ensure_ascii=False) for c in chunks.values())
     )
     (out / "vectors.jsonl").write_text(
-        "\n".join(json.dumps({"qid": it["qid"], "vec": v}) for it, v in zip(items, vecs))
+        "\n".join(json.dumps({"qid": it["qid"], "vec": v}) for it, v in zip(items, vecs, strict=False))
     )
     print(f"→ {out} (문항 {len(results)}, 조각 {len(chunks)})")
     return out
 
 
-def load_capture(path: Path, *, need_vectors: bool = False):
+type Capture = tuple[dict, list[dict], dict[int, RetrievedChunk], dict[str, list[float]]]  # meta·레코드·조각·질문 벡터
+
+
+def load_capture(path: Path, *, need_vectors: bool = False) -> Capture:
     meta = json.loads((path / "meta.json").read_text())
     if meta["settings"] != settings_snapshot():
         raise SystemExit(
             f"설정이 캡처 때와 다르다 — 재생이 전제하는 운영 조건이 아니다: {meta['settings']} vs {settings_snapshot()}"
         )
-    recs = [json.loads(l) for l in (path / "records.jsonl").read_text().splitlines() if l]
+    recs = [json.loads(ln) for ln in (path / "records.jsonl").read_text().splitlines() if ln]
     chunks = {
         d["chunk_id"]: RetrievedChunk(**d)
-        for d in (json.loads(l) for l in (path / "chunks.jsonl").read_text().splitlines() if l)
+        for d in (json.loads(ln) for ln in (path / "chunks.jsonl").read_text().splitlines() if ln)
     }
     vecs = (
-        {d["qid"]: d["vec"] for d in (json.loads(l) for l in (path / "vectors.jsonl").read_text().splitlines() if l)}
+        {d["qid"]: d["vec"] for d in (json.loads(ln) for ln in (path / "vectors.jsonl").read_text().splitlines() if ln)}
         if need_vectors
         else {}
     )
@@ -286,26 +289,26 @@ def _patched():
     }
     orig = {(m, n): getattr(m, n) for m, n in names}
 
-    async def _embed(texts, kind="document"):
+    async def _embed(texts: list[str], kind: Kind = "document") -> list[Embedding]:
         return [Embedding(dense=_CURRENT.get()[2]) for _ in texts]
 
-    async def _dense(tenant, q_embs, n):
+    async def _dense(tenant: str, q_embs: list, n: int) -> DenseHits:
         rec = _CURRENT.get()[0]
         assert n == 30, n
         return DenseHits([[c for c, _ in rec["dense30"]]], [DenseHit(*x) for x in rec["dense30"]])
 
-    async def _lexical(tenant, query, limit):
+    async def _lexical(tenant: str, query: str, limit: int) -> list[int]:
         assert limit == 30, limit
         return list(_CURRENT.get()[0]["bm25_30"])
 
-    async def _ident(tenant, tokens, limit):
+    async def _ident(tenant: str, tokens: list[str], limit: int) -> list[int]:
         return list(_CURRENT.get()[0]["ident"])[:limit]
 
-    async def _chunk_map(ids):
+    async def _chunk_map(ids: list[int]) -> dict[int, RetrievedChunk]:
         chunks = _CURRENT.get()[1]
         return {c: chunks[c] for c in ids if c in chunks}
 
-    async def _scores(query, chunks):
+    async def _scores(query: str, chunks: list[RetrievedChunk]) -> list[float]:
         rerank = _CURRENT.get()[0]["rerank"]
         return [rerank[str(c.chunk_id)] for c in chunks]
 
@@ -333,14 +336,17 @@ async def _production_ids(rec: dict) -> list[int]:
 
 
 def _first_diff(a: list[int], b: list[int]) -> int | None:
-    return next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), None if len(a) == len(b) else min(len(a), len(b)))
+    return next(
+        (i for i, (x, y) in enumerate(zip(a, b, strict=False)) if x != y),
+        None if len(a) == len(b) else min(len(a), len(b)),
+    )
 
 
 async def verify(path: Path, live_n: int) -> bool:
     _, recs, chunks, vecs = load_capture(path, need_vectors=True)
     sem = asyncio.Semaphore(CONCURRENCY)
 
-    async def _patched_one(r):
+    async def _patched_one(r: dict) -> tuple[dict, list[int]]:
         async with sem:
             _CURRENT.set((r, chunks, vecs[r["qid"]]))
             return r, await _production_ids(r)
@@ -358,7 +364,7 @@ async def verify(path: Path, live_n: int) -> bool:
     #    10%대다 — 완전 일치 비율을 기준으로 두면 TEI 잡음을 결함으로 오판한다.
     sample = random.Random(248).sample(recs, min(live_n, len(recs)))
 
-    async def _live_one(r):
+    async def _live_one(r: dict) -> tuple[dict, list[int], bool]:
         async with sem:
             emb = [Embedding(dense=vecs[r["qid"]])]
             d30 = (await os_search.search_dense_per_query(r["tenant"], emb, 30)).top
@@ -379,7 +385,7 @@ async def verify(path: Path, live_n: int) -> bool:
             continue
         # 근접 동점 = 어긋난 **모든** 자리에서 두 후보의 리랭커 점수 차 < LIVE_TIE_EPS(첫 자리만 보면 뒤의 실질 차이를 놓친다).
         # 상위 20 경계에서 점수가 0에 가까운 후보끼리 들고 나는 것도 여기 든다.
-        diffs = [(a, b) for a, b in zip(mine, ids) if a != b]
+        diffs = [(a, b) for a, b in zip(mine, ids, strict=False) if a != b]
         tie = len(mine) == len(ids) and all(
             str(a) in r["rerank"]
             and str(b) in r["rerank"]

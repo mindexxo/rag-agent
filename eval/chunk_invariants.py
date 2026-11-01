@@ -12,6 +12,9 @@ eval/_golden_chunks.py --diff의 "사라진 줄"도 같은 판정(missing_lines)
 """
 
 import re
+from collections.abc import Iterable, Sequence
+
+from rag.chunking.types import ChunkData, Item, Section
 
 _IGNORED = re.compile(r'[\s|]+')
 
@@ -30,7 +33,7 @@ def _stitch(pieces: list[str]) -> str:
     return out
 
 
-def missing_lines(lines, heads: list[str], bodies: list[str]) -> list[str]:
+def missing_lines(lines: Iterable[str], heads: list[str], bodies: list[str]) -> list[str]:
     """`lines` 중 제목 경로 원소(heads)·본문(bodies) 어디에도 없는 것 — 아래 두 함수와 _golden_chunks --diff의 공통 판정."""
     pieces = [norm(h) for h in (*heads, *bodies)]
     # 경계에 걸친 줄은 본문끼리만 이어 붙여 찾는다 — 제목 경로까지 이으면 "제98조(보상)"(제목으로 잘못 올라감) + "에 따라
@@ -44,12 +47,12 @@ def missing_lines(lines, heads: list[str], bodies: list[str]) -> list[str]:
     return out
 
 
-def sections_lost(items, sections) -> list[str]:
+def sections_lost(items: Iterable[Item], sections: Sequence[Section]) -> list[str]:
     """`build_sections` 입력 항목 중 결과 섹션의 제목 경로·본문 어디에도 없는 글. 표 블록은 렌더한 글로 본다."""
     texts = [t.render() if hasattr(t, 'render') else t for _, t, _ in items]
     return missing_lines(texts, [h for s in sections for h in s.heading_path], [s.body for s in sections])
 
 
-def chunks_lost(lines, chunks) -> list[str]:
+def chunks_lost(lines: Iterable[str], chunks: Sequence[ChunkData]) -> list[str]:
     """원문 줄 중 조각(ChunkData)들의 제목 경로·본문 어디에도 없는 줄."""
     return missing_lines(lines, [h for c in chunks for h in c.heading_path], [c.text for c in chunks])

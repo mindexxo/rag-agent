@@ -91,7 +91,7 @@ async def reindex_one(document_id: int) -> None:
             raise RuntimeError(f'재색인 실패 (status={doc.status}): {doc.status_reason}')
 
 
-async def main_async(args) -> None:
+async def main_async(args: argparse.Namespace) -> None:
     targets = await _targets(args.tenant)
     if not targets:
         print('대상 문서가 없습니다.')
@@ -108,7 +108,7 @@ async def main_async(args) -> None:
 
     print()
     ok, failed = 0, []
-    for i, (doc_id, tenant, filename, _) in enumerate(targets, start=1):
+    for i, (doc_id, _tenant, filename, _) in enumerate(targets, start=1):
         try:
             await reindex_one(doc_id)
             ok += 1

@@ -73,7 +73,7 @@ async def _chunks(document_id: int) -> list[dict]:
     return [h['_source'] for h in resp['hits']['hits']]
 
 
-async def phase_upload(base: str, out: Path, only, paths, context: bool = False) -> list[dict]:
+async def phase_upload(base: str, out: Path, only: set[str] | None, paths: list, context: bool = False) -> list[dict]:
     made = build_all(out / 'docs', only, set(paths), context=context)
     manifest = []
     async with httpx.AsyncClient(base_url=base, timeout=120) as client:
@@ -143,7 +143,7 @@ async def phase_ask(base: str, out: Path, manifest: list[dict], only: set[str] |
     """only를 주면 그 정의만 다시 묻고, 기존 answers.jsonl에서 같은 정의의 행을 바꿔 끼운다(정답 키 수정 뒤 재판정용)."""
     answers = []
     if only and (out / 'answers.jsonl').exists():
-        answers = [json.loads(l) for l in open(out / 'answers.jsonl') if json.loads(l)['id'] not in only]
+        answers = [json.loads(line) for line in open(out / 'answers.jsonl') if json.loads(line)['id'] not in only]
         (out / 'answers.jsonl').write_text(''.join(json.dumps(a, ensure_ascii=False) + '\n' for a in answers))
     async with httpx.AsyncClient(base_url=base, timeout=300) as client:
         for m in manifest:
@@ -195,7 +195,7 @@ def _loose(t: str) -> str:
     return norm(t).replace(' ', '')
 
 
-def chunk_loss(spec, path: str, chunks: list[dict]) -> list[str]:
+def chunk_loss(spec: dict, path: str, chunks: list[dict]) -> list[str]:
     """정의의 칸 글자 중 실제 색인 청크에 없는 것(띄어쓰기 무시) — '청킹이 누락 없이 됐는가'의 근거."""
     text = _loose(' '.join(c['text'] for c in chunks))
     cells = [cell_text(c) for t in expected_tables(spec, path) for row in t for c in row if c is not None]
@@ -264,7 +264,7 @@ def phase_report(out: Path, manifest: list[dict], answers: list[dict]) -> None:
             for i, c in enumerate(m.get('chunks') or [])
         )
 
-        def _llm_cell(x):
+        def _llm_cell(x: dict) -> str:
             if x.get('llm_label') is None:
                 return '—' if x['value_ok'] else ('오류' if x.get('llm_error') else '—')
             name = {'correct': '맞음', 'wrong': '틀림', 'ungrounded': '근거 없음', 'not_answered': '미답'}[
@@ -367,7 +367,7 @@ async def phase_cleanup(base: str, manifest: list[dict]) -> None:
         print('drain', await outbox.drain_once(row_ids=rows))
 
 
-async def main():
+async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--phase', default='all', choices=['all', 'upload', 'ask', 'report', 'cleanup'])
     ap.add_argument('--out', default='eval/results/table_parsing/e2e1')
@@ -389,7 +389,7 @@ async def main():
         else:
             manifest = made
     answers = (
-        [json.loads(l) for l in open(out / 'answers.jsonl')]
+        [json.loads(line) for line in open(out / 'answers.jsonl')]
         if (out / 'answers.jsonl').exists() and args.phase != 'all'
         else []
     )

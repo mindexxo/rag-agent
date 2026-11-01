@@ -15,8 +15,15 @@
 import hashlib
 import io
 import re
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from docling_core.types.doc import BoundingBox, DoclingDocument, NodeItem
+
+type Convert = Callable[..., DoclingDocument]  # 문서 변환 함수(테스트 주입용)
 
 _WS = re.compile(r'\s+')
 PLACEHOLDER = (
@@ -65,7 +72,7 @@ def area_threshold() -> float:
     return settings.vlm_caption_area_threshold
 
 
-def _pdf_crop(pdf_path: Path, page_no: int, bbox, page_h: float, scale: float):
+def _pdf_crop(pdf_path: Path, page_no: int, bbox: BoundingBox, page_h: float, scale: float):
     import pypdfium2
 
     pdf = pypdfium2.PdfDocument(str(pdf_path))
@@ -77,7 +84,7 @@ def _pdf_crop(pdf_path: Path, page_no: int, bbox, page_h: float, scale: float):
     return image.crop((int(tl.l * scale), int(tl.t * scale), int(tl.r * scale), int(tl.b * scale)))
 
 
-def _in_table(item, doc) -> bool:
+def _in_table(item: NodeItem, doc: DoclingDocument) -> bool:
     from docling_core.types.doc import TableItem
 
     parent = item.parent.resolve(doc) if item.parent else None
@@ -89,7 +96,7 @@ def _in_table(item, doc) -> bool:
 
 
 def extract_document(
-    document_id: int, filename: str, path: Path, chunk_texts: list[str], crops_dir: Path, convert=None
+    document_id: int, filename: str, path: Path, chunk_texts: list[str], crops_dir: Path, convert: Convert | None = None
 ) -> list[PictureRecord]:
     """문서 하나 → 그림 기록들. convert는 테스트 주입용(기본: 운영 docling_convert — 변환 자식 프로세스)."""
     from docling_core.types.doc import PictureItem

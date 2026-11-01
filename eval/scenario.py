@@ -196,7 +196,7 @@ async def run_scenario(sc: dict) -> dict:
 
 
 async def compute() -> list[dict]:
-    scenarios = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+    scenarios = [json.loads(line) for line in GOLD.read_text().splitlines() if line.strip()]
     results = []
     for sc in scenarios:  # 순차 — 멀티턴 순서를 로그로 따라가야 하는 리허설 도구라 순서 고정 우선
         try:

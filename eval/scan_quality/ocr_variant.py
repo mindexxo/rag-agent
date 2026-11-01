@@ -15,6 +15,7 @@ install(name): docling_convert를 이 프로세스의 convert_process.convert_lo
 """
 
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 VARIANTS = {
@@ -55,7 +56,7 @@ def install(name: str) -> None:
 
         get_ocr_factory(False), get_ocr_factory(True)
 
-        def _local(**kw):
+        def _local(**kw: Any):
             return PO.RapidOcrOptions(
                 lang=kw.get('lang', ['korean']),
                 scale=kw.get('scale', 3.0),

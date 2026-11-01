@@ -37,12 +37,15 @@ def _chunk_one(args: tuple[str, str]) -> tuple[str, list[dict]]:
 def _done() -> set[str]:
     if not CHUNKS.exists():
         return set()
-    return {json.loads(l)['doc'] for l in CHUNKS.read_text(encoding='utf-8').splitlines() if l.strip()}
+    return {json.loads(line)['doc'] for line in CHUNKS.read_text(encoding='utf-8').splitlines() if line.strip()}
 
 
 async def run() -> None:
     kept = set(json.loads(FILTER.read_text(encoding='utf-8'))['kept'])
-    meta = {r['id']: r for r in (json.loads(l) for l in MANIFEST.read_text(encoding='utf-8').splitlines() if l.strip())}
+    meta = {
+        r['id']: r
+        for r in (json.loads(line) for line in MANIFEST.read_text(encoding='utf-8').splitlines() if line.strip())
+    }
     todo = [d for d in sorted(kept) if d not in _done()]
     print(f'유지 {len(kept)} · 남은 {len(todo)}', flush=True)
     with ProcessPoolExecutor(WORKERS) as pool, CHUNKS.open('a', encoding='utf-8') as fp:
@@ -58,7 +61,7 @@ async def run() -> None:
                         ensure_ascii=False,
                     )
                     + '\n'
-                    for c, v in zip(chunks, vecs)
+                    for c, v in zip(chunks, vecs, strict=False)
                 )
             )
             fp.flush()

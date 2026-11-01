@@ -16,12 +16,14 @@ import argparse
 import asyncio
 import json
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 
 from database import AsyncSessionLocal
 from eval.axis_common import table_kind
 from eval.generation import HARD_TYPES, load_gold, row_tenant
 from eval.retrieval import resolve_gold, score_one
+from eval.rows import GoldRow
 from rag.search.os_search import fetch_chunk_map
 from rag.search.retriever import retrieve_candidates
 
@@ -29,7 +31,7 @@ TYPES = {'single_fact', 'paraphrase', 'rare_lexical', 'multi_doc'} | HARD_TYPES
 METRICS = ['recall_at_5', 'recall_at_20', 'hit_at_1', 'mrr']
 
 
-def _table(rows, group_fn, label):
+def _table(rows: list[dict], group_fn: Callable[[dict], str], label: str):
     groups = defaultdict(list)
     for r in rows:
         groups[group_fn(r)].append(r['scores'])
@@ -43,7 +45,7 @@ def _table(rows, group_fn, label):
     print(f'{"(전체)":<14}{len(all_ss):>5}' + ''.join(f'{a:>10.3f}' for a in avgs))
 
 
-def _overall(rows) -> dict:
+def _overall(rows: list[dict]) -> dict:
     """전체 평균 지표 dict — run_all 요약·직전 대비 비교용."""
     all_ss = [r['scores'] for r in rows]
     if not all_ss:
@@ -66,7 +68,7 @@ DIFFICULTY = {
 }
 
 
-def _by_difficulty(rows) -> dict:
+def _by_difficulty(rows: list[dict]) -> dict:
     """난이도 그룹별 R@5 — '어려운 질의에서만 약한지'를 평균에 가려지지 않게 본다."""
     groups = defaultdict(list)
     for r in rows:
@@ -101,7 +103,7 @@ async def compute(expand: bool = False, tenants: set[str] | None = None) -> dict
         llm = create_aux_llm()  # 재작성은 운영과 같은 보조 클라이언트
         sem = asyncio.Semaphore(6)  # worker15 공유 장비 — RAGAS와 동일 안전선
 
-        async def _expand(g):
+        async def _expand(g: GoldRow) -> tuple[str, list[str]]:
             async with sem:
                 return g['id'], await condense_to_queries(llm, g['query'], [])
 

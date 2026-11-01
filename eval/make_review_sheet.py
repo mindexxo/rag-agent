@@ -74,7 +74,7 @@ def _fmt_case(c: dict) -> str:
 
 
 def main() -> None:
-    cases = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+    cases = [json.loads(line) for line in GOLD.read_text().splitlines() if line.strip()]
     by_tenant = defaultdict(list)
     for c in cases:
         by_tenant[_tenant(c["id"])].append(c)

@@ -52,7 +52,7 @@ async def _run_attack(tenant: str, query: str, attachments: list[dict]) -> tuple
 
 
 async def compute() -> dict:
-    attacks = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+    attacks = [json.loads(line) for line in GOLD.read_text().splitlines() if line.strip()]
     sem = asyncio.Semaphore(CONCURRENCY)
 
     async def _one(a: dict):

@@ -71,7 +71,7 @@ def _assign(mode: str, n: int, idx: int) -> str:
     return "summers" if mode == "single" else V2_TENANTS[idx % len(V2_TENANTS)]
 
 
-async def _step(client, base, mode: str, n: int, queries: list[str]) -> dict:
+async def _step(client: httpx.AsyncClient, base: str, mode: str, n: int, queries: list[str]) -> dict:
     """동시 N 요청을 한 번에 발사하고 지연 분포를 집계한다 (한 계단)."""
     t0 = time.monotonic()
     results = await asyncio.gather(*(_one_request(client, base, _assign(mode, n, i), queries[i]) for i in range(n)))
@@ -105,7 +105,12 @@ async def main() -> None:
     args = ap.parse_args()
     steps = [int(s) for s in args.steps.split(",")]
 
-    gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip() if json.loads(l)["type"] in GEN_TYPES]
+    gold = [
+        json.loads(line)
+        for line in GOLD.read_text().splitlines()
+        if line.strip()
+        if json.loads(line)["type"] in GEN_TYPES
+    ]
     # 유니크 질문 풀 — 필요 수만큼, 부족하면 접미 태그로 변형(캐시 히트 배제)
     need = sum(steps) * args.rounds  # 계단마다 유니크를 누적 소비하므로 합계 (max 아님)
     pool = [g["query"] for g in gold]

@@ -24,6 +24,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from rag.clients import shared_aux_llm
 from rag.turn.llm_schemas import ReuseJudgment, acomplete_validated
@@ -101,9 +102,9 @@ def _fmt(v: list[bool | None]) -> str:
 
 async def _regression(n: int) -> dict:
     """40쌍 — 원문 없이(현행 재현) vs 원문 포함. 같은 실행 안에서 재야 모델 상태가 같다."""
-    pairs = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+    pairs = [json.loads(line) for line in GOLD.read_text().splitlines() if line.strip()]
 
-    async def one(p):
+    async def one(p: dict[str, Any]) -> tuple[dict[str, Any], list[bool | None], list[bool | None]]:
         bare = await asyncio.gather(*[_judge(p["q1"], p["q2"], None, None) for _ in range(n)])
         orig = await asyncio.gather(*[_judge(p["q1"], p["q2"], p["q1"], p["q2"]) for _ in range(n)])
         return p, bare, orig
@@ -127,8 +128,12 @@ async def _regression(n: int) -> dict:
             mark = "  ← 흔들림"
         print(f'{p["id"]:<44} {p["kind"]:<12} {str(p["should_hit"]):<6} {_fmt(bare):<7} {_fmt(orig)}{mark}')
 
-    agree = lambda key: sum(1 for p, b, o in rows if all(x is p["should_hit"] for x in (b if key == "bare" else o)))
-    waver = lambda key: sum(1 for p, b, o in rows if len(set(b if key == "bare" else o)) > 1)
+    def agree(key: str) -> int:
+        return sum(1 for p, b, o in rows if all(x is p["should_hit"] for x in (b if key == "bare" else o)))
+
+    def waver(key: str) -> int:
+        return sum(1 for p, b, o in rows if len(set(b if key == "bare" else o)) > 1)
+
     return {
         "n": len(rows),
         "risky": len(risky),

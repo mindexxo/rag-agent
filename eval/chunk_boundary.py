@@ -54,7 +54,7 @@ _MIN_OVERLAP = 5  # 이보다 짧은 일치는 꼬리·머리 글자가 우연�
 
 
 def _lines(text: str) -> list[str]:
-    return [l for l in text.split('\n') if l.strip()]
+    return [line for line in text.split('\n') if line.strip()]
 
 
 def _is_row(line: str) -> bool:
@@ -119,7 +119,7 @@ def context_losses(chunks: list[dict], tables: bool = True) -> list[dict]:
             out.append({'kind': 'reference', 'at': i, 'line': lb[0]})
         # 목록 — 뒤 조각이 항목으로 시작하고 앞 조각이 항목으로 끝나거나 목록 머리로 끝난다
         if ITEM.match(lb[0]):
-            section = [l for c in chunks[:i] if c['heading_path'] == b['heading_path'] for l in _lines(c['text'])]
+            section = [line for c in chunks[:i] if c['heading_path'] == b['heading_path'] for line in _lines(c['text'])]
             ctx = _list_context(section)
             if ctx and norm(ctx) not in nb and (ITEM.match(section[-1]) or ctx == section[-1]):
                 kind = 'list_head' if LIST_HEAD.search(ctx) else 'list_label' if LABEL.match(ctx) else None
@@ -143,7 +143,7 @@ def _table_runs(chunks: list[dict]) -> list[list[int]]:
     runs, cur, header = [], [], None
     for i, c in enumerate(chunks):
         lines = _lines(c['text'])
-        rows = [l for l in lines if _is_row(l)]
+        rows = [line for line in lines if _is_row(line)]
         prev = chunks[cur[-1]] if cur else None
         if (
             prev
@@ -168,25 +168,27 @@ def _table_losses(chunks: list[dict]) -> list[dict]:
     out = []
     for run in _table_runs(chunks):
         first = _lines(chunks[run[0]]['text'])
-        k = next(j for j, l in enumerate(first) if _is_row(l))
+        k = next(j for j, line in enumerate(first) if _is_row(line))
         # 표 앞 설명 — 첫 묶음의 표 위 줄 + 같은 섹션 앞 조각이 글로 끝나면 그 꼬리(설명이 앞 조각에 따로 남는 B1 모양)
         lead = first[:k]
         prev = chunks[run[0] - 1] if run[0] > 0 else None
         if prev and prev['heading_path'] == chunks[run[0]]['heading_path']:
             pl = _lines(prev['text'])
-            tail = pl[max((j for j, l in enumerate(pl) if _is_row(l)), default=-1) + 1 :]
-            lead = tail + [l for l in lead if l not in tail]
+            tail = pl[max((j for j, line in enumerate(pl) if _is_row(line)), default=-1) + 1 :]
+            lead = tail + [line for line in lead if line not in tail]
         lead = lead[-3:]
         header = first[k]
         last = _lines(chunks[run[-1]]['text'])
-        notes = [l for l in last[max(j for j, l in enumerate(last) if _is_row(l)) + 1 :] if NOTE.match(l)]
+        notes = [
+            line for line in last[max(j for j, line in enumerate(last) if _is_row(line)) + 1 :] if NOTE.match(line)
+        ]
         if run[-1] + 1 < len(chunks) and chunks[run[-1] + 1]['heading_path'] == chunks[run[-1]]['heading_path']:
-            notes += [l for l in _lines(chunks[run[-1] + 1]['text'])[:2] if NOTE.match(l)]
+            notes += [line for line in _lines(chunks[run[-1] + 1]['text'])[:2] if NOTE.match(line)]
         for i in run:
             n = norm(chunks[i].get('table_text') or chunks[i]['text'])  # 모델이 받는 글(표 전체)
-            out += [{'kind': 'table_lead', 'at': i, 'line': l} for l in lead if norm(l) not in n]
-            out += [{'kind': 'table_note', 'at': i, 'line': l} for l in notes if norm(l) not in n]
-            if next(l for l in _lines(chunks[i]['text']) if _is_row(l)) != header:
+            out += [{'kind': 'table_lead', 'at': i, 'line': line} for line in lead if norm(line) not in n]
+            out += [{'kind': 'table_note', 'at': i, 'line': line} for line in notes if norm(line) not in n]
+            if next(line for line in _lines(chunks[i]['text']) if _is_row(line)) != header:
                 out.append({'kind': 'table_header', 'at': i, 'line': header})
     return out
 
@@ -197,7 +199,7 @@ def census(docs: dict[str, list[dict]]) -> dict:
     bounds, losses, examples = Counter(), Counter(), []
     for name, chunks in docs.items():
         sheet = name.lower().endswith('.xlsx')
-        for a, b in zip(chunks, chunks[1:]):
+        for a, b in zip(chunks, chunks[1:], strict=False):
             if sheet:
                 break
             if a['heading_path'] == b['heading_path']:

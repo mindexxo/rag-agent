@@ -41,7 +41,7 @@ def tokens_in(text: str) -> list[str]:
 def order_score(expected: list[str], got: list[str]) -> dict:
     pos = {t: i for i, t in enumerate(expected)}
     seq = [t for t in got if t in pos]
-    inv = sum(1 for a, b in zip(seq, seq[1:]) if pos[a] > pos[b])
+    inv = sum(1 for a, b in zip(seq, seq[1:], strict=False) if pos[a] > pos[b])
     seen, dup, first = set(), 0, []
     for t in seq:
         dup += t in seen
@@ -86,7 +86,7 @@ def chunk_mixing(expected: list[str], chunks: list[list[str]]) -> dict:
         if not idx:
             continue
         checked += 1
-        if any(a > b for a, b in zip(idx, idx[1:])):
+        if any(a > b for a, b in zip(idx, idx[1:], strict=False)):
             mixed.append({'chunk': i, 'tokens': toks})
     return {'chunks_checked': checked, 'mixed': mixed}
 
@@ -107,7 +107,7 @@ def evaluate(spec: dict, pdf: Path) -> dict:
     heading_toks = {tokens_in(b[1])[0] for b in spec['blocks'] if b[0] == 'h'}
     body_only = {k: v for k, v in bodies.items() if k not in heading_toks}
     got, merged = [], 0
-    for label, text, _page, _rows in elements:
+    for _label, text, _page, _rows in elements:
         toks = tokens_in(text)
         merged += len(toks) > 1
         got += toks
@@ -142,7 +142,7 @@ def evaluate(spec: dict, pdf: Path) -> dict:
         'chunk_fate': paragraph_fate(body_only, [c.text for c in chunks]),
         'chunks': chunk_mixing(expected, chunk_toks),
         'n_chunks': len(chunks),
-        'pictures': sum(1 for l, *_ in elements if l == 'picture'),
+        'pictures': sum(1 for kind, *_ in elements if kind == 'picture'),
         'elements': labels,
         'chunk_texts': [c.text for c in chunks],
     }

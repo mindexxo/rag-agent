@@ -7,10 +7,12 @@ eval.generation.load_gold가 다른 축에 병합해 버린다). 그래서 "색�
 
 import re
 import subprocess
+from collections.abc import Iterable
 
 from config import settings
 from rag.search.os_client import client
 from rag.search.os_search import tenant_filter
+from rag.search.retrieval_types import RetrievedChunk
 
 
 async def load_chunks(tenant: str) -> list[dict]:
@@ -66,14 +68,14 @@ TABLE_SEP = re.compile(
 )  # 마크다운 표 구분선 `| --- | --- |`(rag.chunking.to_markdown_table)
 
 
-def is_table_chunk(chunk) -> bool:
+def is_table_chunk(chunk: object) -> bool:
     """조각에 표가 있나 — 표 문항 축의 정의점. `is_table`만 보면 안 된다: 그 표식은 묶음 2개 이상인 큰 표(PDF·DOCX)와
     엑셀에만 붙고(rag/chunking/ chunk_file), 산문 조각 안에 통째로 든 **작은 표**는 마크다운 구분선으로만 알 수 있다
     (실문서 PDF 표는 작은 표가 대부분이다 — eval/table_census)."""
     return bool(getattr(chunk, "is_table", False)) or bool(TABLE_SEP.search(getattr(chunk, "text", "") or ""))
 
 
-def table_kind(chunks) -> str:
+def table_kind(chunks: Iterable[RetrievedChunk]) -> str:
     """정답 조각 묶음의 표 종류 — '' (표 없음) / 'big' / 'small' / 'big+small'. 검색축이 문항을 '표 문항'으로 묶는 키."""
     kinds = set()
     for c in chunks:
@@ -82,7 +84,7 @@ def table_kind(chunks) -> str:
     return "+".join(sorted(kinds))
 
 
-def evidence_has(evidence, token: str) -> float:
+def evidence_has(evidence: Iterable[RetrievedChunk], token: str) -> float:
     """모델이 실제로 받는 근거 **글**에 토큰이 있나(키워드 축 합격 기준). 조각 id로 보면 안 된다: 표는 같은 시트 조각을
     가장 위 하나로 접고 시트 완성본으로 바꿔 넘기므로(rag.search.retriever.prepare_evidence), 정답 행이 든 형제 조각이 id로는 빠져도
     모델은 그 행을 본다."""

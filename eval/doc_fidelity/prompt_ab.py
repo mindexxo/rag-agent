@@ -14,6 +14,7 @@ import base64
 import io
 import json
 import re
+from collections.abc import Iterable
 from pathlib import Path
 
 from eval.doc_fidelity.pictures import norm
@@ -47,7 +48,7 @@ CONDITIONAL_V3 = [
 ]
 
 
-def _join(lines):
+def _join(lines: Iterable[str]) -> str:
     return '\n'.join(lines)
 
 
@@ -114,7 +115,7 @@ EDGES = {
 ENGLISH = {'P05_screen': ['Store Ops Console', 'Dashboard', 'Payroll', 'Shift Code', 'Break Time', 'Submit']}
 
 
-def edge_hits(caption: str, edges) -> int:
+def edge_hits(caption: str, edges: Iterable[tuple[str, str]]) -> int:
     hit = 0
     lines = [norm(x) for x in (caption or '').split('\n') if '→' in x]
     for a, b in edges:

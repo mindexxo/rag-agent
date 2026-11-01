@@ -33,7 +33,7 @@ from sqlalchemy import delete, select, update
 
 from database import AsyncSessionLocal
 from rag import outbox
-from rag.models import Document, Folder
+from rag.models import Document, Folder, SearchIndexOutbox
 from text_norm import nfc
 
 V2_TENANTS = ["adererror", "aromanica", "goodpeople", "harim", "homeplus", "summers"]
@@ -80,7 +80,7 @@ def classify(filename: str, title: str = "") -> str:
     return "guide"
 
 
-async def _drain(rows) -> None:
+async def _drain(rows: list[SearchIndexOutbox]) -> None:
     """커밋된 META 행만 바로 반영 — 워커 cron이 없는 로컬에서도 측정 전에 엔진이 PG와 같아진다."""
     ids = [r.id for r in rows]
     if not ids:

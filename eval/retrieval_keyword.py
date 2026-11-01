@@ -217,7 +217,7 @@ async def generate_items(
         other_text = "\x00".join(t for u, n in norm_of.items() if u != tenant for t in n.values())
         cands: dict[str, str] = {}
         nouns = await _analyze_nouns([c["text"] for c in chunks])
-        for c, ns in zip(chunks, nouns):
+        for c, ns in zip(chunks, nouns, strict=False):
             for kind, toks in (
                 ("code", extract_codes(c["text"])),
                 ("acronym", extract_acronyms(c["text"])),

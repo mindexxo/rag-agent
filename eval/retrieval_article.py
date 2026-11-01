@@ -37,7 +37,9 @@ from config import settings
 from eval.axis_common import chunk_head, commit, load_chunks  # 색인 읽기·지문 — 키워드 축과 공용
 from eval.retrieval import score_one
 from rag.identifiers import chunk_identifiers
+from rag.llm.base import LlmClient
 from rag.search.os_client import close_client
+from rag.search.retrieval_types import RetrievedChunk
 from rag.search.retriever import prepare_evidence, retrieve_candidates
 
 TENANTS = ("inticube", "article_test")
@@ -264,7 +266,7 @@ def pick_bare(gold: dict) -> list[str]:
     return shared[::step][:BARE_N]
 
 
-async def _answer(llm, tenant: str, q: str):
+async def _answer(llm: LlmClient, tenant: str, q: str):
     """운영과 같은 검색 → 생성. (근거 상위 TOP_K, 답변)."""
     from eval.generation import generate  # 무거운 import(임베딩·심판) — --answers일 때만
 
@@ -273,11 +275,11 @@ async def _answer(llm, tenant: str, q: str):
     return chunks, await generate(llm, q, chunks)
 
 
-def _evidence_line(chunks, keys_of: dict) -> str:
+def _evidence_line(chunks: list[RetrievedChunk], keys_of: dict) -> str:
     return " / ".join(f"{c.filename} {keys_of.get(c.chunk_id, [])[:4]}" for c in chunks)
 
 
-async def run_bare(llm, tenant: str, gold: dict, keys_of: dict, meta: dict, path: Path) -> None:
+async def run_bare(llm: LlmClient, tenant: str, gold: dict, keys_of: dict, meta: dict, path: Path) -> None:
     lines = ["# 문서명 없는 조 번호 질문 — 단정했나 / 되묻거나 규정별로 나눠 보였나 (사람 판정)", ""]
     for i, key in enumerate(pick_bare(gold)):
         q = _BARE_FORMS[i % len(_BARE_FORMS)].format(key=key)
@@ -296,7 +298,7 @@ async def run_bare(llm, tenant: str, gold: dict, keys_of: dict, meta: dict, path
     path.write_text("\n".join(lines))
 
 
-async def run_failed(llm, rows: list[dict], keys_of: dict, path: Path) -> None:
+async def run_failed(llm: LlmClient, rows: list[dict], keys_of: dict, path: Path) -> None:
     """근거 상위 5개에 정답이 없는 문항의 실제 답변 — 다른 조·다른 규정 내용을 섞어 말하는가(사람 판정)."""
     lines = ["# 근거에 정답 없는 문항의 답변 — 거절했나 / 다른 조·규정 내용으로 답했나 (사람 판정)", ""]
     for r in rows:

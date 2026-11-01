@@ -30,6 +30,12 @@ LlmClient(rag/llm)와 acomplete 시그니처를 맞춰 eval/generation.py에 주
 import asyncio
 import shutil
 import tempfile
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
+
+    from rag.llm.base import CitationTail
 
 # 콜당 상한. 생성 프롬프트는 1~2분이면 족하지만 롱컨텍스트(수십만 자)는 읽기만으로도
 # 오래 걸린다 — vLLM 쪽 300s(rag/llm/openai_compat.py)보다 넉넉히 잡되 무한 대기는 막는다.
@@ -40,7 +46,7 @@ _MINIMAL_SYSTEM = "요청한 작업만 지정된 형식으로 수행한다."  # 
 class ClaudeCliClient:
     """`claude -p` 래퍼. eval 하네스의 LlmClient 대체 주입용."""
 
-    def __init__(self, model: str = "sonnet"):
+    def __init__(self, model: str = "sonnet") -> None:
         self.model = model
         # 프로젝트 컨텍스트 오염 방지용 중립 cwd — 클라이언트 수명 동안 유지
         self._workdir = tempfile.mkdtemp(prefix="claude-eval-")
@@ -51,7 +57,9 @@ class ClaudeCliClient:
         if not self._exe:
             raise RuntimeError("claude 실행 파일을 PATH에서 찾지 못함 — claude-code 설치·로그인 확인")
 
-    async def acomplete(self, messages: list[dict], *, schema=None, citations=None) -> str:
+    async def acomplete(
+        self, messages: list[dict], *, schema: type[BaseModel] | None = None, citations: CitationTail | None = None
+    ) -> str:
         """비스트리밍 1콜. schema·citations는 시그니처 호환용 — 무시한다 (모듈 docstring; CLI에 강제 배관이 없다)."""
         system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
         # 운영 생성 프롬프트는 system+user 구성(rag/turn/prompts.py)이라 보통 user 1개가 남는다.
@@ -84,9 +92,9 @@ class ClaudeCliClient:
         )
         try:
             out, err = await asyncio.wait_for(proc.communicate(prompt.encode()), timeout=TIMEOUT_SECONDS)
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as e:
             proc.kill()
-            raise RuntimeError(f"claude -p 타임아웃 ({TIMEOUT_SECONDS}s, model={self.model})")
+            raise RuntimeError(f"claude -p 타임아웃 ({TIMEOUT_SECONDS}s, model={self.model})") from e
         if proc.returncode != 0:
             # stderr 앞부분만 — 로그인 만료·한도 도달이 여기로 온다. 조용히 삼키면
             # 빈 답변이 채점돼 수치가 오염되므로 시끄럽게 실패한다.
@@ -155,9 +163,9 @@ class ClaudeCliClient:
             out, err = await asyncio.wait_for(
                 proc.communicate((json.dumps(msg, ensure_ascii=False) + "\n").encode()), timeout=TIMEOUT_SECONDS
             )
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as e:
             proc.kill()
-            raise RuntimeError(f"claude -p(이미지) 타임아웃 ({TIMEOUT_SECONDS}s, model={self.model})")
+            raise RuntimeError(f"claude -p(이미지) 타임아웃 ({TIMEOUT_SECONDS}s, model={self.model})") from e
         result = None
         for line in out.decode().splitlines():
             try:

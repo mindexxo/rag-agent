@@ -6,6 +6,7 @@
 """
 
 import re
+from typing import Any
 
 from eval.table_parsing.expected import norm
 from eval.table_parsing.specs import SPECS, paths_of
@@ -14,11 +15,11 @@ PATH_ORDER = ('img', 'pdf', 'docx', 'xlsx')
 
 
 class Q:
-    def __init__(self, text: str, expected: str, *, manual: bool = False, note: str = ''):
+    def __init__(self, text: str, expected: str, *, manual: bool = False, note: str = '') -> None:
         self.text, self.expected, self.manual, self.note = text, expected, manual, note
 
 
-def _f(expected, variants, *, manual=False, note=''):
+def _f(expected: str, variants: list[str], *, manual: bool = False, note: str = '') -> dict[str, Any]:
     assert len(variants) == 4, expected
     return dict(expected=expected, variants=variants, manual=manual, note=note)
 
@@ -486,7 +487,7 @@ FACTS = {
 }
 
 
-def questions_for(spec, path: str = 'img') -> list[Q]:
+def questions_for(spec: dict[str, Any], path: str = 'img') -> list[Q]:
     """경로마다 다른 말투 — img·pdf·docx·xlsx 순서로 질문 4개 중 하나씩."""
     k = PATH_ORDER.index(path)
     return [Q(f['variants'][k], f['expected'], manual=f['manual'], note=f['note']) for f in FACTS[spec['id']]]

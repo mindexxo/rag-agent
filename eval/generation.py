@@ -24,13 +24,15 @@ from collections import defaultdict
 from collections.abc import Mapping
 from pathlib import Path
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from config import settings
 from database import AsyncSessionLocal
 from eval import epcov_judge
 from eval._gold_history import messages_from_conversation
 from eval.absence_judge import judge_llm
 from eval.misinfo_judge import confirm_violations
-from eval.retrieval import resolve_gold
+from eval.retrieval import Resolved, resolve_gold
 from eval.rows import GoldRow
 from rag.llm import LlmClient, aux_overridden, create_aux_llm, create_llm
 from rag.search.embeddings import embed_texts_sync
@@ -57,10 +59,10 @@ def load_gold() -> list[GoldRow]:
     규약(row_tenant)이라 측정 축은 구분 없이 읽는다. **정본을 읽는 다른 스크립트들은 아직
     GOLD를 직접 읽는다** — 실문서 축이 필요해질 때 이 함수로 옮긴다.
     """
-    rows = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+    rows = [json.loads(line) for line in GOLD.read_text().splitlines() if line.strip()]
     if GOLD_PRIVATE_DIR.is_dir():
         for f in sorted(GOLD_PRIVATE_DIR.glob("*.jsonl")):
-            rows += [json.loads(l) for l in f.read_text().splitlines() if l.strip()]
+            rows += [json.loads(line) for line in f.read_text().splitlines() if line.strip()]
     return rows
 
 
@@ -90,7 +92,7 @@ SMOKE = int(os.getenv("SMOKE", "0")) or None  # 스모크셋 크기 (0/미설정
 # ===== 컨텍스트 구성 =================================================
 
 
-async def oracle_context(session, chunk_ids: list[int]) -> list[RetrievedChunk]:
+async def oracle_context(session: AsyncSession, chunk_ids: list[int]) -> list[RetrievedChunk]:
     """gold 정답 청크 id들을 RetrievedChunk로 (LLM 컨텍스트 주입용).
 
     id는 색인 chunk_id다(resolve_gold가 색인에서 푼다). 본문·메타도 색인에서 읽는다;
@@ -106,7 +108,7 @@ async def oracle_context(session, chunk_ids: list[int]) -> list[RetrievedChunk]:
     return prepare_evidence(chunks, len(chunks))
 
 
-async def retrieved_context(session, tenant: str, query: str) -> list[RetrievedChunk]:
+async def retrieved_context(session: AsyncSession, tenant: str, query: str) -> list[RetrievedChunk]:
     """실제 검색기 결과 top-K (옵션: 리랭커 재정렬). 자르기는 운영과 같은 prepare_evidence(접기·시트 확장 포함)."""
     cands = await retrieve_candidates(session, tenant, query, top_n=20)
     chunks = cands.chunks
@@ -234,7 +236,7 @@ def _split_segments(text: str) -> list[str]:
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(y * y for y in b))
     return dot / (na * nb) if na and nb else 0.0
@@ -290,7 +292,7 @@ def expected_points_hits(answer: str, points: list[str]) -> list[bool]:
             embs = embed_texts_sync(remaining + segments)
             p_vecs = [e.dense for e in embs[: len(remaining)]]
             s_vecs = [e.dense for e in embs[len(remaining) :]]
-            for i, pv in zip(gated_idx, p_vecs):  # index 직접 — 중복 포인트도 각자 갱신
+            for i, pv in zip(gated_idx, p_vecs, strict=False):  # index 직접 — 중복 포인트도 각자 갱신
                 if max(_cosine(pv, sv) for sv in s_vecs) >= EPCOV_SIM_THRESHOLD:
                     hits[i] = True
     return hits
@@ -438,7 +440,7 @@ async def judge_faithfulness(answer: str, chunks: list[RetrievedChunk]) -> float
 CONCURRENCY = int(os.getenv("EVAL_CONCURRENCY", "40"))
 
 
-async def _misinfo_scores(judge, answer: str, forbidden: list[str]) -> dict:
+async def _misinfo_scores(judge: LlmClient, answer: str, forbidden: list[str]) -> dict:
     """오정보 채점 2단계: 문자열 후보(must_not_contain_violations) → 후보가 있을 때만 LLM 확인.
     scores에 세 키 — 확정 위반(기존 키, 하위 호환), 1단계 후보, 판정 감사(사유·오류).
     judge는 absence_judge.judge_llm()이다 — 거절축과 **같은 판정자**(ABSENCE_JUDGE=claude 교차채점 포함).
@@ -463,7 +465,9 @@ EPCOV_JUDGE_WORKERS = int(
 )  # 심판 동시 호출 — Claude는 호출=프로세스라 너무 올리면 한도에 빨리 닿는다
 
 
-async def _epcov_scores(judge, sem, answer: str, points: list[str], rule_hits: list[bool]) -> dict:
+async def _epcov_scores(
+    judge: LlmClient | None, sem: asyncio.Semaphore, answer: str, points: list[str], rule_hits: list[bool]
+) -> dict:
     """EPCov 2단계: 규칙 히트(rule_hits) → 미적중이면서 금액 게이트를 통과한 포인트만 심판 확인.
 
     scores에 세 키 — 최종 커버리지(기존 키, 심판 반영), 규칙만의 커버리지(이력 비교용 이중 기록), 판정 감사.
@@ -492,7 +496,15 @@ async def _epcov_scores(judge, sem, answer: str, points: list[str], rule_hits: l
     }
 
 
-async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, epcov_judging: bool = True):
+async def run_mode(
+    session: AsyncSession,
+    llm: LlmClient,
+    mode: str,
+    gold_rows: list[GoldRow],
+    resolved: Resolved,
+    gen_llm: LlmClient | None = None,
+    epcov_judging: bool = True,
+) -> list[dict]:
     """oracle / retrieved 한 모드로 생성 + 채점 → row 리스트.
 
     LLM 콜(condense·generate)은 병렬(vLLM 연속 배칭), 컨텍스트 조회·채점은 직렬 —
@@ -521,7 +533,7 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, e
     # multi_turn: 이전 대화를 운영 condense에 태워 독립 질문으로 재작성.
     # **검색**은 재작성 질의를 쓰고, **생성**은 원 질문 + 재작성 참고 병기 — 운영 경로와 동일.
     # 이력 블록(prior_turns)도 운영과 같은 함수·같은 예산으로 만들어 함께 싣는다.
-    async def _standalone(g):
+    async def _standalone(g: GoldRow) -> tuple[str, tuple[str | None, list[dict]]]:
         if g["type"] != "multi_turn":
             return g["id"], (None, [])
         history = messages_from_conversation(g.get("conversation"))
@@ -538,7 +550,7 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, e
     turn_ctx = dict(await asyncio.gather(*(_standalone(g) for g in gen_rows)))
 
     # ② 컨텍스트 조회 — 세션 직렬. oracle에서 resolve 실패는 스킵(기존 동작)
-    work: list[tuple[dict, list]] = []
+    work: list[tuple[GoldRow, list[RetrievedChunk]]] = []
     for g in gen_rows:
         query = turn_ctx[g["id"]][0] or g["query"]  # 검색은 재작성 질의로 (없으면 원문)
         if mode == "oracle":
@@ -550,7 +562,7 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, e
         work.append((g, chunks))
 
     # ③ 생성 병렬 — 가장 무거운 구간이라 병렬화 효과 최대
-    async def _generate(g, chunks):
+    async def _generate(g: GoldRow, chunks: list[RetrievedChunk]) -> str:
         standalone, prior_turns = turn_ctx[g["id"]]
         async with sem:
             return await generate(gen_llm, g["query"], chunks, standalone_query=standalone, prior_turns=prior_turns)
@@ -560,14 +572,14 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, e
     # ④ EPCov — 규칙(embed_texts_sync 포함)은 직렬, 미적중 포인트의 심판 확인은 전 행에 걸쳐 병렬.
     # 행마다 순서대로 기다리면 Claude 판정자(호출=프로세스, 수 초)로 모드당 20분 가까이 걸린다.
     points_l = [g.get("expected_points", []) for g, _ in work]
-    rule_l = [expected_points_hits(a, p) if p else [] for a, p in zip(answers, points_l)]
+    rule_l = [expected_points_hits(a, p) if p else [] for a, p in zip(answers, points_l, strict=False)]
     epcov_l = await asyncio.gather(
-        *(_epcov_scores(epcov_llm, epcov_sem, a, p, h) for a, p, h in zip(answers, points_l, rule_l))
+        *(_epcov_scores(epcov_llm, epcov_sem, a, p, h) for a, p, h in zip(answers, points_l, rule_l, strict=False))
     )
 
     # ⑤ 채점·행 구성 — 직렬
     rows = []
-    for (g, chunks), answer, epcov in zip(work, answers, epcov_l):
+    for (g, chunks), answer, epcov in zip(work, answers, epcov_l, strict=False):
         standalone = turn_ctx[g["id"]][0]
 
         rows.append(
@@ -619,7 +631,7 @@ def _smoke_sample[R: Mapping[str, object]](rows: list[R], n: int) -> list[R]:
     return [r for r in rows if id(r) in picked]
 
 
-async def main():
+async def main() -> None:
     # load_gold()를 쓴다 — GOLD를 직접 읽으면 eval/gold_private/(사내 실문서 골드)가 통째로
     # 빠진다. 테넌트 라우팅은 row_tenant가 id 접두로 한다(V2_TENANTS에 inticube 포함).
     gold = load_gold()
@@ -678,7 +690,7 @@ async def main():
             all_rows[mode] = rows
 
 
-def summarize(rows):
+def summarize(rows: list[dict]) -> None:
     """모드별 deterministic 평균 (judge는 채점 붙으면 추가).
 
     Misinfo 열 = must_not_contain 위반율(위반 행 수 / 필드 보유 행 수) — 분모가 없으면 '-'.
@@ -688,7 +700,7 @@ def summarize(rows):
     for r in rows:
         by_type[r["type"]].append(r["scores"])
 
-    def _line(label, ss):
+    def _line(label: str, ss: list[dict]) -> None:
         n = len(ss)
         cov = [s["expected_points_coverage"] for s in ss if s["expected_points_coverage"] is not None]
         cite = [s["citation_accuracy"] for s in ss]

@@ -68,7 +68,7 @@ async def main() -> None:
     for qid, runs_hits in by_id.items():
         if len(runs_hits) < RUNS:  # 일부 런에서 스킵된 문항은 일치율 분모에서 제외
             continue
-        for pi, outcomes in enumerate(zip(*runs_hits)):
+        for pi, outcomes in enumerate(zip(*runs_hits, strict=False)):
             if len(set(outcomes)) == 1:
                 stable += 1
             else:

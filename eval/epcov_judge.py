@@ -22,6 +22,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from rag.llm.base import LlmClient
 from rag.turn.llm_schemas import acomplete_validated
 
 JUDGE_PROMPT_VERSION = "v1"
@@ -60,7 +61,7 @@ def judge_label() -> str:
     return f"{backend}:{model}:{JUDGE_PROMPT_VERSION}"
 
 
-def judge_llm():
+def judge_llm() -> LlmClient:
     """판정 클라이언트. 전용 스위치라 부재 단정·오정보 심판(ABSENCE_JUDGE)과 따로 켜고 끈다 — 축별 토큰 조절."""
     backend, model = judge_spec()
     if backend == "claude":
@@ -87,13 +88,13 @@ def _build_messages(answer: str, point: str) -> list[dict]:
     ]
 
 
-async def judge_point(llm, answer: str, point: str) -> CoverageJudgment:
+async def judge_point(llm: LlmClient, answer: str, point: str) -> CoverageJudgment:
     """포인트 하나를 판정. 실패는 예외로 전파 — confirm_points가 미적중 유지로 집계한다."""
     return await acomplete_validated(llm, _build_messages(answer, point), CoverageJudgment)
 
 
 async def confirm_points(
-    llm, answer: str, points: list[str], rule_hits: list[bool], targets: list[int], sem: asyncio.Semaphore
+    llm: LlmClient, answer: str, points: list[str], rule_hits: list[bool], targets: list[int], sem: asyncio.Semaphore
 ) -> tuple[list[bool], list[dict]]:
     """규칙 판정 → (최종 히트, 감사 행). targets(규칙 미적중 중 판정 대상 인덱스)만 LLM에 묻는다.
 
@@ -166,7 +167,12 @@ async def selftest(runs: int = 3) -> dict:
             except Exception as exc:
                 labels.append(f"error:{type(exc).__name__}")
         out.append(
-            {"id": f["id"], "expected": f["expected"], "labels": labels, "ok": all(l == f["expected"] for l in labels)}
+            {
+                "id": f["id"],
+                "expected": f["expected"],
+                "labels": labels,
+                "ok": all(lab == f["expected"] for lab in labels),
+            }
         )
     return {"judge": judge_label(), "runs": runs, "fixtures": out, "all_ok": all(o["ok"] for o in out)}
 

@@ -8,6 +8,12 @@
 import argparse
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.pdfgen.canvas import Canvas
+    from reportlab.platypus import BaseDocTemplate
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -49,7 +55,7 @@ def _png(tmp: Path) -> Path:
     return f
 
 
-def _flow(block, styles, tmp: Path):
+def _flow(block: tuple, styles: tuple[ParagraphStyle, ParagraphStyle, ParagraphStyle, ParagraphStyle], tmp: Path):
     from reportlab.lib import colors
     from reportlab.platypus import FrameBreak, Image, Paragraph, Table, TableStyle
 
@@ -74,7 +80,7 @@ def _flow(block, styles, tmp: Path):
     raise ValueError(kind)
 
 
-def _columns(w, h, n, gap, margin=15 * 2.835):
+def _columns(w: float, h: float, n: int, gap: float, margin: float = 15 * 2.835):
     from reportlab.platypus import Frame
 
     cw = (w - 2 * margin - gap * (n - 1)) / n
@@ -120,7 +126,7 @@ def build(spec: dict, out_dir: Path) -> Path:
     if layout == 'header_footer':
         head, _ = spec['furniture']
 
-        def on_page(canvas, doc):
+        def on_page(canvas: Canvas, doc: BaseDocTemplate) -> None:
             canvas.saveState()
             canvas.setFont('HYGothic-Medium', 9)
             canvas.drawString(15 * mm, H - 12 * mm, head)

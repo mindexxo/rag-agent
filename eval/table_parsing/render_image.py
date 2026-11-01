@@ -5,29 +5,31 @@
 """
 
 import io
+from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
 FONT_PATH = '/System/Library/Fonts/AppleSDGothicNeo.ttc'
 PAD, LINE = 14, 1.35
+Rows = list[list[Any]]  # 정의 격자 — 칸은 str/int/dict/None
 
 
-def font(size):
+def font(size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(FONT_PATH, size)
 
 
-def cell_text(c) -> str:
+def cell_text(c: Any) -> str:
     if c is None:
         return ''
     return str(c) if not isinstance(c, dict) else c.get('t', '')
 
 
-def render_table(rows, *, font_size=16, style='grid', row_header=False):
+def render_table(rows: Rows, *, font_size: int = 16, style: str = 'grid', row_header: bool = False) -> Image.Image:
     f = font(font_size)
     nrows, ncols = len(rows), max(len(r) for r in rows)
     tmp = ImageDraw.Draw(Image.new('RGB', (10, 10)))
 
-    def tsize(text, vertical=False):
+    def tsize(text: str, vertical: bool = False) -> tuple[float, float]:
         lines = text.split('\n') or ['']
         w = max(tmp.textlength(line, font=f) for line in lines)
         h = len(lines) * font_size * LINE
@@ -105,7 +107,7 @@ def render_table(rows, *, font_size=16, style='grid', row_header=False):
     return im
 
 
-def render_spec(spec) -> Image.Image:
+def render_spec(spec: dict[str, Any]) -> Image.Image:
     """정의 하나 → 표 이미지(제목·주석·나란히·기울임·축소·JPEG 열화 포함)."""
     fs = spec.get('font_size', 16)
     if spec.get('side_by_side'):

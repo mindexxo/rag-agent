@@ -63,7 +63,7 @@ async def main():
     from rag.search import retriever as rt
 
     # 임베딩을 결정적 가짜로 교체 (conftest와 동일 목적, TEI 불필요)
-    async def _fake_embed_texts(texts, kind="document"):
+    async def _fake_embed_texts(texts: list[str], kind: emb_mod.Kind = "document") -> list[emb_mod.Embedding]:
         return [emb_mod.Embedding(dense=_fake_dense(t)) for t in texts]
 
     rt.embed_texts = _fake_embed_texts

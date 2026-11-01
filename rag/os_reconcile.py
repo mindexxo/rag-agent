@@ -14,6 +14,7 @@ import argparse
 import asyncio
 
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database import AsyncSessionLocal
@@ -23,11 +24,11 @@ from rag.search import os_client, os_index
 from rag.search.os_client import client
 
 
-def _tenant_term(tenant_id):
+def _tenant_term(tenant_id: str | None) -> dict:
     return {"term": {"tenant_id": tenant_id}} if tenant_id else {"match_all": {}}
 
 
-async def _indexed_parent_ids(field: str, tenant_id) -> set[int]:
+async def _indexed_parent_ids(field: str, tenant_id: str | None) -> set[int]:
     """색인에 있는 부모 id 집합(document_id 또는 faq_id) — terms 집계. 반드시 PG보다 **먼저** 읽는다."""
     agg = await client().search(
         index=settings.opensearch_index,
@@ -36,7 +37,7 @@ async def _indexed_parent_ids(field: str, tenant_id) -> set[int]:
     return {int(b["key"]) for b in agg["aggregations"]["p"]["buckets"]}
 
 
-async def reconcile(session, tenant_id: str | None = None) -> dict:
+async def reconcile(session: AsyncSession, tenant_id: str | None = None) -> dict:
     """PG↔OS 문서 단위 재동기화 — ready 문서가 색인에 있는지만 본다. OS를 PG보다 먼저 읽는다(모듈 docstring).
 
     tenant_id가 없으면 전체. 반환: {'pg': ready 문서 수, 'os': 색인 문서 수, 'indexed': 재등재 수, 'deleted': 삭제 청크 수}.
@@ -48,7 +49,7 @@ async def reconcile(session, tenant_id: str | None = None) -> dict:
         stmt = stmt.where(Document.tenant_id == tenant_id)
     pg_rows = (await session.execute(stmt)).all()
     pg_docs = {did for did, _ in pg_rows}
-    tenant_of = dict(pg_rows)
+    tenant_of = {pid: tenant for pid, tenant in pg_rows}
 
     missing, extra = pg_docs - os_docs, os_docs - pg_docs
     # pending으로 되돌려 재등재한다 — 재색인·ready 승격은 인제스션 핸들러(index_pending_document) 한 곳이 맡는다.
@@ -61,7 +62,7 @@ async def reconcile(session, tenant_id: str | None = None) -> dict:
     return {'pg': len(pg_docs), 'os': len(os_docs), 'indexed': len(missing), 'deleted': deleted, 'unit': 'document'}
 
 
-async def reconcile_faqs(session, tenant_id: str | None = None) -> dict:
+async def reconcile_faqs(session: AsyncSession, tenant_id: str | None = None) -> dict:
     """reconcile()의 FAQ 짝(OS 먼저). 비활성 FAQ도 searchable=False로 색인되므로 PG의 모든 FAQ 행과 대조한다."""
 
     os_faqs = await _indexed_parent_ids("faq_id", tenant_id)
@@ -70,7 +71,7 @@ async def reconcile_faqs(session, tenant_id: str | None = None) -> dict:
         stmt = stmt.where(Faq.tenant_id == tenant_id)
     pg_rows = (await session.execute(stmt)).all()
     pg_faqs = {fid for fid, _ in pg_rows}
-    tenant_of = dict(pg_rows)
+    tenant_of = {pid: tenant for pid, tenant in pg_rows}
 
     missing, extra = pg_faqs - os_faqs, os_faqs - pg_faqs
     if missing:
@@ -81,7 +82,9 @@ async def reconcile_faqs(session, tenant_id: str | None = None) -> dict:
     return {'pg': len(pg_faqs), 'os': len(os_faqs), 'indexed': len(missing), 'deleted': deleted, 'unit': 'faq'}
 
 
-async def _diff(session, tenant_id):
+async def _diff(
+    session: AsyncSession, tenant_id: str | None
+) -> tuple[tuple[set[int], set[int]], tuple[set[int], set[int]]]:
     """reconcile과 같은 순서(OS 먼저)로 문서·FAQ 두 집합의 차이를 읽기만 한다."""
     os_docs = await _indexed_parent_ids("document_id", tenant_id)
     os_faqs = await _indexed_parent_ids("faq_id", tenant_id)

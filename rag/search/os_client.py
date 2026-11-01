@@ -6,6 +6,7 @@ HNSW·BM25 파라미터는 매핑에 명시하지 않고 엔진 기본값을 쓴
 """
 
 import logging
+from typing import Any
 
 from config import settings
 
@@ -14,7 +15,7 @@ DIM = 1024  # 임베딩 모델 차원 (rag/search/embeddings.py)
 NORI_FIELD = "index_text_nori"
 LEX_BIGRAM_FIELD = "lex_bigram"
 
-MAPPING = {
+MAPPING: dict[str, Any] = {
     "settings": {
         "index": {
             "number_of_shards": 1,  # 샤드를 늘리면 df가 샤드별로 갈려 BM25 점수가 흔들린다.
@@ -98,7 +99,7 @@ MAPPING = {
 _client = None
 
 
-def client():
+def client() -> Any:  # opensearchpy는 스텁이 없다
     """공용 AsyncOpenSearch 싱글톤. 커넥션이 이벤트 루프에 묶이므로 프로세스당 루프 1개 전제다.
 
     `opensearchpy`는 함수 안에서 import한다 — 매핑 상수만 보는 테스트가 그 패키지 없이 import할 수 있게.
@@ -131,7 +132,7 @@ async def close_client() -> None:
 ADDITIVE_FIELDS = ("identifiers", "headings", "table_key", "table_text")
 
 
-async def _add_missing_fields(os_client) -> None:
+async def _add_missing_fields(os_client: Any) -> None:
     """ADDITIVE_FIELDS 중 없는 것만 덧붙인다. 실패해도 경고만 남긴다.
 
     drain이 매 회차 ensure_index를 부르므로 여기서 예외를 올리면 색인 전체가 멈춘다.
@@ -139,7 +140,8 @@ async def _add_missing_fields(os_client) -> None:
     props = MAPPING["mappings"]["properties"]
     try:
         current = await os_client.indices.get_mapping(index=settings.opensearch_index)
-        have = next(iter(current.values()), {}).get("mappings", {}).get("properties", {})
+        first: dict[str, Any] = next(iter(current.values()), {})
+        have = first.get("mappings", {}).get("properties", {})
         missing = {f: props[f] for f in ADDITIVE_FIELDS if f not in have}
         if missing:
             await os_client.indices.put_mapping(index=settings.opensearch_index, body={"properties": missing})

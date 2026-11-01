@@ -65,7 +65,7 @@ def build_converter() -> DocumentConverter:
     from docling.pipeline.vlm_pipeline import VlmPipeline
 
     opts = ApiVlmOptions(
-        url=settings.vlm_caption_url,  # type: ignore[arg-type]  # pydantic이 str을 AnyUrl로 검증한다
+        url=settings.vlm_caption_url,
         headers=C.document_converter.caption_headers(),
         prompt=PROMPT,
         response_format=ResponseFormat.MARKDOWN,

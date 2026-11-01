@@ -8,7 +8,7 @@
 
 import os
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self, cast
 
 from dotenv import dotenv_values
 from pydantic import model_validator
@@ -390,7 +390,7 @@ class Settings(BaseSettings):
     # 올리려면 vLLM의 배치 불변(batch-invariant) 모드 같은 서버 쪽 결정성부터 확인할 것.
 
     @model_validator(mode="after")
-    def _require_vendor_model_and_key(self):
+    def _require_vendor_model_and_key(self) -> Self:
         """상용 공급자를 고르면 모델명과 API 키가 있어야 한다 — 기동 시점에 거부한다.
 
         빈 모델명은 LiteLLM이 "openai/"처럼 접두만 남은 이름으로 첫 호출 때 실패시키고, 빈 키는 벤더가 첫 호출에 401을
@@ -410,7 +410,7 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def _reject_renamed_env(self):
+    def _reject_renamed_env(self) -> Self:
         """이름을 바꾼 설정이 옛 이름으로 남아 있으면 멈춘다(#287 결정 4).
 
         extra="ignore"라 옛 이름은 에러 없이 버려지고 새 이름의 **기본값(localhost)** 으로 조용히 붙는다 —
@@ -418,7 +418,7 @@ class Settings(BaseSettings):
         옛 이름을 받아 주는 호환이 아니다(사용자 결정 — 새 이름만 쓴다).
         """
         found = [k for k in os.environ if k.upper() in _RENAMED_ENV]
-        for f in self.model_config["env_file"]:
+        for f in cast("tuple[str, ...]", self.model_config["env_file"]):  # 위 SettingsConfigDict가 튜플로 준다
             if Path(f).exists():
                 found += [k for k in dotenv_values(f) if k.upper() in _RENAMED_ENV]
         if found:

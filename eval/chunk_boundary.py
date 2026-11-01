@@ -37,7 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from eval.chunk_invariants import norm, stitch  # noqa: E402 — 비교 정규화·이어 붙이기의 정의점
-from eval.rows import GoldRow
+from eval.rows import GoldRow  # noqa: E402
 from rag.chunking import TABLE_NOTE  # noqa: E402 — 표 주석 표지의 정의점
 from rag.identifiers import is_heading_line  # noqa: E402 — 조 제목 판정의 정의점
 

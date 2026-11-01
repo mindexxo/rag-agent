@@ -10,7 +10,7 @@
 
 import logging
 from collections.abc import AsyncIterator
-from typing import NamedTuple
+from typing import Literal, NamedTuple, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +18,7 @@ from sqlalchemy.orm import aliased
 
 from config import settings
 from rag.clients import shared_aux_llm, shared_llm
+from rag.llm import LlmUsage
 from rag.models import Attachment, Conversation, Message, TurnStatus
 from rag.search.retrieval_types import RetrievalResult, RetrievedChunk
 from rag.search.retriever import retrieve
@@ -82,7 +83,9 @@ def _resolve_retry(ctx: TurnContext) -> _Retry | None:
     )
 
 
-def _without_retrieval(ctx: TurnContext, route: str, block_reason: str | None = None) -> PreparedRag:
+def _without_retrieval(
+    ctx: TurnContext, route: Literal['other', 'blocked'], block_reason: str | None = None
+) -> PreparedRag:
     """blocked/other 공용 — 검색·인용 없이 라우팅 결과만 담는다."""
     return PreparedRag(
         block_reason=block_reason,
@@ -131,7 +134,7 @@ class RagService:
         # LLM 레벨 종료 사유(rag/llm/base.FinishReason) — streaming.py가 지표·스팬에 기록한다.
         # SSE done의 TurnStatus finish_reason과는 다른 축이다.
         self.last_finish_reason: str | None = None
-        self.last_usage = None  # LlmUsage | None — 상용 공급자만 채운다. streaming.py가 스팬에 기록
+        self.last_usage: LlmUsage | None = None  # 상용 공급자만 채운다. streaming.py가 스팬에 기록
 
     async def prepare(
         self,
@@ -298,6 +301,7 @@ class RagService:
         precomputed_standalone은 RETRY 재실행 전용 — 원 턴의 재작성 결과를 재사용한다(다시 재작성하면 취소 턴이
         낀 이력 때문에 원래와 다른 검색어가 나올 수 있다).
         """
+        expanded: list[str]
         if precomputed_standalone is not None:
             standalone_query, expanded = precomputed_standalone, []
         else:
@@ -383,7 +387,7 @@ class RagService:
         """astream 콜백 — 값 보관만. 기록은 streaming.py가 한다."""
         self.last_finish_reason = reason
 
-    def _set_usage(self, usage) -> None:
+    def _set_usage(self, usage: LlmUsage) -> None:
         """astream 콜백 — 값 보관만. 기록은 streaming.py가 한다."""
         self.last_usage = usage
 
@@ -420,7 +424,7 @@ class RagService:
         # "질문:" 자리는 원 질문, 검색에 쓴 재작성 질의는 참고로 병기한다.
         prompt = build_knowledge_generation_prompt(
             prepared.original_query,
-            prepared.retrieval.chunks,
+            cast(RetrievalResult, prepared.retrieval).chunks,  # knowledge 경로는 retrieval이 있다(불변식)
             standalone_query=prepared.standalone_query,
             prior_turns=prepared.prior_turns,
             attachments=prepared.attachments,
@@ -455,7 +459,7 @@ class RagService:
         await finalize_turn(
             self.session,
             self.tenant_id,
-            prepared.assistant_message_id,
+            cast(int, prepared.assistant_message_id),
             answer,
             source_dicts,
             status=status,

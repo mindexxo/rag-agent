@@ -9,8 +9,9 @@
 
 import logging
 from datetime import timedelta
+from typing import cast
 
-from sqlalchemy import func, update
+from sqlalchemy import CursorResult, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rag.models import Attachment, Conversation, Message, TurnStatus
@@ -201,4 +202,4 @@ async def sweep_stale_generating(session: AsyncSession) -> int:
         .where(Message.created_at < func.now() - timedelta(seconds=GENERATION_STALE_SECONDS))
         .values(status=TurnStatus.FAILED.value)
     )
-    return result.rowcount
+    return cast(CursorResult, result).rowcount  # UPDATE 실행 결과는 CursorResult다

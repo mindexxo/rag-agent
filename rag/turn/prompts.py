@@ -26,6 +26,7 @@ from rag.turn.prompt_texts import (
     STANDALONE_QUERY_LABEL,
     USER_TEMPLATE,
 )
+from schemas.kms import SourceCitation
 
 
 def _resolve_domain_hint(domain_hint: str | None) -> str:
@@ -86,7 +87,7 @@ def build_attachment_blocks(attachments: list[Attachment], start: int = 1) -> st
     )
 
 
-def build_citation_tail(sources, attachment_filenames: list[str]) -> CitationTail:
+def build_citation_tail(sources: list[SourceCitation], attachment_filenames: list[str]) -> CitationTail:
     """출처 꼬리 제약의 의도 — "꼬리 표식 사이에는 1..N 정수 배열만".
 
     N은 검색 출처 + 첨부 수다(첨부를 빠뜨리면 안 되는 이유는 rag/turn/citation_labels.py). 서버 문법으로 바꾸는 건

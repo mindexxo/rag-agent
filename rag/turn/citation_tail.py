@@ -13,6 +13,7 @@ malformed 꼬리는 부분 복구하지 않고 그 번호만 버린다 — 그�
 """
 
 import re
+from collections.abc import Sequence
 
 from rag.turn.citation_labels import TAIL_END, TAIL_START, attachment_display
 from schemas.kms import SourceCitation
@@ -35,7 +36,7 @@ class TailSplitter:
     취소·max_tokens로 꼬리가 잘리면 truncated=True, 잘린 버퍼는 본문·저장 어디에도 안 간다.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._hold = ''  # 본문 중 미방출분 (마커 접두 후보)
         self._tail_buf = ''  # 마커 이후 흡수분 (TAIL_START 제외)
         self._in_tail = False
@@ -117,7 +118,9 @@ class TailSplitter:
         return flushed
 
 
-def resolve_citations(tail_raw: str | None, sources, attachment_filenames: list[str]) -> list[SourceCitation]:
+def resolve_citations(
+    tail_raw: str | None, sources: Sequence[SourceCitation], attachment_filenames: list[str]
+) -> list[SourceCitation]:
     """꼬리의 번호 목록 → 인용 객체. 범위 밖·중복·비숫자는 버리고, 반환 순서는 꼬리 등장 순서.
 
     sources는 반드시 프롬프트를 만든 그 청크의 sources_from_chunks 산출물(prepared.sources)이어야 한다 —

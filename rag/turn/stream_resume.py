@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
+from typing import Any
 
 from config import settings
 from database import AsyncSessionLocal
@@ -27,7 +28,7 @@ def stream_key(tenant_id: str, message_id: int) -> str:
     return f'{_KEY_PREFIX}{tenant_id}:{message_id}'
 
 
-def _redis():
+def _redis() -> Any:  # redis.asyncio 스텁은 동기·비동기 반환을 섞어 적는다
     """공용 Redis 클라이언트를 호출 시점에 읽는다 — tests/conftest.py가 shared_redis를 통째로 교체한다."""
     from rag import clients
 

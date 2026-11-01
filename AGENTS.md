@@ -25,9 +25,9 @@
   `rag/turn/turn_state.py`, `rag/turn/cache.py`,
   `rag/turn/stream_resume.py`, `rag/turn/cancellation.py`, `rag/turn/citation_tail.py`, `rag/documents.py`, `rag/document_admin.py`(문서 목록·속성 변경), `rag/upload.py`(업로드 저장), `rag/folders.py`(폴더 관리), `rag/faq.py`(FAQ·카테고리 관리), `rag/ingestion.py`,
   `rag/turn/prepared.py`,
-  `rag/turn/prompts.py`, `rag/turn/conversation.py`, `rag/turn/guardrail.py`, `rag/outbox.py`,
+  `rag/turn/prompts.py`, `rag/turn/conversation.py`, `rag/turn/history.py`(대화 목록·이력·피드백·제목·삭제), `rag/turn/guardrail.py`, `rag/outbox.py`,
   `rag/os_reconcile.py`(색인 정합 복구 CLI — `outbox`로 재등재하므로 `search/` 안에 두면 단위 순환이 된다), `rag/turn/conversation_search.py`(`models`만 쓴다)
-- **조립점**: `rag/turn/service.py` — 한 턴의 수명(prepare → generate → finalize)을 조율한다. `rag/turn/`은 턴 수명 모듈 15개를 모은 패키지인데
+- **조립점**: `rag/turn/service.py` — 한 턴의 수명(prepare → generate → finalize)을 조율한다. `rag/turn/`은 턴 수명 모듈 16개를 모은 패키지인데
   안에 조립점·진입점이 있어 계층 검사는 이 패키지만 모듈 단위로 본다(`tests/test_architecture.py`의 투명 패키지).
 - **진입점**(다른 모듈이 톱레벨에서 import하지 않는다 — 예외는 아래 지연 목록의 `turn/stream_resume`→`turn/streaming`): `rag/turn/streaming.py`(SSE),
   `rag/worker.py`(arq 백그라운드), `routers/*.py`(HTTP), `main.py`(FastAPI 부트스트랩 전용).

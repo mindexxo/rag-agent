@@ -1,4 +1,4 @@
-"""테스트 증거 스크립트(tests/evidence.py, #311) — 합성 JUnit 리포트로 집계·사유·오래된 리포트 경고를 검사한다."""
+"""테스트 증거 스크립트(tests/evidence.py) — 합성 JUnit 리포트로 집계·사유·오래된 리포트 경고를 검사한다."""
 
 import os
 import time

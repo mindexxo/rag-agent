@@ -1,12 +1,12 @@
-"""생성 중 재접속 계약 테스트 (#75).
+"""생성 중 재접속 계약 테스트.
 
 이 기능의 존재 이유를 검증한다 — **새로고침으로 SSE가 끊겨도 새 연결이 스트림을 이어받는다.**
 최초 연결은 인메모리 큐로 흐르고 재접속만 Redis Stream을 읽는다(이중 쓰기). 같은 인스턴스여도
 큐를 재사용할 수 없다 — `asyncio.Queue.get()`은 1:1 소비라 원 리더와 토큰을 나눠 갖고,
 지나간 분량이 큐에 없어 재생할 재료가 없다.
 
-ASGITransport는 응답 본문이 끝날 때까지 `client.stream()`을 반환하지 않아(test_cancellation.py가
-실측·문서화) "스트림을 열어둔 채 다른 요청"을 HTTP로 재현할 수 없다. 그래서 여기서도 같은 우회를
+ASGITransport는 응답 본문이 끝날 때까지 `client.stream()`을 반환하지 않아(test_cancellation.py 참고)
+"스트림을 열어둔 채 다른 요청"을 HTTP로 재현할 수 없다. 그래서 여기서도 같은 우회를
 쓴다 — `_run_generation`을 직접 기동하고 재접속 리더를 별도 코루틴으로 붙인다.
 실서버 배선(uvicorn·프록시)의 최종 확인은 실기동 몫이다.
 """
@@ -119,7 +119,7 @@ async def fresh_redis():
     """공용 Redis 클라이언트를 이 테스트의 루프에 맞는 새 인스턴스로 교체한다.
 
     동시 구독은 커넥션을 둘 이상 요구하는데, 풀의 내부 Lock이 앞선 테스트의 루프에 묶여
-    있으면 "bound to a different event loop"로 죽는다(실측). 닫힌 루프에 묶인 커넥션은
+    있으면 "bound to a different event loop"로 죽는다. 닫힌 루프에 묶인 커넥션은
     disconnect()조차 실패하므로 정리가 아니라 **교체**다 — test_cancellation.py의
     cancel_subscriber가 같은 이유로 쓰는 패턴.
     """
@@ -251,7 +251,7 @@ async def test_타_테넌트는_스트림을_못_읽는다(client, tenant_id, ot
 
 @pytest.mark.asyncio
 async def test_남의_턴에는_재접속할_수_없다(client, tenant_id, fake_llm, pass_gate):
-    """엔드포인트 소유 검증 — 취소(#30)와 같은 함정이라 같은 헬퍼를 쓴다."""
+    """엔드포인트 소유 검증 — 취소와 같은 함정이라 같은 헬퍼를 쓴다."""
     await register_faq(client)
     prepared = await _prepared_turn(tenant_id)
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)

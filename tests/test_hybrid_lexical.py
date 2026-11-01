@@ -1,6 +1,6 @@
-"""하이브리드 어휘 주입(#135 → #139 OpenSearch BM25/Nori) 통합 계약.
+"""하이브리드 어휘 주입(OpenSearch BM25/Nori) 통합 계약.
 
-핵심 계약 (#128 trgm 채널의 6계약 승계):
+핵심 계약:
   1. dense가 못 잡은 어휘 일치 청크가 후보에 주입된다 (플래그 on)
   2. 주입은 dense 순위 '뒤'다 — 리랭크 꺼짐 폴백에서 dense 순서가 안 깨진다
   3. 플래그 off·dense 빈 결과에선 기존 동작 그대로 (주입 없음)
@@ -10,7 +10,7 @@
 
 dense를 결정적으로 통제하기 위해 fake_embed(텍스트 결정적 가짜 벡터)를 쓰고,
 candidates_per_branch를 좁혀 '어휘 일치 청크가 dense 후보 밖'인 상황을 만든다.
-BM25 채점은 실제 OpenSearch(Nori)가 한다 — 청크는 PG가 아니라 색인에만 있다(#139).
+BM25 채점은 실제 OpenSearch(Nori)가 한다 — 청크는 PG가 아니라 색인에만 있다.
 """
 
 import pytest

@@ -1,4 +1,4 @@
-"""보조 LLM 호출 분리(#297) — 의도 분류·질의 재작성·캐시 재사용 판정만 LLM_AUX_*의 모델·생각 수준으로, 생성은 그대로.
+"""보조 LLM 호출 분리 — 의도 분류·질의 재작성·캐시 재사용 판정만 LLM_AUX_*의 모델·생각 수준으로, 생성은 그대로.
 
 두 층:
   - 단위: 요청 바디(설정이 비면 이전과 같다·설정하면 보조만 바뀐다), 스팬 모델 기록.
@@ -31,7 +31,7 @@ class TestRequestBody:
 
     def test_설정이_비면_보조_클라이언트는_생성_클라이언트_그_자체다(self, no_aux):
         # 커넥션 풀도 하나 — rag/clients가 aux_overridden()이 거짓이면 shared_llm을 그대로 쓴다(모듈을 다시 읽지 않고 분기만 본다:
-        # reload하면 http_async·shared_redis가 새로 생기고 옛 것이 안 닫힌다, 리뷰 반영)
+        # reload하면 http_async·shared_redis가 새로 생기고 옛 것이 안 닫힌다)
         import rag.clients as clients
 
         src = Path(clients.__file__).read_text(encoding='utf-8')

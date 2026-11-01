@@ -1,4 +1,4 @@
-"""PDF·DOCX 큰 표 확장 통합 테스트(#257) — 업로드 → 색인(표 묶음 메타) → 조회 → 근거 준비(표 전체), 상한 초과 표의 색인 실패.
+"""PDF·DOCX 큰 표 확장 통합 테스트 — 업로드 → 색인(표 묶음 메타) → 조회 → 근거 준비(표 전체), 상한 초과 표의 색인 실패.
 
 엑셀 쪽(시트 묶음 → 시트 완성본)은 엑셀 통합 테스트(test_integration_documents_xlsx) G4 항목이 덮는다. 여기는 같은 계약을 PDF·DOCX 경로가
 지키는지 본다 — DOCX로 만든다(docling SimplePipeline이라 PDF보다 빠르고, 표 → TableBlock 운반은 두 형식이 같은 길이다).
@@ -69,10 +69,10 @@ async def test_큰_표는_묶음마다_표_키와_표_전체가_색인되고_근
     whole = batches[0].table_text
     assert whole.startswith(
         '이 기준은 협력사별 납품 단가와 납기를 정한다.\n협력사별 납품 단가는 아래와 같다.\n| 품목코드 |'
-    )  # 표 앞 설명 여러 줄(#268)
+    )  # 표 앞 설명 여러 줄
     assert whole.endswith(
         '| P-0150 | 납품 품목 150번 | 2,050원 |\n※ 단가는 부가세 별도이다.'
-    )  # 표 아래 주석(#268) — 표지 없는 다음 문장은 안 붙는다
+    )  # 표 아래 주석 — 표지 없는 다음 문장은 안 붙는다
     assert all(
         b.text.startswith('협력사별 납품 단가는 아래와 같다.\n| 품목코드 |') and '※' not in b.text for b in batches
     )  # 묶음 본문은 그대로
@@ -85,7 +85,7 @@ async def test_큰_표는_묶음마다_표_키와_표_전체가_색인되고_근
     assert [c.text for c in ev] == [
         table_evidence_text(batches[-1]),
         small[0].text,
-    ]  # 한 칸으로 접혀 걸린 묶음 + 표 전체(#268)
+    ]  # 한 칸으로 접혀 걸린 묶음 + 표 전체
     assert ev[0].text.endswith(f'[표 전체]\n{whole}')
 
 

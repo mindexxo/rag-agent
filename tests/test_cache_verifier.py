@@ -1,10 +1,10 @@
-"""캐시 재사용 판정(#113) 배선 계약 — **판정 승인 없이는 서빙이 없다**.
+"""캐시 재사용 판정 배선 계약 — **판정 승인 없이는 서빙이 없다**.
 
 hit 조건(순서대로): 유사도 ≥ floor(후보 게이트) → doc집합 동일 → LLM 판정 승인.
-자동 서빙 임계와 규칙 기반 기계 가드는 제거됐다(판정기로 일원화 — 사유는 rag/turn/cache.py
+자동 서빙 임계와 규칙 기반 기계 가드는 없다(판정기로 일원화 — 사유는 rag/turn/cache.py
 모듈 docstring). 유사도는 명시 벡터로 제어하고(코사인이 손으로 계산되는 2-성분 조합),
-판정기(_verify_reuse)는 몽키패치로 고정한다 — LLM 판정 품질은 오프라인 검증
-(prompt_texts 주석의 40쌍 실측)이 담당하고, 여기서는 배선만 고정한다.
+판정기(_verify_reuse)는 몽키패치로 고정한다 — LLM 판정 품질은 오프라인 검증이
+담당하고, 여기서는 배선만 고정한다.
 """
 
 import math
@@ -45,7 +45,7 @@ async def _seed(session, tenant_id: str) -> None:
 
 
 def _patch_verdict(monkeypatch, verdict: bool, calls: list) -> None:
-    # 원문 인자(#153)까지 받는다 — get_semantic이 넷을 넘긴다. calls는 재작성문 쌍만 기록해
+    # 원문 인자까지 받는다 — get_semantic이 넷을 넘긴다. calls는 재작성문 쌍만 기록해
     # 기존 단언을 그대로 두고, 원문은 orig_calls에 따로 쌓는다.
     async def fake_verify(llm, cached_query, new_query, cached_original=None, new_original=None):
         calls.append((cached_query, new_query))
@@ -88,8 +88,8 @@ async def test_판정_거절이면_미스(tenant_id, fake_embed, monkeypatch):
 async def test_고유사도도_판정을_거친다(tenant_id, fake_embed, monkeypatch):
     """자동 서빙 임계 제거의 핵심 계약 — 유사도 1.0이어도 판정 없이는 서빙 없음.
 
-    근거: 유사도 0.96~0.99에서 답이 반대인 쌍 4건 실측(#113). 판정을 우회하는
-    고유사도 지름길을 되살리면 그 4건이 그대로 오답 재생으로 돌아온다.
+    근거: 유사도 0.96~0.99에서도 답이 반대인 쌍이 있다. 판정을 우회하는
+    고유사도 지름길을 되살리면 그런 쌍이 오답 재생으로 돌아온다.
     """
     calls = []
     _patch_verdict(monkeypatch, True, calls)
@@ -141,7 +141,7 @@ async def test_doc집합이_다르면_판정_없이_미스(tenant_id, fake_embed
     assert calls == [], 'doc집합 불일치인데 판정 콜이 나갔다 — 순서 위반(비용 누수)'
 
 
-# ── 원문 쿼리 배선 (#153) ────────────────────────────────────────────────────
+# ── 원문 쿼리 배선 ─────────────────────────────────────────────────────────────
 # 판정 품질이 아니라 **원문이 저장되고 판정기까지 도달하는가**만 고정한다.
 # 판정 품질은 eval/cache_judge_probe.py(40쌍 + 방어 케이스)가 담당한다.
 
@@ -180,7 +180,7 @@ async def test_원문이_저장되고_판정기까지_간다(tenant_id, fake_emb
 
 @pytest.mark.asyncio
 async def test_도입_전_행은_원문이_None으로_간다(tenant_id, fake_embed, monkeypatch):
-    """원문 컬럼은 NULL 허용이다. 도입 전 행이 판정기를 깨뜨리지 않아야 한다 (#153)."""
+    """원문 컬럼은 NULL 허용이다. 도입 전 행이 판정기를 깨뜨리지 않아야 한다."""
     calls = []
     origs = _patch_verdict(monkeypatch, True, calls)
     async with AsyncSessionLocal() as session:
@@ -199,7 +199,7 @@ async def test_도입_전_행은_원문이_None으로_간다(tenant_id, fake_emb
 
 
 def test_원문이_없으면_템플릿에_없음이_박힌다():
-    """프롬프트 계약 — 빈 문자열을 넣으면 판정기가 그것도 신호로 읽는다 (#153)."""
+    """프롬프트 계약 — 빈 문자열을 넣으면 판정기가 그것도 신호로 읽는다."""
     from rag.turn.prompt_texts import CACHE_REUSE_JUDGE_NO_ORIGINAL
     from rag.turn.prompts import build_cache_reuse_judge_messages
 
@@ -214,7 +214,7 @@ def test_원문이_없으면_템플릿에_없음이_박힌다():
 
 @pytest.mark.asyncio
 async def test_원문이_달라도_같은_행을_갱신한다(tenant_id, fake_embed):
-    """원문을 cache_key에 섞으면 안 된다 (#153) — 키 기준은 재작성문 그대로여야 한다.
+    """원문을 cache_key에 섞으면 안 된다 — 키 기준은 재작성문 그대로여야 한다.
 
     같은 재작성문을 원문만 바꿔 두 번 저장하면 행이 둘로 갈리지 않고 하나가 갱신돼야 한다.
     (갈리면 upsert 충돌 계약이 깨진 것이고, 같은 질문의 캐시가 원문 표현마다 쌓인다.)

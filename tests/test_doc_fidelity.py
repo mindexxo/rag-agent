@@ -1,4 +1,4 @@
-"""실문서 파싱 충실도 도구(#247·#231) — 판정 기준·분류·표본·집계의 순수 로직. DB·VLM·Claude 없이 돈다."""
+"""실문서 파싱 충실도 도구 — 판정 기준·분류·표본·집계의 순수 로직. DB·VLM·Claude 없이 돈다."""
 
 import pytest
 
@@ -41,7 +41,7 @@ class TestRubric:
         assert grade_of(_v(text_units=0)) == '정확'  # 잃은 글자가 없다
 
     def test_프롬프트에_출력_키를_전부_적는다(self):
-        # #253 교훈: 키를 적지 않으면 판정자가 다른 이름으로 답한다
+        # 키를 적지 않으면 판정자가 다른 이름으로 답한다
         for key in Verdict.model_fields:
             assert key in PROMPT
 
@@ -246,7 +246,7 @@ class TestPromptAB:
         from eval.doc_fidelity.prompt_ab import VARIANTS
         from rag.chunking.document_converter import PICTURE_CAPTION_PROMPT
 
-        assert VARIANTS['V13_V11+계층'] == PICTURE_CAPTION_PROMPT  # 채택안(#247 결정 15)이 운영 프롬프트와 같다
+        assert VARIANTS['V13_V11+계층'] == PICTURE_CAPTION_PROMPT  # 채택안이 운영 프롬프트와 같다
         assert VARIANTS['V0_현행'].split('\n') == [
             x
             for x in PICTURE_CAPTION_PROMPT.split('\n')  # 옛 운영 = 채택안에서 더한 4줄을 뺀 것

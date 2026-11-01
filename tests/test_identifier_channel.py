@@ -1,4 +1,4 @@
-"""식별자 채널(#238) 통합 계약 — 실제 OpenSearch에 색인하고 운영 경로(retrieve_candidates → prepare_evidence)를 탄다.
+"""식별자 채널 통합 계약 — 실제 OpenSearch에 색인하고 운영 경로(retrieve_candidates → prepare_evidence)를 탄다.
 
   1. 색인 경로가 식별자 사전(`identifiers`)과 헤딩 줄(`headings`)을 채운다 — 묶음 헤딩(meta) + 본문 헤딩 꼴 줄
   2. 정확 일치 질의(search_identifiers)는 '11조'에 묶음 조각을 돌려주고 '111조'·'11장' 조각은 돌려주지 않는다
@@ -53,7 +53,7 @@ async def _seed(tenant_id: str) -> dict[str, int]:
         await s.commit()
         doc_id = doc.id
     chunks = [
-        # 묶음 — 제9조만 청킹이 기록했고(meta), 제10·11조는 레이아웃 모델이 본문으로 분류한 꼴(결정 15-3)
+        # 묶음 — 제9조만 청킹이 기록했고(meta), 제10·11조는 레이아웃 모델이 본문으로 분류한 꼴
         ParsedChunk(
             chunk_index=0,
             text=_PACKED,
@@ -117,7 +117,7 @@ async def test_dense가_놓친_정확_일치_조각이_주입된다(tenant_id, f
 
 @pytest.mark.asyncio
 async def test_가산이_장조_혼동을_넘고_근거는_그_조만_오린다(tenant_id, fake_embed, monkeypatch):
-    """리랭커가 '제11장' 조각을 0.97, 묶음을 0.72로 채점하는 상황(실측 재현) — +0.3이면 묶음이 1위."""
+    """리랭커가 '제11장' 조각을 0.97, 묶음을 0.72로 채점하는 상황 — +0.3이면 묶음이 1위."""
     ids = await _seed(tenant_id)
     monkeypatch.setattr(settings, 'rerank_enabled', True)
     import rag.search.reranker
@@ -136,7 +136,7 @@ async def test_가산이_장조_혼동을_넘고_근거는_그_조만_오린다(
     assert cands.chunks[1].chunk_id == ids['chapter'] and cands.chunks[1].matched_ident is None
     ev = prepare_evidence(cands.chunks, 5)
     assert ev[0].text == "제 11 조(사무인계 의무)\n퇴직하는 사원은 업무를 후임자에게 인계한다."  # 묶음에서 그 조만
-    assert ev[0].heading_path == ['가나규칙', '제 2 장 인 사'] and ev[0].page == 3  # 라벨·쪽 불변(결정 18)
+    assert ev[0].heading_path == ['가나규칙', '제 2 장 인 사'] and ev[0].page == 3  # 라벨·쪽 불변
     assert ev[1].text == _CHAPTER  # 다른 조각은 그대로
 
 

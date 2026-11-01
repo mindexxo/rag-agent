@@ -10,7 +10,7 @@ from rag.turn.conversation import build_prior_turns
 
 
 def _msg(role: str, content: str, status: str = 'done'):
-    # status 기본 done — 취소 턴 표식(#59, _history_content)이 assistant.status를 본다
+    # status 기본 done — 취소 턴 표식(_history_content)이 assistant.status를 본다
     return SimpleNamespace(role=role, content=content, status=status)
 
 
@@ -25,7 +25,7 @@ def test_답변_없는_질문은_제외():
 
 
 def test_순서_꼬임_assistant가_먼저면_버려짐():
-    # 리뷰에서 지적된 created_at 동률 정렬 꼬임 시나리오 — 페어링이 조용히 턴을 누락하는 현재 동작 고정
+    # created_at 동률 정렬 꼬임 시나리오 — 페어링이 조용히 턴을 누락하는 현재 동작 고정
     msgs = [_msg('assistant', 'a1'), _msg('user', 'q1')]
     assert build_prior_turns(msgs, budget_tokens=1000) == []
 

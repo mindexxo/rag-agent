@@ -1,7 +1,7 @@
 """service 순수 로직 단위 테스트 — _source_doc_ids / PreparedRag 상태 속성.
 
 _source_doc_ids의 음수 네임스페이스는 FAQ 캐시 무효화 키와 짝 — 깨지면 무효화가 조용히 어긋난다.
-needs_generation은 SSE 백그라운드 생성 분기와 정확히 일치해야 한다 — #36부터 resolved_answer
+needs_generation은 SSE 백그라운드 생성 분기와 정확히 일치해야 한다 — resolved_answer
 한 곳에서 파생되므로, 그 파생 관계와 생성자 불변식(route ↔ retrieval)을 여기서 고정한다.
 """
 
@@ -35,7 +35,7 @@ def _prepared(**kw) -> PreparedRag:
         retrieval=RetrievalResult(chunks=[], no_evidence=False, reason=None),
         sources=[],
         source_doc_ids=[],
-    )  # assistant_message_id는 __post_init__ 불변식 (#72)
+    )  # assistant_message_id는 __post_init__ 불변식
     return PreparedRag(**{**base, **kw})
 
 
@@ -100,11 +100,10 @@ class TestShouldCache:
 
 
 class TestRouteRetrievalInvariant:
-    """route와 retrieval의 짝을 생성자가 강제한다 (#36).
+    """route와 retrieval의 짝을 생성자가 강제한다.
 
     should_cache가 route를 안 보고 `retrieval is not None`으로 blocked/other를 걸러내므로,
     이 짝이 어긋나면 차단된 턴이 캐시에 들어가는 식으로 **조용히** 틀린다.
-    이전엔 _routed() 헬퍼의 관례로만 지켜졌다.
     """
 
     def test_blocked인데_retrieval이_있으면_거부(self):
@@ -125,7 +124,7 @@ class TestRouteRetrievalInvariant:
 
 
 class TestResolvedAnswer:
-    """needs_generation과 generate()가 함께 보는 단일 판정점 (#36)."""
+    """needs_generation과 generate()가 함께 보는 단일 판정점."""
 
     def test_blocked는_고정문구(self):
         from rag.turn.prompt_texts import BLOCKED_INPUT_ANSWER
@@ -160,7 +159,7 @@ class TestResolvedAnswer:
 
 
 class TestGenerateQuerySlot:
-    """generate()가 "질문:" 자리에 원 질문을, 재작성 질의는 참고로 넘기는지 (#48).
+    """generate()가 "질문:" 자리에 원 질문을, 재작성 질의는 참고로 넘기는지.
 
     조립 자체는 test_prompts.py가 검증한다. 여기서 고정하는 건 **호출부가 두 값을 뒤바꿔
     넘기지 않는다**는 것 — 뒤바뀌어도 답변은 그럴듯하게 나오므로 어떤 테스트도 못 잡는다.

@@ -1,11 +1,6 @@
-"""턴 시작 저장 계약 테스트 (#72).
+"""턴 시작 저장 계약 — **prepare() 안에서 무엇이 죽든 사용자의 질문은 DB에 남는다.**
 
-이 기능의 존재 이유를 검증한다 — **prepare() 안에서 무엇이 죽든 사용자의 질문은 DB에 남는다.**
-예전엔 저장이 라우팅·검색이 끝난 뒤였다: 신규 대화는 빈 껍데기만 남고(빈 대화 4,505건이
-그렇게 쌓였다), 기존 대화는 질문의 흔적조차 없었다.
-
-기존 테스트들(test_stream_disconnect·test_cancellation)은 전부 **자리표시가 커밋된 이후**
-구간만 다룬다 — 이 파일이 그 앞 구간을 맡는다.
+test_stream_disconnect·test_cancellation은 **자리표시가 커밋된 이후** 구간을 다루고, 이 파일이 그 앞 구간을 맡는다.
 """
 
 import pytest
@@ -37,7 +32,7 @@ async def _messages(tenant_id: str, conversation_id: int) -> list[Message]:
 
 @pytest.mark.asyncio
 async def test_검색이_죽어도_질문은_남는다(client, tenant_id, fake_llm, monkeypatch):
-    """retrieve는 fail-open이 아니다 — 실제 사고(worker15 TEI 장애)가 난 지점이다."""
+    """retrieve는 fail-open이 아니다 — TEI 장애 시 여기서 예외가 난다."""
     await register_faq(client)
 
     async def boom(*a, **kw):
@@ -63,7 +58,7 @@ async def test_검색이_죽어도_질문은_남는다(client, tenant_id, fake_l
 
 @pytest.mark.asyncio
 async def test_분류_판단실패도_질문을_남기고_전파된다(client, tenant_id, fake_llm, monkeypatch):
-    """폴백 제거(#72) 후 classify는 예외를 던진다 — 그래도 질문은 남아야 한다."""
+    """classify는 판단 실패 시 예외를 던진다 — 그래도 질문은 남아야 한다."""
     await register_faq(client)
 
     async def boom(*a, **kw):
@@ -86,7 +81,7 @@ async def test_분류_판단실패도_질문을_남기고_전파된다(client, t
 
 @pytest.mark.asyncio
 async def test_기존_대화에서도_질문이_남는다(client, tenant_id, fake_llm, pass_gate, monkeypatch):
-    """예전엔 기존 대화의 prepare() 실패가 **아무 흔적도 남기지 않아 관측조차 안 됐다**."""
+    """기존 대화의 prepare() 실패도 질문을 남긴다 — 안 남으면 관측조차 안 된다."""
     await register_faq(client)
 
     async with AsyncSessionLocal() as session:
@@ -112,10 +107,9 @@ async def test_기존_대화에서도_질문이_남는다(client, tenant_id, fak
 
 @pytest.mark.asyncio
 async def test_현재_턴은_자기_이력에_보이지_않는다(client, tenant_id, fake_llm, pass_gate):
-    """자리표시가 status='generating'이라 #22 격리 필터가 짝 user까지 함께 뺀다.
+    """자리표시가 status='generating'이라 이력 격리 필터가 짝 user까지 함께 뺀다.
 
-    이게 깨지면 방금 넣은 질문이 '이전 대화'로 되먹임돼 condense·prior_turns를 오염시킨다 —
-    B안을 A안(user만 저장) 대신 고른 핵심 이유가 이 자동 배제다.
+    이게 깨지면 방금 넣은 질문이 '이전 대화'로 되먹임돼 condense·prior_turns를 오염시킨다.
     """
     await register_faq(client)
     async with AsyncSessionLocal() as session:
@@ -135,7 +129,7 @@ async def test_현재_턴은_자기_이력에_보이지_않는다(client, tenant
 
 @pytest.mark.asyncio
 async def test_정상_턴은_standalone_query가_백필된다(client, tenant_id, fake_llm, pass_gate):
-    """턴 시작엔 NULL로 들어가고 finalize가 채운다 — RETRY(#59)가 이 값을 재사용한다."""
+    """턴 시작엔 NULL로 들어가고 finalize가 채운다 — RETRY가 이 값을 재사용한다."""
     await register_faq(client)
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
@@ -154,8 +148,7 @@ async def test_정상_턴은_standalone_query가_백필된다(client, tenant_id,
 
 @pytest.mark.asyncio
 async def test_차단_턴도_자리표시를_거쳐_마감된다(client, tenant_id, fake_llm):
-    """blocked는 예전에 save_exchange 원샷이라 finalize_turn이 다루지 않는다고 문서화돼 있었다 —
-    #72로 그 전제가 뒤집혔다. block_reason이 자리표시 UPDATE로 실리는지 고정한다."""
+    """blocked도 다른 종료와 같이 자리표시 UPDATE로 마감된다 — block_reason이 거기 실리는지 고정한다."""
     await register_faq(client)
     fake_llm.intent_json = '{"safe": false, "intent": "OTHER", "reason": "프롬프트 인젝션"}'
 
@@ -173,7 +166,7 @@ async def test_차단_턴도_자리표시를_거쳐_마감된다(client, tenant_
 
 @pytest.mark.asyncio
 async def test_타_테넌트_자리표시는_마감되지_않는다(client, tenant_id, other_tenant_id, fake_llm, pass_gate):
-    """finalize_turn에 user 행 백필 UPDATE가 새로 생겼다 — 격리 WHERE가 빠지면 남의 행을 쓴다."""
+    """finalize_turn은 user 행도 백필 UPDATE한다 — 격리 WHERE가 빠지면 남의 행을 쓴다."""
     await register_faq(client)
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
@@ -191,10 +184,9 @@ async def test_타_테넌트_자리표시는_마감되지_않는다(client, tena
 
 @pytest.mark.asyncio
 async def test_실패_마감이_standalone을_백필한다(client, tenant_id, fake_llm, monkeypatch):
-    """실패 턴도 RETRY 대상(#72)이라 "다시" 연타의 체인이 이 값으로 이어진다.
+    """실패 턴도 RETRY 대상이라 "다시" 연타의 체인이 이 값으로 이어진다.
 
-    비워두면 두 번째 "다시"부터 질문 슬롯이 "다시"로 퇴화한다 —
-    #59가 취소 턴에서 막아둔 함정의 실패판. 검증은 test_retry_dispatch가 맡고,
+    비워두면 두 번째 "다시"부터 질문 슬롯이 "다시"로 퇴화한다(취소 턴과 같은 함정). 검증은 test_retry_dispatch가 맡고,
     여기서는 그 재료(백필)가 실제로 DB에 들어가는지만 고정한다.
     """
     await register_faq(client)

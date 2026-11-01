@@ -1,4 +1,4 @@
-"""응답 시각 직렬화(#181) — KstDatetime의 순수 동작. DB 불필요.
+"""응답 시각 직렬화 — KstDatetime의 순수 동작. DB 불필요.
 
 pytest tests/test_kst_datetime.py 만으로 몇 초에 돈다 (AGENTS.md의 순수 로직 묶음에 추가할 것).
 """
@@ -50,7 +50,7 @@ def test_시간대_상수는_서울_고정():
 
 
 def test_응답_OpenAPI_스키마에_date_time_형식이_남는다():
-    """PlainSerializer(return_type=str)만으로는 FastAPI 응답 스키마가 평범한 string이 된다(실측) —
+    """PlainSerializer(return_type=str)만으로는 FastAPI 응답 스키마가 평범한 string이 된다 —
     WithJsonSchema(mode='serialization')로 되살린 것을 고정한다. Swagger·코드젠이 시각임을 알아야 한다."""
     from main import app
 

@@ -1,12 +1,12 @@
-"""문서가 들어오는 경로 — 업로드·색인·버전 정책 (#188 D로 분할).
+"""문서가 들어오는 경로 — 업로드·색인·버전 정책.
 
 업로드(API)→인덱싱(그 문서의 outbox 행만 drain — 워커 프로세스 없이 핸들러 경로 검증)→
 버전 엎어치기(supersede)→dedupe→실패 경로(drain이 failed 확정), 그리고 업로드 전 확인
 (GET /documents/exists)과 낙관적 잠금(expect_version).
-업로드는 arq를 만지지 않는다 — 문서와 색인 대기열 행이 같은 트랜잭션에 커밋된다 (#139 outbox).
+업로드는 arq를 만지지 않는다 — 문서와 색인 대기열(outbox) 행이 같은 트랜잭션에 커밋된다.
 
-같은 축의 나머지: _folders(등록정보·폴더·일괄 변경) _delete(삭제) _list(목록) _failed(#161)
-_reupload(재업로드 뒤 실제 질의 경로의 캐시·인용, #239).
+같은 축의 나머지: _folders(등록정보·폴더·일괄 변경) _delete(삭제) _list(목록) _failed(실패 문서)
+_reupload(재업로드 뒤 실제 질의 경로의 캐시·인용).
 공용 헬퍼는 tests/helpers_documents.py.
 """
 
@@ -30,7 +30,7 @@ from tests.helpers_documents import MD, chunk_texts, get_doc, post_upload, uploa
 async def test_업로드_인덱싱_ready_승격(client, tenant_id, fake_queue, blob_tmp):
     body = await upload(client, '환불정책.md', MD)
     assert body['status'] == 'pending'  # 업로드 직후
-    async with AsyncSessionLocal() as s:  # 대기열 행이 문서와 함께 커밋됨 (#139)
+    async with AsyncSessionLocal() as s:  # 대기열 행이 문서와 함께 커밋됨
         rows = await outbox.pending_row_ids(s, document_id=body['document_id'])
     assert len(rows) == 1
 
@@ -55,7 +55,7 @@ async def test_같은_파일명_재업로드는_엎어치기(client, tenant_id, 
 
     v2 = await upload(client, '환불정책.md', MD.replace(b'14', b'30'))
     assert v2['document_id'] != v1['document_id'] and v2['version'] == 2
-    # 빈 창 없음(E2E #6): v2가 처리되기 전엔 v1이 그대로 검색된다 — 옛 청크를 먼저 지우지 않는다.
+    # 빈 창 없음: v2가 처리되기 전엔 v1이 그대로 검색된다 — 옛 청크를 먼저 지우지 않는다.
     assert (await get_doc(v1['document_id'])).is_active is True
     assert any('14일' in t for t in await chunk_texts(v1['document_id']))
     await ingest(v2['document_id'])
@@ -64,7 +64,7 @@ async def test_같은_파일명_재업로드는_엎어치기(client, tenant_id, 
     assert new.status == 'ready' and new.is_active is True
     assert old.status == 'deleted' and old.is_active is False  # supersede
     assert any('30일' in t for t in await chunk_texts(v2['document_id']))
-    # 옛 청크는 ③ 커밋이 남긴 DROP 행이 다음 회차에 지운다(#186) — 그 전까진 남아 있다(≤1분 공존, 제품 결정)
+    # 옛 청크는 커밋이 남긴 DROP 행이 다음 회차에 지운다 — 그 전까진 남아 있다(짧은 공존 허용)
     assert any('14일' in t for t in await chunk_texts(v1['document_id']))
     assert await ingest(v1['document_id']) == {'done': 1, 'failed': 0}  # 그 DROP 행
     assert await chunk_texts(v1['document_id']) == []  # 옛 청크 제거
@@ -77,7 +77,7 @@ async def test_같은_파일명_재업로드는_엎어치기(client, tenant_id, 
 
 @pytest.mark.asyncio
 async def test_같은_내용_재업로드도_새_버전(client, tenant_id, fake_queue, blob_tmp):
-    """내용 해시 dedupe 제거(2026-08-05) — 식별 기준은 filename 하나뿐.
+    """내용 해시 dedupe는 없다 — 식별 기준은 filename 하나뿐.
 
     같은 이름이면 내용이 같아도 새 version이 되고 인덱싱도 다시 돈다.
     ("같은 이름이면 물어보고, 확인하면 대체"라는 단일 규칙을 유지하기 위한 선택)
@@ -88,7 +88,7 @@ async def test_같은_내용_재업로드도_새_버전(client, tenant_id, fake_
     again = await upload(client, '환불정책.md', MD)  # 내용까지 동일
     assert again['document_id'] != v1['document_id']  # 재사용하지 않는다
     assert again['version'] == v1['version'] + 1
-    async with AsyncSessionLocal() as s:  # 인덱싱이 다시 대기열에 오른다 (#139)
+    async with AsyncSessionLocal() as s:  # 인덱싱이 다시 대기열에 오른다
         assert len(await outbox.pending_row_ids(s, document_id=again['document_id'])) == 1
 
 
@@ -102,8 +102,8 @@ async def test_인덱싱_예외시_failed_기록(client, tenant_id, fake_queue, 
         raise RuntimeError('임베딩 서버 폭발')
 
     monkeypatch.setattr(ri, 'embed_texts', _boom)
-    # RuntimeError는 결정적 실패로 분류돼 1회로 확정된다(#185) — MAX_ATTEMPTS를 낮출 필요가 없다.
-    r = await ingest(body['document_id'])  # 핸들러는 예외를 올리고, drain이 failed를 찍는다 (#139)
+    # RuntimeError는 결정적 실패로 분류돼 1회로 확정된다 — MAX_ATTEMPTS를 낮출 필요가 없다.
+    r = await ingest(body['document_id'])  # 핸들러는 예외를 올리고, drain이 failed를 찍는다
     assert r == {'done': 0, 'failed': 1}
 
     doc = await get_doc(body['document_id'])
@@ -121,7 +121,7 @@ async def test_인덱싱_예외시_failed_기록(client, tenant_id, fake_queue, 
             .scalars()
             .one()
         )
-        # failed 확정은 잔여 청크 DROP을 같은 커밋에 남긴다(#184) — 여기선 청크가 없어 0건 삭제로 끝난다
+        # failed 확정은 잔여 청크 DROP을 같은 커밋에 남긴다 — 여기선 청크가 없어 0건 삭제로 끝난다
         drops = (
             (
                 await s.execute(
@@ -142,8 +142,8 @@ async def test_인덱싱_예외시_failed_기록(client, tenant_id, fake_queue, 
 async def test_docling_변환_실패는_failed로_끝나고_비상_경로로_색인하지_않는다(
     client, tenant_id, fake_queue, blob_tmp, monkeypatch
 ):
-    """#272 — 색인 파서는 docling 하나다. 변환이 실패하면 pdfplumber 등으로 조용히 저품질 색인을 만들지 않고 failed+사유로 끝난다.
-    RuntimeError(불완전 변환 가드와 같은 종류)는 결정적 실패라 1회로 확정된다(#185)."""
+    """색인 파서는 docling 하나다. 변환이 실패하면 pdfplumber 등으로 조용히 저품질 색인을 만들지 않고 failed+사유로 끝난다.
+    RuntimeError(불완전 변환 가드와 같은 종류)는 결정적 실패라 1회로 확정된다."""
     from io import BytesIO
 
     from reportlab.pdfgen import canvas
@@ -161,9 +161,7 @@ async def test_docling_변환_실패는_failed로_끝나고_비상_경로로_색
 
     monkeypatch.setattr(rc.convert_process, 'docling_convert', _boom)  # PDF·DOCX·MD·XLSX 경로가 전부 이 이름을 부른다
     assert await ingest(body['document_id']) == {'done': 0, 'failed': 1}
-    assert not hasattr(
-        settings, 'docling_enabled'
-    )  # 스위치가 되살아나면 여기서 깨진다 — 이슈 결정(2026-10-19)의 강제점
+    assert not hasattr(settings, 'docling_enabled')  # 비상 스위치가 되살아나면 여기서 깨진다
 
     doc = await get_doc(body['document_id'])
     assert doc.status == 'failed' and '테스트 주입' in doc.status_reason
@@ -186,7 +184,7 @@ async def test_docling_변환_실패는_failed로_끝나고_비상_경로로_색
 @pytest.mark.asyncio
 async def test_빈_파일은_failed_유령_ready_방지(client, tenant_id, fake_queue, blob_tmp):
     body = await upload(client, '빈문서.md', b'')
-    r = await ingest(body['document_id'])  # 핸들러가 ValueError → 결정적 → 1회로 failed 확정(#185)
+    r = await ingest(body['document_id'])  # 핸들러가 ValueError → 결정적 → 1회로 failed 확정
     assert r['failed'] == 1
     doc = await get_doc(body['document_id'])
     assert doc.status == 'failed'  # 청크 0개 → ready 승격 금지 (C2)
@@ -253,8 +251,7 @@ async def test_supersede는_타_테넌트_같은_파일명을_건드리지_않�
 
 @pytest.mark.asyncio
 async def test_이미_처리된_문서의_대기열_행은_무해하게_done된다(client, tenant_id, fake_queue, blob_tmp):
-    """(구 P1-4 "큐 등록 실패→failed" 테스트를 대체) #139 outbox 전환으로 업로드는 Redis를 만지지
-    않는다 — 대기열 행이 문서와 같은 트랜잭션에 커밋되므로 그 실패 모드 자체가 사라졌다.
+    """outbox라 업로드는 Redis를 만지지 않는다 — 대기열 행이 문서와 같은 트랜잭션에 커밋되므로 큐 등록 실패 모드가 없다.
     대신 at-least-once의 전제를 고정한다: 이미 ready인 문서에 INDEX_DOCUMENT 행이 또 있어도
     (재시도 겹침·수동 재등재) 핸들러는 다시 색인하지 않고 행만 done으로 넘긴다.
     """
@@ -464,7 +461,7 @@ async def test_409면_blob이_남지_않는다(client, tenant_id, fake_queue, bl
 
     assert (await post_upload(client, '환불정책.md', MD, expect_version=0)).status_code == 409
     assert sorted((blob_tmp / tenant_id).iterdir()) == before
-    # 대기열 행도 문서와 같은 트랜잭션이라 409 롤백에 함께 사라져야 한다 (#139 outbox 원자성).
+    # 대기열 행도 문서와 같은 트랜잭션이라 409 롤백에 함께 사라져야 한다(outbox 원자성).
     # v1의 행은 ingest로 done이 됐으니 pending은 0이어야 한다.
     async with AsyncSessionLocal() as s:
         pending = (
@@ -483,7 +480,6 @@ async def test_동시_삽입은_유니크_인덱스가_막고_409(client, tenant
     """조회를 함께 통과한 두 요청 중 하나는 UNIQUE(tenant_id, filename, version)에 걸린다.
 
     실제 동시 요청 대신 insert가 이미 있는 (filename, version)을 쓰도록 만들어 그 경로만 본다.
-    이전에는 이 위반이 그대로 터져 500이었다.
     """
     v1 = await upload(client, '환불정책.md', MD)
     await ingest(v1['document_id'])
@@ -492,8 +488,8 @@ async def test_동시_삽입은_유니크_인덱스가_막고_409(client, tenant
 
     real = rd.handle_upload
 
-    # 인자는 그대로 흘려보낸다 — handle_upload에 파라미터가 하나 늘 때마다 이 대역이 깨져
-    # 무관한 테스트가 실패하던 것을 끊는다(#164·#165에서 연달아 겪었다).
+    # 인자는 그대로 흘려보낸다 — handle_upload에 파라미터가 늘 때마다 이 대역이 깨져
+    # 무관한 테스트가 실패하지 않게.
     async def _collide(session, t, filename, blob_path, **kw):
         result = await real(session, t, filename, blob_path, **kw)
         result.document.version = 1  # 남이 방금 v1을 넣은 것과 같은 결과

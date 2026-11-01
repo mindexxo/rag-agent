@@ -1,11 +1,11 @@
-"""검색 순위 결정 단위 테스트 — _rank_multi / rerank_maxpool (#38).
+"""검색 순위 결정 단위 테스트 — _rank_multi / rerank_maxpool.
 
 DB·TEI 없이 도는 순수 테스트. retrieve_candidates에서 분해해 나온 조각들이라,
 분해가 동작을 바꾸지 않았음을 이 파일이 함수 단위로 못박는다.
 
 **슬라이스는 리랭크 뒤 한 곳뿐임을 고정한다** — 순위 단계는 어느 경로든 자르지 않는다.
-한때 단일 경로만 리랭크 앞에서 잘라 dense 하위 후보를 리랭커에게 안 보여줬다(#5 부작용,
-#38에서 해소). 순위 단계에 슬라이스가 다시 생기면 그 회귀라 test_자르지_않는다가 잡는다.
+단일 경로만 리랭크 앞에서 자르면 dense 하위 후보를 리랭커에게 안 보여준다.
+순위 단계에 슬라이스가 다시 생기면 그 회귀라 test_자르지_않는다가 잡는다.
 """
 
 import pytest
@@ -32,7 +32,7 @@ class TestRankMulti:
     def test_자르지_않는다(self):
         """여기에 슬라이스가 생기면 리랭커 max-pool이 볼 후보가 줄어든다.
 
-        슬라이스는 리랭크 뒤 한 곳뿐이라는 게 두 경로 공통 계약이다(#38).
+        슬라이스는 리랭크 뒤 한 곳뿐이라는 게 두 경로 공통 계약이다.
         _rank_multi가 미리 자르면 그 계약이 조용히 깨진다.
         """
         per_query = [list(range(1, 31)), list(range(31, 61)), list(range(61, 91))]
@@ -57,7 +57,7 @@ class TestRankMulti:
 
 
 class TestRerankMaxpool:
-    """멀티쿼리 채점 — 청크별 최고점(max-pool)으로 정렬. rag.search.reranker로 이관(#38)."""
+    """멀티쿼리 채점 — 청크별 최고점(max-pool)으로 정렬."""
 
     @pytest.fixture
     def chunks(self):
@@ -82,7 +82,7 @@ class TestRerankMaxpool:
         ordered, best, best_qi = result
         assert [c.chunk_id for c in ordered] == [2, 3, 1]
         assert best == [0.9, 0.5, 0.1]  # 점수도 같은 순서로 대응해야 otel 기록이 맞는다
-        assert best_qi == [1, 0, 0]  # 채택 쿼리 인덱스(#54) — 청크2는 q2, 청크3·1은 q1이 최고점
+        assert best_qi == [1, 0, 0]  # 채택 쿼리 인덱스 — 청크2는 q2, 청크3·1은 q1이 최고점
 
     @pytest.mark.asyncio
     async def test_한_쿼리라도_실패하면_점수가_None(self, monkeypatch, chunks):

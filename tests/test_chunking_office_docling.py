@@ -1,8 +1,7 @@
-"""DOCX·XLSX docling 경로 (#220) — 표 그리기 규칙은 가짜 grid로, 나머지는 생성한 파일을 실제로 변환해 고정한다.
+"""DOCX·XLSX docling 경로 — 표 그리기 규칙은 가짜 grid로, 나머지는 생성한 파일을 실제로 변환해 고정한다.
 
-Word·Excel은 SimplePipeline이라 레이아웃 모델이 없어 변환이 빠르다(파일당 1초 안팎). 그림 캡션은 로컬 VLM 대역
-(conftest.fake_vlm)이 고정 문장을 준다 — 외부 서비스 없이 결정적이다. #223 전에는 VLM을 죽인 채 '캡션 실패 = 자리표시'를
-고정했지만, 이제 캡션 실패는 문서 재시도(CaptionFailedError)라 그 경로는 따로 단언한다.
+Word·Excel은 SimplePipeline이라 레이아웃 모델이 없어 변환이 빠르다. 그림 캡션은 로컬 VLM 대역(conftest.fake_vlm)이
+고정 문장을 줘 외부 서비스 없이 결정적이다. 캡션 실패는 문서 재시도(CaptionFailedError)라 따로 단언한다.
 """
 
 from io import BytesIO
@@ -36,7 +35,7 @@ def _png(size=(120, 80)) -> bytes:
 
 @pytest.fixture(autouse=True)
 def _vlm(fake_vlm, monkeypatch):
-    """캡션은 로컬 대역이 준다. 설정이 바뀌면 변환 프로세스가 스냅숏 불일치로 재기동하므로 싱글턴을 비울 필요가 없다(#223)."""
+    """캡션은 로컬 대역이 준다. 설정이 바뀌면 변환 프로세스가 스냅숏 불일치로 재기동하므로 싱글턴을 비울 필요가 없다."""
     return fake_vlm
 
 
@@ -53,7 +52,7 @@ def _table(grid):
 
 class TestGridMarkdown:
     def test_가로_병합은_칸마다_반복한다(self):
-        # #252 결정 9 — 첫 열에만 두면 '7년 이상·7년 미만'에 걸친 `1 년`이 7년 미만 칸에서 빈칸으로 읽혔다(휴직 안내 3행)
+        # 가로 병합은 전부 반복한다 — 첫 열에만 두면 걸친 칸 값이 다른 칸에서 빈칸으로 읽힌다
         span = _cell('1 년', 1, 1)
         md = docling_grid_markdown(
             _table(
@@ -66,7 +65,7 @@ class TestGridMarkdown:
         assert md.splitlines()[2] == '| 육아휴직 | 1 년 | 1 년 |'
 
     def test_세로_병합은_행마다_반복한다(self):
-        # #220 결정 10 — 첫 행에만 두면 표가 청크 경계에서 잘릴 때 아래 행이 분류어를 잃는다(실문서 37행 중 7행)
+        # 세로 병합도 반복한다 — 첫 행에만 두면 표가 청크 경계에서 잘릴 때 아래 행이 분류어를 잃는다
         cat = _cell('발생원인', 1, 0)
         md = docling_grid_markdown(
             _table(
@@ -103,7 +102,7 @@ def _docx(tmp_path, build, name='t.docx'):
 
 class TestDocxDocling:
     def test_헤딩_스타일_레벨이_그대로_섹션_층이_된다(self, tmp_path):
-        # Heading 스타일 문서 29건 전부 docling 레벨 = 스타일 레벨이었다(2026-10-11, 당시 python-docx 경로와 대조). PDF 매핑의
+        # Heading 스타일 문서는 docling 레벨 = 스타일 레벨이다. PDF 매핑의
         # 제목/장 휴리스틱을 쓰면 3단이 2단으로 눌린다 — 이 테스트가 그 회귀를 잡는다.
         def build(doc):
             doc.add_heading('배송 정책', level=1)
@@ -122,7 +121,7 @@ class TestDocxDocling:
     def test_표_셀은_한_번만_들어가고_굵게_표시가_없다(self, tmp_path):
         # docling은 서식 있는 셀의 내용을 표와 별도 텍스트로 한 번 더 내놓는다 — 건너뛰지 않으면 셀이 두 번 색인된다.
         # export_to_dataframe은 굵은 셀을 '**…**'로 내보낸다 — 셀 원문으로 그려야 없다.
-        # 중복은 **서식 있는 칸에서만** 생긴다 — 그래서 세는 문구를 굵은 칸에 둔다(평범한 칸으로 세면 건너뛰기를 꺼도 통과했다)
+        # 중복은 **서식 있는 칸에서만** 생긴다 — 그래서 세는 문구를 굵은 칸에 둔다(평범한 칸으로 세면 건너뛰기를 꺼도 통과한다)
         def build(doc):
             doc.add_heading('요금표', level=1)
             t = doc.add_table(rows=2, cols=2)
@@ -138,7 +137,7 @@ class TestDocxDocling:
         assert '| 지역 | 요금 |' in text
 
     def test_표_셀_안의_중첩_표를_읽는다(self, tmp_path):
-        # python-docx로 색인하던 때는 셀 안의 표를 못 읽었다(인사규정 2건에서 문장 373·435개 누락) — docling 전환 이유 하나
+        # 셀 안의 표도 읽어야 한다(python-docx로는 못 읽던 부분)
         def build(doc):
             doc.add_heading('인사규정', level=1)
             outer = doc.add_table(rows=1, cols=1)
@@ -149,7 +148,7 @@ class TestDocxDocling:
         assert '중첩셀고유문구' in '\n'.join(c.text for c in chunk_file(_docx(tmp_path, build)))
 
     def test_스타일_없는_문서는_조문_폴백이_docling_경로에서도_돈다(self, tmp_path):
-        # #205 — Heading 스타일 0개인 실문서. docling도 헤딩을 0개 내놓으므로 폴백이 같은 층을 만들어야 한다.
+        # Heading 스타일 0개인 문서. docling도 헤딩을 0개 내놓으므로 폴백이 같은 층을 만들어야 한다.
         def build(doc):
             doc.add_paragraph('장애관리 지침서')
             doc.add_paragraph('제1장 총칙')
@@ -162,7 +161,7 @@ class TestDocxDocling:
         ]
 
     def test_표_칸_안의_그림은_그_칸에_설명이_붙는다(self, tmp_path):
-        # #220 리뷰 — 표 안 요소를 건너뛰는 규칙에 칸 안 그림까지 걸려 캡션이 버려졌다(자리표시도 없이). 이제 그 칸에 붙는다.
+        # 표 안 요소를 건너뛰는 규칙에 칸 안 그림까지 걸리면 캡션이 자리표시도 없이 버려진다 — 그 칸에 붙어야 한다.
         def build(doc):
             doc.add_heading('매뉴얼', level=1)
             t = doc.add_table(rows=1, cols=2)
@@ -178,7 +177,7 @@ class TestDocxDocling:
         assert chunk_file(_docx(tmp_path, lambda doc: None)) == []
 
     def test_그림_캡션이_실패하면_문서째_일시_실패한다(self, tmp_path, fake_vlm):
-        # #223 결정 3 — docling은 VLM 오류를 삼키고 빈 캡션을 준다. 그대로 두면 그림 내용이 빠진 문서가 ready가 됐다.
+        # docling은 VLM 오류를 삼키고 빈 캡션을 준다. 그대로 두면 그림 내용이 빠진 문서가 ready가 된다.
         # CaptionFailedError(ConnectionError 하위)라 outbox가 일시로 분류해 재시도한다(test_outbox_pure).
         fake_vlm.status = 500
 
@@ -210,7 +209,7 @@ class TestDocxDocling:
         assert FAKE_CAPTION in chunks[0].text and count_picture_placeholders(chunks) == 0
 
     def test_그림이_상한을_넘으면_VLM을_부르기_전에_결정적_실패한다(self, tmp_path, monkeypatch, fake_vlm):
-        # #223 결정 4 — 앞 N장만 캡션하고 나머지를 자리표시로 두는 안은 조용한 불완전 색인이라 기각, 문서를 거부한다.
+        # 앞 N장만 캡션하면 조용한 불완전 색인이라 문서를 거부한다.
         # 셈은 캡션 단계의 첫 배치에서 한 번 — 넘으면 캡션을 하나도 요청하지 않는다(넘는 문서에 VLM 시간을 안 쓴다).
         monkeypatch.setattr(settings, 'docling_max_pictures', 2)
 
@@ -233,7 +232,7 @@ class TestDocxDocling:
         assert fake_vlm.calls == 2
 
     def test_조문처럼_시작하는_그림_캡션은_헤딩이_되지_않는다(self, tmp_path, monkeypatch):
-        # 그림은 from_table=True로 #205 폴백 승격에서 빠진다. 자리표시는 원래 조문 패턴에 안 걸리므로 캡션을 바꿔 끼워 본다
+        # 그림은 from_table=True로 헤딩 폴백 승격에서 빠진다. 자리표시는 원래 조문 패턴에 안 걸리므로 캡션을 바꿔 끼워 본다
         import rag.chunking as ch
 
         monkeypatch.setattr(
@@ -273,9 +272,9 @@ class TestXlsxDocling:
             ws.merge_cells('A3:A4')
 
         chunks = chunk_file(_xlsx(tmp_path, build), description='교통비 양식')
-        assert {c.heading_path[0] for c in chunks} == {'양식'}  # 묶음(#222)이 여럿이어도 한 시트
+        assert {c.heading_path[0] for c in chunks} == {'양식'}  # 묶음이 여럿이어도 한 시트
         text = chunks[0].meta['table_text']  # 시트 완성본 — 모델이 보는 본문
-        # 표 폭 전체에 걸친 첫 행 제목은 docling이 표 밖 글로 뺀다(실측) — 가로 병합 반복(#252 결정 9)과 무관하게 한 번
+        # 표 폭 전체에 걸친 첫 행 제목은 docling이 표 밖 글로 뺀다 — 가로 병합 반복과 무관하게 한 번
         assert text.count('업무 교통비 청구서') == 1 and '\n업무 교통비 청구서\n' in text
         assert '| 교통 | 버스 | 1500 |' in text and '| 교통 | 택시 | 29100 |' in text
         assert text.startswith('[교통비 양식]\n') and text.count('[교통비 양식]') == 1
@@ -297,12 +296,12 @@ class TestXlsxDocling:
 
         chunks = chunk_file(_xlsx(tmp_path, build))
         by_sheet = {c.heading_path[0]: c.meta['table_text'] for c in chunks}
-        assert list(by_sheet) == ['첫시트', '둘째']  # 시트 순서 유지(#222: 시트당 묶음 여럿 가능)
+        assert list(by_sheet) == ['첫시트', '둘째']  # 시트 순서 유지(시트당 묶음 여럿 가능)
         assert FAKE_CAPTION in by_sheet['첫시트'] and FAKE_CAPTION not in by_sheet['둘째']
 
     def test_긴_시트의_그림도_캡션이_붙는다(self, tmp_path):
-        # #249 — docling은 시트를 칸 단위로 재고 OneCellAnchor 그림을 1×1칸으로 잡아, 칸이 100개만 넘어도 면적 비율이 하한(1%)
-        # 아래로 떨어져 큰 그림도 캡션 없이 자리표시로 남았다(#223 실측: 41행+그림 10장 전부). XLSX는 하한 0으로 전부 캡션한다
+        # docling은 시트를 칸 단위로 재고 OneCellAnchor 그림을 1×1칸으로 잡아, 칸이 100개만 넘어도 면적 비율이 하한(1%)
+        # 아래로 떨어져 큰 그림도 캡션 없이 자리표시로 남는다. XLSX는 하한 0으로 전부 캡션한다
         from openpyxl.drawing.image import Image as XlImage
 
         from rag.chunking.docling_elements import PICTURE_PLACEHOLDER
@@ -320,7 +319,7 @@ class TestXlsxDocling:
         assert FAKE_CAPTION in text and PICTURE_PLACEHOLDER not in text
 
     def test_XLSX_그림도_장수_상한에_걸린다(self, tmp_path, monkeypatch):
-        # #249 범위 — 하한 0이라 엑셀 그림은 전부 캡션 대상이고, #223 그림 장수 상한도 전부를 센다
+        # 하한 0이라 엑셀 그림은 전부 캡션 대상이고, 그림 장수 상한도 전부를 센다
         from openpyxl.drawing.image import Image as XlImage
 
         monkeypatch.setattr(settings, 'docling_max_pictures', 2)
@@ -337,7 +336,7 @@ class TestXlsxDocling:
             chunk_file(_xlsx(tmp_path, build), description='그림 많은 시트')
 
     def test_숨긴_시트는_색인하지_않고_행_상한에도_세지_않는다(self, tmp_path):
-        # #220 리뷰 — 숨긴 시트가 있으면 문서 전체가 실패했다(openpyxl은 세고 docling은 비워 냄). 서비스 결정: 숨긴 시트는 건너뛴다
+        # 숨긴 시트는 건너뛴다(openpyxl은 세고 docling은 비워 내서 문서 전체가 실패하지 않게)
         from rag.chunking.xlsx import validate_xlsx_upload
 
         def build(wb):
@@ -361,7 +360,7 @@ class TestXlsxDocling:
         validate_xlsx_upload(p.read_bytes(), '설명')  # 예외 없음
 
     def test_공백만_든_시트는_빈_시트로_건너뛴다(self, tmp_path):
-        # docling은 공백 칸을 내용으로 보지 않는다 — openpyxl만 세면 '시트를 비워 냈다'로 문서 전체가 실패했다
+        # docling은 공백 칸을 내용으로 보지 않는다 — openpyxl만 세면 '시트를 비워 냈다'로 문서 전체가 실패한다
         def build(wb):
             wb.active.append(['col'])
             wb.active.append(['v'])
@@ -423,7 +422,7 @@ class TestXlsxDocling:
             chunk_file(_xlsx(tmp_path, build))
 
 
-# ── 채팅 첨부는 docling을 타지 않는다 (#220 결정 6) ──────────────────────────────────
+# ── 채팅 첨부는 docling을 타지 않는다 ─────────────────────────────────────────────
 
 
 class TestAttachmentStaysPlain:
@@ -445,7 +444,7 @@ class TestAttachmentStaysPlain:
 
         assert '첨부값' in extract_text(_xlsx(tmp_path, build_x))
         assert '첨부 본문' in extract_text(_docx(tmp_path, build_d))
-        md = tmp_path / 'a.md'  # MD 색인은 #267부터 docling — 첨부는 원문 그대로다
+        md = tmp_path / 'a.md'  # MD 색인은 docling — 첨부는 원문 그대로다
         md.write_text('# 제목\n\n| 칸 | 값 |\n| --- | --- |\n| A\\|B | 1<br>2 |\n', encoding='utf-8')
         assert extract_text(md) == md.read_text(encoding='utf-8').strip()
 
@@ -455,7 +454,7 @@ class TestAttachmentStaysPlain:
 
 class TestConverterOptions:
     def test_워드_엑셀_캡션_설정이_PDF와_같다(self):
-        # 조용히 무시되는 설정을 잡는 테스트(#151 교훈) — 한 형식만 캡션이 빠지거나 다른 프롬프트로 돌면 에러 없이 품질만 갈린다
+        # 조용히 무시되는 설정을 잡는 테스트 — 한 형식만 캡션이 빠지거나 다른 프롬프트로 돌면 에러 없이 품질만 갈린다
         from docling.datamodel.base_models import InputFormat
 
         from rag.chunking.document_converter import docling_converter
@@ -466,7 +465,7 @@ class TestConverterOptions:
             opts = converter.format_to_options[fmt].pipeline_options
             assert opts.do_picture_description is True
             assert opts.enable_remote_services is True  # 빠지면 OperationNotAllowed로 변환 자체가 죽는다
-            # XLSX는 면적 하한만 0(#249 결정 1 — 시트 칸 단위라 비율이 그림 크기를 반영 못 함), 그 밖의 캡션 설정은 PDF와 같다
+            # XLSX는 면적 하한만 0(시트 칸 단위라 비율이 그림 크기를 반영 못 함), 그 밖의 캡션 설정은 PDF와 같다
             expected = pdf.picture_description_options
             if fmt == InputFormat.XLSX:
                 expected = expected.model_copy(update={'picture_area_threshold': 0.0})
@@ -475,7 +474,7 @@ class TestConverterOptions:
 
 class TestNestedAndLong:
     def test_표_안의_표는_평탄화돼_바깥_글자가_안쪽_행마다_붙는다(self, tmp_path):
-        # #252 결정 4(D) — 전에는 안쪽 표가 통째로 사라졌다(청크에 `평가 항목 | (빈칸)`). PDF(TableFormer)와 같은 5×3 모양
+        # 안쪽 표가 통째로 사라지지 않아야 한다(청크에 `평가 항목 | (빈칸)`). PDF(TableFormer)와 같은 5×3 모양
         def build(doc):
             t = doc.add_table(rows=3, cols=2)
             t.cell(0, 0).text, t.cell(0, 1).text = '구분', '세부'
@@ -525,7 +524,7 @@ class TestNestedAndLong:
         assert '| 접수 | 1. 요청서 수신 2. 담당자 배정 | 총무팀 |' in chunks[0].text
 
     def test_중첩_칸에_적힌_글자는_첫_행으로_남고_3단_중첩은_한_번만(self, tmp_path):
-        # 리뷰 지적 둘: 칸의 라벨 글자가 사라지던 것, 깊은 중첩이 두 번 들어가던 것
+        # 칸의 라벨 글자가 사라지지 않고, 깊은 중첩이 두 번 들어가지 않는다
         def build(doc):
             t = doc.add_table(rows=1, cols=2)
             t.cell(0, 0).text = '구성'

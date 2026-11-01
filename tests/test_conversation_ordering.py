@@ -64,8 +64,7 @@ async def _ordered_ids(tenant_id: str) -> list[int]:
 
 @pytest.mark.asyncio
 async def test_턴_시작_저장시_목록_첫번째로_부상(tenant_id):
-    # #72로 모든 경로(차단·캐시히트·근거없음·생성)가 add_pending_turn으로 턴을 연다 —
-    # 예전엔 즉시 경로만 save_exchange로 부상시켰고 그 경로를 따로 검증했다.
+    # 모든 경로(차단·캐시히트·근거없음·생성)가 add_pending_turn으로 턴을 연다.
     c1_id, c2_id = await _create_two_conversations(tenant_id)
     # PG now()는 트랜잭션 시각 고정 — 별도 세션(트랜잭션)이라 시간차가 생긴다
     async with AsyncSessionLocal() as session:

@@ -1,9 +1,6 @@
-"""질의 재작성 의미 확장(#5) 단위 테스트 — conversation.condense_to_queries + retriever._rrf_fuse.
+"""질의 재작성 의미 확장 — conversation.condense_to_queries + retriever._rrf_fuse. LLM·DB 없이 검증한다.
 
-LLM·DB 없이 검증한다. #43에서 출력이 JSON 스키마 강제로 바뀌어:
-- 구 3줄 파싱·라벨 줄 방어("검색용 독립 질문:" 실측 2/3)는 필드 이름이 대체 — 테스트도 소멸
-- 남은 계약: 스키마가 강제 못 하는 후처리(중복 제거·빈 값 폴백·상한 슬라이스)와
-  폴백 3갈래(비JSON·빈 standalone·예외 → [원본])
+출력 형식은 JSON 스키마가 강제하므로, 여기서는 스키마가 강제 못 하는 후처리(중복 제거·빈 값 폴백·상한 슬라이스)를 본다.
 """
 
 import json
@@ -85,9 +82,8 @@ async def test_빈_standalone이면_원본_폴백():
 
 @pytest.mark.asyncio
 async def test_비JSON_응답이면_판단실패():
-    # 스키마 미지원 서버의 자유 생성이 형식을 안 지킨 경우 — 그럴듯한 복구도, 폴백도 없다.
-    # #72로 "원본 단독 검색" 폴백을 걷어냈다: 재작성을 판단하지 못한 상태에서 원문으로
-    # 검색을 밀어붙이는 건 근거 없는 추측이고, LLM이 그 지경이면 생성도 실패한다.
+    # 스키마 미지원 서버의 자유 생성이 형식을 안 지킨 경우 — 그럴듯한 복구도, "원본 단독 검색" 폴백도 없다.
+    # 재작성을 판단하지 못한 상태에서 원문으로 검색을 밀어붙이는 건 근거 없는 추측이다.
     llm = _FakeLlm(result='재작성\n변형1\n변형2')  # 구 3줄 형식 — 이제 유효하지 않다
     with pytest.raises(LlmJudgmentFailed):
         await condense_to_queries(llm, '원본', [])
@@ -111,8 +107,7 @@ async def test_LLM_예외는_그대로_전파():
 
 @pytest.mark.asyncio
 async def test_단일_condense도_JSON_실값을_반환():
-    """condense_query의 JSON 전환 실값 고정 — FakeLlm 잠복 버그(라벨 줄 반향)가
-    '이 값을 검증하는 테스트가 없어' 살아남았던 전례의 재발 방지 (리뷰 지적)."""
+    """condense_query의 실제 반환값을 고정한다 — 값을 검증하지 않으면 FakeLlm의 라벨 줄 반향 같은 버그가 숨는다."""
     from rag.models import Message
     from rag.turn.conversation import condense_query
 

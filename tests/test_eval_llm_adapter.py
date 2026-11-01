@@ -1,8 +1,8 @@
-"""eval 판정기·캡션 키 계약 (#290) — DB·서버 불필요.
+"""eval 판정기·캡션 키 계약 — DB·서버 불필요.
 
 고정하는 것:
-1. 캡션 헤더: 키 비면 {}(사내, 전과 같은 요청), 있으면 Authorization: Bearer(결정 1)
-2. RAGAS 어댑터는 어떤 LlmClient든 감싸 acomplete(role dict)로 부른다 — Claude CLI 전용이 아니다(결정 2)
+1. 캡션 헤더: 키 비면 {}(사내, 전과 같은 요청), 있으면 Authorization: Bearer
+2. RAGAS 어댑터는 어떤 LlmClient든 감싸 acomplete(role dict)로 부른다 — Claude CLI 전용이 아니다
 3. RAGAS_JUDGE=settings는 create_llm()(= LLM_PROVIDER)을, claude는 CLI 클라이언트를 감싼다. 모르는 값은 즉시 실패
 4. settings judge가 vLLM에 보내는 요청 바디 = 예전 ChatOpenAI 직접 생성 때 손으로 박던 값(enable_thinking False·
    max_tokens·temperature) — RAGAS 이력 연속성의 근거
@@ -93,7 +93,7 @@ class TestJudgeSelection:
         judge, workers = re_._judge("claude")
         assert isinstance(judge.langchain_llm.client, ClaudeCliClient) and workers == 8
 
-    @pytest.mark.parametrize("old", ["vllm", "openai"])  # #290 전 값 — 조용히 기본으로 붙지 않고 바로 알려 준다
+    @pytest.mark.parametrize("old", ["vllm", "openai"])  # 옛 값 — 조용히 기본으로 붙지 않고 바로 알려 준다
     def test_옛_값은_즉시_실패(self, old):
         import eval.ragas_eval as re_
 
@@ -101,7 +101,7 @@ class TestJudgeSelection:
             re_._judge(old)
 
     def test_진행파일_태그는_사내면_예전_이름_그대로(self, monkeypatch):
-        """settings judge + vLLM = 'vllm_<모델>' — #290 전 진행 파일과 같은 키라 이어 돌리기가 유지된다."""
+        """settings judge + vLLM = 'vllm_<모델>' — 예전 진행 파일과 같은 키라 이어 돌리기가 유지된다."""
         import eval.ragas_eval as re_
 
         monkeypatch.setattr(settings, "llm_provider", "vllm")
@@ -111,7 +111,7 @@ class TestJudgeSelection:
         assert re_._progress_tag("claude") == "claude_opus"
 
     def test_vllm_judge_요청바디는_예전_수동값과_같다(self, monkeypatch):
-        """#216에서 ChatOpenAI에 손으로 넣던 값: temperature 0.2·max_tokens=generation_reserve_tokens·enable_thinking False."""
+        """예전에 ChatOpenAI에 손으로 넣던 값: temperature 0.2·max_tokens=generation_reserve_tokens·enable_thinking False."""
         from rag.llm.vllm import VllmClient
 
         monkeypatch.setattr(settings, "llm_reasoning_effort", None)

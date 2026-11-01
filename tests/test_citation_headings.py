@@ -1,14 +1,13 @@
-"""#233 조문 인용 ≠ 조 제목 — 원문 소실 0과 조 이름표.
+"""조문 인용 ≠ 조 제목 — 원문 소실 0과 조 이름표.
 
 제목 판정 규칙 자체는 tests/test_identifiers.py(split_heading_line)·test_chunking_parsers.py(DOCX 폴백)가 고정한다.
 여기는 두 층을 고정한다(소실 판정은 eval/chunk_invariants):
   - 조립 단위(TestBuildSections·TestMdSections) — 본문 없는 헤딩의 자리, 이미 나간 상위, 문서 끝
   - 문서 단위(TestCitationDocs) — 합성 4건(sample_docs/corpus_v2/*_16_*, 정본 생성기 _src/build_citation_docs.py)을 실제
-    경로로 청킹해 원문 소실 0, 골드 *_ct 문항의 근거(스니펫·그 조 구간)와 문서에 없는 조의 가짜 이름표를 본다. #233 전 코드
-    (fd86876)로는 골드 9문항 전부 실패했다(2026-10-18 실측, 실패 사유별: 정답 스니펫이 어느 조각에도 없음 7 · 스니펫은 있으나
-    그 조 구간에 옆 조 내용이 섞임 2). 수정 후 남는 알려진 실패는 아래 KNOWN_FAIL(#260).
+    경로로 청킹해 원문 소실 0, 골드 *_ct 문항의 근거(스니펫·그 조 구간)와 문서에 없는 조의 가짜 이름표를 본다.
+    알려진 실패는 아래 KNOWN_FAIL.
     가짜 이름표('(이하 …)에 따른' 인용 줄 → 문서에 없는 '12조')는 골드가 아니라 여기서만 본다 — 그 문장은 제12조를 실제로
-    언급하므로 "제12조 내용" 질문에 그 문장으로 답하는 것이 오답이라 할 수 없어, 생성 골드로는 결함이 갈리지 않았다(설계 11).
+    언급하므로 "제12조 내용" 질문에 그 문장으로 답하는 것이 오답이라 할 수 없어, 생성 골드로는 결함이 갈리지 않는다.
 """
 
 import importlib.util
@@ -36,10 +35,10 @@ def _b(text):
 
 
 class TestBuildSections:
-    """고아(본문 없이 밀린 헤딩)는 다음 본문 앞에 문서 순서로 되살린다(#137 그대로). #233은 가짜 고아·문서 끝만 고친다(설계 9-재)."""
+    """고아(본문 없이 밀린 헤딩)는 다음 본문 앞에 문서 순서로 되살린다. 가짜 고아·문서 끝은 따로 다룬다."""
 
     def test_이미_경로로_나간_장은_고아가_아니다(self):
-        # 예전: '제2조(삭제)' 뒤에 제2장이 오면 이미 제1조 경로로 나간 '제1장'까지 고아로 잡아 제2장 첫 본문에 다시 붙였다
+        # '제2조(삭제)' 뒤에 제2장이 와도 이미 제1조 경로로 나간 '제1장'을 고아로 잡아 제2장 첫 본문에 다시 붙이지 않는다
         items = [
             _h('규정', 1),
             _h('제1장 총칙', 2),
@@ -58,8 +57,8 @@ class TestBuildSections:
         assert sections_lost(items, secs) == []
 
     def test_상위_번호_제목은_다음_본문_앞에(self):
-        # 실제로 생기는 고아의 거의 전부가 이 꼴이다 — docling이 장 없는 PDF에서 '2.'와 '2.1'을 같은 레벨로 잡는다(실측은
-        # build_sections docstring)
+        # 실제로 생기는 고아의 거의 전부가 이 꼴이다 — docling이 장 없는 PDF에서 '2.'와 '2.1'을 같은 레벨로 잡는다
+        # (build_sections docstring)
         items = [
             _h('정책', 1),
             _h('1. 목적', 2),
@@ -74,7 +73,7 @@ class TestBuildSections:
         )
 
     def test_알려진_한계_삭제_조는_다음_조_경로_아래로(self):
-        # #260·설계 9-재: 배치를 바꾸면 위 상위 제목 고아가 함께 흔들려 고치지 않았다 — 바뀌면 의도한 변경인지 확인할 것
+        # 배치를 바꾸면 위 상위 제목 고아가 함께 흔들린다 — 이 값이 바뀌면 의도한 변경인지 확인할 것
         items = [_h('규정', 1), _h('제3조(삭제)', 2), _h('제4조(대피)', 2), _b('대피 본문')]
         assert [(s.heading_path, s.body) for s in build_sections(items)] == [
             (['규정', '제4조(대피)'], '제3조(삭제)\n대피 본문')
@@ -101,12 +100,12 @@ class TestBuildSections:
         assert sections_lost(items, secs) == []
 
     def test_되살린_고아는_문서_순서로(self):
-        # 빠진 순서로 붙이면 늦게 빠진 상위 'A'가 먼저 빠진 하위 'a1' 뒤에 왔다
+        # 빠진 순서로 붙이면 늦게 빠진 상위 'A'가 먼저 빠진 하위 'a1' 뒤에 온다
         items = [_h('T', 1), _h('A', 2), _h('a1', 3), _h('a2', 3), _h('B', 2), _b('본문')]
         assert [(s.heading_path, s.body) for s in build_sections(items)] == [(['T', 'B'], 'A\na1\na2\n본문')]
 
     def test_헤딩만_있는_문서는_섹션_0개(self):
-        # 결정 3 — 빈 양식은 색인하지 않는다(rag/ingestion이 "추출된 텍스트 없음"으로 실패시킨다)
+        # 빈 양식은 색인하지 않는다(rag/ingestion이 "추출된 텍스트 없음"으로 실패시킨다)
         assert build_sections([_h('규정', 1), _h('제1조(목적)', 2), _h('제2조(정의)', 2)]) == []
 
     @pytest.mark.parametrize(
@@ -134,7 +133,7 @@ class TestBuildSections:
 
 class TestMdSections:
     def test_본문_없는_조는_중간이든_끝이든_남는다(self, tmp_path):
-        # 예전 md 조립은 자기 스택이라 본문 없는 헤딩이 같은 레벨 헤딩에 밀리거나 문서 끝이면 사라졌다
+        # 본문 없는 헤딩이 같은 레벨 헤딩에 밀리거나 문서 끝이어도 사라지지 않는다
         p = tmp_path / 'r.md'
         p.write_text(
             '# 규정\n\n## 제1조(목적)\n\n목적 본문\n\n## 제2조(삭제)\n\n## 제3조(정의)\n\n정의 본문\n\n'
@@ -148,7 +147,7 @@ class TestMdSections:
         ]
 
     def test_헤딩_사이_문단은_줄로_나뉜_한_덩어리(self, tmp_path):
-        # #267부터 docling — 문단은 요소 하나씩 나오고 조립이 줄바꿈 하나로 잇는다(PDF·DOCX와 같은 모양, 정규식 시절엔 빈 줄까지 뒀다)
+        # MD도 docling — 문단은 요소 하나씩 나오고 조립이 줄바꿈 하나로 잇는다(PDF·DOCX와 같은 모양)
         p = tmp_path / 'r.md'
         p.write_text('# 제목\n\n\n첫 문단\n\n둘째 문단\n\n\n## 절\n\n\n', encoding='utf-8')
         assert [(s.heading_path, s.body) for s in md_sections(p)] == [
@@ -178,9 +177,9 @@ GOLD = [
     for g in map(json.loads, open(ROOT / 'eval' / 'gold_set_v2.jsonl', encoding='utf-8'))
     if re.fullmatch(r'[a-z]+_ct\d{3}', g['id'])
 ]
-# 알려진 실패(#260): 본문 없는 삭제 조가 다음 조 본문 앞에 붙어(build_sections 고아 배치, #137) 그 조 구간에 옆 조 내용이
+# 알려진 실패: 본문 없는 삭제 조가 다음 조 본문 앞에 붙어(build_sections 고아 배치) 그 조 구간에 옆 조 내용이
 # 섞인다 — 문서 aromanica는 묶음 안에서 '제8조(시행일) / 제7조(삭제) / 제8조 본문' 순서가 되어 제8조 줄도 끊긴다.
-# 배치를 바꾸면 상위 번호 제목 고아가 함께 흔들려 #233에서 고치지 않았다(설계 9-재, 실측은 build_sections docstring).
+# 배치를 바꾸면 상위 번호 제목 고아가 함께 흔들려 고치지 않았다(build_sections docstring).
 # strict — 고치는 순간 XPASS로 실패하니 이 목록에서 지울 것.
 KNOWN_FAIL = {
     'aromanica_ct003',
@@ -247,7 +246,7 @@ class TestCitationDocs:
         ],
     )
     def test_문서에_없는_조는_이름표가_없다(self, name, query, chunks):
-        # "(이하 …)에 따라" 인용 줄이 본문 보충(effective_headings)에서 헤딩으로 잡혀 없는 조의 이름표가 생겼다(fd86876 실측 3건)
+        # "(이하 …)에 따라" 인용 줄이 본문 보충(effective_headings)에서 헤딩으로 잡혀 없는 조의 이름표가 생기면 안 된다
         assert _article_spans(chunks[name], query) == []
 
     def test_인용_줄은_제목이_되지_않고_진짜_제목은_된다(self, chunks):
@@ -259,7 +258,7 @@ class TestCitationDocs:
             '제2조(시향 예약(단체))',
             '제 5 조1(분실 신고)',
             '제7조(삭제)',
-        } <= heads  # 괄호 중첩·'의' 생략(#250)·삭제 조
+        } <= heads  # 괄호 중첩·'의' 생략·삭제 조
         ids = {
             t
             for c in cs
@@ -268,7 +267,7 @@ class TestCitationDocs:
         assert '5조의1' in ids and '12조' not in ids
 
     def test_PDF_이미_나간_앞_장이_다음_장에_다시_붙지_않는다(self, chunks):
-        # 가짜 고아 — '제 2 조(삭제)' 뒤에 제2장이 오면 이미 나간 '제 1 장 총칙'이 제2장 첫 본문에 다시 붙었다
+        # 가짜 고아 — '제 2 조(삭제)' 뒤에 제2장이 와도 이미 나간 '제 1 장 총칙'이 제2장 첫 본문에 다시 붙지 않는다
         cs = chunks['goodpeople_16_후원물품보관규정.pdf']
         ch2 = [c for c in cs if '제 2 장 보관' in c.heading_path]
         assert ch2 and not any('제 1 장 총칙' in c.text for c in ch2)

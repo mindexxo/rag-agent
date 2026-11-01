@@ -1,6 +1,6 @@
-"""#232 표 문항 축 — 표 조각 판정(eval.axis_common.is_table_chunk·table_kind)과 전수 조사 집계(eval.table_census.census).
+"""표 문항 축 — 표 조각 판정(eval.axis_common.is_table_chunk·table_kind)과 전수 조사 집계(eval.table_census.census).
 
-`is_table`만 보면 산문 조각 안의 작은 표를 놓친다(실문서 PDF 작은 표 38 vs 큰 표 3) — 그 판정을 여기서 고정한다.
+`is_table`만 보면 산문 조각 안의 작은 표를 놓친다 — 그 판정을 여기서 고정한다.
 """
 
 from types import SimpleNamespace as NS

@@ -1,4 +1,4 @@
-"""문서 목록 — 페이징·검색·필터(#176)와 응답 시각 KST 오프셋(#181).
+"""문서 목록 — 페이징·검색·필터와 응답 시각 KST 오프셋.
 
 목록은 문서 관리 화면의 첫 화면이라 total·has_more·ref_count가 어긋나면 바로 보인다.
 필터 조건은 count 쿼리와 페이지 쿼리가 **같은 것**을 써야 한다(rag/document_admin.py _list_where).
@@ -12,7 +12,7 @@ from rag.models import Conversation, Message
 from tests.conftest import ingest
 from tests.helpers_documents import MD, doc_data, get_doc, list_docs, make_folder, upload
 
-# ── #176 목록 페이징 + 검색·필터 ──────────────────────────────
+# ── 목록 페이징 + 검색·필터 ──────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -57,7 +57,7 @@ async def test_목록_파일명_검색(client, tenant_id, fake_queue, blob_tmp):
 
 @pytest.mark.asyncio
 async def test_목록_검색어가_NFD여도_걸린다(client, tenant_id, fake_queue, blob_tmp):
-    """파일명은 NFC로 저장된다(#34). 이름을 복사해 붙여넣으면 NFD일 수 있다 — macOS 경로."""
+    """파일명은 NFC로 저장된다. 이름을 복사해 붙여넣으면 NFD일 수 있다 — macOS 경로."""
     import unicodedata
 
     await upload(client, '환불정책.md', MD)
@@ -107,7 +107,7 @@ async def test_목록_답변사용_필터(client, tenant_id, fake_queue, blob_tm
 
 @pytest.mark.asyncio
 async def test_목록_ref_count는_이번_페이지만_집계한다(client, tenant_id, fake_queue, blob_tmp):
-    """집계를 페이지의 파일명으로 좁혔다(#176) — 좁히는 조건이 틀리면 0이 되거나 남의 값이 붙는다."""
+    """집계를 페이지의 파일명으로 좁힌다 — 좁히는 조건이 틀리면 0이 되거나 남의 값이 붙는다."""
     cited = await upload(client, '환불정책.md', MD)
     await upload(client, '배송정책.md', MD)
 
@@ -138,11 +138,10 @@ async def test_목록_ref_count는_이번_페이지만_집계한다(client, tena
 
 @pytest.mark.asyncio
 async def test_답변사용_필터는_문서_스위치_기준이다(client, tenant_id, fake_queue, blob_tmp):
-    """#176 결정을 고정한다 — 폴더가 참조 off여도 **문서 스위치가 on이면** is_searchable=true에 잡힌다.
+    """폴더가 참조 off여도 **문서 스위치가 on이면** is_searchable=true에 잡힌다.
 
     실제로 검색에 쓰이는지는 폴더와의 곱(실효 참조)이지만, 그 판정을 이 필터에 넣는 것은
-    제품 결정이지 버그 수정이 아니다(같은 규칙의 네 번째 사본이 된다는 이유로 미뤘다).
-    나중에 '고치려는' 변경이 오면 이 테스트가 먼저 걸려 결정을 다시 보게 한다.
+    제품 결정이지 버그 수정이 아니다. '고치려는' 변경이 오면 이 테스트가 먼저 걸려 결정을 다시 보게 한다.
     """
     off_folder = await make_folder(client, '대외비')
     assert (await client.patch(f'/kms/folders/{off_folder}', json={'is_searchable': False})).status_code == 200
@@ -188,7 +187,7 @@ async def test_목록_필터를_건_채로_페이징하면_total도_필터_기�
     assert q_page['total'] == 3 and len(q_page['items']) == 1 and q_page['has_more'] is False
 
 
-# ── #181 응답 시각은 KST 오프셋 ──────────────────────────────
+# ── 응답 시각은 KST 오프셋 ──────────────────────────────
 
 
 @pytest.mark.asyncio

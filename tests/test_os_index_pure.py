@@ -1,10 +1,9 @@
-"""OpenSearch 색인 문서 조립 계약 (#139, #146에서 모듈 분리에 맞춰 3파일로 나눔)
-— DB·OpenSearch 없이 도는 순수 테스트.
+"""OpenSearch 색인 문서 조립 계약 — DB·OpenSearch 없이 도는 순수 테스트.
 
-  1. 어휘 입력 텍스트 조립이 임베딩 입력과 같다       (문서=프리픽스 / FAQ=원문)
-  2. searchable 판정이 조건표대로다                   (문서 활성·ready·토글·폴더 / FAQ 활성)
-  3. build_doc는 청크에 실린 벡터로 색인하고, 없으면 크게 실패한다
-  4. chunk_os_id는 결정적이고 문서·청크 간 충돌이 없으며 20비트 상한을 강제한다
+1. 어휘 입력 텍스트 조립이 임베딩 입력과 같다       (문서=프리픽스 / FAQ=원문)
+2. searchable 판정이 조건표대로다                   (문서 활성·ready·토글·폴더 / FAQ 활성)
+3. build_doc는 청크에 실린 벡터로 색인하고, 없으면 크게 실패한다
+4. chunk_os_id는 결정적이고 문서·청크 간 충돌이 없으며 20비트 상한을 강제한다
 """
 
 import pytest
@@ -73,7 +72,7 @@ def test_어휘_필드는_본문에서_만든다():
 
 
 def test_식별자_필드는_제목_경로와_기록_헤딩에서_만든다():
-    """식별자 채널(#238) — identifiers는 rag.identifiers.chunk_identifiers와 같고, headings는 meta['headings'] 원문."""
+    """식별자 채널 — identifiers는 rag.identifiers.chunk_identifiers와 같고, headings는 meta['headings'] 원문."""
     ch = _Chunk(dense=[0.5] * 1024)
     ch.heading_path, ch.meta = ['가나 규칙', '제 2 장 인 사'], {'headings': ['제 9 조(고용)', '제 11 조(인계)']}
     ch.text = (

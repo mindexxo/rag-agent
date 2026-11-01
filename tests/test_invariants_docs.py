@@ -1,4 +1,4 @@
-"""불변식 대장(INVARIANTS.md)의 빈 칸 채우기 — 문서·색인·인용 축 (#315).
+"""불변식 대장(INVARIANTS.md)의 빈 칸 채우기 — 문서·색인·인용 축.
 
 각 테스트는 이름이 INV 번호로 시작하고 docstring 첫 줄에 그 규칙을 적는다. 규칙의 "왜"는 정의점 파일
 (대장의 정의점 열)에 있다 — 여기는 그 규칙이 깨지면 실패하는 단언만 둔다.
@@ -137,7 +137,7 @@ async def test_INV17_재업로드_커밋이_실패하면_옛_blob은_디스크�
 ):
     """INV-17 옛 blob은 호출부가 커밋 뒤에 지운다 — 커밋 전에 지우면 롤백된 DB가 없는 파일을 가리킨다.
 
-    옛 blob을 지우는 경로는 failed 행 재사용(#161)뿐이라 failed 문서를 같은 이름으로 다시 올린다."""
+    옛 blob을 지우는 경로는 failed 행 재사용뿐이라 failed 문서를 같은 이름으로 다시 올린다."""
     old = await _failed_document(client, '환불정책.md')
     _break_upload_commit(monkeypatch)
     with pytest.raises(RuntimeError, match='업로드 커밋 실패'):
@@ -153,7 +153,7 @@ async def test_INV17_재업로드_커밋이_성공하면_옛_blob을_지운다(c
     """INV-17 옛 blob은 호출부가 커밋 뒤에 지운다 — 위 테스트가 공허하지 않다는 대조(지우는 경로가 실제로 돈다)."""
     old = await _failed_document(client, '환불정책.md')
     again = await upload(client, '환불정책.md', MD)
-    assert again['document_id'] == old.id  # failed 행 재사용(#161)
+    assert again['document_id'] == old.id  # failed 행 재사용
     new = await get_doc(old.id)
     assert new.blob_path != old.blob_path and Path(new.blob_path).is_file()
     assert not Path(old.blob_path).exists()

@@ -1,8 +1,8 @@
-"""OpenSearch 질의 조립 계약 (#139, #146에서 모듈 분리에 맞춰 3파일로 나눔)
+"""OpenSearch 질의 조립 계약
 — DB·OpenSearch 없이 도는 순수 테스트.
 
   1. Nori 질의에 2.18 결함 회피 플래그가 붙어 있다    (조용히 사라지면 500이 돌아온다)
-  2. 게이트 신호 환산이 실측값과 같다                 (틀리면 no_evidence 판정이 조용히 어긋난다)
+  2. 게이트 신호 환산이 pgvector 거리와 같다          (틀리면 no_evidence 판정이 조용히 어긋난다)
   3. 필터가 엔진에서 걸린다                           (검색 후 걸러내면 post-filter가 되어 후보가 깎인다)
 """
 
@@ -20,7 +20,7 @@ def test_nori_질의에_2_18_결함_회피가_붙어_있다():
 def test_게이트_신호_환산이_실측과_같다():
     """OpenSearch cosinesimil 점수 → pgvector cosine_distance = 2 - 2*score.
 
-    실측 대조표(2026-09-08, adererror 5건). 이 환산이 틀리면 apply_gate의 no_evidence
+    아래는 같은 질의를 양쪽에 돌린 대조표다. 이 환산이 틀리면 apply_gate의 no_evidence
     판정이 조용히 어긋난다 — 운영은 게이트가 꺼져 있어(GATE_DISABLED) eval sweep에
     국한되지만, 그 sweep이 임계값을 정하는 근거다.
 

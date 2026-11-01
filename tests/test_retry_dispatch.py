@@ -1,4 +1,4 @@
-"""RETRY 디스패치 (#59) — "다시"류 재요청의 결정론 해소.
+"""RETRY 디스패치 — "다시"류 재요청의 결정론 해소.
 
 분류기는 "재요청 발화"라는 표면 사실만 인식하고(RouteDecision.intent='RETRY'),
 무엇을 다시 할지는 prepare()의 디스패처가 직전 턴 상태로 결정한다:
@@ -116,14 +116,14 @@ async def test_RETRY_직전취소는_그_질문으로_KNOWLEDGE_재실행(client
 
 @pytest.mark.asyncio
 async def test_RETRY_재실행_턴의_user_메시지는_원_발화로_저장(client, tenant_id, fake_llm, fake_embed, pass_gate):
-    """기록엔 사용자가 실제 친 말("다시")만 남는다 — 화면=기록 진실성 (#59 결정)."""
+    """기록엔 사용자가 실제 친 말("다시")만 남는다 — 화면=기록 진실성."""
     await register_faq(client)
     cid = await _seed_cancelled(tenant_id, '사이즈 가이드해줘', 'S(1): 평소')
     fake_llm.intent_json = RETRY_JSON
 
     async with AsyncSessionLocal() as s:
         svc = RagService(tenant_id=tenant_id, session=s, user_id='agent-a')
-        await svc.prepare('다시', conversation_id=cid)  # 자리표시는 prepare가 커밋 (#72)
+        await svc.prepare('다시', conversation_id=cid)  # 자리표시는 prepare가 커밋
 
     async with AsyncSessionLocal() as s:
         users = (
@@ -230,9 +230,8 @@ async def test_RETRY_서로_다른_질문의_연속취소는_최신_질문만(cl
     assert prepared.standalone_query == '티셔츠 사이즈별 착용 가이드'
 
 
-# ── 실패 턴 (#72) ────────────────────────────────────────────
-# 폴백 제거로 failed가 잦아졌는데 RETRY가 cancelled만 보고 있었다 —
-# 실패 턴 뒤의 "다시"가 그 **전전** 턴 답을 반복했다(실측: adererror 대화 16820).
+# ── 실패 턴 ─────────────────────────────────────────────────
+# RETRY가 cancelled만 보면 실패 턴 뒤의 "다시"가 그 **전전** 턴 답을 반복한다.
 
 
 class TestUnansweredIncludesFailed:
@@ -258,7 +257,7 @@ class TestUnansweredIncludesFailed:
 
 @pytest.mark.asyncio
 async def test_실패턴_뒤_다시는_그_질문으로_재실행(client, tenant_id, fake_llm, fake_embed, pass_gate):
-    """#72 회귀 — 이 케이스가 실제로 깨져 있었다.
+    """실패 턴도 RETRY 대상이다.
 
     실패 턴이 이력 격리에서 빠지고(load_recent_messages) RETRY 대상에 들어와야
     "다시"가 **전전** 턴이 아니라 실패한 그 질문을 다시 묻는다.
@@ -294,7 +293,7 @@ async def test_실패턴_질문이_이력에서_사라지지_않는다(client, t
 @pytest.mark.asyncio
 async def test_실패턴_다시_연타도_질문_슬롯이_퇴화하지_않는다(client, tenant_id, fake_llm, fake_embed, pass_gate):
     """_fail_turn의 standalone_query 백필이 체인을 잇는다 — 없으면 두 번째 "다시"부터
-    질문 슬롯이 "다시"로 퇴화한다(#59가 취소 턴에서 막아둔 함정의 실패판)."""
+    질문 슬롯이 "다시"로 퇴화한다(취소 턴에서 막아둔 함정의 실패판)."""
     await register_faq(client)
     cid = await seed_turn(
         tenant_id, '그럼 교환은 며칠까지예요?', '', status='failed', standalone='그럼 교환은 며칠까지예요?'

@@ -1,19 +1,17 @@
-"""색인 동기화 계약 (#139) — E2E 수동 케이스 중 코드로 덮을 수 있는 것을 테스트로 옮긴 것.
+"""색인 동기화 계약 — 라우터는 대기열 행만 남기고 색인은 워커가 한다.
 
-라우터는 대기열 행만 남기고 색인은 워커가 한다. 여기서는 워커 대신 `ingest`/`sync_faq`(그 문서·FAQ의
-행만 drain)로 같은 경로를 태운다. 지연 창("drain 전엔 아직 보인다")은 제품 결정이므로 그대로 단언한다.
+워커 대신 `ingest`/`sync_faq`(그 문서·FAQ의 행만 drain)로 같은 경로를 태운다.
+지연 창("drain 전엔 아직 보인다")은 제품 결정이므로 그대로 단언한다.
 
-  1. 인용 메타(파일명·버전·페이지·폴더명·폴더 설명)는 엔진 _source에서 온다      (E2E #1)
-  2. 문서 검색토글: META 부분 갱신 — 제외/복귀, 재색인 없음(indexed_at 불변)        (E2E #5)
-  3. 색인 일시 실패: attempts·last_error 남기고 다음 회차에 성공                     (E2E #7)
-  4. reconcile(문서): 색인에서 사라진 ready 문서는 재등재, PG에 없는 문서 청크는 삭제  (E2E #9)
-  5. reconcile(FAQ): 같은 계약                                                        (배포 체크리스트 D)
-  6. 백오프(#185): 일시 실패는 next_attempt_at을 미루고 cron 선정에서 빠진다, 결정적 실패는 1회 확정,
-     확정 시 _on_failed 훅·카운터
-  7. failed 확정 시 잔여 청크 DROP(#184): ③ 커밋만 실패한 문서의 청크가 다음 회차에 0, DROP 가드는
-     되살아난 문서를 건너뛴다
-  8. 처리 순서 무관(#185): 백오프로 미뤄진 v1 행보다 v2 행이 먼저 끝나도 신버전이 이긴다
-  9. supersede 삭제는 ③ 커밋의 DROP 행으로(#186): ③이 실패하면 구버전은 PG·엔진 모두 그대로(검색됨)
+  1. 인용 메타(파일명·버전·페이지·폴더명·폴더 설명)는 엔진 _source에서 온다
+  2. 문서 검색토글: META 부분 갱신 — 제외/복귀, 재색인 없음(indexed_at 불변)
+  3. 색인 일시 실패: attempts·last_error 남기고 다음 회차에 성공
+  4. reconcile(문서): 색인에서 사라진 ready 문서는 재등재, PG에 없는 문서 청크는 삭제
+  5. reconcile(FAQ): 같은 계약
+  6. 백오프: 일시 실패는 next_attempt_at을 미루고 cron 선정에서 빠진다, 결정적 실패는 1회 확정
+  7. failed 확정 시 잔여 청크 DROP — DROP 가드는 되살아난 문서를 건너뛴다
+  8. 처리 순서 무관: 백오프로 미뤄진 v1 행보다 v2 행이 먼저 끝나도 신버전이 이긴다
+  9. supersede 삭제는 ③ 커밋의 DROP 행으로: ③이 실패하면 구버전은 PG·엔진 모두 그대로(검색됨)
 """
 
 import json
@@ -125,7 +123,7 @@ async def test_색인_일시_실패는_attempts를_남기고_다음_회차에_�
     monkeypatch.setattr(rd.os_index, 'index_parsed_document', _flaky)
     assert await ingest(doc_id) == {'done': 0, 'failed': 1}
     doc = await _doc(doc_id)
-    assert doc.status == 'pending'  # failed 아님 — 일시 실패라 MAX_ATTEMPTS 전엔 백오프(#185)
+    assert doc.status == 'pending'  # failed 아님 — 일시 실패라 MAX_ATTEMPTS 전엔 백오프
     ((op, status, attempts, err),) = await _rows(doc_id)
     assert (op, status, attempts) == ('index_document', 'pending', 1)
     assert 'Cannot connect' in err
@@ -215,7 +213,7 @@ async def test_reconcile_faqs는_사라진_FAQ를_재등재하고_유령을_지�
 
 @pytest.mark.asyncio
 async def test_업로드_시_지정한_폴더가_색인_메타까지_간다(client, tenant_id, fake_queue, blob_tmp, fake_embed):
-    """#165: 업로드 시점 folder_id는 INDEX_DOCUMENT 경로 하나로 색인까지 간다 — PATCH가 필요 없다.
+    """업로드 시점 folder_id는 INDEX_DOCUMENT 경로 하나로 색인까지 간다 — PATCH가 필요 없다.
 
     위 1번(인용 메타) 테스트는 업로드 후 PATCH로 옮기는 경로를 본다. 여기서 보는 건 그 전 단계,
     즉 처음부터 폴더를 달고 들어온 문서가 META 부분갱신 없이도 폴더 메타를 갖느냐다.
@@ -242,7 +240,7 @@ async def test_업로드_시_지정한_폴더가_색인_메타까지_간다(clie
 
 @pytest.mark.asyncio
 async def test_검색제외_폴더로_업로드하면_검색에_안_잡힌다(client, tenant_id, fake_queue, blob_tmp, fake_embed):
-    """#165: 폴더의 참조 off가 **신규 업로드에도** 먹는지.
+    """폴더의 참조 off가 **신규 업로드에도** 먹는지.
 
     이미 색인된 문서는 폴더 토글이 META 부분갱신으로 반영된다(위 2번). 처음부터 off 폴더로
     들어온 문서는 그 경로를 타지 않고 INDEX_DOCUMENT로 색인되므로, 색인 시점의
@@ -270,7 +268,7 @@ async def test_검색제외_폴더로_업로드하면_검색에_안_잡힌다(cl
 
 @pytest.mark.asyncio
 async def test_일괄_참조끄기가_한_행으로_모든_문서를_제외한다(client, tenant_id, fake_queue, blob_tmp, fake_embed):
-    """#166: 일괄 변경이 남기는 META 행은 **하나**인데, 그 한 행이 담긴 문서 전부를 갱신해야 한다.
+    """일괄 변경이 남기는 META 행은 **하나**인데, 그 한 행이 담긴 문서 전부를 갱신해야 한다.
 
     위 2번(단건 토글)은 문서 하나짜리 payload를 본다. 여기서 보는 건 payload의 document_ids가
     여러 개일 때다 — 워커가 최종값이 같은 문서끼리 묶어 한 번에 갱신하는 경로(sync_meta_documents_now)라
@@ -293,12 +291,12 @@ async def test_일괄_참조끄기가_한_행으로_모든_문서를_제외한�
     assert a['document_id'] not in ids and b['document_id'] not in ids
 
 
-# ── 6. 백오프 (#185) ─────────────────────────────────────────────────────────────
+# ── 6. 백오프 ─────────────────────────────────────────────────────────────
 
 
 async def _row(doc_id) -> SearchIndexOutbox:
     """문서의 **최신** INDEX_DOCUMENT 행 — attempts·next_attempt_at·status를 본다.
-    failed 행을 재사용해 재업로드하면(#161) 같은 document_id로 행이 둘이라 최신을 고른다."""
+    failed 행을 재사용해 재업로드하면 같은 document_id로 행이 둘이라 최신을 고른다."""
     async with AsyncSessionLocal() as s:
         return (
             (
@@ -410,7 +408,7 @@ async def test_결정적_실패는_META_행도_1회로_확정하고_카운터가
     assert outbox.SEARCH_INDEX_FAILED_TOTAL.labels(op=outbox.META_DOCUMENTS)._value.get() == before + 1
 
 
-# ── 7. failed 확정 시 잔여 청크 DROP (#184) ──────────────────────────────────────
+# ── 7. failed 확정 시 잔여 청크 DROP ──────────────────────────────────────
 
 
 async def _drop_rows(doc_id):
@@ -431,7 +429,7 @@ async def _drop_rows(doc_id):
 
 async def _boom_mark_done(session, row_id):
     """③ 커밋 단계만 죽인다 — ②는 끝나 엔진에 청크가 있고, mark_done(③이 ready 승격과 함께 부른다)이 폭발.
-    결정적 예외라 1회로 failed 확정(#185). 픽스처 monkeypatch가 아니라 자기 context로 건다 — 픽스처를 `undo()`하면
+    결정적 예외라 1회로 failed 확정. 픽스처 monkeypatch가 아니라 자기 context로 건다 — 픽스처를 `undo()`하면
     fake_embed까지 걷혀 실제 임베딩 서버로 나간다."""
     raise RuntimeError('③ 커밋 직전 폭발')
 
@@ -457,7 +455,7 @@ async def test_커밋_단계만_실패해_failed가_된_문서의_청크는_다�
 
 @pytest.mark.asyncio
 async def test_DROP은_되살아난_문서를_건너뛴다(client, tenant_id, fake_queue, blob_tmp, fake_embed, monkeypatch):
-    """failed 확정의 DROP이 미뤄진 사이 재업로드(#161 행 재사용)가 먼저 색인을 끝냈다 — 늦게 도는
+    """failed 확정의 DROP이 미뤄진 사이 재업로드(failed 행 재사용)가 먼저 색인을 끝냈다 — 늦게 도는
     DROP이 새 청크를 지우면 ready인데 검색에 없는 문서가 된다. 살아 있는 문서는 건너뛰어야 한다."""
     doc_id = (await _upload(client, '환불정책.md'))['document_id']
     with pytest.MonkeyPatch.context() as mp:
@@ -480,7 +478,7 @@ async def test_DROP은_되살아난_문서를_건너뛴다(client, tenant_id, fa
     assert (await _drop_rows(doc_id))[0].status == 'done'
 
 
-# ── 8. 처리 순서 무관 (#185) ──────────────────────────────────────────────────────
+# ── 8. 처리 순서 무관 ──────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -517,12 +515,12 @@ async def test_백오프로_미뤄진_v1보다_v2가_먼저_끝나도_신버전�
     d1, d2 = await _doc(v1), await _doc(v2)
     assert (d2.status, d2.is_active) == ('ready', True)
     assert d1.status == 'deleted'
-    assert await ingest(v1) == {'done': 1, 'failed': 0}  # v2의 ③이 남긴 DROP[v1] 행(#186)
+    assert await ingest(v1) == {'done': 1, 'failed': 0}  # v2의 ③이 남긴 DROP[v1] 행
     assert await indexed_chunk_texts(v1) == []
     assert (await _cited_ids(tenant_id)) & {v1, v2} == {v2}
 
 
-# ── 9. supersede 구버전 삭제는 커밋 뒤 outbox로 (#186) ────────────────────────────
+# ── 9. supersede 구버전 삭제는 커밋 뒤 outbox로 ────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -530,7 +528,7 @@ async def test_재업로드_커밋이_실패하면_구버전은_PG_엔진_모두
     client, tenant_id, fake_queue, blob_tmp, fake_embed, monkeypatch
 ):
     """③ 커밋만 죽는다(②는 끝나 v2 청크가 엔진에 있다). 구버전 v1은 ready·active·청크 그대로·검색됨이어야
-    한다 — ②에서 지웠던 때는 여기서 "목록엔 정상인데 검색엔 없는" v1이 영구로 남았다."""
+    한다 — 아니면 "목록엔 정상인데 검색엔 없는" v1이 영구로 남는다."""
     v1 = (await _upload(client, '환불정책.md'))['document_id']
     assert await ingest(v1) == {'done': 1, 'failed': 0}
     v1_texts = await indexed_chunk_texts(v1)
@@ -548,7 +546,7 @@ async def test_재업로드_커밋이_실패하면_구버전은_PG_엔진_모두
     assert (await _cited_ids(tenant_id)) & {v1, v2} >= {v1}  # 검색에 여전히 잡힌다
     drops = await _drop_rows(v1)
     assert drops == []  # DROP[v1]은 ③과 함께 롤백됐다
-    assert len(await _drop_rows(v2)) == 1  # v2 잔여 청크 DROP은 failed 확정이 남김(#184)
+    assert len(await _drop_rows(v2)) == 1  # v2 잔여 청크 DROP은 failed 확정이 남김
 
     assert await ingest(v2) == {'done': 1, 'failed': 0}  # 그 DROP — v2 청크 정리
     assert await indexed_chunk_texts(v2) == []

@@ -16,8 +16,7 @@ from tests.conftest import sync_faq
 async def _ask(client, query: str, user: str | None = None):
     headers = {'X-User-Id': user} if user else {}
     res = await client.post('/kms/query', json={'query': query}, headers=headers)
-    # 상태를 여기서 본다 (#170) — 예전엔 그냥 돌려줘서, 429가 나도 조용히 지나가고 한참 뒤
-    # 집계 단언에서 터졌다("집계가 틀렸나?"를 한동안 의심하게 된다).
+    # 상태를 여기서 본다 — 429가 조용히 지나가면 한참 뒤 집계 단언에서 터져 원인을 오인한다.
     assert res.status_code == 200, f'{query!r} → {res.status_code} {res.text[:200]}'
     return res
 
@@ -47,10 +46,10 @@ async def test_씨앗_저장_user_id_latency_cache_kind(client, tenant_id, fake_
         assert answers[1].cache_kind == 'semantic'  # 캐시 재생 표시
         # 저장 시 확정된 사실: 짝 FK(생성·즉시 경로 모두) + 인용 목록 + 인텐트(답변률 분모)
         assert [a.question_message_id for a in answers] == [u.id for u in users]
-        # 근거없음 판정의 원천 — 옛 is_refusal 컬럼을 대신한다 (#61). FAQ 인용은 #278부터 cited_faq_ids에 간다
+        # 근거없음 판정의 원천. FAQ 인용은 cited_faq_ids에 간다
         # (문서 파일명 컬럼엔 안 남는다) — 생성·캐시 재생 둘 다.
         assert all(a.cited_faq_ids and not a.cited_docs for a in answers)
-        assert all(a.intent == 'KNOWLEDGE' for a in answers)  # 생성·캐시 경로 모두 기록 (답변률 분모, #13 원복)
+        assert all(a.intent == 'KNOWLEDGE' for a in answers)  # 생성·캐시 경로 모두 기록 (답변률 분모)
 
 
 @pytest.mark.asyncio
@@ -60,7 +59,7 @@ async def test_stats_집계_정확성(client, tenant_id, fake_llm, pass_gate, re
             'id'
         ]
     )
-    fake_llm.answer = f'7일 이내 처리됩니다. {citation_tail([1])}'  # 출처 꼬리 인용 (#56)
+    fake_llm.answer = f'7일 이내 처리됩니다. {citation_tail([1])}'  # 출처 꼬리 인용
     await _ask(client, '환불 기간 알려줘', user='agent-kim')  # 답변 1 (생성)
     await _ask(client, '환불 기간 알려줘', user='agent-kim')  # 답변 2 (캐시)
     # 거절 유도: pass_gate를 우회할 수 없는 다른 질의? — 게이트가 항상 통과라 거절은
@@ -77,15 +76,13 @@ async def test_stats_집계_정확성(client, tenant_id, fake_llm, pass_gate, re
     body = res.json()
 
     assert body['questions'] == 4  # 사용량은 OTHER 포함 전체
-    assert body['knowledge_done'] == 3  # 분모는 지식 질문만 — 잡담이 답변률을 못 부풀림 (#13 원복)
+    assert body['knowledge_done'] == 3  # 분모는 지식 질문만 — 잡담이 답변률을 못 부풀림
     assert body['ungrounded'] == 1
     assert body['ungrounded_rate'] == round(1 / 3, 3)
     assert body['daily'] and sum(d['questions'] for d in body['daily']) == 4
-    assert (
-        body['top_documents'][0]['filename'] == 'FAQ: 환불 기간은?'
-    )  # 실인용 기준 top — FAQ는 항목별 'FAQ: 질문'(#278)
+    assert body['top_documents'][0]['filename'] == 'FAQ: 환불 기간은?'  # 실인용 기준 top — FAQ는 항목별 'FAQ: 질문'
     assert body['top_documents'][0]['citations'] == 2  # 생성 1 + 캐시 재생 1 (미인용은 미집계)
-    # 제거된 내부 지표(활성 사용자·지연·차단/실패)는 응답에 없어야 한다 (2026-08-07 정리)
+    # 제거된 내부 지표(활성 사용자·지연·차단/실패)는 응답에 없어야 한다
     for gone in ('active_users', 'avg_latency_ms', 'p95_latency_ms', 'blocked', 'failed'):
         assert gone not in body, gone
 
@@ -94,10 +91,10 @@ async def test_stats_집계_정확성(client, tenant_id, fake_llm, pass_gate, re
 async def test_레거시_intent_NULL_거절은_답변률을_왜곡하지_않는다(
     client, tenant_id, fake_llm, pass_gate, relaxed_quota
 ):
-    """intent 컬럼 도입(2026-08-07) 전 행은 분자·분모 어디에도 안 들어가야 한다.
+    """intent가 없는 레거시 행은 분자·분모 어디에도 안 들어가야 한다.
 
     분모만 intent를 거르고 분자를 안 거르면, 레거시 행이 분자에만 들어가
-    근거미확인율>1 → 답변률이 음수가 된다 (셀프 검증에서 발견된 실버그).
+    근거미확인율>1 → 답변률이 음수가 된다.
     """
     await sync_faq(
         (await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})).json()[
@@ -156,8 +153,8 @@ async def test_unanswered_지식갭_목록(client, tenant_id, fake_llm, relaxed_
 
 @pytest.mark.asyncio
 async def test_첨부전용_턴은_KB_지표에서_제외(client, tenant_id, fake_llm, relaxed_quota):
-    """#63 — ATTACHMENT 턴이 intent='KNOWLEDGE'로 남으면 첨부 요약 질문이 근거미확인율
-    분모·지식 갭 리포트에 섞인다(첨부는 KB와 무관 — 리뷰 발견). 각주 누락(최악 조합:
+    """ATTACHMENT 턴이 intent='KNOWLEDGE'로 남으면 첨부 요약 질문이 근거미확인율
+    분모·지식 갭 리포트에 섞인다(첨부는 KB와 무관). 각주 누락(최악 조합:
     인용 0건)이어도 두 지표 모두에 안 잡혀야 한다."""
     fake_llm.intent_json = '{"safe": true, "intent": "ATTACHMENT"}'
     fake_llm.answer = '문서 요약입니다.'  # 꼬리 없음 → citations=[] (각주 누락 재현)
@@ -196,16 +193,14 @@ async def test_stats_테넌트_격리(client, tenant_id, other_tenant_id, fake_l
         assert (await other.get('/kms/stats/unanswered?days=1')).json() == []
 
 
-# ── #61: 거절 문구 판정 → 인용없음(ungrounded) 구조 판정 전환 ────────────
+# ── 인용없음(ungrounded) 구조 판정 ────────────
 
 
 @pytest.mark.asyncio
 async def test_비표준_거절문구도_ungrounded로_집계된다(client, tenant_id, fake_llm, pass_gate, relaxed_quota):
-    """옛 문구 판정이 놓쳤던 유형 — 핵심 문구 없이 부재를 단정하고 꼬리가 빈 답변.
+    """핵심 거절 문구 없이 부재를 단정하고 꼬리가 빈 답변 — 예: "해외 배송은 제공되지 않습니다. ««»»".
 
-    실측 사례(#48 거절축 덤프): "해외 배송은 제공되지 않습니다. ««»»"
-    → 옛 is_refusal은 '제공된 문서에서 확인할 수 없'을 못 찾아 False였다.
-    → 인용 0건이므로 새 판정은 True. 이 전환의 실질 이득이 정확히 이것이다.
+    문구로는 못 잡지만 인용 0건이므로 ungrounded로 집계된다.
     """
     await sync_faq(
         (await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})).json()[
@@ -225,8 +220,7 @@ async def test_비표준_거절문구도_ungrounded로_집계된다(client, tena
 async def test_차단_턴은_ungrounded_집계에서_빠진다(client, tenant_id, fake_llm, relaxed_quota):
     """차단은 '근거 없이 답했다'가 아니다 — status='blocked'가 분모·분자 양쪽에서 걸러낸다.
 
-    #61 주의점: 차단 턴은 sources=[]라 구조 판정만 보면 ungrounded가 된다(옛 문구 판정에서는
-    BLOCKED_INPUT_ANSWER가 거절 문구를 안 담아 우연히 False였다). 판정 함수에 스코프를 넣지
+    차단 턴은 sources=[]라 구조 판정만 보면 ungrounded가 된다. 판정 함수에 스코프를 넣지
     않고 SQL 필터에 맡긴 설계라, 그 필터가 실제로 막는지 여기서 고정한다.
     """
     fake_llm.intent_json = '{"safe": false, "reason": "인젝션 시도", "intent": "OTHER"}'
@@ -241,10 +235,9 @@ async def test_차단_턴은_ungrounded_집계에서_빠진다(client, tenant_id
 
 @pytest.mark.asyncio
 async def test_OTHER_잡담은_지식갭_목록에_안_뜬다(client, tenant_id, fake_llm, relaxed_quota):
-    """#61이 만든 신규 회귀를 막는다 — stats_unanswered에 intent 필터가 새로 필요해졌다.
+    """stats_unanswered는 intent로 잡담을 걸러야 한다.
 
-    문구 판정 시절엔 잡담 답변이 거절 문구를 담을 일이 없어 안 걸렸다. 인용 기반 판정에서는
-    OTHER가 **항상** 인용 0건이다(출처 꼬리 메커니즘 자체가 없다) — 필터가 없으면 잡담이
+    인용 기반 판정에서는 OTHER가 **항상** 인용 0건이다(출처 꼬리 메커니즘 자체가 없다) — 필터가 없으면 잡담이
     전부 지식 갭 목록을 덮는다.
     """
     fake_llm.intent_json = '{"safe": true, "intent": "OTHER"}'
@@ -261,11 +254,8 @@ async def test_OTHER_잡담은_지식갭_목록에_안_뜬다(client, tenant_id,
 async def test_문구가_거절이어도_인용이_있으면_ungrounded가_아니다(
     client, tenant_id, fake_llm, pass_gate, relaxed_quota
 ):
-    """판정이 문구에서 완전히 분리됐다는 것의 대칭 확인 (#61).
-
-    옛 streaming.py의 `refusal or` 절은 "본문은 거절인데 꼬리에 번호가 남은" 모순을
-    citations=[]로 덮었다. 그 절을 지웠으므로 이제 인용이 살아남는다 — 의도된 변경이라
-    회귀로 오인하지 않게 고정한다.
+    """판정이 문구와 무관하다는 대칭 확인 — 본문이 거절 문구여도 꼬리에 번호가 남으면
+    인용이 살아남는다(의도된 동작).
     """
     await sync_faq(
         (await client.post('/kms/faqs', json={'question': '환불 기간은?', 'variants': [], 'answer': '7일'})).json()[
@@ -277,18 +267,18 @@ async def test_문구가_거절이어도_인용이_있으면_ungrounded가_아�
 
     body = (await client.get('/kms/stats?days=1')).json()
     assert body['knowledge_done'] == 1
-    assert body['ungrounded'] == 0  # 문구가 아니라 인용을 본다 — FAQ만 인용해도 근거 있음(#278)
+    assert body['ungrounded'] == 0  # 문구가 아니라 인용을 본다 — FAQ만 인용해도 근거 있음
     assert body['top_documents'][0]['filename'] == 'FAQ: 환불 기간은?'
 
 
-# ── #181 일별 집계 경계는 KST 자정 ────────────────────────────
+# ── 일별 집계 경계는 KST 자정 ────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_daily_버킷은_KST_자정으로_갈린다(client, tenant_id):
     """KST 어제 23:30(=UTC 어제 14:30)과 KST 오늘 00:30(=UTC 어제 15:30)을 심는다.
-    세션 tz(UTC) 자정 기준이었다면 둘 다 '어제'로 잡혀 today=0·yesterday=2가 된다 — 그 어긋남이
-    "오늘 질문 수가 오전 9시에 바뀌는" 현상이었다. 경계를 못 박는 테스트가 없었다(#181)."""
+    세션 tz(UTC) 자정 기준이면 둘 다 '어제'로 잡혀 today=0·yesterday=2가 된다
+    ("오늘 질문 수가 오전 9시에 바뀌는" 현상)."""
     from datetime import datetime, time, timedelta
 
     from schemas.common import KST

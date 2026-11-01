@@ -20,7 +20,7 @@ from tests.conftest import sse_events as _events
 @pytest.mark.asyncio
 async def test_KNOWLEDGE_생성_경로_SSE_전체흐름(client, tenant_id, fake_llm, pass_gate):
     faq_id = await register_faq(client)
-    # 실제 후보(FAQ, 유일 후보 = 1번)를 출처 꼬리로 인용 — done.citations 검증이 실질이 되게 (#56)
+    # 실제 후보(FAQ, 유일 후보 = 1번)를 출처 꼬리로 인용 — done.citations 검증이 실질이 되게
     from rag.turn.citation_labels import TAIL_END, TAIL_START, citation_tail
 
     fake_llm.answer = f'테스트 답변입니다. {citation_tail([1])}'
@@ -30,7 +30,7 @@ async def test_KNOWLEDGE_생성_경로_SSE_전체흐름(client, tenant_id, fake_
     events = _events(res.text)
     names = [e for e, _ in events]
 
-    # 이벤트 순서(#56): meta → delta+ → done. 구 계약 이름은 하나도 없어야 한다(음성 검증)
+    # 이벤트 순서: meta → delta+ → done. 구 계약 이름은 하나도 없어야 한다(음성 검증)
     assert names[0] == 'meta' and names[-1] == 'done'
     assert 'delta' in names
     assert 'sources' not in names and 'token' not in names
@@ -40,27 +40,24 @@ async def test_KNOWLEDGE_생성_경로_SSE_전체흐름(client, tenant_id, fake_
     assert meta['assistant_message_id'] is not None  # FE 재접속 폴링용
     assert '테스트 답변입니다.' in sse_answer(res)
 
-    # done이 최종 상태를 싣는다 — 확정 인용·finish_reason·latency (#56)
+    # done이 최종 상태를 싣는다 — 확정 인용·finish_reason·latency
     done = sse_done(res)
     assert done['finish_reason'] == 'done'
-    # FAQ 인용은 항목별(#278): faq_id가 실리고 표시명은 'FAQ: 질문' — 원본 파일이 없으니 document_id는 그대로 None
+    # FAQ 인용은 항목별: faq_id가 실리고 표시명은 'FAQ: 질문' — 원본 파일이 없으니 document_id는 그대로 None
     assert done['citations'] == [{'document_id': None, 'filename': 'FAQ: 환불 기간은?', 'version': 1, 'faq_id': faq_id}]
     assert isinstance(done['latency_ms'], int)
 
     # persist-before-stream: 스트림이 끝났으면 자리표시가 done으로 finalize돼 있어야 함
     async with AsyncSessionLocal() as session:
         msg = await session.get(Message, meta['assistant_message_id'])
-        assert msg.status == 'done'  # 스트림 finish_reason과 같은 어휘 (#56)
-        assert msg.content.strip() == '테스트 답변입니다.'  # 꼬리는 본문·저장 어디에도 없다 (#56)
+        assert msg.status == 'done'  # 스트림 finish_reason과 같은 어휘
+        assert msg.content.strip() == '테스트 답변입니다.'  # 꼬리는 본문·저장 어디에도 없다
         assert TAIL_START not in msg.content
         assert msg.tenant_id == tenant_id
-        assert msg.cited_docs == [] and msg.cited_faq_ids == [
-            faq_id
-        ]  # done.citations와 같은 사실 — FAQ는 id 컬럼에(#278)
+        assert msg.cited_docs == [] and msg.cited_faq_ids == [faq_id]  # done.citations와 같은 사실 — FAQ는 id 컬럼에
 
-    # 꼬리 제약 의도가 생성 호출에 실렸는지 — 후보 1건(FAQ)이면 count=1 (#56→#65→#287 의도 객체).
-    # 서버 문법으로 바꾸는 건 공급자 구현(tests/test_llm_providers.py), 실제 강제는 라이브 실측 — 여기서는
-    # "올바른 후보 수가 넘어갔는지"만 고정한다.
+    # 꼬리 제약 의도가 생성 호출에 실렸는지 — 후보 1건(FAQ)이면 count=1. 서버 문법 변환은
+    # tests/test_llm_providers.py, 실제 강제는 라이브 확인 — 여기서는 "올바른 후보 수가 넘어갔는지"만 고정한다.
     tails = [t for t in fake_llm.citation_tails if t is not None]
     assert tails and tails[-1].count == 1  # 범위 밖 번호 차단의 근거
     assert tails[-1].start == TAIL_START and tails[-1].end == TAIL_END
@@ -75,7 +72,7 @@ async def test_차단_입력은_즉시_경로(client, tenant_id, fake_llm):
 
     assert sse_answer(res).strip() == BLOCKED_INPUT_ANSWER
     assert [e for e, _ in events][-1] == 'done'
-    assert sse_done(res)['finish_reason'] == 'blocked'  # 재조회 status와 같은 어휘 (#56)
+    assert sse_done(res)['finish_reason'] == 'blocked'  # 재조회 status와 같은 어휘
     assert sse_done(res)['citations'] == []
     assert not any(c.startswith('stream:') for c in fake_llm.calls)  # 생성 LLM 미호출
 
@@ -128,7 +125,7 @@ async def test_캐시_히트는_즉시_경로_LLM_미호출(client, tenant_id, f
     assert events[0][1]['cached'] is True
     assert events[0][1]['cache_kind'] == 'semantic'
     assert '테스트 답변입니다.' in sse_answer(second)  # 캐시된 답 재생
-    # 캐시가 저장한 인용이 재생 턴의 done.citations로 복원된다 (#56 — 캐시는 인용만 저장)
+    # 캐시가 저장한 인용이 재생 턴의 done.citations로 복원된다 (캐시는 인용만 저장)
     assert sse_done(second)['citations'] == sse_done(first)['citations']
     assert sse_done(second)['finish_reason'] == 'done'
     new_calls = fake_llm.calls[len(calls_after_first) :]
@@ -137,7 +134,7 @@ async def test_캐시_히트는_즉시_경로_LLM_미호출(client, tenant_id, f
 
 @pytest.mark.asyncio
 async def test_domain_hint가_인텐트와_생성_프롬프트에_주입(client, tenant_id, fake_llm, pass_gate):
-    # 요청 → prepare(분류) → PreparedRag → 백그라운드 생성까지 힌트가 관통하는지 (#1)
+    # 요청 → prepare(분류) → PreparedRag → 백그라운드 생성까지 힌트가 관통하는지
     await register_faq(client)
     hint = '보험 약관·청구 절차 상담'
     res = await client.post('/kms/query', json={'query': '환불 기간 알려줘', 'domain_hint': hint})
@@ -147,13 +144,13 @@ async def test_domain_hint가_인텐트와_생성_프롬프트에_주입(client,
     injected = {kind: system for kind, system in fake_llm.system_prompts}
     assert hint in injected['intent']
     assert hint in injected['generate']
-    # condense는 도메인 중립 — 스콥 밖 (#1). 첫 턴은 히스토리가 없어 호출 자체가 없을 수 있다.
+    # condense는 도메인 중립 — 스콥 밖. 첫 턴은 히스토리가 없어 호출 자체가 없을 수 있다.
     assert all(hint not in system for kind, system in fake_llm.system_prompts if kind == 'condense')
 
 
 @pytest.mark.asyncio
 async def test_꼬리가_잘린_답변은_인용_없이_완주한다(client, tenant_id, fake_llm, pass_gate):
-    """max_tokens 도달 등으로 END 전에 스트림이 끝나는 경우(#56 truncated) — 잘린 버퍼는
+    """max_tokens 도달 등으로 END 전에 스트림이 끝나는 경우 — 잘린 버퍼는
     화면·저장 어디에도 없고 citations는 빈 목록이어야 한다."""
     await register_faq(client)
     from rag.turn.citation_labels import TAIL_START
@@ -168,10 +165,8 @@ async def test_꼬리가_잘린_답변은_인용_없이_완주한다(client, ten
 
 @pytest.mark.asyncio
 async def test_인텐트_판단_실패는_503이고_질문은_남는다(client, tenant_id, fake_llm, pass_gate):
-    """#72 — 가드가 판단을 못 내리면 fail-open(KNOWLEDGE 추측)이 아니라 실패로 끝낸다.
-
-    옛 폴백은 안전 측이 아니었다: 입력 가드가 꺼진 채 통과시키고, 모든 OTHER 질의를 검색
-    경로로 보냈다. 대신 **질문은 남아야 한다** — 자리표시를 턴 시작에 커밋해 두기 때문이다.
+    """가드가 판단을 못 내리면 fail-open(KNOWLEDGE 추측)이 아니라 실패로 끝낸다 — 추측 통과는 입력 가드를
+    끈 것과 같다. 대신 **질문은 남아야 한다** — 자리표시를 턴 시작에 커밋해 두기 때문이다.
     """
     await register_faq(client)
     fake_llm.intent_json = '형식을 지키지 않은 자유 서술 응답'
@@ -192,18 +187,15 @@ async def test_인텐트_판단_실패는_503이고_질문은_남는다(client, 
 @pytest.mark.asyncio
 async def test_없는_대화_id는_404(client, tenant_id, fake_llm):
     res = await client.post('/kms/query', json={'query': '환불?', 'conversation_id': 999999})
-    assert res.status_code == 404  # REVIEW ③ — 500 아닌 404
+    assert res.status_code == 404  # 500 아닌 404
 
 
 @pytest.mark.asyncio
 async def test_생성_실패도_부분_답변과_소요시간을_남긴다(client, tenant_id, fake_llm, pass_gate):
-    """실패 턴의 저장 규칙 — 취소와 같아야 한다.
+    """실패 턴의 저장 규칙 — 취소와 같이 부분 답변을 남긴다.
 
-    예전엔 ""로 지웠다. 그러면 **화면과 기록이 어긋난다**: 상담원 눈앞엔 흐르다 멈춘
-    답변이 남아 있는데, 새로고침하면 본문이 사라지고 '오류'만 남는다. 방금 읽은 내용을
-    자기도 다시 확인할 수 없다.
-    바로 위 취소 분기는 부분 텍스트를 저장하는데 실패만 지우고 있었다 — 이 저장소가
-    "멈췄든 오류가 났든 답을 못 받았다는 점은 같다"고 선언한 것(UNANSWERED)과도 어긋난다.
+    본문을 비우면 **화면과 기록이 어긋난다**: 상담원 눈앞엔 흐르다 멈춘 답변이 있는데,
+    새로고침하면 본문이 사라지고 '오류'만 남는다.
     """
     await register_faq(client)
     fake_llm.raise_after_tokens = 2  # 두 토큰 흐른 뒤 LLM 스트림이 끊긴다
@@ -227,5 +219,5 @@ async def test_생성_실패도_부분_답변과_소요시간을_남긴다(clien
     assert assistant.status == 'failed'
     assert assistant.content == streamed, 'DB에 남은 본문 = 화면에 흐른 본문'
     assert assistant.latency_ms is not None, '얼마 만에 실패했는지가 장애 분석의 기본 값'
-    # 이력 정책은 그대로 — 질문은 남아야 한다 (#59: _ISOLATED에 넣으면 질문까지 사라진다)
+    # 이력 정책은 그대로 — 질문은 남아야 한다 (_ISOLATED에 넣으면 질문까지 사라진다)
     assert [m.content for m in msgs if m.role == 'user'] == ['환불 기간 알려줘']

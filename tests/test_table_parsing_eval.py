@@ -1,4 +1,4 @@
-"""#246 표 파싱 검증 하네스의 순수 로직 — docling·서버 없이. 기대 렌더 규칙(expected), markdown 표 파싱·채점(score).
+"""표 파싱 검증 하네스의 순수 로직 — docling·서버 없이. 기대 렌더 규칙(expected), markdown 표 파싱·채점(score).
 
 채점기가 틀리면 측정 전체가 틀린다 — 조립이 틀린 채로 측정한 사고(AGENTS.md)를 막는 테스트다.
 """
@@ -33,21 +33,21 @@ class TestSpecs:
 
 class TestExpectedRows:
     def test_전_경로_공통_grid_규칙_병합은_가로_세로_모두_칸마다(self):
-        # #252 결정 2: PDF도 docling_grid_rows — 2단 헤더를 점으로 잇지 않고 첫 행이 헤더, 둘째 헤더 행은 데이터 행
+        # PDF도 docling_grid_rows — 2단 헤더를 점으로 잇지 않고 첫 행이 헤더, 둘째 헤더 행은 데이터 행
         for path in ('pdf', 'docx', 'xlsx', 'img'):
             rows = expected_rows(S02, S02['rows'], path)
-            assert rows[0] == ['직급', '국내 출장', '국내 출장', '해외 출장', '해외 출장']  # 결정 9
+            assert rows[0] == ['직급', '국내 출장', '국내 출장', '해외 출장', '해외 출장']  # 가로 병합은 칸마다 반복
             assert rows[1] == ['직급', '일비', '숙박비', '일비', '숙박비'] and len(rows) == 5
 
     def test_가로_머리글_표도_첫_행이_헤더다(self):
-        # #252 전 PDF는 열 이름이 0,1,2…였다(결함 A). 이제 어느 경로든 첫 행
+        # 어느 경로든 첫 행이 헤더다(열 이름 0,1,2…가 아니라)
         rows = expected_rows(S16, S16['rows'], 'pdf')
         assert rows[0] == ['문서명', '휴양시설 이용 안내'] and rows[1] == ['개정일', '2026-03-01']
 
     def test_중첩_표는_L2에선_어느_경로든_평탄화_L1_docx만_바깥_안쪽_따로(self):
         s = BY_ID['V15_nested']
         for path in ('pdf', 'docx', 'img'):
-            (flat,) = expected_tables(s, path)  # L2: docling PDF 실측 모양(#253) 5×3 — DOCX도 #252 D로 같은 모양
+            (flat,) = expected_tables(s, path)  # L2: docling PDF 모양 5×3 — DOCX도 같은 모양
             assert flat_dims(flat) == (5, 3)
         assert len(expected_tables(s, 'docx', 'l1')) == 2 and len(expected_tables(s, 'pdf', 'l1')) == 1
         cells = {(c.row, c.col): (c.text, c.row_span, c.col_span) for c in expected_cells(flat)}
@@ -71,7 +71,7 @@ class TestChunkTables:
         assert t == [[['a', 'b'], ['1', '2'], ['3', '4'], ['5', '6']]]
 
     def test_같은_헤더가_반복되는_행_묶음은_한_표다(self):
-        # #252: 긴 표는 행 묶음마다 헤더를 반복한다 — 묶음 둘을 표 하나로 읽어야 셀 대조가 된다. 다른 헤더면 새 표
+        # 긴 표는 행 묶음마다 헤더를 반복한다 — 묶음 둘을 표 하나로 읽어야 셀 대조가 된다. 다른 헤더면 새 표
         t = chunk_tables(
             self._chunks(
                 '| a | b |\n| --- | --- |\n| 1 | 2 |', '| a | b |\n| --- | --- |\n| 3 | 4 |', '| c |\n| --- |\n| 9 |'
@@ -91,7 +91,7 @@ class TestChunkTables:
         assert chunk_tables(c, xlsx=True) == [[['a'], ['1'], ['2']]]
 
     def test_PDF_큰_표_묶음은_완성본이_있어도_묶음에서_잇는다(self):
-        # #257 리뷰: 표만 있는 PDF는 모든 청크가 표 묶음(table_text 있음)이라 청크 모양으로 xlsx와 구별되지 않는다 — 형식은 호출부가 준다
+        # 표만 있는 PDF는 모든 청크가 표 묶음(table_text 있음)이라 청크 모양으로 xlsx와 구별되지 않는다 — 형식은 호출부가 준다
         whole = '| a |\n| --- |\n| 1 |\n| 2 |'
         c = [
             SimpleNamespace(text='| a |\n| --- |\n| 1 |', meta={'table_text': whole}),
@@ -194,7 +194,7 @@ class TestDoclingDrift:
         return TableItem(self_ref='#/tables/0', data=TableData(num_rows=n, num_cols=m, table_cells=cells))
 
     def test_기대_규칙은_rag_chunking의_grid_렌더와_같다(self):
-        # #252부터 PDF·DOCX·XLSX 모두 docling_grid_rows 하나다 — 하네스 기대 규칙이 그 함수와 어긋나면 여기서 잡힌다
+        # PDF·DOCX·XLSX 모두 docling_grid_rows 하나다 — 하네스 기대 규칙이 그 함수와 어긋나면 여기서 잡힌다
         from rag.chunking import docling_grid_rows
 
         for spec in (S02, BY_ID['S03_rowspan'], BY_ID['S04_form'], S16):
@@ -441,7 +441,7 @@ class TestDiagnosis:
 
 
 class TestContext:
-    """--context 문서(#247 결정 11) — 문맥이 표 값을 흘리면 '문맥 유무'만 비교한다는 전제가 깨진다."""
+    """--context 문서 — 문맥이 표 값을 흘리면 '문맥 유무'만 비교한다는 전제가 깨진다."""
 
     def test_모든_정의에_문맥이_있다(self):
         from eval.table_parsing.context import CONTEXT

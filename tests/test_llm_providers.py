@@ -1,8 +1,7 @@
-"""LLM 공급자 분리 계약 (#287) — DB·서버 불필요.
+"""LLM 공급자 분리 계약 — DB·서버 불필요.
 
 고정하는 것:
-1. 기본 공급자(vllm)가 서버로 보내는 요청 인자가 #287 전과 **같다**(동작 보존 — 리팩토링 원칙 2).
-   기대값은 #287 전 단일 모듈 클라이언트·rag/turn/llm_schemas.py·rag/turn/prompts.py가 만들던 딕셔너리를 그대로 적었다.
+1. 기본 공급자(vllm)가 서버로 보내는 요청 인자(동작 보존 기준 — 기대값은 딕셔너리 그대로 적었다).
 2. 의도 → 문법 변환은 구현 몫: 바탕(OpenAI 호환)은 제약을 받으면 ConstraintUnsupported를 낸다(조용한 무시 금지).
 3. create_llm은 설정 이름으로 구현을 고르고, 모르는 이름은 즉시 실패한다.
 4. 종료 사유는 공통 어휘(stop|length|other)로 맞춘다.
@@ -24,7 +23,7 @@ def _vllm_kwargs(**intent) -> dict:
 
 
 class TestVllm요청은_이전과_같다:
-    """#287 전 요청 바디(model·max_tokens·temperature·extra_body)를 그대로 고정한다."""
+    """기본 공급자의 요청 바디(model·max_tokens·temperature·extra_body)를 그대로 고정한다."""
 
     def test_제약_없는_호출(self):
         assert _vllm_kwargs() == {
@@ -73,7 +72,7 @@ class TestVllm요청은_이전과_같다:
 
 class TestBase:
     def test_바탕은_제약을_받으면_실패한다(self):
-        """조용히 무시하지 않는다 — 제약을 받아 놓고 강제하지 않는 서버가 실제로 있었다(#61)."""
+        """조용히 무시하지 않는다 — 제약을 받아 놓고 강제하지 않는 서버가 있다."""
         client = OpenAiCompatClient()
         assert client._request_kwargs(None, None)['model'] == settings.llm_model
         with pytest.raises(ConstraintUnsupported):

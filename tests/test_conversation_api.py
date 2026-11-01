@@ -1,4 +1,4 @@
-"""대화 목록 API(#10) 통합 테스트 — 페이지네이션·소프트 삭제·제목 변경·user 스코핑.
+"""대화 목록 API 통합 테스트 — 페이지네이션·소프트 삭제·제목 변경·user 스코핑.
 
 실제 앱 + DB (conftest client 패턴). LLM 불필요 — 소유 검증은 prepare의
 ensure_conversation 단계(LLM 호출 전)에서 끝나므로 fake_llm 없이 404 경로 검증 가능.
@@ -40,7 +40,7 @@ async def test_목록_응답형태_정렬_updated_at(client, tenant_id):
     res = await client.get('/kms/conversations', headers=USER_A)
     assert res.status_code == 200
     body = res.json()
-    assert set(body.keys()) == {'items', 'has_more', 'total'}  # 배열 → 객체(#10), total 추가(#28)
+    assert set(body.keys()) == {'items', 'has_more', 'total'}
     assert body['total'] == 3
     assert [i['conversation_id'] for i in body['items']] == list(reversed(ids))  # 최근 사용순
     assert body['has_more'] is False
@@ -130,7 +130,7 @@ async def test_query_신규대화에_created_by_저장(client, tenant_id, fake_l
 
 @pytest.mark.asyncio
 async def test_updated_at은_KST_오프셋으로_나가고_시점은_같다(client, tenant_id):
-    """#181 — 응답 스키마 세 곳이 같은 KstDatetime을 쓴다. 대화 목록 쪽도 형식·시점을 고정한다."""
+    """응답 스키마 세 곳이 같은 KstDatetime을 쓴다. 대화 목록 쪽도 형식·시점을 고정한다."""
     from datetime import datetime
 
     ids = await _seed(tenant_id, 1)

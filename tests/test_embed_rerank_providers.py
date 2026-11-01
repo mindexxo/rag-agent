@@ -1,12 +1,12 @@
-"""임베딩·리랭크 공급자 분기 계약 (#289) — 키·네트워크 없이, TEI는 HTTP를·상용은 litellm을 가짜로 바꿔 요청과 해석을 고정한다.
+"""임베딩·리랭크 공급자 분기 계약 — 키·네트워크 없이, TEI는 HTTP를·상용은 litellm을 가짜로 바꿔 요청과 해석을 고정한다.
 
-고정하는 것(#289 결정):
-1. 함수 계약 불변(결정 2): embed_texts/embed_query/rerank_scores 시그니처 그대로, 분기는 모듈 안. TEI 요청 본문은 kind와 무관하게 전과 같다.
-2. 차원 1024 고정(결정 3): 상용엔 dimensions=1024를 보내고, 응답 벡터가 그 길이가 아니면 ValueError — 저장 벡터(os_client.DIM)와 같은 값.
-3. 용도 전달(결정 4): gemini는 RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT, voyage는 query/document, openai는 안 보냄. embed_query는 "query".
+고정하는 것:
+1. 함수 계약: embed_texts/embed_query/rerank_scores 시그니처 그대로, 분기는 모듈 안. TEI 요청 본문은 kind와 무관하다.
+2. 차원 1024 고정: 상용엔 dimensions=1024를 보내고, 응답 벡터가 그 길이가 아니면 ValueError — 저장 벡터(os_client.DIM)와 같은 값.
+3. 용도 전달: gemini는 RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT, voyage는 query/document, openai는 안 보냄. embed_query는 "query".
 4. 배치 32 분할·응답 index 정렬·개수 검사는 상용에도 같다. 리랭크는 배치 안 index를 원본 위치로 환산하고 실패 시 None(graceful degrade).
 5. 설정: 상용 공급자인데 모델명이 비면 기동 시 ValueError.
-실제 벤더 요청 모양은 로컬 스텁 캡처로 확인했다 — 품질·눈금은 라이브 측정 몫.
+품질·눈금은 라이브 측정 몫이다.
 """
 
 from types import SimpleNamespace
@@ -82,7 +82,7 @@ def test_dim_matches_storage():
 
 
 class TestTeiUnchanged:
-    """기본 공급자(tei) 경로는 #289 전과 같은 요청 본문 — kind는 무시."""
+    """기본 공급자(tei) 경로의 요청 본문 — kind는 무시."""
 
     @pytest.mark.anyio
     async def test_async_body_and_kind_ignored(self, monkeypatch):

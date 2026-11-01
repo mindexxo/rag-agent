@@ -98,7 +98,7 @@ async def test_INV16_reconcile은_두_스냅샷_사이에_ready가_된_문서의
 
 
 async def _failed_document(client, filename) -> Document:
-    """③ 커밋 단계를 터뜨려 failed로 확정된 문서(tests/test_integration_index_sync._break_commit_stage 패턴).
+    """③ 커밋 단계를 터뜨려 failed로 확정된 문서(tests/helpers_index_sync.boom_mark_done 패턴).
     monkeypatch.context로 감싸 blob_tmp·fake_embed의 패치는 되돌리지 않는다."""
     doc_id = (await upload(client, filename, MD))['document_id']
 

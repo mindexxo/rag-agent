@@ -1,6 +1,6 @@
-"""문서 관리 통합 테스트가 함께 쓰는 헬퍼.
+"""문서 관리 통합 테스트가 함께 쓰는 헬퍼 — 업로드·폴더·목록 호출과 표준 본문.
 
-test_integration_documents*.py 다섯 파일이 이 모듈을 가져다 쓴다 — 여러 파일에서 불리는 것들이라 한곳에 둔다.
+여러 문서 통합 테스트 파일에서 불리는 것들이라 한곳에 둔다.
 
 **conftest에 넣지 않은 이유**: 문서 축 전용이라 전 테스트에 노출할 이유가 없다. 공용 픽스처
 (client·tenant_id·ingest·indexed_chunk_texts)는 그대로 conftest가 정의점이다.
@@ -11,9 +11,12 @@ import json
 from database import AsyncSessionLocal
 from rag.models import Document
 from tests.conftest import indexed_chunk_texts
+from tests.helpers_xlsx import XLSX_MIME, xlsx_bytes
 
 # 여러 파일이 쓰는 표준 본문. '14일'이 들어 있어 재업로드 테스트가 '30일' 본문과 대조할 수 있다.
 MD = '# 환불 정책\n\n## 1. 기간\n\n단순변심 반품은 14일 이내 신청한다.\n'.encode()
+DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+XLSX_TABLE = xlsx_bytes(3)
 
 
 async def upload(client, filename: str, content: bytes, mime='text/markdown', headers=None, extra_parts=None) -> dict:
@@ -27,6 +30,20 @@ async def post_upload(client, filename: str, content: bytes, expect_version=None
     """상태 코드를 직접 보는 업로드 — 409·400을 기대하는 테스트용(upload는 200을 단언한다)."""
     data = {} if expect_version is None else {'expect_version': str(expect_version)}
     return await client.post('/kms/documents', files={'file': (filename, content, 'text/markdown')}, data=data)
+
+
+async def post_xlsx(client, filename: str, content: bytes = XLSX_TABLE, description=None, form=None):
+    """상태 코드를 직접 보는 xlsx 업로드. description은 document-data 파트로, form은 평면 Form으로."""
+    files = {'file': (filename, content, XLSX_MIME)}
+    if description is not None:
+        files.update(doc_data(description=description))
+    return await client.post('/kms/documents', files=files, data=form)
+
+
+async def upload_xlsx(client, filename: str, description: str, content: bytes = XLSX_TABLE) -> dict:
+    res = await post_xlsx(client, filename, content, description=description)
+    assert res.status_code == 200, res.text
+    return res.json()
 
 
 def doc_data(**fields) -> dict:

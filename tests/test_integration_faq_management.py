@@ -5,19 +5,13 @@ SSE done.citations는 tests/test_integration_query_sse.py, 통계 집계는 test
 """
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 
 from database import AsyncSessionLocal
 from rag import outbox
 from rag.turn.citation_labels import citation_tail
 from schemas.kms import FAQ_CATEGORY_NAME_MAX
 from tests.conftest import sse_done, sse_meta, sync_faq
-
-
-def _client_for(tenant: str) -> AsyncClient:
-    from main import app
-
-    return AsyncClient(transport=ASGITransport(app=app), base_url='http://testserver', headers={'X-Tenant-Id': tenant})
+from tests.tenant_client import client_for
 
 
 async def _faq(
@@ -132,7 +126,7 @@ async def test_카테고리_규칙은_폴더와_같다(client, tenant_id):
 @pytest.mark.asyncio
 async def test_카테고리_격리(client, tenant_id, other_tenant_id):
     cat = await _category(client, 'A사 전용')
-    async with _client_for(other_tenant_id) as other:
+    async with client_for(other_tenant_id) as other:
         assert all(c['id'] != cat['id'] for c in (await other.get('/kms/faq-categories')).json())
         assert (await other.patch(f"/kms/faq-categories/{cat['id']}", json={'name': '탈취'})).status_code == 404
         assert (await other.delete(f"/kms/faq-categories/{cat['id']}")).status_code == 404

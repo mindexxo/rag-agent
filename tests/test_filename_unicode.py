@@ -14,13 +14,12 @@ from database import AsyncSessionLocal
 from rag.models import Document, Message
 from rag.turn.citation_labels import citation_tail
 from tests.conftest import ingest, sse_meta
+from tests.helpers_documents import MD, upload
 
 # 분해형(NFD) 한글 파일명 — macOS 브라우저 업로드가 주는 형태.
 # 소스 파일 자체는 NFC로 저장되므로 리터럴을 쓰지 않고 런타임에 분해한다.
 FILENAME_NFC = '환불반품정책.md'
 FILENAME_NFD = unicodedata.normalize('NFD', FILENAME_NFC)
-
-MD = '# 환불 정책\n\n## 1. 기간\n\n단순변심 반품은 14일 이내 신청한다.\n'.encode()
 
 
 def test_전제_두_정규형은_다른_문자열이다():
@@ -30,16 +29,10 @@ def test_전제_두_정규형은_다른_문자열이다():
     assert unicodedata.normalize('NFC', FILENAME_NFD) == FILENAME_NFC
 
 
-async def _upload(client, filename: str) -> dict:
-    res = await client.post('/kms/documents', files={'file': (filename, MD, 'text/markdown')})
-    assert res.status_code == 200, res.text
-    return res.json()
-
-
 @pytest.mark.asyncio
 async def test_NFD_파일명_업로드는_NFC로_저장된다(client, tenant_id, fake_queue, blob_tmp):
     """경계 정규화 — 분해형으로 올려도 DB에는 조합형만 들어간다."""
-    body = await _upload(client, FILENAME_NFD)
+    body = await upload(client, FILENAME_NFD, MD)
     assert body['filename'] == FILENAME_NFC  # 응답도 정규화된 이름
 
     async with AsyncSessionLocal() as session:
@@ -57,7 +50,7 @@ async def test_NFD로_올린_문서의_인용은_NFC_파일명으로_잡힌다(
     cited_docs의 파일명 값은 DB 저장값이다 — 저장이 NFD로 남으면 FE 각주·통계의 파일명이
     분해형으로 샌다.
     """
-    body = await _upload(client, FILENAME_NFD)
+    body = await upload(client, FILENAME_NFD, MD)
     await ingest(body['document_id'])
 
     # 유일 문서 = 후보 1번 인용
@@ -80,8 +73,8 @@ async def test_NFD로_올린_문서의_인용은_NFC_파일명으로_잡힌다(
 async def test_NFD와_NFC_동명_재업로드는_새_버전이_된다(client, tenant_id, fake_queue, blob_tmp):
     """UNIQUE(tenant_id, filename, version)가 코드포인트 단위라, 정규화가 없으면 두 정규형이
     별개 문서로 통과해 시각적으로 같은 이름의 문서가 조용히 2건 생긴다."""
-    first = await _upload(client, FILENAME_NFD)
-    second = await _upload(client, FILENAME_NFC)  # 같은 이름의 재업로드로 취급돼야 한다
+    first = await upload(client, FILENAME_NFD, MD)
+    second = await upload(client, FILENAME_NFC, MD)  # 같은 이름의 재업로드로 취급돼야 한다
 
     assert second['version'] == first['version'] + 1
 
@@ -96,7 +89,7 @@ async def test_NFD와_NFC_동명_재업로드는_새_버전이_된다(client, te
 async def test_exists_조회는_정규형과_무관하게_같은_문서를_찾는다(client, tenant_id, fake_queue, blob_tmp):
     """exists는 '업로드 판정과 정확히 같아야' 하는 API — 여기가 어긋나면 FE가 중복 확인창을
     띄우지 않고 expect_version=0으로 올려 기존 문서를 별개로 만든다."""
-    await _upload(client, FILENAME_NFC)
+    await upload(client, FILENAME_NFC, MD)
 
     for probe in (FILENAME_NFC, FILENAME_NFD):
         res = await client.get('/kms/documents/exists', params={'filename': probe})

@@ -1,6 +1,6 @@
 """PDF·DOCX 큰 표 확장 통합 테스트 — 업로드 → 색인(표 묶음 메타) → 조회 → 근거 준비(표 전체), 상한 초과 표의 색인 실패.
 
-엑셀 쪽(시트 묶음 → 시트 완성본)은 엑셀 통합 테스트(test_integration_documents_xlsx) G4 항목이 덮는다. 여기는 같은 계약을 PDF·DOCX 경로가
+엑셀 쪽(시트 묶음 → 시트 완성본)은 docling 실경로 테스트(test_integration_documents_docling) G4 항목이 덮는다. 여기는 같은 계약을 PDF·DOCX 경로가
 지키는지 본다 — DOCX로 만든다(docling SimplePipeline이라 PDF보다 빠르고, 표 → TableBlock 운반은 두 형식이 같은 길이다).
 """
 
@@ -11,9 +11,7 @@ from docx import Document as Docx
 
 from rag.search import os_search
 from tests.conftest import ingest
-from tests.helpers_documents import get_doc
-
-DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+from tests.helpers_documents import DOCX_MIME, get_doc, upload
 
 
 def _docx(n_rows: int) -> bytes:
@@ -39,12 +37,6 @@ def _docx(n_rows: int) -> bytes:
     return buf.getvalue()
 
 
-async def _upload(client, name: str, content: bytes) -> int:
-    res = await client.post('/kms/documents', files={'file': (name, content, DOCX_MIME)})
-    assert res.status_code == 200, res.text
-    return res.json()['document_id']
-
-
 async def _indexed(doc_id: int):
     resp = await os_search.client().search(
         index=os_search.settings.opensearch_index,
@@ -59,7 +51,7 @@ async def _indexed(doc_id: int):
 async def test_큰_표는_묶음마다_표_키와_표_전체가_색인되고_근거는_표_전체다(client, tenant_id, fake_queue, blob_tmp):
     from rag.search.retriever import prepare_evidence
 
-    doc_id = await _upload(client, '납품기준.docx', _docx(150))
+    doc_id = (await upload(client, '납품기준.docx', _docx(150), DOCX_MIME))['document_id']
     await ingest(doc_id)
     assert (await get_doc(doc_id)).status == 'ready'
     chunks = await _indexed(doc_id)
@@ -91,7 +83,7 @@ async def test_큰_표는_묶음마다_표_키와_표_전체가_색인되고_근
 
 @pytest.mark.asyncio
 async def test_상한을_넘는_표가_있으면_색인_실패와_사유가_남는다(client, tenant_id, fake_queue, blob_tmp):
-    doc_id = await _upload(client, '대형표.docx', _docx(400))
+    doc_id = (await upload(client, '대형표.docx', _docx(400), DOCX_MIME))['document_id']
     result = await ingest(doc_id)
     assert result['failed'] == 1  # 결정적 실패 — 재시도 없이 한 번에
     doc = await get_doc(doc_id)

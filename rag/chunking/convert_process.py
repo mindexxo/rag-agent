@@ -73,7 +73,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]  # rag/chunking/ 아래라 �
 
 # 변환 프로세스가 쓰는 설정의 접두사 — 부모는 이 설정만 자식에 넘기고, 이것이 바뀌었을 때만 자식을 다시 띄운다
 # (변환과 무관한 설정을 바꿀 때마다 콜드 기동하지 않게). 이 패키지가 읽는 settings 필드가 모두 이 접두사 안인지는
-# tests/test_chunking_docling.py가 검사한다 — 빠뜨리면 값을 바꿔도 자식이 옛 값으로 돈다.
+# tests/test_chunking_docling_process.py가 검사한다 — 빠뜨리면 값을 바꿔도 자식이 옛 값으로 돈다.
 CHILD_SETTING_PREFIXES = (
     'docling_',
     'ocr_',

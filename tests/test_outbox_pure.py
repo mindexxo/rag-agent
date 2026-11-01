@@ -134,3 +134,20 @@ class TestDrainRoundBudget:
 
         monkeypatch.setattr(outbox, '_fits_round', lambda elapsed: False)
         assert await outbox.drain(Session()) == {'done': 0, 'failed': 0}
+
+
+# ── PDF 쪽수 가드 — 설정 불변식 ──────────────────────────────────────────────
+
+
+def test_F1_쪽수_가드가_타임아웃보다_먼저_걸린다():
+    """정상 최악 = 100쪽 ≈ 610초(쪽당 6.1초) + 그림 100장 ≈ 200초(동시 1) < 변환 마감
+    ≤ 회차 예산(arq job_timeout) − 꼬리. 순서가 깨지면 상한 안의 정상 문서가 마감에 걸리거나(앞),
+    첫 행조차 회차 예산에 못 들어가 arq 취소로 헛돈다(뒤)."""
+    from rag.worker import WorkerSettings
+
+    per_page_seconds, per_picture_seconds = 6.1, 2.0
+    assert (
+        settings.docling_max_num_pages * per_page_seconds + settings.docling_max_pictures * per_picture_seconds
+        < settings.docling_document_timeout_seconds
+        <= WorkerSettings.job_timeout - outbox.INDEX_TAIL_SECONDS
+    )

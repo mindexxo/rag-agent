@@ -16,7 +16,9 @@ services:
     command: ["postgres", "-c", "max_connections=300", "-c", "fsync=off",
               "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
     ports: ["127.0.0.1:55432:5432"]
-    volumes: ["./schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro"]
+    # 원본 경로는 루트 conftest.py가 KMS_TEST_SCHEMA로 준다 — schema.sql 내용 해시로 이름 붙인 워크트리 밖 사본이라
+    # 내용이 같으면 경로도 같아 다른 워크트리의 실행이 컨테이너를 다시 만들지 않는다(./schema.sql은 수동 기동용 기본값).
+    volumes: ["${KMS_TEST_SCHEMA:-./schema.sql}:/docker-entrypoint-initdb.d/10-schema.sql:ro"]
     tmpfs: ["/var/lib/postgresql/data"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d kms"]   # TCP로 본다 — initdb 중 임시 서버는 소켓만 연다

@@ -4,6 +4,7 @@
 그 디렉토리가 sys.path에 자동 추가됨 → 테스트가 `from database import ...` 가능.
 """
 
+import hashlib
 import os
 import subprocess
 import warnings
@@ -30,6 +31,21 @@ COMPOSE_FILE = Path(__file__).resolve().parent / 'docker-compose.test.yml'
 LOCAL_HOSTS = ('127.0.0.1', 'localhost')
 
 
+def _shared_schema_copy() -> Path:
+    """schema.sql을 내용 해시로 이름 붙인 워크트리 밖 경로에 복사한다 — DB 컨테이너의 마운트 원본.
+
+    워크트리 경로를 그대로 마운트하면 워크트리마다 compose 설정이 달라 컨테이너가 재생성되고, 다른 워크트리에서
+    돌던 테스트의 연결이 끊긴다. 내용이 같으면 경로가 같고, 스키마가 달라졌을 때만 새 경로(= 재생성)가 된다.
+    """
+    src = Path(__file__).resolve().parent / 'schema.sql'
+    data = src.read_bytes()
+    dst = Path.home() / '.cache' / 'kms-test' / f'schema-{hashlib.sha256(data).hexdigest()[:16]}.sql'
+    if not dst.exists():
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(data)
+    return dst
+
+
 @pytest.fixture(autouse=True, scope='session')
 def _test_infra() -> None:
     """주소가 로컬이 아니면 스위트를 멈추고, compose로 컨테이너를 띄워 헬스체크 통과까지 기다린다.
@@ -47,7 +63,8 @@ def _test_infra() -> None:
         )
     cmd = ['docker', 'compose', '-f', str(COMPOSE_FILE), 'up', '-d', '--wait']
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=600)
+        env = {**os.environ, 'KMS_TEST_SCHEMA': str(_shared_schema_copy())}
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=600, env=env)
     except (OSError, subprocess.SubprocessError) as e:
         detail = getattr(e, 'stderr', '') or e
         warnings.warn(f'테스트 인프라 기동 실패 — 인프라를 쓰는 테스트는 실패한다: {detail}', stacklevel=1)

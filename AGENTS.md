@@ -65,6 +65,8 @@ import한다(118MB 패키지라 사내 vLLM·TEI만 쓰는 프로세스가 비�
   DB·Redis·OpenSearch는 **로컬 컨테이너만** 쓴다(`docker-compose.test.yml`, 도커 필요) — 루트 `conftest.py`가 `.env`의
   개발계 주소를 로컬 포트로 덮고, 세션 시작마다 `up -d --wait`로 헬스체크까지 기다린다(떠 있으면 약 1초, 첫 기동은 OpenSearch 이미지 빌드).
   데이터는 tmpfs라 `docker compose -f docker-compose.test.yml down` 후 다시 띄우면 빈 스키마로 돌아온다.
+  컨테이너는 워크트리끼리 공유한다 — DB 스키마는 `schema.sql` 내용 해시로 이름 붙인 `~/.cache/kms-test/` 사본을 마운트해,
+  스키마가 같으면 다른 워크트리의 실행이 컨테이너를 다시 만들지 않는다(스키마가 다른 브랜치면 다시 만든다).
   DB 없이 순수 로직만 몇 초 만에 돌리려면 `pytest tests/test_service_pure.py tests/test_prompts.py
   tests/test_turn_status_contract.py tests/test_docs_freshness.py tests/test_code_quality.py
   tests/test_prompt_bytes.py`. 리팩토링의 동작 보존 증거는 프롬프트 = `tests/test_prompt_bytes.py`(모델에 가는 문자열 해시),

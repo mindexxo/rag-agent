@@ -82,3 +82,29 @@ async def test_reconcile_faqs는_사라진_FAQ를_재등재하고_유령을_지�
     assert await faq_doc(999_999_002) is None
     assert await sync_faq(faq_id) == {'done': 1, 'failed': 0}
     assert await faq_doc(faq_id)
+
+
+@pytest.mark.asyncio
+async def test_색인_도중_reconcile이_끼어들어도_청크_없는_ready가_되지_않는다(
+    client, tenant_id, fake_queue, blob_tmp, fake_embed, monkeypatch
+):
+    """RC-08 — 청크가 엔진에 들어간 뒤 ready 커밋 전에 --apply가 돈다. 색인 중(pending) 문서는 잉여가 아니다."""
+    doc_id = (await upload(client, '환불정책.md', MD))['document_id']
+    real = os_index.index_parsed_document
+    seen: list[dict] = []
+
+    async def _index_then_reconcile(**kw: object) -> None:
+        await real(**kw)
+        async with AsyncSessionLocal() as s:
+            seen.append(await os_reconcile.reconcile(s, tenant_id))
+
+    monkeypatch.setattr(os_index, 'index_parsed_document', _index_then_reconcile)  # 색인기는 모듈 속성으로 부른다
+    assert await ingest(doc_id) == {'done': 1, 'failed': 0}
+
+    assert seen[0]['deleted'] == 0, '색인 중인 문서의 청크를 잉여로 지웠다'
+    assert seen[0]['indexed'] == 0  # pending은 누락도 아니다
+    assert (await get_doc(doc_id)).status == 'ready'
+    assert await indexed_chunk_texts(doc_id) != [], '청크 없는 ready'
+    async with AsyncSessionLocal() as s:
+        after = await os_reconcile.reconcile(s, tenant_id)
+    assert after['indexed'] == 0 and after['deleted'] == 0

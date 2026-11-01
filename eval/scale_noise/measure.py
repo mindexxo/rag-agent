@@ -14,6 +14,7 @@ import time
 from collections.abc import Collection, Iterator
 from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 
 from config import settings
 from database import AsyncSessionLocal
@@ -159,14 +160,15 @@ def _signature(cond: str) -> str:
     return f"{info['built']}|{info['total']}|{info['noise_chunks']}"
 
 
-async def measure(conds: list[str]) -> None:
-    bad = [c for c in conds if c not in CONDITIONS]
-    if bad:
-        raise SystemExit(f'모르는 조건 {bad} — 가능: {CONDITIONS}')
-    gold_all = load_gold()
-    gold_rows = [g for g in gold_all if row_tenant(g) == TENANT and g['type'] in TYPES]
-    gold = {g['id']: g for g in gold_rows}
-    path = OUT / 'measure.json'
+async def _gold_ids(gold_rows: list[dict]) -> dict[str, set[int]]:
+    """지금 조건의 인덱스로 정답 조각을 푼다(문항 id → 스니펫 포함 조각 전부)."""
+    async with AsyncSessionLocal() as session:
+        resolved = await resolve_gold(session, TENANT, gold_rows)
+    return {k: set(v) for k, v in resolved.scoring_ids.items()}
+
+
+def _load_result(path: Path) -> dict:
+    """저장된 측정 결과(있으면) — 없으면 빈 골격."""
     result = (
         json.loads(path.read_text(encoding='utf-8'))
         if path.exists()
@@ -180,41 +182,60 @@ async def measure(conds: list[str]) -> None:
         }
     )
     result.setdefault('signature', {})  # 서명 도입 전 파일(10/23 x0 1차)도 읽는다 — 서명이 없으면 전부 재측정
-    OUT.mkdir(parents=True, exist_ok=True)
-    gold_ids_by_cond: dict[str, dict[str, set[int]]] = {}
-    for cond in conds:
-        sig = _signature(cond)
-        if result['signature'].get(cond) != sig:  # 빌드가 바뀌었으면 그 조건은 처음부터
-            result['pool'].pop(cond, None)
-            result['retrieval'].pop(cond, None)
-            result['signature'][cond] = sig
+    return result
+
+
+async def _measure_cond(cond: str, result: dict, path: Path, gold_rows: list[dict]) -> dict[str, set[int]]:
+    """한 조건의 ⓐ·ⓑ — 빌드가 바뀌었으면 처음부터, 이미 잰 단계는 건너뛰고 단계마다 저장한다. → 그 조건의 정답 조각."""
+    sig = _signature(cond)
+    if result['signature'].get(cond) != sig:  # 빌드가 바뀌었으면 그 조건은 처음부터
+        result['pool'].pop(cond, None)
+        result['retrieval'].pop(cond, None)
+        result['signature'][cond] = sig
+    with condition(cond):
+        gold_ids = await _gold_ids(gold_rows)
+        if cond not in result['pool']:
+            result['pool'][cond] = await _pool_compare(gold_rows, gold_ids)
+            path.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding='utf-8')
+        if cond not in result['retrieval']:
+            result['retrieval'][cond] = (await compute(tenants={TENANT}))['rows']
+            path.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding='utf-8')
+        print(cond, _pool_summary(result['pool'][cond]), _summary(result['retrieval'][cond]), flush=True)
+    return gold_ids
+
+
+async def _all_regressions(
+    result: dict, gold_rows: list[dict], gold_ids_by_cond: dict[str, dict[str, set[int]]]
+) -> list[str]:
+    """저장된 **모든** 조건의 회귀 덤프 줄 — 일부 조건만 다시 재도 앞선 조건의 덤프가 사라지지 않게(리뷰 지적 2).
+    상위 5는 채점과 별도로 다시 검색한 것이라 TEI 흔들림(1.4e-4)만큼 순위가 다를 수 있다."""
+    if 'x0' not in result['retrieval']:
+        return []
+    gold = {g['id']: g for g in gold_rows}
+    base = {r['id']: r for r in result['retrieval']['x0']}
+    reg_lines: list[str] = []
+    for cond in CONDITIONS:
+        if cond == 'x0' or cond not in result['retrieval']:
+            continue
         with condition(cond):
-            async with AsyncSessionLocal() as session:
-                resolved = await resolve_gold(session, TENANT, gold_rows)
-            gold_ids = {k: set(v) for k, v in resolved.scoring_ids.items()}
-            gold_ids_by_cond[cond] = gold_ids
-            if cond not in result['pool']:
-                result['pool'][cond] = await _pool_compare(gold_rows, gold_ids)
-                path.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding='utf-8')
-            if cond not in result['retrieval']:
-                result['retrieval'][cond] = (await compute(tenants={TENANT}))['rows']
-                path.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding='utf-8')
-            print(cond, _pool_summary(result['pool'][cond]), _summary(result['retrieval'][cond]), flush=True)
+            if cond not in gold_ids_by_cond:
+                gold_ids_by_cond[cond] = await _gold_ids(gold_rows)
+            reg_lines += await _regressions(cond, result['retrieval'][cond], base, gold, gold_ids_by_cond[cond])
+    return reg_lines
+
+
+async def measure(conds: list[str]) -> None:
+    bad = [c for c in conds if c not in CONDITIONS]
+    if bad:
+        raise SystemExit(f'모르는 조건 {bad} — 가능: {CONDITIONS}')
+    gold_all = load_gold()
+    gold_rows = [g for g in gold_all if row_tenant(g) == TENANT and g['type'] in TYPES]
+    path = OUT / 'measure.json'
+    result = _load_result(path)
+    OUT.mkdir(parents=True, exist_ok=True)
+    gold_ids_by_cond = {cond: await _measure_cond(cond, result, path, gold_rows) for cond in conds}
     _report(result)
-    # 회귀 덤프는 저장된 **모든** 조건으로 다시 만든다 — 일부 조건만 다시 재도 앞선 조건의 덤프가 사라지지 않게(리뷰 지적 2).
-    # 상위 5는 채점과 별도로 다시 검색한 것이라 TEI 흔들림(1.4e-4)만큼 순위가 다를 수 있다.
-    reg_lines = []
-    if 'x0' in result['retrieval']:
-        base = {r['id']: r for r in result['retrieval']['x0']}
-        for cond in CONDITIONS:
-            if cond == 'x0' or cond not in result['retrieval']:
-                continue
-            with condition(cond):
-                if cond not in gold_ids_by_cond:
-                    async with AsyncSessionLocal() as session:
-                        resolved = await resolve_gold(session, TENANT, gold_rows)
-                    gold_ids_by_cond[cond] = {k: set(v) for k, v in resolved.scoring_ids.items()}
-                reg_lines += await _regressions(cond, result['retrieval'][cond], base, gold, gold_ids_by_cond[cond])
+    reg_lines = await _all_regressions(result, gold_rows, gold_ids_by_cond)
     (OUT / 'regressions.md').write_text(
         '# #235 회귀 문항 덤프(x0 대비)\n\n' + '\n'.join(reg_lines) + '\n', encoding='utf-8'
     )

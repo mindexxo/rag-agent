@@ -129,10 +129,8 @@ async def _run_turn(tenant_id: str, conversation_id: int, turn: dict) -> dict:
     }
 
 
-def _check(turn: dict, obs: dict) -> list[str]:
-    """턴 기대 대 관측 — 어긋난 항목 목록(빈 목록=통과). 전부 결정적 신호."""
-    if obs.get("error"):
-        return [f"예외 {obs['error']}"]
+def _decision_fails(turn: dict, obs: dict) -> list[str]:
+    """경로·거절·인용 문서 기대."""
     fails = []
     if (want := turn.get("expect_route")) is not None and obs["route"] != want:
         fails.append(f"route {obs['route']!r} != {want!r}")
@@ -146,6 +144,12 @@ def _check(turn: dict, obs: dict) -> list[str]:
         missing = [g for g in groups if not any(citation_match(c, _EXT_RE.sub("", s)) for s in g for c in cores)]
         if missing:
             fails.append(f"인용 누락: {missing} (실제 {obs['citations']})")
+    return fails
+
+
+def _content_fails(turn: dict, obs: dict) -> list[str]:
+    """답변 문구·주입된 첨부 기대."""
+    fails = []
     # contains_point 재사용 — 공백만 지우는 substring은 "5만원"이 "15만원"에 오탐된다
     # 숫자 경계+콤마 정규화를 그대로 가져와 수치 판정을 정확히 한다.
     norm_answer = obs["answer"].replace(" ", "")
@@ -159,6 +163,13 @@ def _check(turn: dict, obs: dict) -> list[str]:
         if any(fn in af for af in obs.get("attachment_files", [])):
             fails.append(f"차단 첨부 주입됨: {fn!r} (실제 {obs.get('attachment_files')})")
     return fails
+
+
+def _check(turn: dict, obs: dict) -> list[str]:
+    """턴 기대 대 관측 — 어긋난 항목 목록(빈 목록=통과). 전부 결정적 신호."""
+    if obs.get("error"):
+        return [f"예외 {obs['error']}"]
+    return _decision_fails(turn, obs) + _content_fails(turn, obs)
 
 
 async def run_scenario(sc: dict) -> dict:

@@ -25,8 +25,6 @@
  "eval/other_eval.py",
  "eval/pdf_layout/build.py",
  "eval/pdf_layout/specs.py",
- "eval/perf_probe.py",
- "eval/perf_report.py",
  "eval/ragas_adapter.py",
  "eval/ragas_eval.py",
  "eval/refusal.py",

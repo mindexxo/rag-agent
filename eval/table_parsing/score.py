@@ -120,42 +120,47 @@ def score_cells(
     s.dims_ok = s.exp_dims == s.act_dims
     by_pos = {(c.row, c.col): c for c in actual.cells}
     for e in expected:
-        s.cells_total += 1
-        numeric = is_numeric(e.text)
-        s.numeric_total += numeric
-        spanned = e.row_span > 1 or e.col_span > 1
-        s.span_total += spanned
         a = by_pos.get((e.row, e.col))
         if a is not None and a.text != norm(a.text):  # 호출부가 정규화를 빠뜨려도 비교는 같은 기준으로
             a = Cell(a.row, a.col, a.row_span, a.col_span, norm(a.text))
-        if a is None:
-            if e.text:
-                s.mismatches.append(dict(r=e.row, c=e.col, kind='누락', expected=e.text, actual=''))
-            else:
-                s.cells_ok += 1
-            continue
-        if spanned and (a.row_span, a.col_span) == (e.row_span, e.col_span):
-            s.span_ok += 1
-        elif spanned or (a.row_span, a.col_span) != (1, 1):  # 기대 병합이 깨졌거나, 기대엔 없는 병합이 생겼거나
-            s.mismatches.append(
-                dict(
-                    r=e.row,
-                    c=e.col,
-                    kind='병합',
-                    expected=f'{e.row_span}x{e.col_span}',
-                    actual=f'{a.row_span}x{a.col_span}',
-                )
-            )
-        if a.text == e.text:
-            s.cells_ok += 1
-            s.numeric_ok += numeric
-        elif not a.text:
-            s.mismatches.append(dict(r=e.row, c=e.col, kind='누락', expected=e.text, actual=''))
-        elif not e.text:
-            s.mismatches.append(dict(r=e.row, c=e.col, kind='추가', expected='', actual=a.text))
-        else:
-            s.mismatches.append(dict(r=e.row, c=e.col, kind='오독', expected=e.text, actual=a.text))
+        _score_cell(s, e, a)
     return s
+
+
+def _score_cell(s: Score, e: Cell, a: Cell | None) -> None:
+    """기대 칸 하나를 짝지은 실제 칸과 비교해 s에 센다 — 병합 범위와 글자를 따로 본다."""
+    s.cells_total += 1
+    numeric = is_numeric(e.text)
+    s.numeric_total += numeric
+    spanned = e.row_span > 1 or e.col_span > 1
+    s.span_total += spanned
+    if a is None:
+        if e.text:
+            s.mismatches.append(dict(r=e.row, c=e.col, kind='누락', expected=e.text, actual=''))
+        else:
+            s.cells_ok += 1
+        return
+    if spanned and (a.row_span, a.col_span) == (e.row_span, e.col_span):
+        s.span_ok += 1
+    elif spanned or (a.row_span, a.col_span) != (1, 1):  # 기대 병합이 깨졌거나, 기대엔 없는 병합이 생겼거나
+        s.mismatches.append(
+            dict(
+                r=e.row,
+                c=e.col,
+                kind='병합',
+                expected=f'{e.row_span}x{e.col_span}',
+                actual=f'{a.row_span}x{a.col_span}',
+            )
+        )
+    if a.text == e.text:
+        s.cells_ok += 1
+        s.numeric_ok += numeric
+    elif not a.text:
+        s.mismatches.append(dict(r=e.row, c=e.col, kind='누락', expected=e.text, actual=''))
+    elif not e.text:
+        s.mismatches.append(dict(r=e.row, c=e.col, kind='추가', expected='', actual=a.text))
+    else:
+        s.mismatches.append(dict(r=e.row, c=e.col, kind='오독', expected=e.text, actual=a.text))
 
 
 def _pair(expected_text_sets: list[set[str]], actual_text_sets: list[set[str]]) -> list[int | None]:
@@ -203,6 +208,11 @@ def chunk_tables(chunks: list[ChunkData], *, xlsx: bool = False) -> list[list[li
     바로 시작하면 앞 표에 잇는다. xlsx는 시트 완성본(meta.table_text)이 전체라 그것만 읽는다. PDF·DOCX 큰 표 묶음도
     table_text를 갖지만 읽지 않는다 — 이 하네스가 재는 것이 묶음 분할(헤더 반복·행 경계)이라 묶음에서 다시 잇는다. 형식은 청크로
     가르지 않고 호출부가 알려 준다: 표만 있는 PDF는 모든 청크가 표 묶음이라 청크 모양으로는 xlsx와 구별되지 않는다."""
+    return _md_tables(_chunk_text(chunks, xlsx=xlsx))
+
+
+def _chunk_text(chunks: list[ChunkData], *, xlsx: bool) -> str:
+    """읽을 글 — xlsx는 시트마다 완성본(table_text) 하나, 그 밖은 청크 본문을 잇는다."""
     if xlsx and chunks and chunks[0].meta and chunks[0].meta.get('table_text'):
         texts = []
         seen = set()
@@ -211,9 +221,11 @@ def chunk_tables(chunks: list[ChunkData], *, xlsx: bool = False) -> list[list[li
             if st and st not in seen:
                 seen.add(st)
                 texts.append(st)
-        text = '\n'.join(texts)
-    else:
-        text = '\n'.join(c.text for c in chunks)
+        return '\n'.join(texts)
+    return '\n'.join(c.text for c in chunks)
+
+
+def _md_tables(text: str) -> list[list[list[str]]]:
     tables, cur, prev = [], None, None  # cur = 지금 잇는 표, prev = 직전 '|' 행(새 표의 헤더 후보)
     for line in text.split('\n'):
         if not line.startswith('|'):

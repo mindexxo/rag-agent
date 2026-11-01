@@ -30,16 +30,17 @@ from config import settings
 from database import AsyncSessionLocal
 from eval import epcov_judge
 from eval.absence_judge import judge_llm
+from eval.citation_score import citation_accuracy as citation_accuracy
+from eval.citation_score import citation_match as citation_match
 from eval.gold_history import messages_from_conversation
 from eval.misinfo_judge import confirm_violations
-from eval.retrieval import Resolved, resolve_gold
+from eval.retrieval import Resolved, resolve_by_tenant
 from eval.rows import GoldRow
 from rag.llm import LlmClient, aux_overridden, create_aux_llm, create_llm
 from rag.search.embeddings import embed_texts_sync
 from rag.search.retrieval_types import RetrievedChunk
 from rag.search.retriever import prepare_evidence, retrieve_candidates
 from rag.turn.citation_labels import sources_from_chunks
-from rag.turn.citation_tail import TailSplitter, resolve_citations
 from rag.turn.conversation import build_prior_turns, condense_query, trim_messages_for_condense
 from rag.turn.prompts import build_citation_tail, build_knowledge_generation_prompt
 
@@ -366,60 +367,6 @@ def must_not_contain_violations(answer: str, forbidden: list[str]) -> list[str] 
     return [f for f in forbidden if contains_point(norm_answer, re.sub(r"\s+", "", f))]
 
 
-def citation_match(core: str, stem: str) -> bool:
-    """인용 토큰 코어 ↔ 기대 파일명 stem 매칭.
-
-    허용: 정확 일치 / 언더스코어 마지막 조각 일치(kms_03_배송지연대응 ↔ 배송지연대응) /
-          4자 이상일 때의 포함 관계 (짧은 토큰의 우연 매칭 오탐 방지).
-    """
-    if not core or not stem:
-        return False
-    if core == stem:
-        return True
-    if core == stem.split('_')[-1] or stem == core.split('_')[-1]:
-        return True
-    shorter, longer = sorted((core, stem), key=len)
-    return len(shorter) >= 4 and shorter in longer
-
-
-def citation_accuracy(answer: str, expected_docs: list[str], chunks: list[RetrievedChunk]) -> float:
-    r"""기대 문서 중 답변이 실제로 인용한 비율 (0..1).
-
-    인용은 답변 끝 출처 꼬리(TAIL_START…TAIL_END, 번호 목록)에서 읽는다. 꼬리 분리·번호 해석은
-    운영 배관(TailSplitter → sources_from_chunks → resolve_citations)을 그대로 쓴다 — 채점기가
-    배관을 따로 들면 운영과 다른 번호 해석이 생길 수 있다(단일 정의점 원칙). 그래서 운영의 오탐
-    복구도 그대로 따른다: `««1»» 추가 설명`(END 뒤 텍스트)이나 END 없는 꼬리는 인용 None이다.
-    resolve_citations의 `\d+` 추출이 대괄호·쉼표·여백을 무시하므로 `««1,3»»`·`««[1,3]»»` 모두 같다.
-    꼬리가 없으면(형식 미준수) 인용 0으로 집계 — 그게 사실이다.
-    eval/rescore_v2.py는 v2 라벨 꼬리 전용이라 이 시그니처로는 동작하지 않는다(의도적).
-
-    - any-match가 아니라 커버리지 비율이다 — any-match는 multi_doc에서 문서 하나만 인용해도 만점이다.
-    - FAQ 출처는 'FAQ'로 접는다 — 운영 인용은 항목별 'FAQ: 질문'이지만 이 채점기의 기대 'FAQ'는
-      **어느 FAQ든 인용했나**다(골드에 FAQ 문항이 없다). 항목 단위 채점은 eval/faq_citation.py가 faq_id로 한다.
-    - 확장자 스트립은 5개 형식 전체.
-    """
-    if not expected_docs:
-        return 0.0
-    # 꼬리 분리는 운영 배관 그대로 — 완성된 문자열을 한 청크로 흘려 넣는다.
-    # feed/finish의 계약상 부분 스트리밍과 결과가 같다: 보류(_hold)는 finish가 비워내고,
-    # 오탐 복구 판정은 누적 버퍼 기준이라 청크 경계와 무관하다.
-    splitter = TailSplitter()
-    splitter.feed(answer)
-    splitter.finish()
-    cited = resolve_citations(splitter.tail_raw, sources_from_chunks(chunks), [])
-    # 기대 stem과 같은 규칙으로 확장자 제거 — '공지.txt' vs '공지'는 4자 미만이라 포함 매칭도 못 탄다.
-    # FAQ 인용은 항목 표시명('FAQ: 질문')이 아니라 'FAQ'로 접는다 — 기대 'FAQ'와 정확 매칭되게.
-    cores = ['FAQ' if c.faq_id is not None else re.sub(r"\.(pdf|docx|xlsx|txt|md)$", "", c.filename) for c in cited]
-    # 원소가 리스트면 대체 출처 그룹 — 같은 정보가 여러 문서에 있을 때 하나만 인용해도 인정
-    groups = [[d] if isinstance(d, str) else d for d in expected_docs]
-    covered = 0
-    for group in groups:
-        stems = [re.sub(r"\.(pdf|docx|xlsx|txt|md)$", "", d) for d in group]
-        if any(citation_match(core, stem) for stem in stems for core in cores):
-            covered += 1
-    return covered / len(groups)
-
-
 # ===== 채점 — LLM-judge (서버 + 심판모델, 현재 stub) =================
 
 
@@ -496,6 +443,87 @@ async def epcov_scores(
     }
 
 
+async def _turn_contexts(
+    condense_llm: LlmClient, gen_rows: list[GoldRow], sem: asyncio.Semaphore
+) -> dict[str, tuple[str | None, list[dict]]]:
+    """{문항 id: (재작성 질의 | None, 이력 턴)} — multi_turn만 값이 채워진다. condense 선병렬(DB 무관).
+
+    multi_turn: 이전 대화를 운영 condense에 태워 독립 질문으로 재작성.
+    **검색**은 재작성 질의를 쓰고, **생성**은 원 질문 + 재작성 참고 병기 — 운영 경로와 동일.
+    이력 블록(prior_turns)도 운영과 같은 함수·같은 예산으로 만들어 함께 싣는다.
+    """
+
+    async def _standalone(g: GoldRow) -> tuple[str, tuple[str | None, list[dict]]]:
+        if g["type"] != "multi_turn":
+            return g["id"], (None, [])
+        history = messages_from_conversation(g.get("conversation"))
+        async with sem:
+            # 예산이 둘로 갈리는 것까지 운영과 같게 맞춘다 — condense는 600으로 자른
+            # 이력을, 생성 맥락은 자르지 않은 원본을 받는다(build_prior_turns가 2000으로 자체
+            # 트리밍한다). rag/turn/service.py가 같은 messages에서 두 경로를 독립으로 뽑는 구조다.
+            standalone = await condense_query(
+                condense_llm, g["query"], trim_messages_for_condense(history, settings.condense_history_budget_tokens)
+            )
+        return g["id"], (standalone, build_prior_turns(history, settings.history_budget_tokens))
+
+    return dict(await asyncio.gather(*(_standalone(g) for g in gen_rows)))
+
+
+async def _contexts(
+    session: AsyncSession,
+    mode: str,
+    gen_rows: list[GoldRow],
+    resolved: Resolved,
+    turn_ctx: dict[str, tuple[str | None, list[dict]]],
+) -> list[tuple[GoldRow, list[RetrievedChunk]]]:
+    """문항별 근거 조회 — 세션 직렬. oracle에서 resolve 실패는 스킵(기존 동작)."""
+    work: list[tuple[GoldRow, list[RetrievedChunk]]] = []
+    for g in gen_rows:
+        query = turn_ctx[g["id"]][0] or g["query"]  # 검색은 재작성 질의로 (없으면 원문)
+        if mode == "oracle":
+            chunks = await oracle_context(session, resolved.chunk_ids.get(g["id"]) or [])
+            if not chunks:  # 정답 청크 resolve 실패 → oracle 스킵
+                continue
+        else:
+            chunks = await retrieved_context(session, row_tenant(g), query)
+        work.append((g, chunks))
+    return work
+
+
+async def _epcov_all(epcov_llm: LlmClient | None, answers: list[str], points_l: list[list[str]]) -> list[dict]:
+    """EPCov — 규칙(embed_texts_sync 포함)은 직렬, 미적중 포인트의 심판 확인은 전 행에 걸쳐 병렬.
+
+    행마다 순서대로 기다리면 Claude 판정자(호출=프로세스, 수 초)로 모드당 20분 가까이 걸린다.
+    """
+    epcov_sem = asyncio.Semaphore(EPCOV_JUDGE_WORKERS)
+    rule_l = [expected_points_hits(a, p) if p else [] for a, p in zip(answers, points_l, strict=False)]
+    return await asyncio.gather(
+        *(epcov_scores(epcov_llm, epcov_sem, a, p, h) for a, p, h in zip(answers, points_l, rule_l, strict=False))
+    )
+
+
+async def _scores(
+    misinfo_judge_llm: LlmClient, g: GoldRow, chunks: list[RetrievedChunk], answer: str, epcov: dict
+) -> dict:
+    """한 행의 채점 — EPCov(이미 계산)·인용·오정보·judge stub."""
+    return {
+        **epcov,
+        "citation_accuracy": citation_accuracy(answer, g.get("expected_docs", []), chunks),
+        **(await _misinfo_scores(misinfo_judge_llm, answer, g.get("must_not_contain", []))),
+        "answer_relevancy": await judge_relevancy(g["query"], answer),
+        "faithfulness": await judge_faithfulness(answer, chunks),
+    }
+
+
+def _context_text(c: RetrievedChunk) -> str:
+    """RAGAS retrieved_contexts 한 항목 — 생성기가 본 것과 동일하게 [파일명 vN] 헤더 포함.
+    헤더 없이 text만 저장하면 답변의 인용 문장이 judge에게 근거없음 판정된다."""
+    return (
+        f"[{c.filename} v{c.version}] 섹션: "
+        f"{' > '.join(c.heading_path) if c.heading_path else ''} / 페이지: {c.page or '-'}\n{c.text}"
+    )
+
+
 async def run_mode(
     session: AsyncSession,
     llm: LlmClient,
@@ -525,84 +553,33 @@ async def run_mode(
     # EPCov 2단계 판정자 — 전용 스위치 EPCOV_JUDGE(기본 claude). 끄면 규칙만.
     epcov_llm = epcov_judge.judge_llm() if epcov_judging else None
     epcov_label = epcov_judge.judge_label() if epcov_judging else "rule-only"
-    epcov_sem = asyncio.Semaphore(EPCOV_JUDGE_WORKERS)
     gen_rows = [g for g in gold_rows if g["type"] in GEN_TYPES]
     sem = asyncio.Semaphore(CONCURRENCY)
 
-    # ① condense 선병렬 (multi_turn만 — DB 무관).
-    # multi_turn: 이전 대화를 운영 condense에 태워 독립 질문으로 재작성.
-    # **검색**은 재작성 질의를 쓰고, **생성**은 원 질문 + 재작성 참고 병기 — 운영 경로와 동일.
-    # 이력 블록(prior_turns)도 운영과 같은 함수·같은 예산으로 만들어 함께 싣는다.
-    async def _standalone(g: GoldRow) -> tuple[str, tuple[str | None, list[dict]]]:
-        if g["type"] != "multi_turn":
-            return g["id"], (None, [])
-        history = messages_from_conversation(g.get("conversation"))
-        async with sem:
-            # 예산이 둘로 갈리는 것까지 운영과 같게 맞춘다 — condense는 600으로 자른
-            # 이력을, 생성 맥락은 자르지 않은 원본을 받는다(build_prior_turns가 2000으로 자체
-            # 트리밍한다). rag/turn/service.py가 같은 messages에서 두 경로를 독립으로 뽑는 구조다.
-            standalone = await condense_query(
-                condense_llm, g["query"], trim_messages_for_condense(history, settings.condense_history_budget_tokens)
-            )
-        return g["id"], (standalone, build_prior_turns(history, settings.history_budget_tokens))
+    turn_ctx = await _turn_contexts(condense_llm, gen_rows, sem)
+    work = await _contexts(session, mode, gen_rows, resolved, turn_ctx)
 
-    # {문항 id: (재작성 질의 | None, 이력 턴)} — multi_turn만 값이 채워진다
-    turn_ctx = dict(await asyncio.gather(*(_standalone(g) for g in gen_rows)))
-
-    # ② 컨텍스트 조회 — 세션 직렬. oracle에서 resolve 실패는 스킵(기존 동작)
-    work: list[tuple[GoldRow, list[RetrievedChunk]]] = []
-    for g in gen_rows:
-        query = turn_ctx[g["id"]][0] or g["query"]  # 검색은 재작성 질의로 (없으면 원문)
-        if mode == "oracle":
-            chunks = await oracle_context(session, resolved.chunk_ids.get(g["id"]) or [])
-            if not chunks:  # 정답 청크 resolve 실패 → oracle 스킵
-                continue
-        else:
-            chunks = await retrieved_context(session, row_tenant(g), query)
-        work.append((g, chunks))
-
-    # ③ 생성 병렬 — 가장 무거운 구간이라 병렬화 효과 최대
+    # 생성 병렬 — 가장 무거운 구간이라 병렬화 효과 최대
     async def _generate(g: GoldRow, chunks: list[RetrievedChunk]) -> str:
         standalone, prior_turns = turn_ctx[g["id"]]
         async with sem:
             return await generate(gen_llm, g["query"], chunks, standalone_query=standalone, prior_turns=prior_turns)
 
     answers = await asyncio.gather(*(_generate(g, c) for g, c in work))
+    epcov_l = await _epcov_all(epcov_llm, answers, [g.get("expected_points", []) for g, _ in work])
 
-    # ④ EPCov — 규칙(embed_texts_sync 포함)은 직렬, 미적중 포인트의 심판 확인은 전 행에 걸쳐 병렬.
-    # 행마다 순서대로 기다리면 Claude 판정자(호출=프로세스, 수 초)로 모드당 20분 가까이 걸린다.
-    points_l = [g.get("expected_points", []) for g, _ in work]
-    rule_l = [expected_points_hits(a, p) if p else [] for a, p in zip(answers, points_l, strict=False)]
-    epcov_l = await asyncio.gather(
-        *(epcov_scores(epcov_llm, epcov_sem, a, p, h) for a, p, h in zip(answers, points_l, rule_l, strict=False))
-    )
-
-    # ⑤ 채점·행 구성 — 직렬
+    # 채점·행 구성 — 직렬
     rows = []
     for (g, chunks), answer, epcov in zip(work, answers, epcov_l, strict=False):
-        standalone = turn_ctx[g["id"]][0]
-
         rows.append(
             {
                 "id": g["id"],
                 "type": g["type"],
                 "mode": mode,
-                "standalone_query": standalone,  # multi_turn만 값 있음 — condense 품질 분석용
+                "standalone_query": turn_ctx[g["id"]][0],  # multi_turn만 값 있음 — condense 품질 분석용
                 "answer": answer,
-                # RAGAS retrieved_contexts용 — 생성기가 본 것과 동일하게 [파일명 vN] 헤더 포함
-                # (헤더 없이 text만 저장하면 답변의 인용 문장이 judge에게 근거없음 판정됨)
-                "retrieved_contexts": [
-                    f"[{c.filename} v{c.version}] 섹션: "
-                    f"{' > '.join(c.heading_path) if c.heading_path else ''} / 페이지: {c.page or '-'}\n{c.text}"
-                    for c in chunks
-                ],
-                "scores": {
-                    **epcov,
-                    "citation_accuracy": citation_accuracy(answer, g.get("expected_docs", []), chunks),
-                    **(await _misinfo_scores(misinfo_judge_llm, answer, g.get("must_not_contain", []))),
-                    "answer_relevancy": await judge_relevancy(g["query"], answer),
-                    "faithfulness": await judge_faithfulness(answer, chunks),
-                },
+                "retrieved_contexts": [_context_text(c) for c in chunks],
+                "scores": await _scores(misinfo_judge_llm, g, chunks, answer, epcov),
                 "gold_version": GOLD_VERSION,
                 "epcov_judge": epcov_label,  # 판정자·모델·프롬프트 버전 — 다르면 EPCov 수치를 비교하지 않는다
             }
@@ -631,6 +608,36 @@ def smoke_sample[R: Mapping[str, object]](rows: list[R], n: int) -> list[R]:
     return [r for r in rows if id(r) in picked]
 
 
+def _generator() -> tuple[str, LlmClient | None, str]:
+    """(GENERATOR 값, 생성 전용 클라이언트 | None, 결과 행의 생성기 이름).
+
+    GENERATOR=claude 면 **생성 콜만** Claude CLI로 교체(비교군). condense·검색·채점은 운영 그대로 —
+    무엇이 격차를 만들었는지 한 변수로 좁히기 위해서다(run_mode의 gen_llm docstring). 모델은 CLAUDE_MODEL(기본 sonnet)로 바꾼다.
+    """
+    generator = os.getenv("GENERATOR", "vllm")
+    if generator == "claude":
+        from eval.claude_client import ClaudeCliClient
+
+        gen_llm = ClaudeCliClient(model=os.getenv("CLAUDE_MODEL", "sonnet"))
+        return generator, gen_llm, f"claude:{gen_llm.model}"
+    if generator == "vllm":
+        return generator, None, f"{settings.llm_provider}:{settings.llm_model}"
+    raise SystemExit(f"GENERATOR={generator} — vllm|claude 만 지원")
+
+
+async def _resolve_all(session: AsyncSession, gold: list[GoldRow]) -> Resolved:
+    """테넌트별 resolve 후 병합 (chunk_ids는 문항 id 키라 충돌 없음). 노후 라벨은 앞 10건을 찍는다."""
+    resolved = Resolved()
+    async for tenant, _, r_t in resolve_by_tenant(session, gold, row_tenant):
+        resolved.chunk_ids.update(r_t.chunk_ids)
+        resolved.stale.extend(f"[{tenant}] {m}" for m in r_t.stale)
+    if resolved.stale:
+        print(f"⚠ 라벨 노후 {len(resolved.stale)}건")
+        for m in resolved.stale[:10]:
+            print("  ", m)
+    return resolved
+
+
 async def main() -> None:
     # load_gold()를 쓴다 — GOLD를 직접 읽으면 eval/gold_private/(사내 실문서 골드)가 통째로
     # 빠진다. 테넌트 라우팅은 row_tenant가 id 접두로 한다(V2_TENANTS에 inticube 포함).
@@ -641,39 +648,10 @@ async def main() -> None:
     RESULT_DIR.mkdir(exist_ok=True)
 
     llm = create_llm()
-    # 생성기 선택(비교군): GENERATOR=claude 면 **생성 콜만** Claude CLI로 교체.
-    # condense·검색·채점은 운영 그대로 — 무엇이 격차를 만들었는지 한 변수로 좁히기 위해서다
-    # (run_mode의 gen_llm docstring). 모델은 CLAUDE_MODEL(기본 sonnet)로 바꾼다.
-    generator = os.getenv("GENERATOR", "vllm")
-    if generator == "claude":
-        from eval.claude_client import ClaudeCliClient
-
-        gen_llm = ClaudeCliClient(model=os.getenv("CLAUDE_MODEL", "sonnet"))
-        gen_label = f"claude:{gen_llm.model}"
-    elif generator == "vllm":
-        gen_llm = None
-        gen_label = f"{settings.llm_provider}:{settings.llm_model}"
-    else:
-        raise SystemExit(f"GENERATOR={generator} — vllm|claude 만 지원")
+    generator, gen_llm, gen_label = _generator()
 
     async with AsyncSessionLocal() as session:
-        # 테넌트별 resolve 후 병합 (chunk_ids는 문항 id 키라 충돌 없음)
-        from eval.retrieval import Resolved
-
-        resolved = Resolved()
-        by_tenant = defaultdict(list)
-        for g in gold:
-            by_tenant[row_tenant(g)].append(g)
-        for tenant, rows_t in by_tenant.items():
-            r_t = await resolve_gold(session, tenant, rows_t)
-            resolved.chunk_ids.update(r_t.chunk_ids)
-            resolved.stale.extend(f"[{tenant}] {m}" for m in r_t.stale)
-        if resolved.stale:
-            print(f"⚠ 라벨 노후 {len(resolved.stale)}건")
-            for m in resolved.stale[:10]:
-                print("  ", m)
-
-        all_rows = {}
+        resolved = await _resolve_all(session, gold)
         for mode in ("oracle", "retrieved"):
             print(f"\n=== mode: {mode} ({len(gen_gold)}문항) ===")
             rows = await run_mode(session, llm, mode, gen_gold, resolved, gen_llm=gen_llm)
@@ -687,7 +665,6 @@ async def main() -> None:
             out.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows))
             summarize(rows)
             print(f"→ {out} ({len(rows)} rows)")
-            all_rows[mode] = rows
 
 
 def summarize(rows: list[dict]) -> None:

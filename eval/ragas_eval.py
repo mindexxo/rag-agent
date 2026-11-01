@@ -29,7 +29,13 @@ metric — 한 번 실행에 두 집합을 채점한다:
       (settings judge의 실제 대상 = .env의 LLM_PROVIDER/LLM_BASE_URL — 기본 worker15:18888)
 """
 
+import hashlib
+import math
 import os
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
 
@@ -51,6 +57,9 @@ from ragas.run_config import RunConfig  # noqa: E402
 from config import settings  # noqa: E402
 from eval.ragas_adapter import build_samples  # noqa: E402
 from rag.search.embeddings import embed_query_sync, embed_texts_sync  # noqa: E402
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 JUDGE = os.getenv("RAGAS_JUDGE", "settings")  # settings=rag/llm 공급자 설정 | claude=CLI (docstring 참조)
 SMOKE = int(os.getenv("SMOKE", "3"))  # 0이면 전체
@@ -101,38 +110,8 @@ def _progress_tag(kind: str) -> str:
     return f"{judge}_{model.replace('/', '_')}"
 
 
-def compute(smoke: int | None = None) -> dict:
-    """RAGAS 채점 실행 → 요약 반환 (per-sample CSV도 저장). 출력은 main이 담당.
-
-    smoke: None이면 환경변수 SMOKE 사용. 반환: {'faithfulness', 'answer_relevancy', 'n', 'csv'}
-    """
-    import math
-
-    rows = build_samples("retrieved")
-    n_smoke = SMOKE if smoke is None else smoke
-    if n_smoke:
-        rows = rows[:n_smoke]
-    ref_rows = [r for r in rows if r["has_ref"]] if WITH_REF else []
-    EvaluationDataset.from_list([r["sample"] for r in rows])
-
-    judge, max_workers = _judge(JUDGE)
-    emb = LangchainEmbeddingsWrapper(LocalBGEEmbeddings())
-
-    # timeout 600: 기본 180초면 14B judge의 긴 판정이 시간 초과로 조용히 NaN이 된다.
-    # NaN은 평균에서 빠져 분모가 몰래 준다.
-    run_config = RunConfig(max_workers=max_workers, max_retries=10, timeout=600)
-
-    # ── 묶음 채점 + 이어 돌리기 ──────────────────────────────────────────────
-    # evaluate()는 전체가 끝나야 결과를 돌려준다 — 사용량 한도로 중단되면 완료분까지 사라진다.
-    # RAGAS_BATCH문항씩 채점해 묶음마다 진행 파일에 덧붙이고, 재실행 시 지표가 다 찬 문항은 건너뛴다.
-    # 결측(NaN)·미채점 칸만 다시 채점하므로 결측 메우기 스크립트가 따로 필요 없다.
-    # 진행 파일 키 = 심판·모델·생성 결과 파일 해시 — 답변을 재생성하면 새 파일로 시작한다(옛 점수 재사용 방지).
-    import hashlib
-    from datetime import datetime
-    from pathlib import Path
-
-    import pandas as pd
-
+def _base_metrics() -> tuple[list[str], list]:
+    """(결과 칸 이름, 3축 지표) — reference가 필요 없는 지표 집합."""
     # context_precision은 기본 off: 문항당 판정 5회(청크 5개 각각)로 호출의 절반 이상인데, 검색 노이즈 지표라
     # 검색축(Hit@1·R@5·MRR)과 겹치고 '생성기만 교체'하는 상용 비교에선 A·B가 거의 같게 나온다. run_all 이력에도 행이 없다.
     # 필요하면 RAGAS_CTX_PRECISION=1로 켠다.
@@ -143,51 +122,80 @@ def compute(smoke: int | None = None) -> dict:
     base_metrics = [faithfulness, answer_relevancy] + (
         [LLMContextPrecisionWithoutReference()] if with_ctx_precision else []
     )
-    ref_cols = ["context_recall", "answer_correctness"]
-    gen_hash = hashlib.sha1(Path("eval/results/generation_retrieved.jsonl").read_bytes()).hexdigest()[:10]
-    progress = Path(f"eval/results/ragas_progress_{_progress_tag(JUDGE)}_{gen_hash}.csv")
-    prog = pd.read_csv(progress).set_index("id") if progress.exists() else pd.DataFrame()
+    return base_cols, base_metrics
 
-    def _missing(r: dict, cols: list[str]) -> bool:
+
+@dataclass
+class _Progress:
+    """진행 파일 — 문항(id)×지표 칸. 묶음마다 디스크에 덧붙여 중단돼도 완료분이 남는다."""
+
+    path: Path
+    frame: "pd.DataFrame"
+
+    @classmethod
+    def open(cls) -> "_Progress":
+        # 진행 파일 키 = 심판·모델·생성 결과 파일 해시 — 답변을 재생성하면 새 파일로 시작한다(옛 점수 재사용 방지).
+        import pandas as pd
+
+        gen_hash = hashlib.sha1(Path("eval/results/generation_retrieved.jsonl").read_bytes()).hexdigest()[:10]
+        path = Path(f"eval/results/ragas_progress_{_progress_tag(JUDGE)}_{gen_hash}.csv")
+        return cls(path, pd.read_csv(path).set_index("id") if path.exists() else pd.DataFrame())
+
+    def missing(self, r: dict, cols: list[str]) -> bool:
+        import pandas as pd
+
+        prog = self.frame
         if r["id"] not in prog.index:
             return True
         return any(c not in prog.columns or pd.isna(prog.at[r["id"], c]) for c in cols)
 
-    need_base = [r for r in rows if _missing(r, base_cols)]
-    need_ref = [r for r in ref_rows if _missing(r, ref_cols)]
-    print(
-        f"진행 파일 {progress.name}: 3지표 남은 {len(need_base)}/{len(rows)} · 정답대조 남은 {len(need_ref)}/{len(ref_rows)}"
-    )
-    batch = int(os.getenv("RAGAS_BATCH", "50"))
+    def merge(self, part: "pd.DataFrame") -> None:
+        for rid in part.index:  # 칸 단위 갱신 — 다른 지표 칸은 보존
+            for c in part.columns:
+                self.frame.loc[rid, c] = part.at[rid, c]
+        self.frame.reset_index(names="id").to_csv(self.path, index=False)  # 묶음마다 저장 — 여기까지는 중단돼도 남는다
 
-    def _run(todo: list[dict], metrics: list, cols: list[str], rename: dict | None = None) -> None:
-        nonlocal prog
+
+@dataclass
+class _Scorer:
+    """RAGAS evaluate() 호출 설정 — judge·임베딩·실행 설정·묶음 크기."""
+
+    judge: Any
+    emb: Any
+    run_config: RunConfig
+    batch: int
+
+    def run(self, progress: _Progress, todo: list[dict], metrics: list, cols: list[str]) -> None:
+        batch = self.batch
         for i in range(0, len(todo), batch):
             chunk = todo[i : i + batch]
             res = evaluate(
                 dataset=EvaluationDataset.from_list([r["sample"] for r in chunk]),
                 metrics=metrics,
-                llm=judge,
-                embeddings=emb,
-                run_config=run_config,
+                llm=self.judge,
+                embeddings=self.emb,
+                run_config=self.run_config,
             )
             part = res.to_pandas()
             part.insert(0, "id", [r["id"] for r in chunk])
             part = part.set_index("id")
             keep = [c for c in part.columns if c in cols or c in ("user_input", "response", "reference")]
-            part = part[keep]
-            for rid in part.index:  # 칸 단위 갱신 — 다른 지표 칸은 보존
-                for c in part.columns:
-                    prog.loc[rid, c] = part.at[rid, c]
-            prog.reset_index(names="id").to_csv(progress, index=False)  # 묶음마다 저장 — 여기까지는 중단돼도 남는다
+            progress.merge(part[keep])
             print(f"  [{'/'.join(cols)[:30]}] {min(i + batch, len(todo))}/{len(todo)} 저장")
 
-    if need_base:
-        _run(need_base, base_metrics, base_cols)
-    if need_ref:
-        _run(need_ref, [LLMContextRecall(), answer_correctness], ref_cols)
 
-    df = prog.reindex([r["id"] for r in rows]).reset_index(names="id")
+def _make_scorer() -> _Scorer:
+    judge, max_workers = _judge(JUDGE)
+    emb = LangchainEmbeddingsWrapper(LocalBGEEmbeddings())
+    # timeout 600: 기본 180초면 14B judge의 긴 판정이 시간 초과로 조용히 NaN이 된다.
+    # NaN은 평균에서 빠져 분모가 몰래 준다.
+    run_config = RunConfig(max_workers=max_workers, max_retries=10, timeout=600)
+    return _Scorer(judge, emb, run_config, 0)
+
+
+def _snapshot(progress: _Progress, rows: list[dict], ref_rows: list[dict], ref_cols: list[str]) -> tuple:
+    """채점 대상 행만 뽑은 최종 표를 시각·문항수가 박힌 CSV로 저장 → (표, 경로)."""
+    df = progress.frame.reindex([r["id"] for r in rows]).reset_index(names="id")
     for c in ref_cols:  # 모범답안 없는 행은 정답대조 빈값이 정상
         if c in df.columns:
             df.loc[~df["id"].isin({r["id"] for r in ref_rows}), c] = float("nan")
@@ -196,17 +204,52 @@ def compute(smoke: int | None = None) -> dict:
         f"eval/results/ragas_retrieved_{stamp}_n{len(rows)}.csv"
     )  # 최종 스냅샷(시각·문항수) — 덮어쓰기 사고 방지(07-18)
     df.to_csv(out, index=False)
+    return df, out
 
-    def _mean(col: str) -> float | None:
-        v = df[col].mean() if col in df.columns else float("nan")
-        return None if (v is None or math.isnan(v)) else float(v)
 
+def _mean(df: "pd.DataFrame", col: str) -> float | None:
+    v = df[col].mean() if col in df.columns else float("nan")
+    return None if (v is None or math.isnan(v)) else float(v)
+
+
+def compute(smoke: int | None = None) -> dict:
+    """RAGAS 채점 실행 → 요약 반환 (per-sample CSV도 저장). 출력은 main이 담당.
+
+    smoke: None이면 환경변수 SMOKE 사용. 반환: {'faithfulness', 'answer_relevancy', 'n', 'csv'}
+    """
+    rows = build_samples("retrieved")
+    n_smoke = SMOKE if smoke is None else smoke
+    if n_smoke:
+        rows = rows[:n_smoke]
+    ref_rows = [r for r in rows if r["has_ref"]] if WITH_REF else []
+    EvaluationDataset.from_list([r["sample"] for r in rows])
+    scorer = _make_scorer()
+
+    # ── 묶음 채점 + 이어 돌리기 ──────────────────────────────────────────────
+    # evaluate()는 전체가 끝나야 결과를 돌려준다 — 사용량 한도로 중단되면 완료분까지 사라진다.
+    # RAGAS_BATCH문항씩 채점해 묶음마다 진행 파일에 덧붙이고, 재실행 시 지표가 다 찬 문항은 건너뛴다.
+    # 결측(NaN)·미채점 칸만 다시 채점하므로 결측 메우기 스크립트가 따로 필요 없다.
+    base_cols, base_metrics = _base_metrics()
+    ref_cols = ["context_recall", "answer_correctness"]
+    progress = _Progress.open()
+    need_base = [r for r in rows if progress.missing(r, base_cols)]
+    need_ref = [r for r in ref_rows if progress.missing(r, ref_cols)]
+    print(
+        f"진행 파일 {progress.path.name}: 3지표 남은 {len(need_base)}/{len(rows)} · 정답대조 남은 {len(need_ref)}/{len(ref_rows)}"
+    )
+    scorer.batch = int(os.getenv("RAGAS_BATCH", "50"))
+    if need_base:
+        scorer.run(progress, need_base, base_metrics, base_cols)
+    if need_ref:
+        scorer.run(progress, need_ref, [LLMContextRecall(), answer_correctness], ref_cols)
+
+    df, out = _snapshot(progress, rows, ref_rows, ref_cols)
     return {
-        "faithfulness": _mean("faithfulness"),
-        "answer_relevancy": _mean("answer_relevancy"),
-        "context_precision": _mean("llm_context_precision_without_reference"),
-        "context_recall": _mean("context_recall"),
-        "answer_correctness": _mean("answer_correctness"),
+        "faithfulness": _mean(df, "faithfulness"),
+        "answer_relevancy": _mean(df, "answer_relevancy"),
+        "context_precision": _mean(df, "llm_context_precision_without_reference"),
+        "context_recall": _mean(df, "context_recall"),
+        "answer_correctness": _mean(df, "answer_correctness"),
         "n": len(rows),
         "n_ref": len(ref_rows),  # 정답 대조 2축의 분모
         # 지표별 결측(NaN) 수 — 0이 아니면 같은 명령을 다시 돌리면 그 칸만 다시 채점한다
@@ -216,7 +259,7 @@ def compute(smoke: int | None = None) -> dict:
             if c in df.columns
         },
         "csv": str(out),
-        "progress": str(progress),
+        "progress": str(progress.path),
     }
 
 

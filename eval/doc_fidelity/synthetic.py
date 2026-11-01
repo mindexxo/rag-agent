@@ -144,6 +144,22 @@ def match_pictures(
     거리(평균 픽셀 차이)가 MATCH_MAX_DIST를 넘으면 짝이 없다 — 그림으로 검출되지 않았다는 뜻이고, 그 내용이 글자(OCR)·헤딩으로
     들어갔는지는 run.phase_synthetic_pictures가 색인에서 따로 본다.
     """
+    got = _match_by_shape(specs, records, crops_dir)
+    by_id = {r['picture_id']: r for r in records}
+    # 모양으로 못 짝지은 정의는 캡션의 정답 적중률로 다시 찾는다 — docling이 그림 영역을 일부만 자르거나(산식 상자의 제목 띠가
+    # 빠짐) 붙은 그림 둘을 하나로 합치면(4%·6% 상자 → 그림 1장) 모양이 정의와 달라진다. 이 단계는 이미
+    # 짝지어진 그림도 다시 쓸 수 있다 — 한 그림에 정의 둘이 걸리면 합쳐진 그림이다(run.phase_synthetic_pictures가 'merged'로 표시).
+    for sid, spec in specs:
+        if sid in got:
+            continue
+        best = _best_by_caption(spec, records)
+        if best:
+            got[sid] = best
+    return [(sid, by_id.get(got.get(sid))) for sid, _ in specs]
+
+
+def _match_by_shape(specs: list[tuple[str, dict]], records: list[dict], crops_dir: Path) -> dict[str, str]:
+    """정의 id → 그림 id. 거리 오름차순으로 탐욕적으로 1:1 짝을 짓는다."""
     from PIL import Image
 
     fps = {}
@@ -164,21 +180,16 @@ def match_pictures(
         used_s.add(sid)
         used_r.add(pid)
         got[sid] = pid
-    by_id = {r['picture_id']: r for r in records}
-    # 모양으로 못 짝지은 정의는 캡션의 정답 적중률로 다시 찾는다 — docling이 그림 영역을 일부만 자르거나(산식 상자의 제목 띠가
-    # 빠짐) 붙은 그림 둘을 하나로 합치면(4%·6% 상자 → 그림 1장) 모양이 정의와 달라진다. 이 단계는 이미
-    # 짝지어진 그림도 다시 쓸 수 있다 — 한 그림에 정의 둘이 걸리면 합쳐진 그림이다(run.phase_synthetic_pictures가 'merged'로 표시).
-    for sid, spec in specs:
-        if sid in got:
-            continue
-        best, best_ratio = None, CAPTION_MATCH_RATIO
-        for r in records:
-            ratio = _caption_ratio(spec, r.get('caption') or '')
-            if ratio >= best_ratio:
-                best, best_ratio = r['picture_id'], ratio
-        if best:
-            got[sid] = best
-    return [(sid, by_id.get(got.get(sid))) for sid, _ in specs]
+    return got
+
+
+def _best_by_caption(spec: dict, records: list[dict]) -> str | None:
+    best, best_ratio = None, CAPTION_MATCH_RATIO
+    for r in records:
+        ratio = _caption_ratio(spec, r.get('caption') or '')
+        if ratio >= best_ratio:
+            best, best_ratio = r['picture_id'], ratio
+    return best
 
 
 def _caption_ratio(spec: dict, caption: str) -> float:

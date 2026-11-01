@@ -17,6 +17,7 @@ import argparse
 import json
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -180,6 +181,73 @@ def _mismatch_report(rows: list[dict[str, Any]]) -> str:
     return '\n'.join(out)
 
 
+def _use_engine(engine: str) -> None:
+    """--engine 값대로 변환 경로를 바꾸고 결과 행의 engine 이름을 정한다."""
+    global _ENGINE
+    if engine == 'llm':
+        from config import settings
+        from eval import vlm_engine
+
+        settings.ocr_provider = 'llm'  # 운영 코드 그대로 — convert_local이 ocr_llm.convert_pdf로 보낸다
+        _ENGINE = vlm_engine.label().replace('vlm_', 'ocrllm_', 1)
+        print(
+            f'engine={_ENGINE} max_tokens={settings.ocr_llm_max_tokens} concurrency={settings.ocr_llm_concurrency}',
+            flush=True,
+        )
+    if engine == 'vlm':
+        from eval import vlm_engine
+
+        _ENGINE = vlm_engine.label()
+        vlm_engine.install()
+        print(f'engine={vlm_engine.label()} scale={vlm_engine.SCALE} max_tokens={vlm_engine.MAX_TOKENS}', flush=True)
+
+
+def _score_or_fail(
+    spec: dict[str, Any], path: str, doc: DoclingDocument, chunks: list[ChunkData] | Exception
+) -> tuple[list[Score], list[Score], list[list[list[str]] | None]]:
+    """청킹·채점이 실패하면 L1은 docling 표로 그대로 채점하고 L2만 실패로 남긴다."""
+    try:
+        if isinstance(chunks, Exception):
+            raise chunks
+        return _score_pair(spec, path, doc, chunks)
+    except Exception as e:  # noqa: BLE001 — 청킹·채점 실패를 결과에 남긴다
+        tables = expected_tables(spec, path, 'l1')
+        actuals = docling_tables(doc)
+        l1 = [
+            score_cells(expected_cells(tb), a, flat(tb), all_texts(actuals))
+            for tb, a in zip(tables, match_tables([expected_cells(tb) for tb in tables], actuals), strict=False)
+        ]
+        l2 = _failed(spec, '청킹실패', e, path)
+        return l1, l2, [None] * len(l2)
+
+
+def _evaluate(spec: dict[str, Any], path: str, file: Path, emit: Callable[[dict[str, Any]], None]) -> None:
+    """문서 하나 — 변환·채점해 L1·L2 행을 내보내고 한 줄 요약을 찍는다."""
+    spec_id = spec['id']
+    t = time.time()
+    try:
+        doc, chunks = _convert_and_chunk(file, path)
+    except Exception as e:  # noqa: BLE001 — 변환 실패도 결과다
+        sec = time.time() - t
+        for k, s in enumerate(_failed(spec, '변환실패', e, path)):
+            emit(_row(spec, path, k, s, 'l1', sec))
+            emit(_row(spec, path, k, s, 'l2', sec))
+        print(f'{spec_id:16} {path:5} 변환 실패 {type(e).__name__}: {str(e)[:80]}', flush=True)
+        return
+    sec = time.time() - t
+    l1, l2, act_rows = _score_or_fail(spec, path, doc, chunks)
+    for k, s1 in enumerate(l1):  # L1·L2 표 수가 다를 수 있다(DOCX 중첩: L1 2개, L2 1개)
+        emit(_row(spec, path, k, s1, 'l1', sec))
+    for k, s2 in enumerate(l2):
+        emit(_row(spec, path, k, s2, 'l2', sec, act_rows[k]))
+    print(
+        f"{spec_id:16} {path:5} {sec:5.1f}s L1 {sum(s.cells_ok for s in l1)}/{sum(s.cells_total for s in l1)} "
+        f"L2 {sum(s.cells_ok for s in l2)}/{sum(s.cells_total for s in l2)} "
+        f"{'·'.join(k for s in l1 for k in s.kinds) or 'ok'}",
+        flush=True,
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', default='eval/results/table_parsing/run1')
@@ -193,23 +261,7 @@ def main() -> None:
         "| llm=운영 상용 OCR(#299, OCR_PROVIDER=llm)",
     )
     args = ap.parse_args()
-    global _ENGINE
-    if args.engine == 'llm':
-        from config import settings
-        from eval import vlm_engine
-
-        settings.ocr_provider = 'llm'  # 운영 코드 그대로 — convert_local이 ocr_llm.convert_pdf로 보낸다
-        _ENGINE = vlm_engine.label().replace('vlm_', 'ocrllm_', 1)
-        print(
-            f'engine={_ENGINE} max_tokens={settings.ocr_llm_max_tokens} concurrency={settings.ocr_llm_concurrency}',
-            flush=True,
-        )
-    if args.engine == 'vlm':
-        from eval import vlm_engine
-
-        _ENGINE = vlm_engine.label()
-        vlm_engine.install()
-        print(f'engine={vlm_engine.label()} scale={vlm_engine.SCALE} max_tokens={vlm_engine.MAX_TOKENS}', flush=True)
+    _use_engine(args.engine)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     made = build_all(out / 'docs', set(args.only) if args.only else None, set(args.paths))
@@ -222,41 +274,7 @@ def main() -> None:
             f.flush()
 
         for spec_id, path, file in made:
-            spec = BY_ID[spec_id]
-            t = time.time()
-            try:
-                doc, chunks = _convert_and_chunk(file, path)
-            except Exception as e:  # noqa: BLE001 — 변환 실패도 결과다
-                sec = time.time() - t
-                for k, s in enumerate(_failed(spec, '변환실패', e, path)):
-                    emit(_row(spec, path, k, s, 'l1', sec))
-                    emit(_row(spec, path, k, s, 'l2', sec))
-                print(f'{spec_id:16} {path:5} 변환 실패 {type(e).__name__}: {str(e)[:80]}', flush=True)
-                continue
-            sec = time.time() - t
-            try:
-                if isinstance(chunks, Exception):
-                    raise chunks
-                l1, l2, act_rows = _score_pair(spec, path, doc, chunks)
-            except Exception as e:  # noqa: BLE001 — 청킹·채점 실패를 결과에 남긴다
-                tables = expected_tables(spec, path, 'l1')
-                actuals = docling_tables(doc)
-                l1 = [
-                    score_cells(expected_cells(tb), a, flat(tb), all_texts(actuals))
-                    for tb, a in zip(tables, match_tables([expected_cells(tb) for tb in tables], actuals), strict=False)
-                ]
-                l2 = _failed(spec, '청킹실패', e, path)
-                act_rows = [None] * len(l2)
-            for k, s1 in enumerate(l1):  # L1·L2 표 수가 다를 수 있다(DOCX 중첩: L1 2개, L2 1개)
-                emit(_row(spec, path, k, s1, 'l1', sec))
-            for k, s2 in enumerate(l2):
-                emit(_row(spec, path, k, s2, 'l2', sec, act_rows[k]))
-            print(
-                f"{spec_id:16} {path:5} {sec:5.1f}s L1 {sum(s.cells_ok for s in l1)}/{sum(s.cells_total for s in l1)} "
-                f"L2 {sum(s.cells_ok for s in l2)}/{sum(s.cells_total for s in l2)} "
-                f"{'·'.join(k for s in l1 for k in s.kinds) or 'ok'}",
-                flush=True,
-            )
+            _evaluate(BY_ID[spec_id], path, file, emit)
     (out / 'matrix_l1.md').write_text('# L1 — docling 추출 정확도(셀 격자 vs 정의)\n\n' + _matrix(rows, 'l1') + '\n')
     (out / 'matrix_l2.md').write_text(
         '# L2 — 색인 결과 정확도(청크 markdown vs 기대 렌더)\n\n' + _matrix(rows, 'l2') + '\n'

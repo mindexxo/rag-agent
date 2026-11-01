@@ -1,7 +1,7 @@
 """검색 채점 공용부 — 골드의 안정 키(파일명·스니펫)를 현재 문서·청크 id로 바꾸고, 한 문항의 Recall@k·Hit@1·MRR을 계산한다."""
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
@@ -118,6 +118,33 @@ async def resolve_gold(session: AsyncSession, tenant_id: str, gold_rows: Sequenc
         r.chunk_ids[row["id"]] = primary
         r.scoring_ids[row["id"]] = scoring
     return r
+
+
+async def resolve_by_tenant(
+    session: AsyncSession, gold_rows: Iterable[GoldRow], tenant_of: Callable[[GoldRow], str]
+) -> AsyncIterator[tuple[str, list[GoldRow], Resolved]]:
+    """문항을 테넌트별로 묶어(첫 등장 순) 하나씩 resolve해 내준다 — 호출부가 그 테넌트 일을 마친 뒤 다음 테넌트를 푼다.
+
+    tenant_of는 호출부가 넘긴다(eval.generation.row_tenant) — 이 모듈이 생성 하네스를 import하면 순환이다.
+    """
+    by_tenant: dict[str, list[GoldRow]] = {}
+    for g in gold_rows:
+        by_tenant.setdefault(tenant_of(g), []).append(g)
+    for tenant, items in by_tenant.items():
+        yield tenant, items, await resolve_gold(session, tenant, items)
+
+
+def scorable(items: Iterable[GoldRow], resolved: Resolved) -> tuple[list[tuple[GoldRow, list[int]]], int]:
+    """채점할 수 있는 (문항, 정답 id) 목록과 정답을 못 푼 스킵 수. 정답 id = 스니펫 포함 청크 전부, 정렬."""
+    out: list[tuple[GoldRow, list[int]]] = []
+    skipped = 0
+    for g in items:
+        gold_ids = sorted(resolved.scoring_ids.get(g["id"]) or [])
+        if gold_ids:
+            out.append((g, gold_ids))
+        else:
+            skipped += 1
+    return out, skipped
 
 
 # 한 문항 검색 채점

@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import json
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -37,6 +38,27 @@ def _pct(values: list[float], q: float) -> float:
     return vs[min(len(vs) - 1, round(q * (len(vs) - 1)))]
 
 
+@dataclass
+class _DeltaClock:
+    """delta 도착 시각으로 TTFT·최대 간격·답변 길이를 누적한다."""
+
+    t0: float
+    ttft_ms: float | None = None
+    last_delta_t: float | None = None
+    max_gap_ms: float = 0.0
+    answer_chars: int = 0
+
+    def on_delta(self, data: str) -> None:
+        now = time.monotonic()
+        if self.ttft_ms is None:
+            self.ttft_ms = (now - self.t0) * 1000
+        else:
+            assert self.last_delta_t is not None
+            self.max_gap_ms = max(self.max_gap_ms, (now - self.last_delta_t) * 1000)
+        self.last_delta_t = now
+        self.answer_chars += len(json.loads(data).get("text", ""))
+
+
 async def probe_turn(client: httpx.AsyncClient, base: str, tenant: str, query: str) -> dict:
     """새 대화 1턴 SSE — 요청→첫 delta, 요청→done + 스트리밍 품질 지표 3종.
 
@@ -46,10 +68,7 @@ async def probe_turn(client: httpx.AsyncClient, base: str, tenant: str, query: s
     - max_gap_ms: delta 간 최대 간격(ITL stall) — "중간에 멈칫하는가".
     """
     t0 = time.monotonic()
-    ttft_ms = None
-    last_delta_t = None
-    max_gap_ms = 0.0
-    answer_chars = 0
+    clock = _DeltaClock(t0)
     done: dict = {}
     async with client.stream(
         "POST",
@@ -64,22 +83,17 @@ async def probe_turn(client: httpx.AsyncClient, base: str, tenant: str, query: s
                 event = line.split(":", 1)[1].strip()
             elif line.startswith("data:"):
                 if event == "delta":
-                    now = time.monotonic()
-                    if ttft_ms is None:
-                        ttft_ms = (now - t0) * 1000
-                    else:
-                        max_gap_ms = max(max_gap_ms, (now - last_delta_t) * 1000)
-                    last_delta_t = now
-                    answer_chars += len(json.loads(line.split(":", 1)[1]).get("text", ""))
+                    clock.on_delta(line.split(":", 1)[1])
                 elif event == "done":
                     done = json.loads(line.split(":", 1)[1])
+    ttft_ms, last_delta_t, answer_chars = clock.ttft_ms, clock.last_delta_t, clock.answer_chars
     stream_s = (last_delta_t - t0) * 1000 / 1000 - (ttft_ms or 0) / 1000 if last_delta_t else 0
     return {
         "ttft_ms": ttft_ms,
         "total_ms": (time.monotonic() - t0) * 1000,
         "answer_chars": answer_chars,
         "gen_cps": answer_chars / stream_s if stream_s > 0.1 else None,  # 한 delta짜리 답은 속도 무의미
-        "max_gap_ms": max_gap_ms or None,
+        "max_gap_ms": clock.max_gap_ms or None,
         "citations": done.get("citations", []),
         "finish": done.get("finish_reason"),
     }

@@ -35,6 +35,30 @@ RUNS = int(os.getenv("RUNS", "5"))
 OUT = RESULT_DIR / "consistency.jsonl"
 
 
+def _point_agreement(
+    all_rows: list[dict], points_by_id: dict[str, list[str]]
+) -> tuple[dict[str, list[list[bool]]], int, int, list[str]]:
+    """(문항, 포인트) 쌍 단위 런간 일치 → (문항별 런 판정, 일치 쌍 수, flaky 쌍 수, flaky 상세 줄)."""
+    by_id: dict[str, list[list[bool]]] = defaultdict(list)
+    for r in all_rows:
+        by_id[r["id"]].append(r["point_hits"])
+
+    stable = flaky = 0
+    flaky_detail: list[str] = []
+    for qid, runs_hits in by_id.items():
+        if len(runs_hits) < RUNS:  # 일부 런에서 스킵된 문항은 일치율 분모에서 제외
+            continue
+        for pi, outcomes in enumerate(zip(*runs_hits, strict=False)):
+            if len(set(outcomes)) == 1:
+                stable += 1
+            else:
+                flaky += 1
+                flaky_detail.append(
+                    f"{qid} 포인트[{pi}] {''.join('O' if o else 'X' for o in outcomes)} — {points_by_id[qid][pi][:60]}"
+                )
+    return by_id, stable, flaky, flaky_detail
+
+
 async def main() -> None:
     # load_gold()라야 사내 실문서가 모수에 들어온다 — 정본 직독이면 표본 50문항이
     # 모의 6테넌트에서만 뽑힌다. 타입 균등 표본이라 모수가 넓어지면 구성이 바뀐다.
@@ -58,25 +82,7 @@ async def main() -> None:
     RESULT_DIR.mkdir(exist_ok=True)
     OUT.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in all_rows))
 
-    # ── 집계: (문항, 포인트) 쌍 단위 런간 일치 ──
-    by_id: dict[str, list[list[bool]]] = defaultdict(list)
-    for r in all_rows:
-        by_id[r["id"]].append(r["point_hits"])
-
-    stable = flaky = 0
-    flaky_detail: list[str] = []
-    for qid, runs_hits in by_id.items():
-        if len(runs_hits) < RUNS:  # 일부 런에서 스킵된 문항은 일치율 분모에서 제외
-            continue
-        for pi, outcomes in enumerate(zip(*runs_hits, strict=False)):
-            if len(set(outcomes)) == 1:
-                stable += 1
-            else:
-                flaky += 1
-                flaky_detail.append(
-                    f"{qid} 포인트[{pi}] {''.join('O' if o else 'X' for o in outcomes)} — {points_by_id[qid][pi][:60]}"
-                )
-
+    by_id, stable, flaky, flaky_detail = _point_agreement(all_rows, points_by_id)
     total = stable + flaky
     ep_by_run = defaultdict(list)
     for r in all_rows:

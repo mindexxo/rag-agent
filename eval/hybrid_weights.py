@@ -1,4 +1,4 @@
-"""하이브리드 가중치 검증 — 캡처·동치 확인·진단 CLI. 계산은 eval/hybrid_replay(순수부)에 있다.
+"""하이브리드 가중치 검증 — 캡처·동치 확인·진단 CLI. 캡처는 eval/hybrid_capture, 계산은 eval/hybrid_replay(순수부)에 있다.
 
 질문: 키워드(BM25 Nori)·벡터 결합에 **가중치를 둘지 말지**. 기준선은 현행(가중치 없음: 벡터 30 + 키워드 주입 15 → 리랭커).
 리랭커가 순서를 정하는 구조라 가중치가 품질을 바꿀 수 있는 자리는 둘뿐이다 — ① 리랭커 풀에 누가 들어가나 ② 리랭크 뒤
@@ -27,244 +27,22 @@ import argparse
 import asyncio
 import contextlib
 import contextvars
-import dataclasses
 import json
 import random
-from collections import Counter, defaultdict
-from datetime import datetime
 from pathlib import Path
 
 import rag.search.reranker
 import rag.search.retriever
-from config import settings
 from eval import hybrid_replay as hr
-from eval.axis_common import commit, load_chunks
-from rag.identifiers import normalize_identifiers
+from eval.hybrid_capture import CONCURRENCY, SETS, capture, load_capture
 from rag.search import os_search
-from rag.search.embeddings import Embedding, Kind, embed_texts
-from rag.search.os_client import NORI_FIELD, client, close_client
+from rag.search.embeddings import Embedding, Kind
+from rag.search.os_client import close_client
 from rag.search.retrieval_types import DenseHit, DenseHits, RetrievedChunk
 
-RESULT_DIR = Path("eval/results")
-CONCURRENCY = 6  # TEI 공유 장비 — retrieval_article과 같은 안전선
-DEPTH = 100  # 진단용 깊이(주입 상방 N=30·50·100)
-POOL_M = 50  # 리랭커 점수를 받는 상위집합 = 벡터·BM25 각 상위 POOL_M ∪ 운영 풀 — 후보 조건이 이 안에서 움직이게
-SETS = ("v2", "keyword", "article")
 LIVE_TIE_EPS = (
     5e-3  # 실제 운영과 재생이 다를 때 허용하는 근접 동점 — 리랭커 점수 차가 이보다 작은 두 후보의 자리바꿈만(설계 8)
 )
-
-
-def settings_snapshot() -> dict:
-    """재생이 전제하는 운영 설정. 캡처 때와 지금이 다르면 재생·확인을 거부한다(BASELINE이 이 값을 가정한다)."""
-    return {
-        k: getattr(settings, k)
-        for k in (
-            "rerank_enabled",
-            "hybrid_lexical_enabled",
-            "hybrid_lexical_inject",
-            "ident_channel_enabled",
-            "ident_inject",
-            "ident_boost",
-        )
-    }
-
-
-# ----- 질문셋 -------------------------------------------------------------
-
-
-async def load_v2() -> list[dict]:
-    """retrieval_v2와 같은 문항·정답(정답 = 스니펫 포함 조각 전부). 복제한 루프의 정의점: eval/retrieval_v2.compute —
-    그쪽은 채점까지 한 루프라 문항만 뽑을 수 없어 복제했다(기존 축 무변경). 둘이 어긋나지 않게 고칠 때는 함께 고친다."""
-    from database import (
-        AsyncSessionLocal,  # DB 세션을 여는 건 v2 캡처뿐이다(모듈 import 자체는 hybrid_replay 경유로 이미 됨)
-    )
-    from eval.generation import load_gold, row_tenant
-    from eval.retrieval import resolve_gold
-    from eval.retrieval_v2 import TYPES
-
-    by_tenant: dict[str, list[dict]] = defaultdict(list)
-    for g in load_gold():
-        if g["type"] in TYPES:
-            by_tenant[row_tenant(g)].append(g)
-    items = []
-    async with AsyncSessionLocal() as session:
-        for tenant, rows in by_tenant.items():
-            resolved = await resolve_gold(session, tenant, rows)
-            for g in rows:
-                gold = sorted(resolved.scoring_ids.get(g["id"]) or [])
-                if gold:
-                    items.append(
-                        {
-                            "set": "v2",
-                            "qid": g["id"],
-                            "tenant": tenant,
-                            "type": g["type"],
-                            "query": g["query"],
-                            "gold_ids": gold,
-                            "token": None,
-                        }
-                    )
-    return items
-
-
-async def load_keyword() -> list[dict]:
-    from eval.retrieval_keyword import generate_items
-
-    items, _ = await generate_items()
-    return [{k: it[k] for k in ("set", "qid", "tenant", "type", "query", "gold_ids", "token")} for it in items]
-
-
-async def load_article() -> list[dict]:
-    from eval import retrieval_article as ra
-
-    items = []
-    for tenant in ra.TENANTS:
-        chunks = await load_chunks(tenant)
-        gold, _ = ra.build_gold(chunks)
-        for i, it in enumerate(ra.build_items(chunks, gold, tenant)):
-            items.append(
-                {
-                    "set": "article",
-                    "qid": f"ar_{tenant}_{i:04d}",
-                    "tenant": tenant,
-                    "type": "article",
-                    "query": it["query"],
-                    "gold_ids": it["gold_ids"],
-                    "token": None,
-                }
-            )
-    return items
-
-
-LOADERS = {"v2": load_v2, "keyword": load_keyword, "article": load_article}
-
-
-# ----- 캡처 ---------------------------------------------------------------
-
-
-async def _bm25_scored(tenant: str, query: str, n: int) -> list[list]:
-    """BM25 상위 n의 (id, 점수). 운영 search_lexical은 id만 돌려주므로 같은 절(lex_clause·tenant_filter·NORI_FIELD)로 한 번 더
-    묻는다 — 운영 질의 바디의 정의점: rag/search/os_search.search_lexical. 어긋나면 verify ①이 잡는다(BM25 30은 운영 함수로 받는다)."""
-    resp = await client().search(
-        index=settings.opensearch_index,
-        body={
-            "size": n,
-            "_source": ["chunk_id"],
-            "query": {
-                "bool": {"filter": [os_search.tenant_filter(tenant)], "must": [os_search.lex_clause(NORI_FIELD, query)]}
-            },
-        },
-    )
-    return [[int(h["_source"]["chunk_id"]), float(h["_score"])] for h in resp["hits"]["hits"]]
-
-
-async def capture_one(it: dict, vec: list[float]) -> tuple[dict, dict[int, RetrievedChunk]]:
-    tenant, query, emb = it["tenant"], it["query"], [Embedding(dense=vec)]
-    dense30 = (await os_search.search_dense_per_query(tenant, emb, 30)).top  # 운영 크기 — 운영 함수 그대로
-    dense100 = (await os_search.search_dense_per_query(tenant, emb, DEPTH)).top
-    bm25_30 = await os_search.search_lexical(tenant, query, 30)
-    bm25_100 = await _bm25_scored(tenant, query, DEPTH)
-    tokens = normalize_identifiers(query) if settings.ident_channel_enabled else []
-    ident = await os_search.search_identifiers(tenant, tokens, settings.ident_inject) if tokens else []
-    rec = {
-        **it,
-        "dense30": [list(x) for x in dense30],
-        "dense100": [list(x) for x in dense100],
-        "bm25_30": bm25_30,
-        "bm25_100": bm25_100,
-        "ident_tokens": tokens,
-        "ident": ident,
-    }
-    superset = list(
-        dict.fromkeys(hr.build_pool(rec) + [c for c, _ in dense100[:POOL_M]] + [c for c, _ in bm25_100[:POOL_M]])
-    )
-    # 정답 조각도 함께 받아 둔다(점수는 안 매김) — 시트 접기 판정(hybrid_replay.evaluate)이 정답 조각의 시트를 봐야 해서(리뷰 지적)
-    chunk_map = await os_search.fetch_chunk_map(list(dict.fromkeys(superset + list(it["gold_ids"]))))
-    pool = [chunk_map[c] for c in superset if c in chunk_map]
-    scores = await rag.search.reranker.rerank_scores(query, pool) if pool else []
-    if scores is None:
-        raise RuntimeError(f"{it['qid']}: 리랭커 실패 — 부분 성공은 쓰지 않는다(rerank_maxpool과 같은 규율)")
-    rec["rerank"] = {str(c.chunk_id): float(s) for c, s in zip(pool, scores, strict=False)}
-    return rec, chunk_map
-
-
-async def capture(sets: list[str], limit: int | None) -> Path:
-    out = RESULT_DIR / f"hybrid_{datetime.now().strftime('%Y%m%d_%H%M')}"
-    out.mkdir(parents=True, exist_ok=True)
-    items = []
-    for s in sets:
-        got = (await LOADERS[s]())[: limit or None]
-        items += got
-        print(f"{s}: 문항 {len(got)}", flush=True)
-    dup = [q for q, n in Counter(it["qid"] for it in items).items() if n > 1]
-    if dup:  # 벡터·확인·비교가 전부 qid를 키로 쓴다 — 겹치면 조용히 덮어쓴다(리뷰 지적)
-        raise SystemExit(f"문항 id 중복: {dup[:5]}")
-    vecs = []
-    for i in range(0, len(items), 256):  # embed_texts가 32씩 나눠 보낸다
-        vecs += [e.dense for e in await embed_texts([it["query"] for it in items[i : i + 256]], kind="query")]
-    sem = asyncio.Semaphore(CONCURRENCY)
-    done = 0
-
-    async def _one(it: dict, vec: list[float]) -> tuple[dict, dict[int, RetrievedChunk]]:
-        nonlocal done
-        async with sem:
-            r = await capture_one(it, vec)
-        done += 1
-        if done % 200 == 0:
-            print(f"  캡처 {done}/{len(items)}", flush=True)
-        return r
-
-    results = await asyncio.gather(*(_one(it, v) for it, v in zip(items, vecs, strict=False)))
-    chunks: dict[int, RetrievedChunk] = {}
-    for _, cm in results:
-        chunks.update(cm)
-    (out / "meta.json").write_text(
-        json.dumps(
-            {
-                "commit": commit(),
-                "at": out.name,
-                "settings": settings_snapshot(),
-                "index": settings.opensearch_index,
-                "depth": DEPTH,
-                "pool_m": POOL_M,
-                "sets": {s: sum(it["set"] == s for it in items) for s in sets},
-            },
-            ensure_ascii=False,
-            indent=1,
-        )
-    )
-    (out / "records.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r, _ in results))
-    (out / "chunks.jsonl").write_text(
-        "\n".join(json.dumps(dataclasses.asdict(c), ensure_ascii=False) for c in chunks.values())
-    )
-    (out / "vectors.jsonl").write_text(
-        "\n".join(json.dumps({"qid": it["qid"], "vec": v}) for it, v in zip(items, vecs, strict=False))
-    )
-    print(f"→ {out} (문항 {len(results)}, 조각 {len(chunks)})")
-    return out
-
-
-type Capture = tuple[dict, list[dict], dict[int, RetrievedChunk], dict[str, list[float]]]  # meta·레코드·조각·질문 벡터
-
-
-def load_capture(path: Path, *, need_vectors: bool = False) -> Capture:
-    meta = json.loads((path / "meta.json").read_text())
-    if meta["settings"] != settings_snapshot():
-        raise SystemExit(
-            f"설정이 캡처 때와 다르다 — 재생이 전제하는 운영 조건이 아니다: {meta['settings']} vs {settings_snapshot()}"
-        )
-    recs = [json.loads(ln) for ln in (path / "records.jsonl").read_text().splitlines() if ln]
-    chunks = {
-        d["chunk_id"]: RetrievedChunk(**d)
-        for d in (json.loads(ln) for ln in (path / "chunks.jsonl").read_text().splitlines() if ln)
-    }
-    vecs = (
-        {d["qid"]: d["vec"] for d in (json.loads(ln) for ln in (path / "vectors.jsonl").read_text().splitlines() if ln)}
-        if need_vectors
-        else {}
-    )
-    return meta, recs, chunks, vecs
 
 
 # ----- 동치 확인 ------------------------------------------------------------
@@ -342,9 +120,10 @@ def _first_diff(a: list[int], b: list[int]) -> int | None:
     )
 
 
-async def verify(path: Path, live_n: int) -> bool:
-    _, recs, chunks, vecs = load_capture(path, need_vectors=True)
-    sem = asyncio.Semaphore(CONCURRENCY)
+async def _verify_patched(
+    recs: list[dict], chunks: dict[int, RetrievedChunk], vecs: dict[str, list[float]], sem: asyncio.Semaphore
+) -> tuple[dict[str, list[int]], list[tuple[str, int | None]]]:
+    """① 캡처값을 끼운 운영 조립 vs 재생 → (문항별 재생 순서, 불일치 (qid, 첫 차이 위치))."""
 
     async def _patched_one(r: dict) -> tuple[dict, list[int]]:
         async with sem:
@@ -358,10 +137,27 @@ async def verify(path: Path, live_n: int) -> bool:
     print(f"① 캡처값을 끼운 운영 조립 = 재생: {len(recs) - len(bad)}/{len(recs)} 일치")
     for qid, pos in bad[:20]:
         print(f"   불일치 {qid} — 첫 차이 {pos}위")
+    return replayed, bad
 
-    # ② 아무것도 끼우지 않은 실제 운영(표본). 차이는 셋 중 하나로 가른다 — 근접 동점(리랭커 흔들림), 색인 변동(캡처 뒤 벡터·
-    #    BM25 30이 달라짐 — 공유 색인), 설명 안 됨. 합격은 '설명 안 됨 0'이다: 리랭커 흔들림만으로 근접 동점 자리바꿈이 표본의
-    #    10%대다 — 완전 일치 비율을 기준으로 두면 TEI 잡음을 결함으로 오판한다.
+
+def _near_tie(r: dict, mine: list[int], ids: list[int]) -> bool:
+    """근접 동점 = 어긋난 **모든** 자리에서 두 후보의 리랭커 점수 차 < LIVE_TIE_EPS(첫 자리만 보면 뒤의 실질 차이를 놓친다).
+    상위 20 경계에서 점수가 0에 가까운 후보끼리 들고 나는 것도 여기 든다."""
+    diffs = [(a, b) for a, b in zip(mine, ids, strict=False) if a != b]
+    return len(mine) == len(ids) and all(
+        str(a) in r["rerank"]
+        and str(b) in r["rerank"]
+        and abs(r["rerank"][str(a)] - r["rerank"][str(b)]) < LIVE_TIE_EPS
+        for a, b in diffs
+    )
+
+
+async def _verify_live(
+    recs: list[dict], vecs: dict[str, list[float]], replayed: dict[str, list[int]], live_n: int, sem: asyncio.Semaphore
+) -> dict:
+    """② 아무것도 끼우지 않은 실제 운영(표본) vs 재생. 차이는 셋 중 하나로 가른다 — 근접 동점(리랭커 흔들림), 색인 변동(캡처 뒤
+    벡터·BM25 30이 달라짐 — 공유 색인), 설명 안 됨. 합격은 '설명 안 됨 0'이다: 리랭커 흔들림만으로 근접 동점 자리바꿈이 표본의
+    10%대다 — 완전 일치 비율을 기준으로 두면 TEI 잡음을 결함으로 오판한다."""
     sample = random.Random(248).sample(recs, min(live_n, len(recs)))
 
     async def _live_one(r: dict) -> tuple[dict, list[int], bool]:
@@ -379,20 +175,9 @@ async def verify(path: Path, live_n: int) -> bool:
         mine = replayed[r["qid"]]
         if mine == ids:
             exact += 1
-            continue
-        if drift:
+        elif drift:
             drifted += 1
-            continue
-        # 근접 동점 = 어긋난 **모든** 자리에서 두 후보의 리랭커 점수 차 < LIVE_TIE_EPS(첫 자리만 보면 뒤의 실질 차이를 놓친다).
-        # 상위 20 경계에서 점수가 0에 가까운 후보끼리 들고 나는 것도 여기 든다.
-        diffs = [(a, b) for a, b in zip(mine, ids, strict=False) if a != b]
-        tie = len(mine) == len(ids) and all(
-            str(a) in r["rerank"]
-            and str(b) in r["rerank"]
-            and abs(r["rerank"][str(a)] - r["rerank"][str(b)]) < LIVE_TIE_EPS
-            for a, b in diffs
-        )
-        if tie:
+        elif _near_tie(r, mine, ids):
             near_tie += 1
         else:
             unexplained.append((r["qid"], _first_diff(mine, ids)))
@@ -402,21 +187,19 @@ async def verify(path: Path, live_n: int) -> bool:
     )
     for u in unexplained[:20]:
         print(f"   설명 안 됨 {u}")
-    ok = not bad and not unexplained
+    return {"n": len(live), "exact": exact, "near_tie": near_tie, "index_drift": drifted, "unexplained": unexplained}
+
+
+async def verify(path: Path, live_n: int) -> bool:
+    _, recs, chunks, vecs = load_capture(path, need_vectors=True)
+    sem = asyncio.Semaphore(CONCURRENCY)
+    replayed, bad = await _verify_patched(recs, chunks, vecs, sem)
+    live = await _verify_live(recs, vecs, replayed, live_n, sem)
+    ok = not bad and not live["unexplained"]
     print("동치 확인 통과" if ok else "동치 확인 실패 — 측정하지 말 것")
     (path / "verify.json").write_text(
         json.dumps(
-            {
-                "patched": {"n": len(recs), "match": len(recs) - len(bad), "mismatch": bad},
-                "live": {
-                    "n": len(live),
-                    "exact": exact,
-                    "near_tie": near_tie,
-                    "index_drift": drifted,
-                    "unexplained": unexplained,
-                },
-                "ok": ok,
-            },
+            {"patched": {"n": len(recs), "match": len(recs) - len(bad), "mismatch": bad}, "live": live, "ok": ok},
             ensure_ascii=False,
             indent=1,
         )

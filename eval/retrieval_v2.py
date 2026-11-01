@@ -19,12 +19,15 @@ from collections import defaultdict
 from collections.abc import Callable
 from pathlib import Path
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from database import AsyncSessionLocal
 from eval.axis_common import table_kind
 from eval.generation import HARD_TYPES, load_gold, row_tenant
-from eval.retrieval import resolve_gold, score_one
+from eval.retrieval import resolve_by_tenant, scorable, score_one
 from eval.rows import GoldRow
 from rag.search.os_search import fetch_chunk_map
+from rag.search.retrieval_types import RetrievedChunk
 from rag.search.retriever import retrieve_candidates
 
 TYPES = {'single_fact', 'paraphrase', 'rare_lexical', 'multi_doc'} | HARD_TYPES
@@ -79,6 +82,42 @@ def _by_difficulty(rows: list[dict]) -> dict:
     return out
 
 
+async def _expand_queries(target: list[GoldRow]) -> dict[str, list[str]]:
+    """문항별 멀티쿼리(첫 줄=주 쿼리) — 운영 플래그 on과 같은 condense_to_queries, 빈 히스토리."""
+    from rag.llm import create_aux_llm
+    from rag.turn.conversation import condense_to_queries
+
+    llm = create_aux_llm()  # 재작성은 운영과 같은 보조 클라이언트
+    sem = asyncio.Semaphore(6)  # worker15 공유 장비 — RAGAS와 동일 안전선
+
+    async def _expand(g: GoldRow) -> tuple[str, list[str]]:
+        async with sem:
+            return g['id'], await condense_to_queries(llm, g['query'], [])
+
+    return dict(await asyncio.gather(*(_expand(g) for g in target)))
+
+
+def _table_fields(gold_ids: list[int], gold_chunks: dict[int, RetrievedChunk]) -> dict[str, str]:
+    """정답 조각의 표 종류(table)와 표 조각의 파일 형식(table_fmt) — 표가 아니면 둘 다 ''."""
+    table_chunks = [gold_chunks[c] for c in gold_ids if c in gold_chunks]
+    table = table_kind(table_chunks)
+    table_fmt = (
+        '+'.join(sorted({c.filename.rsplit('.', 1)[-1].lower() for c in table_chunks if table_kind([c])}))
+        if table
+        else ''
+    )
+    return {'table': table, 'table_fmt': table_fmt}
+
+
+async def _search(session: AsyncSession, tenant: str, query: str, expanded: list[str] | None) -> list[int]:
+    """검색 상위 20의 chunk_id. expanded가 있으면 첫 줄=주 쿼리, 나머지=변형."""
+    if expanded is not None:
+        cands = await retrieve_candidates(session, tenant, expanded[0], top_n=20, expanded_queries=expanded[1:])
+    else:
+        cands = await retrieve_candidates(session, tenant, query, top_n=20)
+    return [c.chunk_id for c in cands.chunks]
+
+
 async def compute(expand: bool = False, tenants: set[str] | None = None) -> dict:
     """검색축 채점 실행 → 요약 반환 (출력·파일저장은 main이 담당).
 
@@ -93,66 +132,31 @@ async def compute(expand: bool = False, tenants: set[str] | None = None) -> dict
     """
     gold = load_gold()  # 정본 + eval/gold_private (인티큐브 실문서 골드 — gitignore)
     target = [g for g in gold if g['type'] in TYPES and (tenants is None or row_tenant(g) in tenants)]
-
     # 1단계(expand만): LLM 선병렬 — vLLM 연속 배칭 활용. DB 접근 없어 gather 안전
-    queries_map: dict[str, list[str]] = {}
-    if expand:
-        from rag.llm import create_aux_llm
-        from rag.turn.conversation import condense_to_queries
-
-        llm = create_aux_llm()  # 재작성은 운영과 같은 보조 클라이언트
-        sem = asyncio.Semaphore(6)  # worker15 공유 장비 — RAGAS와 동일 안전선
-
-        async def _expand(g: GoldRow) -> tuple[str, list[str]]:
-            async with sem:
-                return g['id'], await condense_to_queries(llm, g['query'], [])
-
-        queries_map = dict(await asyncio.gather(*(_expand(g) for g in target)))
-
-    by_tenant = defaultdict(list)
-    for g in target:
-        by_tenant[row_tenant(g)].append(g)
+    queries_map = await _expand_queries(target) if expand else {}
 
     # 2단계: 검색·채점 — 세션 직렬 (AsyncSession은 동시 실행 불가)
     rows, skipped, stale = [], 0, {}
     async with AsyncSessionLocal() as session:
-        for tenant, items in by_tenant.items():
-            resolved = await resolve_gold(session, tenant, items)
+        async for tenant, items, resolved in resolve_by_tenant(session, target, row_tenant):
             if resolved.stale:
                 stale[tenant] = len(resolved.stale)
             # 정답 조각의 표 여부 — 테넌트당 한 번 읽는다
             gold_chunks = await fetch_chunk_map(sorted({c for s in resolved.scoring_ids.values() for c in s}))
-            for g in items:
-                gold_ids = sorted(resolved.scoring_ids.get(g['id']) or [])  # 스니펫 포함 청크 전부
-                if not gold_ids:
-                    skipped += 1
-                    continue
-                table_chunks = [gold_chunks[c] for c in gold_ids if c in gold_chunks]
-                table = table_kind(table_chunks)
-                table_fmt = (
-                    '+'.join(sorted({c.filename.rsplit('.', 1)[-1].lower() for c in table_chunks if table_kind([c])}))
-                    if table
-                    else ''
-                )
-                if expand:
-                    queries = queries_map[g['id']]
-                    cands = await retrieve_candidates(
-                        session, tenant, queries[0], top_n=20, expanded_queries=queries[1:]
-                    )
-                else:
-                    queries = [g['query']]
-                    cands = await retrieve_candidates(session, tenant, g['query'], top_n=20)
-                scores = score_one([c.chunk_id for c in cands.chunks], gold_ids)
+            work, n_skip = scorable(items, resolved)
+            skipped += n_skip
+            for g, gold_ids in work:
+                expanded = queries_map[g['id']] if expand else None
+                got = await _search(session, tenant, g['query'], expanded)
                 row = {
                     'id': g['id'],
                     'type': g['type'],
                     'tenant': tenant,
-                    'table': table,
-                    'table_fmt': table_fmt,
-                    'scores': scores,
+                    **_table_fields(gold_ids, gold_chunks),
+                    'scores': score_one(got, gold_ids),
                 }
-                if expand:
-                    row['queries'] = queries
+                if expanded is not None:
+                    row['queries'] = expanded
                 rows.append(row)
 
     return {

@@ -72,6 +72,17 @@ def overlap_chars(a: str, b: str, cap: int = 400) -> int:
     return next((k for k in range(min(len(a), len(b), cap), 0, -1) if a.endswith(b[:k])), 0)
 
 
+def _table_boundary(tail: str, head: str) -> str | None:
+    """앞 조각 끝 줄·뒤 조각 첫 줄 중 하나라도 표 행이면 표 경계 종류, 아니면 None."""
+    if _is_row(tail) and not tail.rstrip().endswith('|') and _is_row_part(head) and not _is_row(head):
+        return 'table_mid_row'
+    if _is_row(tail) and _is_row(head):
+        return 'table_row'
+    if _is_row(tail) or _is_row(head):
+        return 'table_text'
+    return None
+
+
 def classify_boundary(a: str, b: str) -> str:
     """같은 섹션 이웃 조각 경계의 종류. 앞에서부터 처음 맞는 것:
     table_mid_row(표 행 한가운데 — MD·TXT 표를 분할기가 자름) / table_row(표 행 사이) / table_text(표↔글) / sentence(앞 조각이 문장 끝) / next_item(뒤 조각이 항목·소제목·조 제목으로 시작) /
@@ -80,12 +91,9 @@ def classify_boundary(a: str, b: str) -> str:
     if not la or not lb:
         return 'sentence'
     tail, head = la[-1], lb[0]
-    if _is_row(tail) and not tail.rstrip().endswith('|') and _is_row_part(head) and not _is_row(head):
-        return 'table_mid_row'
-    if _is_row(tail) and _is_row(head):
-        return 'table_row'
-    if _is_row(tail) or _is_row(head):
-        return 'table_text'
+    table = _table_boundary(tail, head)
+    if table:
+        return table
     if SENTENCE_END.search(tail):
         return 'sentence'
     # PDF는 짧은 조끼리 한 섹션으로 묶여(제목 경로가 같다) 뒤 조각이 '제 36 조(휴일)'로 시작할 수 있다 — 앞 항목이 마침표 없이

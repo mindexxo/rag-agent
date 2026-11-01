@@ -103,19 +103,8 @@ def build_img_pdf(spec: dict[str, Any], out: Path, png_dir: Path, context: bool 
 # ── pdf: reportlab 네이티브 표 ──────────────────────────────────────────────────
 
 
-def _rl_table(rows: list[list[Any]], *, nested_ok: bool = True, style_kind: str = 'grid'):
-    """style_kind: grid(격자) · hlines(가로선만 — 테두리 없는 표) · striped(헤더 음영 + 짝수 행 연한 회색)."""
-    data = []
-    for row in rows:
-        line = []
-        for cell in row:
-            if isinstance(cell, dict) and cell.get('nested') and nested_ok:
-                line.append(_rl_table(cell['nested'], nested_ok=False))
-            else:
-                line.append(Paragraph(cell_text(cell).replace('\n', '<br/>'), _CELL))
-        data.append(line)
-    t = Table(data, repeatRows=1)
-    style = [('FONT', (0, 0), (-1, -1), 'HYGothic-Medium', 9), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')]
+def _rl_style(rows: list[list[Any]], style_kind: str) -> list[tuple]:
+    style: list[tuple] = [('FONT', (0, 0), (-1, -1), 'HYGothic-Medium', 9), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')]
     if style_kind == 'grid':
         style.append(('GRID', (0, 0), (-1, -1), 0.5, colors.black))
     elif style_kind == 'hlines':
@@ -129,7 +118,22 @@ def _rl_table(rows: list[list[Any]], *, nested_ok: bool = True, style_kind: str 
         for c, cell in enumerate(row):
             if isinstance(cell, dict) and cell.get('bg'):
                 style.append(('BACKGROUND', (c, r), (c, r), colors.HexColor(cell['bg'])))
-    t.setStyle(TableStyle(style))
+    return style
+
+
+def _rl_table(rows: list[list[Any]], *, nested_ok: bool = True, style_kind: str = 'grid'):
+    """style_kind: grid(격자) · hlines(가로선만 — 테두리 없는 표) · striped(헤더 음영 + 짝수 행 연한 회색)."""
+    data = []
+    for row in rows:
+        line = []
+        for cell in row:
+            if isinstance(cell, dict) and cell.get('nested') and nested_ok:
+                line.append(_rl_table(cell['nested'], nested_ok=False))
+            else:
+                line.append(Paragraph(cell_text(cell).replace('\n', '<br/>'), _CELL))
+        data.append(line)
+    t = Table(data, repeatRows=1)
+    t.setStyle(TableStyle(_rl_style(rows, style_kind)))
     return t
 
 
@@ -236,10 +240,11 @@ def _xlsx_fill(
     rows: list[list[Any]],
     *,
     typed: bool,
-    col_offset: int = 0,
+    at: tuple[int, int] = (0, 0),
     striped: bool = False,
-    row_offset: int = 0,
 ):
+    """at — 표 왼쪽 위 칸의 (행, 열) 오프셋."""
+    row_offset, col_offset = at
     for r, row in enumerate(rows, start=1 + row_offset):
         for c, cell in enumerate(row, start=1 + col_offset):
             v = _xlsx_value(cell, typed)
@@ -280,11 +285,11 @@ def build_xlsx(spec: dict[str, Any], out: Path, context: bool = False) -> Path:
     if spec.get('side_by_side'):
         off = 0
         for t in spec['side_by_side']:
-            _xlsx_fill(ws, t, typed=typed, col_offset=off, row_offset=top)
+            _xlsx_fill(ws, t, typed=typed, at=(top, off))
             off += max(len(r) for r in t) + 2
         height = max(len(t) for t in spec['side_by_side'])
     else:
-        _xlsx_fill(ws, spec['rows'], typed=typed, striped=spec.get('style') == 'striped', row_offset=top)
+        _xlsx_fill(ws, spec['rows'], typed=typed, at=(top, 0), striped=spec.get('style') == 'striped')
         height = len(spec['rows'])
     if context:
         ws.cell(row=top + height + 2, column=1, value=cb['after'])

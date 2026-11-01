@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database import AsyncSessionLocal
+from rag.llm import LlmClient
 from rag.models import AnswerCache as AnswerCacheRow
 from rag.search.embeddings import embed_query
 from rag.search.retriever import retrieve
@@ -81,53 +82,39 @@ def _failed_guard(similarity: float, docset_equal: bool) -> str | None:
     return "verifier"
 
 
-async def compute() -> dict:
-    """캐시 히트 정확성 채점 → 요약.
+async def _score_pair(session: AsyncSession, llm: LlmClient, p: dict) -> dict:
+    """q1을 캐시에 심고 q2로 조회해 히트 여부를 채점한다. 끝나면 평가 테넌트 캐시를 비운다."""
+    # 0. 임베딩은 여기서 만들어 재사용 (운영 호출 계약) — 유사도 기록 + TEI 호출 절감
+    v1 = (await embed_query(p["q1"])).dense
+    v2 = (await embed_query(p["q2"])).dense
+    similarity = _cosine(v1, v2)
+    # 1. q1의 doc집합으로 캐시에 심는다 (답변은 더미 — 히트 여부만 관심)
+    ids1 = await _docids(session, p["tenant"], p["q1"])
+    # 원문(original_query)은 질문 자체를 넣는다 — 이 셋의 q1·q2는 자족 단일턴 질의이고,
+    # 운영에서 단일턴은 condense를 건너뛰어 원문==재작성문이기 때문이다(service._prepare_knowledge).
+    await cache.save_answer(
+        session, EVAL_TENANT, p["q1"], "더미 답변", [], ids1, query_embedding=v1, original_query=p["q1"]
+    )
+    await session.commit()
+    # 2. q2로 조회 — 히트하나?
+    ids2 = await _docids(session, p["tenant"], p["q2"])
+    hit = (
+        await cache.get_semantic(
+            session, EVAL_TENANT, p["q2"], ids2, query_embedding=v2, llm=llm, original_query=p["q2"]
+        )
+        is not None
+    )
+    await _clear(session)  # 다음 쌍 오염 방지
+    return {
+        **p,
+        "hit": hit,
+        "ok": hit == p["should_hit"],
+        "similarity": round(similarity, 4),
+        "failed_guard": (None if hit else _failed_guard(similarity, set(ids1) == set(ids2))),
+    }
 
-    반환: {accuracy, n, false_hit, false_miss, by_kind, misses, composition}.
-    rows(misses 포함)에는 similarity·failed_guard가 실린다 — 오판정이 어느 관문
-    (floor/docset/verifier) 탓인지 목록에서 바로 읽기 위함.
-    """
-    pairs = [json.loads(line) for line in GOLD.read_text().splitlines() if line.strip()]
-    rows = []
-    from rag.clients import shared_aux_llm
 
-    llm = shared_aux_llm  # 운영 판정기와 같은 보조 클라이언트
-
-    async with AsyncSessionLocal() as session:
-        await _clear(session)
-        for p in pairs:
-            # 0. 임베딩은 여기서 만들어 재사용 (운영 호출 계약) — 유사도 기록 + TEI 호출 절감
-            v1 = (await embed_query(p["q1"])).dense
-            v2 = (await embed_query(p["q2"])).dense
-            similarity = _cosine(v1, v2)
-            # 1. q1의 doc집합으로 캐시에 심는다 (답변은 더미 — 히트 여부만 관심)
-            ids1 = await _docids(session, p["tenant"], p["q1"])
-            # 원문(original_query)은 질문 자체를 넣는다 — 이 셋의 q1·q2는 자족 단일턴 질의이고,
-            # 운영에서 단일턴은 condense를 건너뛰어 원문==재작성문이기 때문이다(service._prepare_knowledge).
-            await cache.save_answer(
-                session, EVAL_TENANT, p["q1"], "더미 답변", [], ids1, query_embedding=v1, original_query=p["q1"]
-            )
-            await session.commit()
-            # 2. q2로 조회 — 히트하나?
-            ids2 = await _docids(session, p["tenant"], p["q2"])
-            hit = (
-                await cache.get_semantic(
-                    session, EVAL_TENANT, p["q2"], ids2, query_embedding=v2, llm=llm, original_query=p["q2"]
-                )
-                is not None
-            )
-            await _clear(session)  # 다음 쌍 오염 방지
-            rows.append(
-                {
-                    **p,
-                    "hit": hit,
-                    "ok": hit == p["should_hit"],
-                    "similarity": round(similarity, 4),
-                    "failed_guard": (None if hit else _failed_guard(similarity, set(ids1) == set(ids2))),
-                }
-            )
-
+def _summarize(rows: list[dict]) -> dict:
     by_kind = defaultdict(lambda: [0, 0])
     for r in rows:
         by_kind[r["kind"]][0] += r["ok"]
@@ -149,6 +136,26 @@ async def compute() -> dict:
         "misses": [r for r in rows if not r["ok"]],
         "composition": COMPOSITION,
     }
+
+
+async def compute() -> dict:
+    """캐시 히트 정확성 채점 → 요약.
+
+    반환: {accuracy, n, false_hit, false_miss, by_kind, misses, composition}.
+    rows(misses 포함)에는 similarity·failed_guard가 실린다 — 오판정이 어느 관문
+    (floor/docset/verifier) 탓인지 목록에서 바로 읽기 위함.
+    """
+    pairs = [json.loads(line) for line in GOLD.read_text().splitlines() if line.strip()]
+    rows = []
+    from rag.clients import shared_aux_llm
+
+    llm = shared_aux_llm  # 운영 판정기와 같은 보조 클라이언트
+
+    async with AsyncSessionLocal() as session:
+        await _clear(session)
+        for p in pairs:
+            rows.append(await _score_pair(session, llm, p))
+    return _summarize(rows)
 
 
 async def main() -> None:

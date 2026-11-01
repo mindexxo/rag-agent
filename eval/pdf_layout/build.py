@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.pdfgen.canvas import Canvas
-    from reportlab.platypus import BaseDocTemplate
+    from reportlab.platypus import BaseDocTemplate, Flowable
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -87,67 +87,62 @@ def _columns(w: float, h: float, n: int, gap: float, margin: float = 15 * 2.835)
     return [Frame(margin + i * (cw + gap), margin, cw, h - 2 * margin, id=f'c{i}') for i in range(n)]
 
 
-def build(spec: dict, out_dir: Path) -> Path:
+def _build_image_wrap(spec: dict, path: Path, styles: tuple, title: Flowable) -> None:
+    """그림 옆 글 흐름 — 첫 절 제목 뒤 문단 셋을 그림 왼쪽에 흘린다."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Image, ImageAndFlowables, Paragraph, SimpleDocTemplate
+
+    p, h, _t, _c = styles
+    blocks = spec['blocks']
+    story = [title, Paragraph(blocks[0][1], h)]
+    side = [Paragraph(b[1], p) for b in blocks[2:5]]
+    story.append(
+        ImageAndFlowables(
+            Image(str(_png(path.parent)), width=170, height=113), side, imageSide='right', imageLeftPadding=8
+        )
+    )
+    story += [Paragraph(b[1], p) for b in blocks[5:]]
+    SimpleDocTemplate(str(path), pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm).build(story)
+
+
+def _build_header_footer(spec: dict, path: Path, styles: tuple, title: Flowable) -> None:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.platypus import BaseDocTemplate, Frame, PageTemplate
+
+    W, H = A4
+    head, _ = spec['furniture']
+
+    def on_page(canvas: Canvas, doc: BaseDocTemplate) -> None:
+        canvas.saveState()
+        canvas.setFont('HYGothic-Medium', 9)
+        canvas.drawString(15 * mm, H - 12 * mm, head)
+        canvas.drawRightString(W - 15 * mm, 10 * mm, f'- {doc.page} -')
+        canvas.restoreState()
+
+    doc = BaseDocTemplate(str(path), pagesize=A4)
+    doc.addPageTemplates([PageTemplate('one', [Frame(15 * mm, 20 * mm, W - 30 * mm, H - 40 * mm)], onPage=on_page)])
+    doc.build([title] + [_flow(b, styles, path.parent) for b in spec['blocks']])
+
+
+def _framed_doc(spec: dict, path: Path) -> BaseDocTemplate:
+    """다단·가로 섞임·사이드바 — 배치 유형별 프레임을 얹은 문서 틀."""
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.units import mm
-    from reportlab.platypus import (
-        BaseDocTemplate,
-        Frame,
-        ImageAndFlowables,
-        NextPageTemplate,
-        PageTemplate,
-        Paragraph,
-        SimpleDocTemplate,
-    )
+    from reportlab.platypus import BaseDocTemplate, Frame, PageTemplate
 
-    styles = _styles()
-    p, h, t, _c = styles
-    out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"{spec['id']}.pdf"
     W, H = A4
     layout = spec['layout']
-    blocks = spec['blocks']
-    title = Paragraph(spec['title'], t)
-
-    if layout == 'image_wrap':
-        story = [title, Paragraph(blocks[0][1], h)]
-        from reportlab.platypus import Image
-
-        side = [Paragraph(b[1], p) for b in blocks[2:5]]
-        story.append(
-            ImageAndFlowables(
-                Image(str(_png(out_dir)), width=170, height=113), side, imageSide='right', imageLeftPadding=8
-            )
-        )
-        story += [Paragraph(b[1], p) for b in blocks[5:]]
-        SimpleDocTemplate(str(path), pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm).build(story)
-        return path
-
-    if layout == 'header_footer':
-        head, _ = spec['furniture']
-
-        def on_page(canvas: Canvas, doc: BaseDocTemplate) -> None:
-            canvas.saveState()
-            canvas.setFont('HYGothic-Medium', 9)
-            canvas.drawString(15 * mm, H - 12 * mm, head)
-            canvas.drawRightString(W - 15 * mm, 10 * mm, f'- {doc.page} -')
-            canvas.restoreState()
-
-        doc = BaseDocTemplate(str(path), pagesize=A4)
-        doc.addPageTemplates([PageTemplate('one', [Frame(15 * mm, 20 * mm, W - 30 * mm, H - 40 * mm)], onPage=on_page)])
-        doc.build([title] + [_flow(b, styles, out_dir) for b in blocks])
-        return path
-
     doc = BaseDocTemplate(str(path), pagesize=A4)
     if layout == 'two_col':
         gap = spec.get('gap_mm', 10) * mm
+        # 제목은 첫 단 머리에 — 단 전폭 제목 프레임은 두지 않는다(흔한 워드 2단 조판)
         doc.addPageTemplates([PageTemplate('two', _columns(W, H - 25 * mm, 2, gap))])
-        story = [title]  # 제목은 첫 단 머리에 — 단 전폭 제목 프레임은 두지 않는다(흔한 워드 2단 조판)
     elif layout == 'three_col':
         doc = BaseDocTemplate(str(path), pagesize=landscape(A4))
         LW, LH = landscape(A4)
         doc.addPageTemplates([PageTemplate('three', _columns(LW, LH, 3, 8 * mm))])
-        story = [title]
     elif layout == 'mixed_orient':
         LW, LH = landscape(A4)
         doc.addPageTemplates(
@@ -156,7 +151,6 @@ def build(spec: dict, out_dir: Path) -> Path:
                 PageTemplate('land', [Frame(15 * mm, 15 * mm, LW - 30 * mm, LH - 30 * mm)], pagesize=landscape(A4)),
             ]
         )
-        story = [title]
     elif layout == 'two_col_table':
         gap, m = 10 * mm, 15 * mm
         cw = (W - 2 * m - gap) / 2
@@ -166,19 +160,35 @@ def build(spec: dict, out_dir: Path) -> Path:
         tbl = Frame(m, 110 * mm, W - 2 * m, 75 * mm, id='tbl')  # 전폭 표
         bot = [Frame(m + i * (cw + gap), m, cw, 90 * mm, id=f'bot{i}') for i in range(2)]  # 아래 2단
         doc.addPageTemplates([PageTemplate('mix', top + [tbl] + bot)])
-        story = [title]
     elif layout == 'sidebar':
         main = Frame(15 * mm, 15 * mm, (W - 30 * mm) * 0.64, H - 30 * mm, id='main')
         side = Frame(
             15 * mm + (W - 30 * mm) * 0.68, 15 * mm, (W - 30 * mm) * 0.32, H - 30 * mm, id='side', showBoundary=1
         )
         doc.addPageTemplates([PageTemplate('sb', [main, side])])
-        story = [title]
     else:
         raise ValueError(layout)
+    return doc
 
+
+def build(spec: dict, out_dir: Path) -> Path:
+    from reportlab.platypus import NextPageTemplate, Paragraph
+
+    styles = _styles()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{spec['id']}.pdf"
+    layout = spec['layout']
+    title = Paragraph(spec['title'], styles[2])
+    if layout == 'image_wrap':
+        _build_image_wrap(spec, path, styles, title)
+        return path
+    if layout == 'header_footer':
+        _build_header_footer(spec, path, styles, title)
+        return path
+    doc = _framed_doc(spec, path)
+    story = [title]
     page_switch = iter(['land', 'port']) if layout == 'mixed_orient' else None
-    for b in blocks:
+    for b in spec['blocks']:
         if b[0] == 'break' and page_switch is not None:
             story += [NextPageTemplate(next(page_switch)), _flow(('break',), styles, out_dir)]
             continue

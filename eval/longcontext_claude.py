@@ -158,6 +158,58 @@ def filename_citation_accuracy(cited: list[str], expected_docs: list[str]) -> fl
 # ===== 메인 ============================================================
 
 
+async def _load_corpora(tenants: set[str]) -> dict[str, str]:
+    """테넌트별 코퍼스 선로드 (DB 직렬) — 문항마다 다시 읽지 않는다."""
+    corpora: dict[str, str] = {}
+    async with AsyncSessionLocal() as session:
+        for tenant in sorted(tenants):
+            corpus = await load_corpus(session, tenant)
+            if not corpus:
+                raise SystemExit(f"{tenant}: 코퍼스 0자 — DATABASE_URL이 코퍼스 있는 DB인지 확인.")
+            corpora[tenant] = corpus
+            flag = " ⚠ 컨텍스트 초과 가능" if len(corpus) > CORPUS_CHAR_WARN else ""
+            print(f"[corpus] {tenant}: {len(corpus):,}자{flag}")
+    return corpora
+
+
+async def _generate(client: ClaudeCliClient, sem: asyncio.Semaphore, corpora: dict[str, str], g: GoldRow) -> dict:
+    async with sem:
+        answer = await client.acomplete(
+            [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": build_user_message(corpora[row_tenant(g)], g)},
+            ]
+        )
+    cited = parse_cited_files(answer)
+    return {
+        "id": g["id"],
+        "type": g["type"],
+        "mode": "longcontext",
+        "answer": answer,
+        "cited_files": cited,
+        "scores": {
+            # EPCov는 TEI 임베딩을 쓰는 동기 함수 — 직렬화를 위해 락 밖이 아닌 여기서
+            # 호출하지 않고 아래 채점 루프에서 한다. (answer만 여기서 만든다)
+            "expected_points_coverage": None,  # 채점 루프에서 채움
+            "citation_accuracy": filename_citation_accuracy(cited, g.get("expected_docs", [])),
+        },
+        "generator": f"claude:{client.model}",
+        "gold_version": GOLD_VERSION,
+    }
+
+
+def _score_epcov(rows: list[dict], gen_gold: list[dict]) -> None:
+    """EPCov 채점 — 직렬 (embed_texts_sync가 동기 TEI 콜이라 gather에 안 태운다)."""
+    by_id = {g["id"]: g for g in gen_gold}
+    for r in rows:
+        r["scores"]["expected_points_coverage"] = expected_points_coverage(
+            r["answer"], by_id[r["id"]].get("expected_points", [])
+        )
+        # 규칙만으로 채점한다(2단계 심판 없음) — 생성 평가의 심판 반영 EPCov와 섞이지 않게 자기서술
+        r["scores"]["expected_points_coverage_rule"] = r["scores"]["expected_points_coverage"]
+        r["epcov_judge"] = "rule-only"
+
+
 async def main() -> None:
     gold = [json.loads(line) for line in GOLD.read_text().splitlines() if line.strip()]
     gen_gold = [g for g in gold if g["type"] in GEN_TYPES]
@@ -167,55 +219,11 @@ async def main() -> None:
 
     client = ClaudeCliClient(model=os.getenv("CLAUDE_MODEL", "sonnet"))
     sem = asyncio.Semaphore(CONCURRENCY)
-
-    # 테넌트별 코퍼스 선로드 (DB 직렬) — 문항마다 다시 읽지 않는다
-    corpora: dict[str, str] = {}
-    async with AsyncSessionLocal() as session:
-        for tenant in sorted({row_tenant(g) for g in gen_gold}):
-            corpus = await load_corpus(session, tenant)
-            if not corpus:
-                raise SystemExit(f"{tenant}: 코퍼스 0자 — DATABASE_URL이 코퍼스 있는 DB인지 확인.")
-            corpora[tenant] = corpus
-            flag = " ⚠ 컨텍스트 초과 가능" if len(corpus) > CORPUS_CHAR_WARN else ""
-            print(f"[corpus] {tenant}: {len(corpus):,}자{flag}")
-
-    async def _run(g: GoldRow) -> dict:
-        async with sem:
-            answer = await client.acomplete(
-                [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": build_user_message(corpora[row_tenant(g)], g)},
-                ]
-            )
-        cited = parse_cited_files(answer)
-        return {
-            "id": g["id"],
-            "type": g["type"],
-            "mode": "longcontext",
-            "answer": answer,
-            "cited_files": cited,
-            "scores": {
-                # EPCov는 TEI 임베딩을 쓰는 동기 함수 — 직렬화를 위해 락 밖이 아닌 여기서
-                # 호출하지 않고 아래 채점 루프에서 한다. (answer만 여기서 만든다)
-                "expected_points_coverage": None,  # 채점 루프에서 채움
-                "citation_accuracy": filename_citation_accuracy(cited, g.get("expected_docs", [])),
-            },
-            "generator": f"claude:{client.model}",
-            "gold_version": GOLD_VERSION,
-        }
+    corpora = await _load_corpora({row_tenant(g) for g in gen_gold})
 
     print(f"\n=== longcontext ({len(gen_gold)}문항, model={client.model}) ===")
-    rows = await asyncio.gather(*(_run(g) for g in gen_gold))
-
-    # 채점 — 직렬 (EPCov의 embed_texts_sync가 동기 TEI 콜이라 gather에 안 태운다)
-    by_id = {g["id"]: g for g in gen_gold}
-    for r in rows:
-        r["scores"]["expected_points_coverage"] = expected_points_coverage(
-            r["answer"], by_id[r["id"]].get("expected_points", [])
-        )
-        # 규칙만으로 채점한다(2단계 심판 없음) — 생성 평가의 심판 반영 EPCov와 섞이지 않게 자기서술
-        r["scores"]["expected_points_coverage_rule"] = r["scores"]["expected_points_coverage"]
-        r["epcov_judge"] = "rule-only"
+    rows = await asyncio.gather(*(_generate(client, sem, corpora, g) for g in gen_gold))
+    _score_epcov(rows, gen_gold)
 
     OUT.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows))
     summarize(rows)

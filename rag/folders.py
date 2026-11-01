@@ -88,6 +88,8 @@ async def update_folder(session: AsyncSession, folder: Folder, request: FolderUp
     tenant_id = folder.tenant_id
     if request.name is not None:
         folder.name = request.name
+        # 이름 중복은 여기서 판정한다 — 미루면 뒤의 SELECT가 autoflush로 UNIQUE 위반을 아래 try 밖에서 터뜨린다
+        await _flush_or_conflict(session)
     if request.description is not None:
         # 설명은 리랭커 입력에 들어가 검색 순위를 바꾼다 → 옛 순위로 만든 답변 캐시를 버린다.
         # (설명이 실제로 달라졌을 때만 — 같은 값 재전송으로 캐시가 날아가지 않게)
@@ -112,6 +114,14 @@ async def update_folder(session: AsyncSession, folder: Folder, request: FolderUp
         await session.rollback()
         raise FolderConflict('같은 이름의 폴더가 이미 있습니다.') from e
     return folder
+
+
+async def _flush_or_conflict(session: AsyncSession) -> None:
+    try:
+        await session.flush()
+    except IntegrityError as e:
+        await session.rollback()
+        raise FolderConflict('같은 이름의 폴더가 이미 있습니다.') from e
 
 
 async def delete_folder(session: AsyncSession, folder: Folder) -> None:

@@ -24,6 +24,7 @@ from eval.generation import load_gold, row_tenant
 from eval.gold_history import messages_from_conversation
 from eval.retrieval import resolve_by_tenant, scorable, score_one
 from eval.retrieval_v2 import METRICS
+from eval.rows import GoldRow
 from rag.llm import create_aux_llm
 from rag.search.retriever import retrieve_candidates
 from rag.turn.conversation import condense_query, condense_to_queries, trim_messages_for_condense
@@ -49,7 +50,7 @@ async def compute(multi: bool = False) -> dict:
     llm = create_aux_llm()  # 재작성은 운영과 같은 보조 클라이언트 — LLM_AUX_*가 비면 생성 설정 그대로
     sem = asyncio.Semaphore(CONCURRENCY)
 
-    async def _condense(g: dict) -> tuple[str, list[str]]:
+    async def _condense(g: GoldRow) -> tuple[str, list[str]]:
         # 운영과 같은 예산으로 자른다. multi_turn_long 문항 다수가 예산에 걸리고 그 문항들이 이 축의
         # 존재 이유(긴 이력)라, 트리밍을 안 하면 docstring이 말하는 "히스토리 예산 트리밍"을 한 번도 안 태우게 된다.
         msgs = trim_messages_for_condense(
@@ -64,7 +65,9 @@ async def compute(multi: bool = False) -> dict:
     queries_map = dict(await asyncio.gather(*(_condense(g) for g in target)))
 
     # 2단계: 검색·채점 — 세션 직렬
-    rows, skipped, stale = [], 0, {}
+    rows: list[dict] = []
+    skipped = 0
+    stale: dict[str, int] = {}
     async with AsyncSessionLocal() as session:
         async for tenant, items, resolved in resolve_by_tenant(session, target, row_tenant):
             if resolved.stale:
@@ -115,7 +118,7 @@ async def main() -> None:
 
 if __name__ == '__main__':
 
-    async def _run():
+    async def _run() -> None:
         try:
             await main()
         finally:

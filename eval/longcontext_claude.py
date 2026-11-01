@@ -114,7 +114,7 @@ async def load_corpus(session: AsyncSession, tenant: str) -> str:
 # ===== 프롬프트·채점 ===================================================
 
 
-def build_user_message(corpus: str, g: dict) -> str:
+def build_user_message(corpus: str, g: GoldRow) -> str:
     """문서 전문 + (원 대화 그대로) + 질문. condense·검색이 없는 것이 이 축의 정의다."""
     blocks = [f"[지식 문서 전체]\n\n{corpus}"]
     conv = g.get("conversation") or []
@@ -140,7 +140,7 @@ def parse_cited_files(answer: str) -> list[str]:
     return [t.strip().strip("'\"") for t in matches[-1].split(",") if t.strip()]
 
 
-def filename_citation_accuracy(cited: list[str], expected_docs: list[str]) -> float:
+def filename_citation_accuracy(cited: list[str], expected_docs: list[str | list[str]]) -> float:
     """기대 문서 중 파일명 인용이 커버한 비율 — citation_accuracy의 그룹·매칭 규칙을
     파일명 직접 비교로 옮긴 것(청크 번호 배관이 없는 이 축 전용)."""
     if not expected_docs:

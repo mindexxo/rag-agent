@@ -25,8 +25,10 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from typing import Any, cast
 
 from opentelemetry import trace
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database import AsyncSessionLocal
@@ -52,7 +54,7 @@ EVENT_DONE = 'done'
 SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
 
-def sse_event(event: str, data) -> str:
+def sse_event(event: str, data: Any) -> str:
     """SSE 한 이벤트를 봉투 형식 문자열로 만든다."""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
@@ -98,7 +100,7 @@ def _elapsed_ms(t_request: float) -> int:
     return int((time.monotonic() - t_request) * 1000)
 
 
-def _record_turn_result(root_span, result: TurnResult) -> None:
+def _record_turn_result(root_span: trace.Span, result: TurnResult) -> None:
     """턴 결과를 루트 kms.query 스팬에 기록한다. is_recording 가드를 먼저 둬 no-op이면 clip 비용도 없게 한다."""
     if not root_span.is_recording():
         return
@@ -114,7 +116,7 @@ def _record_turn_result(root_span, result: TurnResult) -> None:
 
 
 async def immediate_stream(
-    service: RagService, prepared: PreparedRag, session, t_request: float, root_span
+    service: RagService, prepared: PreparedRag, session: AsyncSession, t_request: float, root_span: trace.Span
 ) -> AsyncIterator[str]:
     """즉시 경로(입력차단·캐시히트·근거없음): 답이 확정돼 있어 태스크 없이 저장 후 스트림한다.
 
@@ -152,7 +154,7 @@ async def immediate_stream(
 
 
 def spawn_generation(
-    prepared: PreparedRag, queue: asyncio.Queue, lease: Lease, t_request: float, root_span
+    prepared: PreparedRag, queue: asyncio.Queue, lease: Lease, t_request: float, root_span: trace.Span
 ) -> asyncio.Task:
     """생성 태스크를 띄우고 참조를 보관한다. 호출자는 lease.handed_off를 True로 이미 세워둘 것.
 
@@ -160,7 +162,7 @@ def spawn_generation(
     요청 쪽에서 정리하면 생성 도중에 슬롯이 풀리고 턴 duration이 잘린다.
     """
     task = asyncio.create_task(_run_generation(prepared, queue, lease, t_request, root_span))
-    message_id = prepared.assistant_message_id
+    message_id = cast(int, prepared.assistant_message_id)  # 생성 경로는 자리표시 저장 뒤라 id가 있다
     cancellation.register(message_id, task)
     # 백업 — 태스크는 finally에서 스스로 unregister하지만, finally를 못 타는 경로의 누수를 막는다.
     task.add_done_callback(lambda _t: cancellation.unregister(message_id))
@@ -272,7 +274,7 @@ async def _close_turn(out: _Emitter, root_span: trace.Span, result: TurnResult, 
 
 
 async def _run_generation(
-    prepared: PreparedRag, queue: asyncio.Queue, lease: Lease, t_request: float, root_span
+    prepared: PreparedRag, queue: asyncio.Queue, lease: Lease, t_request: float, root_span: trace.Span
 ) -> None:
     """백그라운드: 생성 → 큐로 토큰 전달 → 완료 시 DB finalize. 연결과 무관하게 끝까지 돈다.
 
@@ -281,7 +283,7 @@ async def _run_generation(
     # 출처 꼬리는 knowledge만 만든다.
     splitter = TailSplitter() if prepared.route == "knowledge" else None
     # 재접속용 미러링 — 큐와 같은 이벤트를 Redis Stream에도 남긴다. 요청이 아니라 태스크가 소유한다.
-    writer = stream_resume.StreamWriter(lease.tenant_id, prepared.assistant_message_id)
+    writer = stream_resume.StreamWriter(lease.tenant_id, cast(int, prepared.assistant_message_id))
     # meta는 로컬 리더가 직접 합성하므로 큐를 거치지 않고 스트림에만 심는다.
     writer.add(EVENT_META, _meta_payload(prepared))
     out = _Emitter(queue, writer)
@@ -303,7 +305,7 @@ async def _run_generation(
 
             # 캐시 적재는 done 뒤에 따로 — 각주 표시를 늦추지 않고, 적재 실패가 done 턴을 오염시키지 않게.
             # 먼저 취소 대상에서 빠진다 — 아래 await 중 늦은 취소가 done 턴을 cancelled로 덮어쓰지 않게.
-            cancellation.unregister(prepared.assistant_message_id)
+            cancellation.unregister(cast(int, prepared.assistant_message_id))
             try:
                 await svc.maybe_cache(prepared, answer, citations)
                 await session.commit()
@@ -330,7 +332,7 @@ async def _run_generation(
     finally:
         # 취소 대상에서 먼저, 동기로 빠진다 — 아래 await 중 도착한 취소가 이 finally를 끊어
         # 리미터 반납·스팬 종료를 유실시키지 않게.
-        cancellation.unregister(prepared.assistant_message_id)
+        cancellation.unregister(cast(int, prepared.assistant_message_id))
         await queue.put(None)  # 리더 종료 sentinel — finalize·commit 뒤에 넣는다
         # 스트림 쪽 종료 마커 — 위 sentinel과 같은 사실이다. 한쪽만 남기면 재접속 리더가 종료를 모른다.
         await writer.aclose()

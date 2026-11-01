@@ -115,7 +115,7 @@ async def selftest(runs: int = 3) -> dict:
     llm = judge_llm()
     out = []
     for f in FIXTURES:
-        labels = []
+        labels: list[str] = []
         for _ in range(runs):
             try:
                 labels.append((await judge_misinfo(llm, f["answer"], f["phrase"])).label)

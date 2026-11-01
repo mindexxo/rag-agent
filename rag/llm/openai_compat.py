@@ -4,9 +4,11 @@
 """
 
 from collections.abc import AsyncIterator, Callable
+from typing import cast
 
 import httpx
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, AsyncStream
+from openai.types.chat import ChatCompletion, ChatCompletionChunk, ChatCompletionMessageParam
 from pydantic import BaseModel
 
 from config import settings
@@ -30,7 +32,7 @@ class OpenAiCompatClient:
         model: str | None = None,
         api_key: str | None = None,
         reasoning_effort: str | None = "",
-    ):
+    ) -> None:
         self._model = model or settings.llm_model
         # ""면 요청 시점의 settings.llm_reasoning_effort를 따른다. 보조 클라이언트만 값을 넘긴다
         self._reasoning_effort = reasoning_effort
@@ -81,10 +83,15 @@ class OpenAiCompatClient:
         on_usage: Callable[[LlmUsage], None] | None = None,
     ) -> str:
         # on_usage는 받되 부르지 않는다 — usage를 받으려면 요청 바디가 바뀌는데 vLLM 요청 바디는 테스트가 고정한다.
-        response = await self._client.chat.completions.create(
-            messages=messages, stream=False, **self._request_kwargs(schema, citations)
+        response = cast(
+            ChatCompletion,
+            await self._client.chat.completions.create(
+                messages=cast('list[ChatCompletionMessageParam]', messages),
+                stream=False,
+                **self._request_kwargs(schema, citations),
+            ),
         )
-        return response.choices[0].message.content
+        return cast(str, response.choices[0].message.content)  # 호출부가 None도 방어한다(acomplete_validated)
 
     async def astream(
         self,
@@ -100,8 +107,13 @@ class OpenAiCompatClient:
         마지막 청크는 delta 없이 finish_reason만 실려 오므로 delta 유무와 따로 본다. 콜백은 호출마다 받으므로
         공용 인스턴스여도 동시 요청 간 값이 섞이지 않는다.
         """
-        stream = await self._client.chat.completions.create(
-            messages=messages, stream=True, **self._request_kwargs(schema, citations)
+        stream = cast(
+            AsyncStream[ChatCompletionChunk],
+            await self._client.chat.completions.create(
+                messages=cast('list[ChatCompletionMessageParam]', messages),
+                stream=True,
+                **self._request_kwargs(schema, citations),
+            ),
         )
         try:
             async for chunk in stream:

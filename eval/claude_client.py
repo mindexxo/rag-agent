@@ -165,7 +165,7 @@ def _last_result_event(out: bytes) -> dict | None:
     return result
 
 
-async def _smoke():
+async def _smoke() -> None:
     client = ClaudeCliClient()
     answer = await client.acomplete(
         [

@@ -13,6 +13,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from config import settings
 
@@ -59,7 +60,7 @@ class Lease:
     degraded: bool = False
 
 
-def _redis():
+def _redis() -> Any:  # redis.asyncio 스텁은 동기·비동기 반환을 섞어 적는다
     """공용 Redis 클라이언트를 **호출 시점에** 읽는다 — 테스트가 클라이언트를 교체하므로 붙잡아 두면 안 된다.
     지연 import는 동기 스크립트가 이 모듈만 쓸 때 LLM 클라이언트까지 만들어지지 않게 하려는 것."""
     from rag import clients

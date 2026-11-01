@@ -1,13 +1,8 @@
-"""타입 검사 게이트 — 판단 기준 5(AGENTS.md "코드 품질 기준")의 새 파일 몫. 공개 시그니처 힌트 래칫은 ruff ANN(pyproject.toml).
+"""타입 검사 게이트 — 판단 기준 5(AGENTS.md "코드 품질 기준"). 공개 시그니처 힌트 래칫은 ruff ANN(pyproject.toml).
 
-기존 파일은 tests/typecheck_baseline.json에 동결하고, **목록 밖 파일(= 새 파일)은 mypy 오류 0**이어야 한다(설정은 pyproject.toml
-[tool.mypy] — 함수 정의에 힌트 필수). 기존 코드에 그대로 켜면 rag/ 51·eval/ 163 오류가 나서(main 31bece0) 리팩토링 뒤로 미룬다.
-리팩토링으로 기존 파일이 깨끗해지면 목록에서 빼서 조인다:
+동결 목록 tests/typecheck_baseline.json 밖의 파일은 **mypy 오류 0**이어야 한다(설정은 pyproject.toml [tool.mypy] — 함수 정의에
+힌트 필수). 지금 목록은 비어 있어 대상 전 파일이 검사된다. 목록은 줄이기만 한다(사라진 파일·오류 0이 된 파일을 뺀다):
     QUALITY_BASELINE_UPDATE=1 pytest tests/test_typecheck.py
-갱신은 목록을 줄이기만 한다(사라진 파일·이제 오류 0인 파일을 뺀다). 처음 만들 때만 QUALITY_ALLOW_GROWTH=1로 현재 파일 전부를 넣는다.
-파일 이름을 바꾸거나 옮기면 목록 밖이 되어 새 파일로 검사된다. 반대로 기존 파일에 붙여 넣은
-코드는 이 검사를 피한다 — 그 몫은 ruff ANN 래칫(시그니처)뿐이다. 새 파일이 부르는 기존 모듈은 힌트가 없어 Any로 흐른다
-(follow_imports=silent) — 타입은 새 파일 안에서만 닫히고, 기존 코드가 깨끗해질수록 강해진다.
 대상은 tests/test_code_quality.py와 같은 git 기준 파일 목록에서 tests/·루트 conftest.py를 뺀 것 — 테스트 함수는 관례상 힌트를 달지 않는다.
 mypy는 requirements.txt에 버전 고정 — 없으면 건너뛰되 CI=1이면 실패, 버전이 다르면 실패.
 """

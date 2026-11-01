@@ -8,11 +8,23 @@
 된다 — 후보 목록 파생은 PreparedRag.citation_candidates(rag/turn/prepared.py) 한 곳에서 한다.
 """
 
-from typing import NamedTuple
+from collections.abc import Iterable
+from typing import NamedTuple, Protocol, cast
 
 # 꼬리 마커의 정의점은 rag/turn/prompt_texts.py다.
 from rag.turn.prompt_texts import TAIL_END, TAIL_START
 from schemas.kms import SourceCitation
+
+
+class SourceChunk(Protocol):
+    """번호를 받는 검색 청크의 모양 — 검색 결과(RetrievedChunk)가 이 꼴이다."""
+
+    document_id: int | None
+    faq_id: int | None
+    filename: str
+    version: int
+    heading_path: list[str]
+    text: str
 
 
 class CitationCandidates(NamedTuple):
@@ -22,13 +34,13 @@ class CitationCandidates(NamedTuple):
     attachment_filenames: list[str]
 
 
-def citation_tail(numbers) -> str:
+def citation_tail(numbers: Iterable[int]) -> str:
     """꼬리 문자열의 유일한 조립 통로 — 형식을 손으로 적은 산문·테스트가 형식 변경 때 조용히 낡지 않게.
     프롬프트 쪽은 f-string 보간이라 함수 대신 TAIL_EXAMPLE_* 상수를 쓴다."""
     return f'{TAIL_START}[{",".join(str(n) for n in numbers)}]{TAIL_END}'
 
 
-def sources_from_chunks(chunks) -> list[SourceCitation]:
+def sources_from_chunks(chunks: Iterable[SourceChunk]) -> list[SourceCitation]:
     """검색 청크 → 출처 단위 인용 후보 (번호 순서의 원천).
 
     청크 첫 등장 순서(=리랭크 순위)로 번호를 받는다 — 문서는 document_id 단위, FAQ는 항목(faq_id) 단위다
@@ -53,13 +65,13 @@ def sources_from_chunks(chunks) -> list[SourceCitation]:
     return out
 
 
-def source_key(item) -> tuple:
+def source_key(item: SourceChunk | SourceCitation) -> tuple:
     """청크·인용 객체 → 번호 묶음 키. 문서와 FAQ는 id 공간이 겹쳐 종류를 같이 든다."""
     faq_id = getattr(item, 'faq_id', None)
     return ('faq', faq_id) if faq_id is not None else ('doc', item.document_id)
 
 
-def faq_question(chunk) -> str:
+def faq_question(chunk: SourceChunk) -> str:
     """FAQ 청크의 질문 — 색인이 heading_path=[질문]으로 적는다(rag/search/os_index.index_parsed_faq).
     없으면 본문 첫 줄 'Q: …'(rag/search/faq_indexing.build_faq_chunk_text 형식)에서 읽는다 — 방어용."""
     if chunk.heading_path:
@@ -73,10 +85,10 @@ def faq_display(question: str) -> str:
     return f'FAQ: {question}'
 
 
-def source_display(source) -> str:
+def source_display(source: SourceChunk | SourceCitation) -> str:
     """컨텍스트 블록의 [번호] 뒤에 붙는 사람용 이름(매칭에 안 쓰임). 청크와 SourceCitation 둘 다 받는다."""
     if getattr(source, 'faq_id', None) is not None:
-        return faq_display(faq_question(source)) if hasattr(source, 'text') else source.filename
+        return faq_display(faq_question(cast(SourceChunk, source))) if hasattr(source, 'text') else source.filename
     return f'{source.filename} v{source.version}'
 
 

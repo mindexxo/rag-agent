@@ -172,8 +172,10 @@ async def score_items(items: list[dict], keys_of: dict) -> list[dict]:
     async def _one(it: dict) -> dict:
         async with sem:
             # session은 쓰지 않는다(retrieve_candidates docstring) — 그래서 gather에 태울 수 있다.
-            cands = await retrieve_candidates(None, it["tenant"], it["query"], top_n=20)
+            cands = await retrieve_candidates(None, it["tenant"], it["query"], top_n=20)  # type: ignore[arg-type]
         got = [c.chunk_id for c in cands.chunks]
+        scores = score_one(got, it["gold_ids"])
+        assert scores is not None
         top = prepare_evidence(cands.chunks, TOP_K)
         packed = any(len(keys_of.get(g, [])) > 1 for g in it["gold_ids"])
         # 합격 기준: 생성 모델이 실제로 받는 근거(top)에 정답이 들었나. recall_at_5(리랭크 순 상위 5)와
@@ -181,7 +183,7 @@ async def score_items(items: list[dict], keys_of: dict) -> list[dict]:
         in_evidence = float(any(c.chunk_id in set(it["gold_ids"]) for c in top))
         return {
             **it,
-            **score_one(got, it["gold_ids"]),
+            **scores,
             **classify_mix(it, top, keys_of),
             "in_evidence": in_evidence,
             "gold_packed": packed,
@@ -266,11 +268,11 @@ def pick_bare(gold: dict) -> list[str]:
     return shared[::step][:BARE_N]
 
 
-async def _answer(llm: LlmClient, tenant: str, q: str):
+async def _answer(llm: LlmClient, tenant: str, q: str) -> tuple[list[RetrievedChunk], str]:
     """운영과 같은 검색 → 생성. (근거 상위 TOP_K, 답변)."""
     from eval.generation import generate  # 무거운 import(임베딩·심판) — --answers일 때만
 
-    cands = await retrieve_candidates(None, tenant, q, top_n=20)
+    cands = await retrieve_candidates(None, tenant, q, top_n=20)  # type: ignore[arg-type]  # 세션을 쓰지 않는다
     chunks = prepare_evidence(cands.chunks, TOP_K)
     return chunks, await generate(llm, q, chunks)
 

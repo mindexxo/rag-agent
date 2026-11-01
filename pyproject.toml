@@ -53,9 +53,9 @@ max-statements = 50
 max-nested-blocks = 4
 
 [tool.mypy]
-# 새 파일 전용(#308) — 기존 파일은 tests/typecheck_baseline.json에 동결하고 tests/test_typecheck.py가 목록 밖 파일만 검사한다.
-# 실측(main 31bece0, mypy 2.4.0): 기존 rag/ 51·eval/ 163 오류(엄격 시 rag/ 169) — 기존 코드 적용은 리팩토링 뒤(#308 2단계).
+# 검사 대상 전 파일 mypy 오류 0 — 강제는 tests/test_typecheck.py, 동결 목록 tests/typecheck_baseline.json은 비어 있다.
 python_version = "3.14"
+plugins = ["pydantic.mypy"]   # pydantic 모델·BaseSettings의 생성자 시그니처(기본값·환경변수 주입)를 mypy가 알게 한다
 explicit_package_bases = true   # rag/는 __init__ 없는 네임스페이스 패키지인데 rag/llm/만 패키지라 이게 없으면 모듈 경로를 못 정한다
 namespace_packages = true
 ignore_missing_imports = true   # 스텁 없는 서드파티 전부(docling·opensearchpy·litellm 등)를 Any로

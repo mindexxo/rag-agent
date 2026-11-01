@@ -23,16 +23,20 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from eval.chunk_invariants import missing_lines  # noqa: E402 — "소실"의 정의점(위 docstring)
 
+if TYPE_CHECKING:
+    from rag.chunking.types import ChunkData
+
 ROOTS = ('sample_docs', 'docs')
 EXTS = ('.pdf', '.docx', '.md', '.txt', '.xlsx')
 
 
-def chunks_for(path: Path):
+def chunks_for(path: Path) -> list[ChunkData]:
     """운영과 같은 진입점 — chunk_file이 5형식을 전부 처리한다."""
     from rag.chunking import chunk_file
 
@@ -41,7 +45,7 @@ def chunks_for(path: Path):
 
 def capture(targets: list[str] | None = None) -> dict:
     base = Path(__file__).resolve().parent.parent
-    out = {}
+    out: dict[str, Any] = {}
     roots = [Path(t).resolve() for t in targets] if targets else [base / root for root in ROOTS]
     files = sorted(
         {

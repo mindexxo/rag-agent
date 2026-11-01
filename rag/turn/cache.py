@@ -13,12 +13,14 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
+from typing import cast
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import CursorResult, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
+from rag.llm import LlmClient
 from rag.models import AnswerCache as AnswerCacheRow
 from rag.models import Faq
 from rag.search.embeddings import embed_query
@@ -37,7 +39,11 @@ class CacheHit:
 
 
 async def _verify_reuse(
-    llm, cached_query: str, new_query: str, cached_original: str | None = None, new_original: str | None = None
+    llm: LlmClient,
+    cached_query: str,
+    new_query: str,
+    cached_original: str | None = None,
+    new_original: str | None = None,
 ) -> bool:
     """캐시 후보의 재사용 가부를 LLM에 묻는다 — 모든 히트의 필요조건.
 
@@ -104,7 +110,7 @@ async def get_semantic(
     query: str,
     current_source_doc_ids: list[int],
     query_embedding: list[float] | None = None,
-    llm=None,
+    llm: LlmClient | None = None,
     original_query: str | None = None,
 ) -> CacheHit | None:
     """semantic 캐시를 조회한다. 실패는 miss로 삼킨다 — 캐시가 요청을 죽이면 안 된다.
@@ -260,7 +266,7 @@ async def sweep_stale(session: AsyncSession) -> int:
             AnswerCacheRow.last_hit_at < func.now() - func.make_interval(0, 0, 0, settings.cache_retention_days)
         )
     )
-    return result.rowcount
+    return cast(CursorResult, result).rowcount  # DELETE 실행 결과는 CursorResult다
 
 
 async def invalidate_source(
@@ -275,5 +281,5 @@ async def invalidate_source(
     await session.execute(
         delete(AnswerCacheRow)
         .where(AnswerCacheRow.tenant_id == tenant_id)
-        .where(AnswerCacheRow.source_doc_ids.any(source_id))
+        .where(AnswerCacheRow.source_doc_ids.any(source_id))  # type: ignore[arg-type]  # ARRAY.any는 값도 받는다
     )

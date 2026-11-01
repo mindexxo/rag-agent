@@ -43,7 +43,7 @@ from rag.models import AnswerCache as AnswerCacheRow
 from rag.search.embeddings import embed_query
 from rag.search.retriever import retrieve
 from rag.turn import cache
-from rag.turn.service import _source_doc_ids
+from rag.turn.service import chunk_source_doc_ids
 
 GOLD = Path(__file__).resolve().parent / "cache_set_v1.jsonl"
 EVAL_TENANT = "__cache_eval__"  # 캐시 저장 격리용 (실테넌트 캐시 불건드림)
@@ -62,7 +62,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 async def _docids(session: AsyncSession, tenant: str, query: str) -> list[int]:
     r = await retrieve(session, tenant, query)
-    return _source_doc_ids(r.chunks)
+    return chunk_source_doc_ids(r.chunks)
 
 
 async def _clear(session: AsyncSession) -> None:
@@ -115,7 +115,7 @@ async def _score_pair(session: AsyncSession, llm: LlmClient, p: dict) -> dict:
 
 
 def _summarize(rows: list[dict]) -> dict:
-    by_kind = defaultdict(lambda: [0, 0])
+    by_kind: defaultdict[str, list[int]] = defaultdict(lambda: [0, 0])
     for r in rows:
         by_kind[r["kind"]][0] += r["ok"]
         by_kind[r["kind"]][1] += 1

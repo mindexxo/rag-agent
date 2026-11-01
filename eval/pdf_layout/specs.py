@@ -64,7 +64,7 @@ def _table(rows: int, start: int) -> tuple[str, list[list[str]]]:
 def _two_col(gap_mm: int, tag: str) -> dict:
     """① 2단 본문 — 왼쪽 단을 다 읽고 오른쪽 단으로. 쪽 2장."""
     c = count(1)
-    blocks = []
+    blocks: list[tuple] = []
     for page in range(2):
         for col in range(2):
             n = next(c)
@@ -85,7 +85,7 @@ def _two_col(gap_mm: int, tag: str) -> dict:
 def _three_col() -> dict:
     """② 3단 브로슈어 — 단마다 소제목 + 짧은 문단 셋. 쪽 1장(가로)."""
     c = count(1)
-    blocks = []
+    blocks: list[tuple] = []
     for col in range(3):
         n = next(c)
         blocks.append(('h', f'[P{n:02d}] {["상품 소개", "이용 방법", "문의 안내"][col]}'))
@@ -207,12 +207,13 @@ def paragraph_bodies(spec: dict) -> dict[str, str]:
     가로로 한 줄씩 이어 읽힌 꼴(좁은 2단에서 생긴다)을 놓친다."""
     import re
 
-    return {
-        m.group(1): b[1][m.end() :].strip()
-        for b in spec['blocks']
-        if b[0] in ('p', 'h')
-        for m in [re.match(r'\[(P\d+)\]\s*', b[1])]
-    }
+    out = {}
+    for b in spec['blocks']:
+        if b[0] in ('p', 'h'):
+            m = re.match(r'\[(P\d+)\]\s*', b[1])
+            assert m is not None
+            out[m.group(1)] = b[1][m.end() :].strip()
+    return out
 
 
 def expected_order(spec: dict) -> list[str]:
@@ -222,5 +223,7 @@ def expected_order(spec: dict) -> list[str]:
     out = []
     for b in spec['blocks']:
         if b[0] in ('p', 'h'):
-            out.append(re.match(r'\[(P\d+)\]', b[1]).group(1))
+            m = re.match(r'\[(P\d+)\]', b[1])
+            assert m is not None
+            out.append(m.group(1))
     return out

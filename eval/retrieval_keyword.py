@@ -241,12 +241,14 @@ async def score_items(items: list[dict]) -> list[dict]:
     async def _one(it: dict) -> dict:
         async with sem:
             # session은 쓰지 않는다(retrieve_candidates docstring) — 그래서 gather에 태울 수 있다.
-            cands = await retrieve_candidates(None, it["tenant"], it["query"], top_n=20)
+            cands = await retrieve_candidates(None, it["tenant"], it["query"], top_n=20)  # type: ignore[arg-type]
         got = [c.chunk_id for c in cands.chunks]
+        scores = score_one(got, it["gold_ids"])
+        assert scores is not None
         top = prepare_evidence(cands.chunks, TOP_K)
         return {
             **it,
-            **score_one(got, it["gold_ids"]),
+            **scores,
             "in_evidence": evidence_has(top, it["token"]),
             "got_ids": got,
             "top_ids": [c.chunk_id for c in top],

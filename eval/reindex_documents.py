@@ -87,6 +87,7 @@ async def reindex_one(document_id: int) -> None:
 
     async with AsyncSessionLocal() as session:  # 승격 확인 — 실패면 status가 failed로 남는다
         doc = await session.get(Document, document_id)
+        assert doc is not None
         if doc.status != 'ready':
             raise RuntimeError(f'재색인 실패 (status={doc.status}): {doc.status_reason}')
 

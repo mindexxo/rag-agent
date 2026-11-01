@@ -29,9 +29,9 @@ def main() -> None:
 
         run()
     elif a.cmd == 'chunks':
-        from eval.scale_noise.chunks import run
+        from eval.scale_noise.chunks import run as run_chunks
 
-        asyncio.run(run())
+        asyncio.run(run_chunks())
     elif a.cmd == 'build':
         from eval.scale_noise.build import build
 

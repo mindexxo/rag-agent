@@ -23,6 +23,7 @@ import re
 from collections import defaultdict
 from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -432,7 +433,8 @@ async def epcov_scores(
         if judge is None
         else [k for k, h in enumerate(rule_hits) if not h and point_amounts_present(answer, points[k])]
     )
-    final, audit = await epcov_judge.confirm_points(judge, answer, points, rule_hits, targets, sem)
+    # judge가 None이면 targets가 비어 판정 호출이 일어나지 않는다
+    final, audit = await epcov_judge.confirm_points(judge, answer, points, rule_hits, targets, sem)  # type: ignore[arg-type]
     return {
         "expected_points_coverage": sum(final) / len(points),
         "expected_points_coverage_rule": sum(rule_hits) / len(points),
@@ -619,7 +621,7 @@ def _generator() -> tuple[str, LlmClient | None, str]:
         from eval.claude_client import ClaudeCliClient
 
         gen_llm = ClaudeCliClient(model=os.getenv("CLAUDE_MODEL", "sonnet"))
-        return generator, gen_llm, f"claude:{gen_llm.model}"
+        return generator, cast('LlmClient', gen_llm), f"claude:{gen_llm.model}"
     if generator == "vllm":
         return generator, None, f"{settings.llm_provider}:{settings.llm_model}"
     raise SystemExit(f"GENERATOR={generator} — vllm|claude 만 지원")
@@ -685,8 +687,7 @@ def summarize(rows: list[dict]) -> None:
         mnc = [v for v in mnc if v is not None]
         misinfo = f"{sum(1 for v in mnc if v) / len(mnc):.2f}" if mnc else "   -"
         cov_avg = sum(cov) / len(cov) if cov else 0.0
-        rule = [s.get("expected_points_coverage_rule") for s in ss]
-        rule = [v for v in rule if v is not None]
+        rule = [v for s in ss if (v := s.get("expected_points_coverage_rule")) is not None]
         rule_avg = f"{sum(rule) / len(rule):>9.2f}" if rule else f"{'-':>9}"  # 옛 결과 파일엔 규칙 값이 없다
         print(f"{label:<14}{n:>4}{cov_avg:>8.2f}{rule_avg}{sum(cite) / n:>7.2f}{misinfo:>9}")
 

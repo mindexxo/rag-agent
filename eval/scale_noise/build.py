@@ -52,7 +52,8 @@ def _noise_docs(limit: int, tenant: str) -> tuple[list[dict], int]:
                 by_doc[c['doc']].append(c)
     order = sorted(by_doc)
     random.Random(235).shuffle(order)
-    out, n_docs = [], 0
+    out: list[dict] = []
+    n_docs = 0
     for k, doc in enumerate(order):
         if len(out) >= limit:
             break

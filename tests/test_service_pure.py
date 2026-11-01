@@ -1,6 +1,6 @@
-"""service 순수 로직 단위 테스트 — _source_doc_ids / PreparedRag 상태 속성.
+"""service 순수 로직 단위 테스트 — chunk_source_doc_ids / PreparedRag 상태 속성.
 
-_source_doc_ids의 음수 네임스페이스는 FAQ 캐시 무효화 키와 짝 — 깨지면 무효화가 조용히 어긋난다.
+chunk_source_doc_ids의 음수 네임스페이스는 FAQ 캐시 무효화 키와 짝 — 깨지면 무효화가 조용히 어긋난다.
 needs_generation은 SSE 백그라운드 생성 분기와 정확히 일치해야 한다 — resolved_answer
 한 곳에서 파생되므로, 그 파생 관계와 생성자 불변식(route ↔ retrieval)을 여기서 고정한다.
 """
@@ -9,7 +9,7 @@ import pytest
 
 from rag.search.retrieval_types import RetrievalResult, RetrievedChunk
 from rag.turn.prepared import PreparedRag
-from rag.turn.service import _source_doc_ids
+from rag.turn.service import chunk_source_doc_ids
 
 
 def _chunk(document_id=None, faq_id=None) -> RetrievedChunk:
@@ -41,20 +41,20 @@ def _prepared(**kw) -> PreparedRag:
 
 class TestSourceDocIds:
     def test_문서는_양수_FAQ는_음수(self):
-        ids = _source_doc_ids([_chunk(document_id=5), _chunk(faq_id=7)])
+        ids = chunk_source_doc_ids([_chunk(document_id=5), _chunk(faq_id=7)])
         assert set(ids) == {5, -7}
 
     def test_중복_제거(self):
-        ids = _source_doc_ids([_chunk(document_id=5), _chunk(document_id=5)])
+        ids = chunk_source_doc_ids([_chunk(document_id=5), _chunk(document_id=5)])
         assert list(ids) == [5]
 
     def test_같은_번호의_문서와_FAQ는_구분(self):
         # doc 5와 faq 5가 하나로 접히면 캐시 무효화 키가 어긋난다
-        ids = _source_doc_ids([_chunk(document_id=5), _chunk(document_id=5), _chunk(faq_id=5)])
+        ids = chunk_source_doc_ids([_chunk(document_id=5), _chunk(document_id=5), _chunk(faq_id=5)])
         assert set(ids) == {5, -5}
 
     def test_빈_입력(self):
-        assert list(_source_doc_ids([])) == []
+        assert list(chunk_source_doc_ids([])) == []
 
 
 class TestNeedsGeneration:

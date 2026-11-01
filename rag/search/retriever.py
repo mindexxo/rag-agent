@@ -20,6 +20,7 @@ eval은 retrieve_candidates·apply_gate를 직접 불러 Recall@N·threshold swe
 
 import logging
 from dataclasses import replace
+from typing import cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -87,7 +88,7 @@ EVIDENCE_BUDGET_TOKENS = 22000
 
 def apply_identifier_boost(
     chunks: list[RetrievedChunk], scores: list[float], query_idx: list[int], tokens: list[str], boost: float
-):
+) -> tuple[list[RetrievedChunk], list[float], list[int]]:
     """리랭커 점수에 식별자 일치 가산(+boost)을 더해 재정렬한다 — 식별자 채널의 순위 정의점.
 
     질문 토큰이 조각의 `identifiers`에 정확히 있으면 가산하고 `matched_ident`에 적는다(prepare_evidence가 이걸로 오린다).
@@ -96,7 +97,7 @@ def apply_identifier_boost(
     """
     tok = set(tokens)
     rows = []
-    for ch, score, qi in zip(chunks, scores, query_idx):
+    for ch, score, qi in zip(chunks, scores, query_idx, strict=False):
         hit = next((t for t in ch.identifiers if t in tok), None)
         if hit is not None:
             ch = replace(ch, matched_ident=hit)
@@ -117,7 +118,7 @@ def table_evidence_text(ch: RetrievedChunk) -> str:
     표 전체만 주면 한 행 조회에서 이웃 행을 읽고, 묶음만 주면 최댓값·개수·전체 나열 질문에서 무너진다.
     """
     if not ch.text.strip() or ch.text.strip() == (ch.table_text or '').strip():
-        return ch.table_text
+        return cast(str, ch.table_text)  # 표 묶음(is_table)만 들어온다 — table_text가 있다
     return f'{TABLE_HIT_LABEL}\n{ch.text}\n\n{TABLE_WHOLE_LABEL}\n{ch.table_text}'
 
 
@@ -245,7 +246,9 @@ async def _rerank_pool(
         if best is None:
             otel.set_attrs(sp, {'kms.fallback': 'rrf' if multi else 'dense'})
         elif ident_tokens:
-            result, best, best_qi = apply_identifier_boost(result, best, best_qi, ident_tokens, settings.ident_boost)
+            result, best, best_qi = apply_identifier_boost(
+                result, best, cast('list[int]', best_qi), ident_tokens, settings.ident_boost
+            )  # 점수가 있으면 기여 쿼리 목록도 있다
             otel.set_attrs(
                 sp,
                 {
@@ -254,7 +257,9 @@ async def _rerank_pool(
                 },
             )
         if best is not None and sp.is_recording():  # 채택 점수·기여 쿼리 — DB에 안 남는 진단 정보
-            for i, (ch, score, qi) in enumerate(zip(result[:top_n], best[:top_n], best_qi[:top_n])):
+            for i, (ch, score, qi) in enumerate(
+                zip(result[:top_n], best[:top_n], cast('list[int]', best_qi)[:top_n], strict=False)
+            ):
                 sp.set_attribute(f'reranker.output_documents.{i}.document.id', str(ch.chunk_id))
                 sp.set_attribute(f'reranker.output_documents.{i}.document.score', float(score))
                 sp.set_attribute(f'reranker.output_documents.{i}.document.query_index', qi)  # 0=원본, 1..=확장

@@ -217,6 +217,7 @@ def _chunk_text(chunks: list[ChunkData], *, xlsx: bool) -> str:
         texts = []
         seen = set()
         for c in chunks:  # 시트마다 완성본 하나
+            assert c.meta is not None
             st = c.meta.get('table_text')
             if st and st not in seen:
                 seen.add(st)

@@ -10,6 +10,7 @@ import logging
 
 from config import settings
 from rag.search.index_text import build_index_text
+from rag.search.retrieval_types import RetrievedChunk
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 _VENDORS = {"cohere": "cohere", "voyage": "voyage", "jina": "jina_ai"}
 
 
-def _rerank_text(chunk) -> str:
+def _rerank_text(chunk: RetrievedChunk) -> str:
     """cross-encoder 입력 — 인제스션의 임베딩 입력과 같은 형태(파일명·헤딩 머리줄)에 폴더 설명을 더한다.
 
     FAQ 청크는 본문 그대로다 — heading_path가 질문 그 자체라 붙이면 질문이 두 번 들어간다.
@@ -84,9 +85,9 @@ async def rerank_maxpool(queries: list[str], chunks: list) -> tuple[list, list[f
     matrix = await asyncio.gather(*(rerank_scores(q, chunks) for q in queries))
     if not all(s is not None for s in matrix):
         return chunks, None, None
-    per_chunk = list(zip(*matrix))  # [청크][쿼리] 점수
+    per_chunk = list(zip(*matrix, strict=False))  # [청크][쿼리] 점수
     best_qi = [max(range(len(col)), key=col.__getitem__) for col in per_chunk]
-    best = [col[qi] for col, qi in zip(per_chunk, best_qi)]  # == max(col) — 값 불변
+    best = [col[qi] for col, qi in zip(per_chunk, best_qi, strict=False)]  # == max(col) — 값 불변
     order = sorted(range(len(chunks)), key=lambda i: -best[i])
     return [chunks[i] for i in order], [best[i] for i in order], [best_qi[i] for i in order]
 

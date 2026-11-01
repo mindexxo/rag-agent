@@ -76,7 +76,7 @@ class LocalBGEEmbeddings(Embeddings):
         return embed_query_sync(text).dense
 
 
-def _judge(kind: str):
+def _judge(kind: str) -> tuple[Any, int]:
     """(RAGAS judge 래퍼, max_workers). 분기는 여기뿐 — tests/test_eval_llm_adapter.py가 고정한다."""
     from eval.llm_langchain import LlmClientChatModel
 
@@ -176,7 +176,7 @@ class _Scorer:
                 embeddings=self.emb,
                 run_config=self.run_config,
             )
-            part = res.to_pandas()
+            part = res.to_pandas()  # type: ignore[union-attr]  # return_executor를 안 쓰면 EvaluationResult다
             part.insert(0, "id", [r["id"] for r in chunk])
             part = part.set_index("id")
             keep = [c for c in part.columns if c in cols or c in ("user_input", "response", "reference")]

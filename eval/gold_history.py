@@ -38,12 +38,13 @@ gold가 값을 실었으면 그대로 통과시킨다 — 어댑터를 안 고�
 실행: python -m eval.gold_history        # 계약 스모크 (DB·LLM 불필요)
 """
 
+from eval.rows import ConversationTurn
 from rag.models import Message
 
 DEFAULT_STATUS = 'done'  # 운영 DB의 컬럼 기본값과 같다 (rag/models.py) — 위 docstring 참조
 
 
-def messages_from_conversation(conversation: list[dict] | None) -> list[Message]:
+def messages_from_conversation(conversation: list[ConversationTurn] | None) -> list[Message]:
     """gold의 conversation을 condense_query·build_prior_turns가 받는 Message 리스트로.
 
     None·빈 리스트는 빈 리스트를 돌려준다 — 소비처의 "이력 없음" 경로와 같은 신호다.

@@ -23,7 +23,7 @@ def citation_match(core: str, stem: str) -> bool:
     return len(shorter) >= 4 and shorter in longer
 
 
-def citation_accuracy(answer: str, expected_docs: list[str], chunks: list[RetrievedChunk]) -> float:
+def citation_accuracy(answer: str, expected_docs: list[str | list[str]], chunks: list[RetrievedChunk]) -> float:
     r"""기대 문서 중 답변이 실제로 인용한 비율 (0..1).
 
     인용은 답변 끝 출처 꼬리(TAIL_START…TAIL_END, 번호 목록)에서 읽는다. 꼬리 분리·번호 해석은

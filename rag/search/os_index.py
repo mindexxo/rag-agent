@@ -6,22 +6,24 @@
 
 import json
 from collections import defaultdict
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from rag.identifiers import chunk_identifiers, effective_headings
 from rag.models import Document, Faq, Folder
-from rag.search.embeddings import embed_texts
+from rag.search.embeddings import Embedding, embed_texts
 from rag.search.faq_indexing import build_faq_chunk_text
 from rag.search.index_text import build_index_text
 from rag.search.lexical import bigrams
 from rag.search.os_client import LEX_BIGRAM_FIELD, NORI_FIELD, client
 
 
-def lex_text(text: str, filename: str | None, heading_path) -> str:
+def lex_text(text: str, filename: str | None, heading_path: list[str] | None) -> str:
     """어휘 필드 입력 — 문서는 '파일명>헤딩' 프리픽스, FAQ(filename=None)는 원문 그대로. 임베딩 입력과 같은 조립이다."""
     if filename is None:
         return text
@@ -38,17 +40,17 @@ def chunk_os_id(*, document_id: int | None = None, faq_id: int | None = None, ch
         raise ValueError(f'chunk_index {chunk_index}가 20비트 상한(1,048,575)을 넘는다')
     if faq_id is not None:
         return -((faq_id << 20) | chunk_index)
-    return (document_id << 20) | chunk_index
+    return (cast(int, document_id) << 20) | chunk_index  # faq_id가 없으면 document_id가 있다(호출부 계약)
 
 
 def effective_searchable(
     *,
     is_faq: bool,
-    doc_is_active=None,
-    doc_status=None,
-    doc_is_searchable=None,
-    folder_is_searchable=None,
-    faq_is_active=None,
+    doc_is_active: bool | None = None,
+    doc_status: str | None = None,
+    doc_is_searchable: bool | None = None,
+    folder_is_searchable: bool | None = None,
+    faq_is_active: bool | None = None,
 ) -> bool:
     """검색 가능 판정의 **정의점** — 색인 시점에 계산해 `searchable` 플래그로 넣는다.
 
@@ -65,7 +67,7 @@ def effective_searchable(
 
 
 def build_doc(
-    chunk,
+    chunk: ParsedChunk,
     filename: str | None,
     version: int | None,
     *,
@@ -174,17 +176,17 @@ async def index_parsed_document(
     tenant_id: str,
     filename: str,
     version: int,
-    folder_id,
-    folder_name,
-    folder_description,
+    folder_id: int | None,
+    folder_name: str | None,
+    folder_description: str | None,
     searchable: bool,
-    chunks,
-    embeddings,
+    chunks: Sequence[Any],
+    embeddings: Sequence[Embedding],
 ) -> int:
     """파싱 결과를 색인한다. 옛 청크를 먼저 지운다 — 청크 수가 줄면 큰 chunk_index의 옛 청크가 꼬리로 남는다."""
     await _delete_by_terms('document_id', [document_id])
     docs = []
-    for c, e in zip(chunks, embeddings):
+    for c, e in zip(chunks, embeddings, strict=False):
         docs.append(
             build_doc(
                 ParsedChunk(
@@ -210,7 +212,7 @@ async def index_parsed_document(
 
 
 async def index_parsed_faq(
-    *, faq_id: int, tenant_id: str, text: str, question: str, searchable: bool, embedding
+    *, faq_id: int, tenant_id: str, text: str, question: str, searchable: bool, embedding: Embedding
 ) -> int:
     """FAQ 청크 색인. 항목당 청크 1개라 chunk_index는 0 고정이다."""
     await _delete_by_terms('faq_id', [faq_id])
@@ -233,15 +235,15 @@ async def index_parsed_faq(
     return await bulk_index([doc])
 
 
-async def drop_documents_now(document_ids) -> int:
+async def drop_documents_now(document_ids: Iterable[int]) -> int:
     return await _delete_by_terms('document_id', list(document_ids))
 
 
-async def drop_faqs_now(faq_ids) -> int:
+async def drop_faqs_now(faq_ids: Iterable[int]) -> int:
     return await _delete_by_terms('faq_id', list(faq_ids))
 
 
-async def index_faq_chunks(session, faq_id: int) -> int:
+async def index_faq_chunks(session: AsyncSession, faq_id: int) -> int:
     """INDEX_FAQ 핸들러 — FAQ 행에서 텍스트를 조립해 임베딩·색인한다. 행이 없으면(삭제됨) 0."""
     faq = (await session.execute(select(Faq).where(Faq.id == faq_id))).scalars().first()
     if faq is None:
@@ -258,7 +260,7 @@ async def index_faq_chunks(session, faq_id: int) -> int:
     )
 
 
-async def sync_meta_documents_now(session, document_ids) -> int:
+async def sync_meta_documents_now(session: AsyncSession, document_ids: Iterable[int]) -> int:
     """문서 메타(검색가능·폴더) 부분 갱신. 폴더 변경이면 호출부가 그 폴더의 document_ids를 넘긴다.
 
     같은 메타 값을 갖는 문서끼리 묶어 갱신 호출 수를 줄인다.
@@ -306,7 +308,7 @@ async def sync_meta_documents_now(session, document_ids) -> int:
     return n
 
 
-async def sync_meta_faqs_now(session, faq_ids) -> int:
+async def sync_meta_faqs_now(session: AsyncSession, faq_ids: Iterable[int]) -> int:
     """FAQ 활성 토글 부분 갱신."""
     rows = (await session.execute(select(Faq.id, Faq.is_active).where(Faq.id.in_(list(faq_ids))))).all()
     groups = defaultdict(list)

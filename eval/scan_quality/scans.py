@@ -49,8 +49,8 @@ SPECS = [
 def degrade(img: Image.Image, spec: ScanSpec, rng: np.random.Generator) -> Image.Image:
     im = img.convert('L')
     if spec.rotate:
-        im = im.rotate(spec.rotate, resample=Image.BICUBIC, expand=False, fillcolor=255)
-    a = np.asarray(im).astype(np.float32)
+        im = im.rotate(spec.rotate, resample=Image.Resampling.BICUBIC, expand=False, fillcolor=255)
+    a: np.ndarray = np.asarray(im).astype(np.float32)
     if spec.uneven:  # 왼쪽 위가 최대 60 어둡고 오른쪽 아래로 갈수록 밝다
         h, w = a.shape
         g = (np.linspace(0, 1, w)[None, :] + np.linspace(0, 1, h)[:, None]) / 2

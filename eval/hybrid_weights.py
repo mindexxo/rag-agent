@@ -29,6 +29,7 @@ import contextlib
 import contextvars
 import json
 import random
+from collections.abc import Iterator
 from pathlib import Path
 
 import rag.search.reranker
@@ -51,7 +52,7 @@ _CURRENT: contextvars.ContextVar[tuple[dict, dict, list[float]]] = contextvars.C
 
 
 @contextlib.contextmanager
-def _patched():
+def _patched() -> Iterator[None]:
     """운영 retrieve_candidates의 **단계 함수만** 지금 레코드(_CURRENT)의 캡처값으로 바꾼다 — 조립·정렬·가산·자르기는 운영 코드가
     실제로 돈다. 그래서 ① 확인은 '재생 조립 = 운영 조립'만 보고, 공유 색인이 캡처 뒤에 바뀌어도(다른 세션의 업로드 — BM25 IDF는
     인덱스 전체라 남의 테넌트 문서에도 점수가 움직인다) 흔들리지 않는다. 레코드별 값은 ContextVar라 gather에도
@@ -109,7 +110,8 @@ def _patched():
 
 
 async def _production_ids(rec: dict) -> list[int]:
-    cands = await rag.search.retriever.retrieve_candidates(None, rec["tenant"], rec["query"], top_n=hr.TOP_N)
+    # 세션은 쓰이지 않는다 — 세션을 쓰는 단계(_chunk_map)는 _patched가 캡처값으로 바꿔 둔다
+    cands = await rag.search.retriever.retrieve_candidates(None, rec["tenant"], rec["query"], top_n=hr.TOP_N)  # type: ignore[arg-type]
     return [c.chunk_id for c in cands.chunks]
 
 

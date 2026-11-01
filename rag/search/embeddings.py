@@ -8,7 +8,7 @@
 """
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import httpx
 
@@ -60,7 +60,7 @@ def _vendor_kwargs(kind: Kind) -> dict:
     return kw
 
 
-def _from_vendor(resp, n: int) -> list[Embedding]:
+def _from_vendor(resp: Any, n: int) -> list[Embedding]:
     """LiteLLM 응답 → 입력 순서의 Embedding. 응답 index로 정렬하고 개수·차원을 검사한다."""
     rows = sorted(resp.data, key=lambda d: d["index"])
     if len(rows) != n:

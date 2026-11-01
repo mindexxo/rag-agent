@@ -4,7 +4,7 @@
 호출부 계약: 빈 문자열 q는 None으로 접어서 넘길 것 — '%%'는 전건 매칭이라 필터를 건 척만 한다.
 """
 
-from sqlalchemy import or_, select, true
+from sqlalchemy import ColumnElement, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rag.models import Conversation, Message
@@ -31,7 +31,7 @@ def _build_snippet(content: str, q: str) -> str | None:
     return f'{prefix}{content[start:end]}{suffix}'
 
 
-def search_filter(tenant_id: str, q: str | None):
+def search_filter(tenant_id: str, q: str | None) -> ColumnElement[bool]:
     """제목 또는 대화 내용 부분일치 필터. q=None이면 필터 없음.
 
     메시지 매칭은 JOIN이 아니라 EXISTS다 — 한 대화에 여러 건이 걸려도 대화 행이 하나라 total이 부풀지 않는다.

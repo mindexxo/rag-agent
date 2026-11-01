@@ -18,7 +18,7 @@ from rag.turn.turn_state import sweep_stale_generating as _sweep_generating
 logger = logging.getLogger(__name__)
 
 
-async def ping(ctx):
+async def ping(ctx: dict) -> str:
     return "pong"
 
 
@@ -40,7 +40,7 @@ def _start_metrics_server() -> None:
         logger.info('워커 지표 서버 기동 — %s:%d/metrics', host, port)
 
 
-async def startup(ctx):
+async def startup(ctx: dict) -> None:
     """워커 지표 노출 + 검색 인덱스 보장.
 
     워커가 웹보다 먼저 떠 없는 인덱스에 색인하면 동적 매핑으로 굳으므로 먼저 보장한다. 엔진에 못 붙어도 기동은 한다.
@@ -49,11 +49,11 @@ async def startup(ctx):
     await os_client.ensure_index_soft()
 
 
-async def shutdown(ctx):
+async def shutdown(ctx: dict) -> None:
     await os_client.close_client()
 
 
-async def sweep_stale_cache(ctx):
+async def sweep_stale_cache(ctx: dict) -> None:
     """미히트 캐시 청소 — cache_retention_days 지난 행 삭제. 일 1회."""
     async with AsyncSessionLocal() as session:
         deleted = await cache.sweep_stale(session)
@@ -62,7 +62,7 @@ async def sweep_stale_cache(ctx):
         logger.info('미히트 캐시 %d행 삭제 (보존 %d일)', deleted, settings.cache_retention_days)
 
 
-async def sweep_stale_generating(ctx):
+async def sweep_stale_generating(ctx: dict) -> None:
     """고착 generating 턴 회수 — 웹 프로세스가 생성 도중 죽어 남은 자리표시를 생성과 무관한 워커가 정리한다."""
     async with AsyncSessionLocal() as session:
         swept = await _sweep_generating(session)
@@ -71,7 +71,7 @@ async def sweep_stale_generating(ctx):
         logger.info('고착 generating %d행을 failed로 정리', swept)
 
 
-async def drain_search_index_outbox(ctx):
+async def drain_search_index_outbox(ctx: dict) -> None:
     """색인 대기열 드레인 — 인제스션을 포함한 **모든 색인 작업의 유일한 처리 경로**(규약은 rag/outbox.py)."""
     r = await outbox.drain_once()
     if r.get('done') or r.get('failed'):

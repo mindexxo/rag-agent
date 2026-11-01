@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 import openpyxl
 from docx import Document as DocxDocument
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from openpyxl.styles import Alignment, PatternFill
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -41,7 +42,7 @@ _CELL = ParagraphStyle('c', fontName='HYGothic-Medium', fontSize=9, leading=12)
 _INTRO = '아래 표는 사내 기준을 정리한 것이다.'  # 쪽에 글자가 표만 있으면 레이아웃 모델이 흔들려 짧은 본문을 둔다
 
 
-def _span_cells(rows: list[list[Any]]):
+def _span_cells(rows: list[list[Any]]) -> list[tuple[int, int, int, int]]:
     """(r, c, rs, cs) 목록 — 병합 원점만."""
     out = []
     for r, row in enumerate(rows):
@@ -121,7 +122,7 @@ def _rl_style(rows: list[list[Any]], style_kind: str) -> list[tuple]:
     return style
 
 
-def _rl_table(rows: list[list[Any]], *, nested_ok: bool = True, style_kind: str = 'grid'):
+def _rl_table(rows: list[list[Any]], *, nested_ok: bool = True, style_kind: str = 'grid') -> Table:
     """style_kind: grid(격자) · hlines(가로선만 — 테두리 없는 표) · striped(헤더 음영 + 짝수 행 연한 회색)."""
     data = []
     for row in rows:
@@ -160,7 +161,7 @@ def build_text_pdf(spec: dict[str, Any], out: Path, context: bool = False) -> Pa
 # ── docx ────────────────────────────────────────────────────────────────────────
 
 
-def _docx_fill(table: DocxTable, rows: list[list[Any]]):
+def _docx_fill(table: DocxTable, rows: list[list[Any]]) -> None:
     for r, row in enumerate(rows):
         for c, cell in enumerate(row):
             if cell is None:
@@ -214,19 +215,19 @@ def build_docx(spec: dict[str, Any], out: Path, context: bool = False) -> Path:
         d.add_paragraph(spec['note'])
     if context:
         if cb['caption']:
-            d.add_paragraph(cb['caption']).alignment = 1
+            d.add_paragraph(cb['caption']).alignment = WD_ALIGN_PARAGRAPH.CENTER
         d.add_paragraph(cb['after'])
         d.add_heading('3. 문의', level=2)
         d.add_paragraph(cb['contact'])
     p = out / f"{spec['id']}.docx.docx"
-    d.save(p)
+    d.save(str(p))
     return p
 
 
 # ── xlsx ────────────────────────────────────────────────────────────────────────
 
 
-def _xlsx_value(cell: Any, typed: bool):
+def _xlsx_value(cell: Any, typed: bool) -> Any:
     if cell is None:
         return None
     raw = cell.get('t') if isinstance(cell, dict) else cell
@@ -242,7 +243,7 @@ def _xlsx_fill(
     typed: bool,
     at: tuple[int, int] = (0, 0),
     striped: bool = False,
-):
+) -> None:
     """at — 표 왼쪽 위 칸의 (행, 열) 오프셋."""
     row_offset, col_offset = at
     for r, row in enumerate(rows, start=1 + row_offset):

@@ -27,11 +27,11 @@ from rag.search import os_client, os_index
 from rag.search.os_client import client
 
 
-def _tenant_term(tenant_id):
+def _tenant_term(tenant_id: str | None) -> dict:
     return {"term": {"tenant_id": tenant_id}} if tenant_id else {"match_all": {}}
 
 
-async def _indexed_parent_ids(field: str, tenant_id) -> set[int]:
+async def _indexed_parent_ids(field: str, tenant_id: str | None) -> set[int]:
     """색인에 있는 부모 id 집합(document_id 또는 faq_id) — terms 집계. 반드시 PG보다 **먼저** 읽는다.
 
     집계 size가 상한이다 — 한 테넌트(전체 실행이면 전체)의 부모 id가 65,536개를 넘으면 그 너머는 "색인에 없음"으로
@@ -44,7 +44,7 @@ async def _indexed_parent_ids(field: str, tenant_id) -> set[int]:
     return {int(b["key"]) for b in agg["aggregations"]["p"]["buckets"]}
 
 
-async def reconcile(session, tenant_id: str | None = None) -> dict:
+async def reconcile(session: AsyncSession, tenant_id: str | None = None) -> dict:
     """PG↔OS 문서 단위 재동기화 — 누락은 ready 기준, 잉여는 살아 있는 문서 기준(모듈 docstring). OS를 PG보다 먼저 읽는다.
 
     tenant_id가 없으면 전체. 반환: {'pg': ready 문서 수, 'os': 색인 문서 수, 'indexed': 재등재 수, 'deleted': 삭제 청크 수}.
@@ -68,7 +68,7 @@ async def reconcile(session, tenant_id: str | None = None) -> dict:
     return {'pg': len(pg_docs), 'os': len(os_docs), 'indexed': len(missing), 'deleted': deleted, 'unit': 'document'}
 
 
-async def reconcile_faqs(session, tenant_id: str | None = None) -> dict:
+async def reconcile_faqs(session: AsyncSession, tenant_id: str | None = None) -> dict:
     """reconcile()의 FAQ 짝(OS 먼저). 비활성 FAQ도 searchable=False로 색인되므로 PG의 모든 FAQ 행과 대조한다."""
 
     os_faqs = await _indexed_parent_ids("faq_id", tenant_id)
@@ -77,7 +77,7 @@ async def reconcile_faqs(session, tenant_id: str | None = None) -> dict:
         stmt = stmt.where(Faq.tenant_id == tenant_id)
     pg_rows = (await session.execute(stmt)).all()
     pg_faqs = {fid for fid, _ in pg_rows}
-    tenant_of = dict(pg_rows)
+    tenant_of = {pid: tenant for pid, tenant in pg_rows}
 
     missing, extra = pg_faqs - os_faqs, os_faqs - pg_faqs
     if missing:
@@ -98,7 +98,9 @@ async def _pg_documents(session: AsyncSession, tenant_id: str | None) -> tuple[s
     return ready, {did for did, _, _ in rows}, {did: tid for did, tid, _ in rows}
 
 
-async def _diff(session, tenant_id):
+async def _diff(
+    session: AsyncSession, tenant_id: str | None
+) -> tuple[tuple[set[int], set[int]], tuple[set[int], set[int]]]:
     """reconcile과 같은 순서(OS 먼저)·같은 기준으로 문서·FAQ 두 집합의 차이를 읽기만 한다."""
     os_docs = await _indexed_parent_ids("document_id", tenant_id)
     os_faqs = await _indexed_parent_ids("faq_id", tenant_id)

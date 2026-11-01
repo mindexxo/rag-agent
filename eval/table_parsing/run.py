@@ -40,6 +40,7 @@ from eval.table_parsing.specs import BY_ID, PATH_LABEL
 if TYPE_CHECKING:
     from docling_core.types.doc import DoclingDocument
 
+    from rag.chunking.document_converter import ConvertKwargs
     from rag.chunking.types import ChunkData
 
 PATHS = ('img', 'pdf', 'docx', 'xlsx')
@@ -65,10 +66,12 @@ def _score_pair(
     return l1, l2, actual_l2
 
 
-def _convert_and_chunk(path_file: Path, path: str):
-    doc = ch.convert_process.convert_local(path_file, **({'max_num_pages': 100} if path in ('img', 'pdf') else {}))
+def _convert_and_chunk(path_file: Path, path: str) -> tuple[DoclingDocument, list[ChunkData] | Exception]:
+    kwargs: ConvertKwargs = {'max_num_pages': 100} if path in ('img', 'pdf') else {}
+    doc = ch.convert_process.convert_local(path_file, **kwargs)
     orig = ch.convert_process.docling_convert
     ch.convert_process.docling_convert = lambda p, **k: doc  # 같은 변환 결과로 청킹(두 번 변환 안 함)
+    chunks: list[ChunkData] | Exception
     try:
         chunks = ch.chunk_file(path_file, description='표') if path == 'xlsx' else ch.chunk_file(path_file)
     except Exception as e:  # noqa: BLE001 — 청킹 실패도 결과다(L2만)
@@ -122,7 +125,9 @@ def _row(
 
 def _matrix(rows: list[dict[str, Any]], layer: str) -> str:
     """축 × 경로 — 칸: 셀 일치/전체 (숫자 일치/전체) + 오류 유형. 같은 축의 표들(짝 2개·나란히·중첩)을 합친다."""
-    agg = defaultdict(lambda: dict(c=[0, 0], n=[0, 0], kinds=set(), present=[0, 0], clean=True))
+    agg: defaultdict[tuple[str, str], dict[str, Any]] = defaultdict(
+        lambda: dict(c=[0, 0], n=[0, 0], kinds=set(), present=[0, 0], clean=True)
+    )
     for r in rows:
         if r['layer'] != layer:
             continue
@@ -140,13 +145,13 @@ def _matrix(rows: list[dict[str, Any]], layer: str) -> str:
     for ax in axes:
         cells = []
         for p in PATHS:
-            a = agg.get((ax, p))
-            if a is None:
+            got = agg.get((ax, p))
+            if got is None:
                 cells.append('—')
                 continue
-            c, n, pr = a['c'], a['n'], a['present']
-            mark = '✅' if a['clean'] else ('⚠️' if pr[0] == pr[1] else '❌')
-            kinds = f" {'·'.join(sorted(a['kinds']))}" if a['kinds'] else ''
+            c, n, pr = got['c'], got['n'], got['present']
+            mark = '✅' if got['clean'] else ('⚠️' if pr[0] == pr[1] else '❌')
+            kinds = f" {'·'.join(sorted(got['kinds']))}" if got['kinds'] else ''
             cells.append(f"{mark} {c[0]}/{c[1]} (숫자 {n[0]}/{n[1]}){kinds}")
         lines.append(f'| {ax} | ' + ' | '.join(cells) + ' |')
     lines += [

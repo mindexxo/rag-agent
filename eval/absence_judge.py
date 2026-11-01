@@ -65,7 +65,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel
 
@@ -132,7 +132,9 @@ def judge_llm() -> LlmClient:
     if judge == "claude":
         from eval.claude_client import ClaudeCliClient
 
-        return ClaudeCliClient(model=os.getenv("CLAUDE_MODEL", "sonnet"))
+        return cast(
+            'LlmClient', ClaudeCliClient(model=os.getenv("CLAUDE_MODEL", "sonnet"))
+        )  # acomplete만 쓰는 판정 경로의 대체 주입
     if judge != "vllm":  # 외부 judge는 별도 값이 아니라 설정 공급자(LLM_PROVIDER)로 — 값 이름 'vllm'은 호환 유지
         raise SystemExit(
             f"ABSENCE_JUDGE={judge} — vllm(설정 공급자)|claude 만 지원. 외부 judge는 LLM_PROVIDER를 바꾼다(#290)"

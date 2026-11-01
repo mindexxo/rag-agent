@@ -21,6 +21,7 @@ import math
 import os
 import re
 from collections import defaultdict
+from collections.abc import Mapping
 from pathlib import Path
 
 from config import settings
@@ -30,6 +31,7 @@ from eval._gold_history import messages_from_conversation
 from eval.absence_judge import judge_llm
 from eval.misinfo_judge import confirm_violations
 from eval.retrieval import resolve_gold
+from eval.rows import GoldRow
 from rag.llm import LlmClient, aux_overridden, create_aux_llm, create_llm
 from rag.search.embeddings import embed_texts_sync
 from rag.search.retrieval_types import RetrievedChunk
@@ -47,7 +49,7 @@ GOLD_VERSION = "v2"
 GOLD_PRIVATE_DIR = Path("eval/gold_private")
 
 
-def load_gold() -> list[dict]:
+def load_gold() -> list[GoldRow]:
     """정본 gold_set_v2 + eval/gold_private/*.jsonl(있으면)을 합쳐 돌려준다.
 
     실문서 골드는 회사 비공개 자료의 원문 발췌를 담으므로 공개 저장소에 올리지 않는다 —
@@ -62,7 +64,7 @@ def load_gold() -> list[dict]:
     return rows
 
 
-def row_tenant(g: dict) -> str:
+def row_tenant(g: GoldRow) -> str:
     """gold 문항의 테넌트 — id 접두(summers_sf001 등), v1 형식이면 demo."""
     prefix = g["id"].split("_")[0]
     return prefix if prefix in V2_TENANTS else TENANT
@@ -642,7 +644,7 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, e
     return rows
 
 
-def _smoke_sample(rows: list[dict], n: int) -> list[dict]:
+def _smoke_sample[R: Mapping[str, object]](rows: list[R], n: int) -> list[R]:
     """스모크셋 — 타입별로 고르게 뽑는다 (#77).
 
     옛 구현은 `rows[:n]`이었다. gold는 테넌트 블록이 이어진 순서라 앞에서 자르면 앞쪽
@@ -657,7 +659,7 @@ def _smoke_sample(rows: list[dict], n: int) -> list[dict]:
     import math
     from collections import defaultdict
 
-    by_type: dict[str, list[dict]] = defaultdict(list)
+    by_type: dict[object, list[R]] = defaultdict(list)
     for r in rows:
         by_type[r["type"]].append(r)
     per = max(1, math.ceil(n / len(by_type))) if by_type else 0

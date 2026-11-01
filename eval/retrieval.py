@@ -1,11 +1,14 @@
 """검색 채점 공용부 — 골드의 안정 키(파일명·스니펫)를 현재 문서·청크 id로 바꾸고, 한 문항의 Recall@k·Hit@1·MRR을 계산한다."""
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
+from eval.rows import ExpectedChunk, GoldRow
 from rag.models import Document
 from rag.search import os_client
 
@@ -28,7 +31,7 @@ def _norm_snippet(text: str) -> str:
 
 
 def match_expected_chunks(
-    chunk_rows: list[tuple[int, list[str], str]], expected_chunks: list[dict]
+    chunk_rows: list[tuple[int, list[str], str]], expected_chunks: list[ExpectedChunk]
 ) -> tuple[list[int], set[int], list[str]]:
     """expected_chunks → (주 정답 id 목록, 채점용 id 집합, 못 찾은 스니펫 목록). DB 없는 순수 함수 — 테스트는 튜플만 먹인다.
 
@@ -68,7 +71,7 @@ async def _indexed_chunks(document_id: int) -> list[tuple[int, list[str], str]]:
 
 
 # 안정 키 -> 현재 id
-async def resolve_gold(session, tenant_id, gold_rows) -> Resolved:
+async def resolve_gold(session: AsyncSession, tenant_id: str, gold_rows: Sequence[GoldRow]) -> Resolved:
     """gold set의 안정 키(filename/heading_path/snippet)를 현재 id로 resolve.
 
     gold는 id가 아닌 내용 기준 안정 키로 정답을 적어둔다 (재인제스천마다 id가

@@ -15,6 +15,7 @@ from collections.abc import Collection, Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from config import settings
 from database import AsyncSessionLocal
@@ -27,6 +28,9 @@ from rag.search.embeddings import embed_texts
 from rag.search.os_client import client
 from rag.search.os_search import knn_clause, tenant_filter
 from rag.search.retriever import retrieve_candidates
+
+if TYPE_CHECKING:
+    from eval.rows import GoldRow
 
 POOL = 30  # 운영 candidates_per_branch(rag/search/retriever.retrieve_candidates)
 
@@ -63,7 +67,7 @@ def _first_rank(ranked: list[int], gold: Collection[int]) -> int | None:
     return next((i + 1 for i, c in enumerate(ranked) if c in gold), None)
 
 
-async def _pool_compare(gold_rows: list[dict], gold_ids: dict[str, set[int]]) -> list[dict]:
+async def _pool_compare(gold_rows: list[GoldRow], gold_ids: dict[str, set[int]]) -> list[dict]:
     """ⓐ — 문항마다 근사·정확 상위 30."""
     out = []
     vecs = await embed_texts([g['query'] for g in gold_rows], kind="query")
@@ -123,7 +127,7 @@ def _pool_summary(rows: list[dict]) -> dict:
 
 
 async def _regressions(
-    cond: str, rows: list[dict], base: dict[str, dict], gold: dict[str, dict], gold_ids: dict[str, set[int]]
+    cond: str, rows: list[dict], base: dict[str, dict], gold: dict[str, GoldRow], gold_ids: dict[str, set[int]]
 ) -> list[str]:
     lines = []
     async with AsyncSessionLocal() as session:
@@ -160,7 +164,7 @@ def _signature(cond: str) -> str:
     return f"{info['built']}|{info['total']}|{info['noise_chunks']}"
 
 
-async def _gold_ids(gold_rows: list[dict]) -> dict[str, set[int]]:
+async def _gold_ids(gold_rows: list[GoldRow]) -> dict[str, set[int]]:
     """지금 조건의 인덱스로 정답 조각을 푼다(문항 id → 스니펫 포함 조각 전부)."""
     async with AsyncSessionLocal() as session:
         resolved = await resolve_gold(session, TENANT, gold_rows)
@@ -185,7 +189,7 @@ def _load_result(path: Path) -> dict:
     return result
 
 
-async def _measure_cond(cond: str, result: dict, path: Path, gold_rows: list[dict]) -> dict[str, set[int]]:
+async def _measure_cond(cond: str, result: dict, path: Path, gold_rows: list[GoldRow]) -> dict[str, set[int]]:
     """한 조건의 ⓐ·ⓑ — 빌드가 바뀌었으면 처음부터, 이미 잰 단계는 건너뛰고 단계마다 저장한다. → 그 조건의 정답 조각."""
     sig = _signature(cond)
     if result['signature'].get(cond) != sig:  # 빌드가 바뀌었으면 그 조건은 처음부터
@@ -205,7 +209,7 @@ async def _measure_cond(cond: str, result: dict, path: Path, gold_rows: list[dic
 
 
 async def _all_regressions(
-    result: dict, gold_rows: list[dict], gold_ids_by_cond: dict[str, dict[str, set[int]]]
+    result: dict, gold_rows: list[GoldRow], gold_ids_by_cond: dict[str, dict[str, set[int]]]
 ) -> list[str]:
     """저장된 **모든** 조건의 회귀 덤프 줄 — 일부 조건만 다시 재도 앞선 조건의 덤프가 사라지지 않게(리뷰 지적 2).
     상위 5는 채점과 별도로 다시 검색한 것이라 TEI 흔들림(1.4e-4)만큼 순위가 다를 수 있다."""

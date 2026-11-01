@@ -157,7 +157,9 @@ def evaluate(rec: dict, final: list[RetrievedChunk], chunks: dict[int, Retrieved
             any(c.chunk_id in gold for c in evidence)
             or any(g in chunks and chunks[g].is_table and table_identity(chunks[g]) in tables for g in gold)
         )
-    return {**score_one([c.chunk_id for c in final], rec["gold_ids"]), "in_evidence": in_ev}
+    scores = score_one([c.chunk_id for c in final], rec["gold_ids"])
+    assert scores is not None
+    return {**scores, "in_evidence": in_ev}
 
 
 # ----- 진단 (2단계, 가중치 없이) -----------------------------------------------
@@ -263,7 +265,7 @@ def compare(
     for r in recs:
         groups[r[key]].append(r["qid"])
         groups["(전체)"].append(r["qid"])
-    out = {}
+    out: dict = {}
     for cond in conds:
         got = scores_of(cond)
         out[cond.name] = {}

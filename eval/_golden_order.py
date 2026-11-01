@@ -65,7 +65,7 @@ def _cases() -> Iterator[tuple[str, str, list[str] | None, bool]]:
                 yield q, label, exp, rerank_on
 
 
-async def main():
+async def main() -> None:
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -84,7 +84,7 @@ async def main():
     # rag.search.reranker의 이름을 패치하므로, max-pool이 reranker.py로 이관돼도 그대로 먹는다.
     import rag.search.reranker as rr
 
-    async def _fake_scores(query: str, chunks: list):
+    async def _fake_scores(query: str, chunks: list) -> list[float]:
         # query·청크쌍마다 결정적 점수. 순위가 dense 순서와 확실히 달라지게 섞는다.
         return [
             int.from_bytes(hashlib.sha256(f'{query}|{c.chunk_id}'.encode()).digest()[:4], 'big') / 2**32 for c in chunks

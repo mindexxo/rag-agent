@@ -26,9 +26,13 @@ import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 from eval.absence_judge import judge_absence
 from eval.claude_client import ClaudeCliClient
+
+if TYPE_CHECKING:
+    from rag.llm import LlmClient
 
 CONCURRENCY = 4  # claude -p 콜=서브프로세스라 동시 호출을 낮게 둔다
 RESULT_DIR = Path(__file__).resolve().parent / "results"
@@ -45,7 +49,7 @@ async def _claude_label(
     """
     async with sem:
         try:
-            v = await judge_absence(claude, query, answer)
+            v = await judge_absence(cast('LlmClient', claude), query, answer)
             return v.label == "absence_assertion", v.reason
         except Exception as exc:
             return None, f"판정 불가: {type(exc).__name__}: {exc}"

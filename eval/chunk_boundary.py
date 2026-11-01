@@ -37,6 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from eval.chunk_invariants import norm, stitch  # noqa: E402 — 비교 정규화·이어 붙이기의 정의점
+from eval.rows import GoldRow
 from rag.chunking import TABLE_NOTE  # noqa: E402 — 표 주석 표지의 정의점
 from rag.identifiers import is_heading_line  # noqa: E402 — 조 제목 판정의 정의점
 
@@ -148,7 +149,9 @@ def _table_runs(chunks: list[dict]) -> list[list[int]]:
     이나 표 행으로 바로 시작하는 조각(MD·TXT 표를 분할기가 자른 뒤 조각)이 이어진다. 머리 행이 같은지만으로 묶으면 MD 표의 뒤
     조각(머리 행 없음)이 빠지고, 표 행이 든 조각이면 다 묶으면 이웃한 다른 표끼리 묶인다(실문서 부칙·별지 오탐, 10/18). 그래서
     다른 머리 행 + 구분 행으로 시작하는 조각은 새 표로 본다."""
-    runs, cur, header = [], [], None
+    runs: list[list[int]] = []
+    cur: list[int] = []
+    header = None
     for i, c in enumerate(chunks):
         lines = _lines(c['text'])
         rows = [line for line in lines if _is_row(line)]
@@ -204,7 +207,9 @@ def _table_losses(chunks: list[dict]) -> list[dict]:
 def census(docs: dict[str, list[dict]]) -> dict:
     """문서별 조각 목록 → 경계 분류 건수·맥락 손실 후보(예시 포함). XLSX는 둘 다 세지 않는다(_table_losses docstring과 같은 이유). 맥락 손실은 (문서, 종류, 잃은 줄) 하나를 한 건으로 센다 —
     표 하나의 설명 한 줄이 묶음 다섯에서 빠져도 한 건이다(묶음 수만큼 세면 큰 표 하나가 수치를 지배한다)."""
-    bounds, losses, examples = Counter(), Counter(), []
+    bounds: Counter[str] = Counter()
+    losses: Counter[str] = Counter()
+    examples: list = []
     for name, chunks in docs.items():
         sheet = name.lower().endswith('.xlsx')
         for a, b in zip(chunks, chunks[1:], strict=False):
@@ -232,11 +237,12 @@ def census(docs: dict[str, list[dict]]) -> dict:
     return {'boundaries': dict(bounds), 'context_losses': dict(losses), 'examples': examples}
 
 
-def gold_spans(docs: dict[str, list[dict]], gold: list[dict]) -> dict:
+def gold_spans(docs: dict[str, list[dict]], gold: list[GoldRow]) -> dict:
     """골드 정답 스니펫이 조각 하나 안에 있나 / 이웃 조각을 이어야만 있나(경계에 걸림) / 아예 없나. docs 키는 '<테넌트>/<파일명>'."""
     from eval.generation import row_tenant
 
-    out, spans = Counter(), []
+    out: Counter[str] = Counter()
+    spans: list = []
     for g in gold:
         for e in g.get('expected_chunks') or []:
             sn = norm(e['snippet'])
@@ -256,7 +262,7 @@ async def _from_index() -> dict[str, list[dict]]:
     from eval.generation import V2_TENANTS
     from rag.search.os_client import close_client
 
-    docs = {}
+    docs: dict[str, list[dict]] = {}
     try:
         for t in sorted(V2_TENANTS):
             for c in sorted(await load_chunks(t), key=lambda c: c['chunk_id']):

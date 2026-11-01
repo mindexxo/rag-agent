@@ -24,6 +24,8 @@ if TYPE_CHECKING:
     from docling_core.types.doc import BoundingBox, DoclingDocument, NodeItem, PictureItem
     from PIL import Image
 
+    from rag.chunking.document_converter import ConvertKwargs
+
 type Convert = Callable[..., DoclingDocument]  # 문서 변환 함수(테스트 주입용)
 
 _WS = re.compile(r'\s+')
@@ -73,7 +75,7 @@ def area_threshold() -> float:
     return settings.vlm_caption_area_threshold
 
 
-def _pdf_crop(pdf_path: Path, page_no: int, bbox: BoundingBox, page_h: float, scale: float):
+def _pdf_crop(pdf_path: Path, page_no: int, bbox: BoundingBox, page_h: float, scale: float) -> Image.Image:
     import pypdfium2
 
     pdf = pypdfium2.PdfDocument(str(pdf_path))
@@ -133,7 +135,8 @@ def extract_document(
 
     fmt = path.suffix.lower().lstrip('.')
     convert = convert or ch.docling_convert
-    doc = convert(path, **({'max_num_pages': 100} if fmt == 'pdf' else {}))
+    kwargs: ConvertKwargs = {'max_num_pages': 100} if fmt == 'pdf' else {}
+    doc = convert(path, **kwargs)
     index_text = norm('\n'.join(chunk_texts))
     threshold = area_threshold()
     out: list[PictureRecord] = []

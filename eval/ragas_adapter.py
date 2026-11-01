@@ -17,6 +17,7 @@ context_precision/recall은 reference 필요 → 현재 expected_points 기반(�
 
 import json
 from pathlib import Path
+from typing import Any
 
 from ragas import EvaluationDataset
 
@@ -78,7 +79,7 @@ if __name__ == "__main__":
     for mode in ("retrieved", "oracle"):
         ds = build_dataset(mode)
         print(f"=== {mode}: {len(ds)} samples ===")
-        s = ds[0]
+        s: Any = ds[0]  # 표본 출력만 — 단일 턴 표본이다
         print("  user_input        :", s.user_input[:50])
         print("  response          :", s.response[:50])
         print("  retrieved_contexts:", len(s.retrieved_contexts), "개")

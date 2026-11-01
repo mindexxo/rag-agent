@@ -115,7 +115,7 @@ async def _score_pair(session: AsyncSession, llm: LlmClient, p: dict) -> dict:
 
 
 def _summarize(rows: list[dict]) -> dict:
-    by_kind = defaultdict(lambda: [0, 0])
+    by_kind: defaultdict[str, list[int]] = defaultdict(lambda: [0, 0])
     for r in rows:
         by_kind[r["kind"]][0] += r["ok"]
         by_kind[r["kind"]][1] += 1

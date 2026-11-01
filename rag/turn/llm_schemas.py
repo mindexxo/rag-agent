@@ -13,6 +13,7 @@
 import logging
 from typing import Literal
 
+from opentelemetry.trace import Span
 from pydantic import BaseModel, Field, ValidationError
 
 from rag import otel
@@ -83,9 +84,9 @@ def _extract_json_slice(raw: str) -> str:
     return raw[raw.index('{') : raw.rindex('}') + 1]
 
 
-async def acomplete_validated(
-    llm: LlmClient, messages: list[dict], model_cls: type[BaseModel], *, span=None
-) -> BaseModel:
+async def acomplete_validated[M: BaseModel](
+    llm: LlmClient, messages: list[dict], model_cls: type[M], *, span: Span | None = None
+) -> M:
     """스키마 강제 호출 + 검증. 검증 실패는 LlmJudgmentFailed(kms.schema_invalid 기록),
     호출 자체 실패(타임아웃·스키마 거부)는 그대로 전파한다. 호출부는 아무것도 잡지 않는다.
     """

@@ -36,6 +36,7 @@ from eval.absence_judge import JUDGE_PROMPT_VERSION, judge_absence, judge_llm, s
 from eval.generation import load_gold, must_not_contain_violations, row_tenant
 from eval.misinfo_judge import JUDGE_PROMPT_VERSION as MISINFO_JUDGE_VERSION
 from eval.misinfo_judge import confirm_violations
+from eval.rows import GoldRow
 from eval.turn_cleanup import discard_turn
 from rag.llm import LlmClient
 from rag.turn.citation_tail import TailSplitter, resolve_citations
@@ -98,7 +99,7 @@ async def _refused(tenant: str, query: str) -> tuple[bool, str, str]:
     return not answer_citations(prepared, answer), answer, prepared.route
 
 
-async def _judge_absence_row(llm: LlmClient, g: dict, refused: bool, answer: str, route: str) -> tuple:
+async def _judge_absence_row(llm: LlmClient, g: GoldRow, refused: bool, answer: str, route: str) -> tuple:
     """부재단정 판정 → (absence, reason, error). 판정 대상이 아니면 셋 다 None."""
     # 판정 게이트 2조건(route=='knowledge' · 인용 0건) — 사유는
     # eval/absence_judge.py 모듈 docstring이 정의점이다.
@@ -114,7 +115,7 @@ async def _judge_absence_row(llm: LlmClient, g: dict, refused: bool, answer: str
     return absence, absence_reason, absence_error
 
 
-async def _judge_misinfo_row(sem: asyncio.Semaphore, llm: LlmClient, g: dict, answer: str, route: str) -> tuple:
+async def _judge_misinfo_row(sem: asyncio.Semaphore, llm: LlmClient, g: GoldRow, answer: str, route: str) -> tuple:
     """오답단정 판정 → (확정 위반, 1단계 후보, 감사). knowledge가 아니면 위반·후보가 None."""
     # 오답단정 — trap이 "답했는가"만 재던 공백을 메운다: 낚인 값(must_not_contain)이
     # 답변에 실렸는지. route 게이트는 부재단정과 같은 이유(OTHER는 규칙 3 밖) —
@@ -124,14 +125,15 @@ async def _judge_misinfo_row(sem: asyncio.Semaphore, llm: LlmClient, g: dict, an
     )
     # 2단계: 문자열 후보가 있을 때만 LLM이 '단정'인지 '부정·정정'인지 가른다 — 문자열 일치만으론 오탐이 많다.
     # 같은 세마포어 안에서 돈다(LLM 동시 상한). 판정 실패는 위반 유지(fail-closed, misinfo_judge docstring).
-    misinfo, misinfo_audit = misinfo_candidates, []
+    misinfo = misinfo_candidates
+    misinfo_audit: list[dict] = []
     if misinfo_candidates:
         async with sem:
             misinfo, misinfo_audit = await confirm_violations(llm, answer, misinfo_candidates)
     return misinfo, misinfo_candidates, misinfo_audit
 
 
-async def _score_row(sem: asyncio.Semaphore, llm: LlmClient, g: dict) -> dict:
+async def _score_row(sem: asyncio.Semaphore, llm: LlmClient, g: GoldRow) -> dict:
     """한 문항을 파이프라인에 태우고 거절·부재단정·오답단정을 판정한다."""
     async with sem:
         refused, answer, route = await _refused(row_tenant(g), g["query"])
@@ -232,7 +234,7 @@ def _absence_summary(rows: list[dict], flaky: list, audit: Path) -> dict:
 
 
 def _summarize(rows: list[dict], flaky: list, audit: Path) -> dict:
-    by_type = defaultdict(lambda: [0, 0])  # type -> [ok, total]
+    by_type: defaultdict[str, list[int]] = defaultdict(lambda: [0, 0])  # type -> [ok, total]
     for r in rows:
         by_type[r["type"]][0] += r["ok"]
         by_type[r["type"]][1] += 1

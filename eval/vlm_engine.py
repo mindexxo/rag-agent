@@ -15,7 +15,7 @@ import os
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Unpack
+from typing import TYPE_CHECKING, Any, Unpack, cast
 from urllib.parse import urlsplit
 
 import rag.chunking as C
@@ -24,7 +24,7 @@ from rag.chunking.document_converter import ConvertKwargs
 
 if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter
-    from docling_core.types.doc import DoclingDocument
+    from docling_core.types.doc import DocItem, DoclingDocument
 
 PROMPT_V1 = (
     "이 쪽을 마크다운으로 옮겨 적어라. 표는 마크다운 표(| 칸 | 칸 |)로 — 병합된 칸은 그 값을 해당 칸마다 반복해 적고, 빈 칸은 비워 둔다. "
@@ -65,7 +65,7 @@ def build_converter() -> DocumentConverter:
     from docling.pipeline.vlm_pipeline import VlmPipeline
 
     opts = ApiVlmOptions(
-        url=settings.vlm_caption_url,
+        url=settings.vlm_caption_url,  # type: ignore[arg-type]  # pydantic이 str을 AnyUrl로 검증한다
         headers=C.document_converter.caption_headers(),
         prompt=PROMPT,
         response_format=ResponseFormat.MARKDOWN,
@@ -114,13 +114,13 @@ def _paced(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
-def _patch_requests():
+def _patch_requests() -> None:
     import docling.models.vlm_pipeline_models.api_vlm_model as M
 
     if not getattr(M, '_vlm296_patched', False):
         M.api_image_request = _paced(M.api_image_request)
         M.api_image_request_streaming = _paced(M.api_image_request_streaming)
-        M._vlm296_patched = True
+        M._vlm296_patched = True  # type: ignore[attr-defined]  # 실험용 런타임 패치 표식
 
 
 # 헤딩 조립 보정 — VLM이 '#'로 쓴 줄은 docling에서 title 라벨이 되는데 PDF 청킹(docling_elements.sections_from_docling_elements)은 section_header만
@@ -131,7 +131,8 @@ def _patch_requests():
 def _fix_headings(doc: DoclingDocument) -> DoclingDocument:
     from docling_core.types.doc import DocItemLabel
 
-    for item, _ in doc.iterate_items():
+    for node, _ in doc.iterate_items():
+        item = cast('DocItem', node)
         label = item.label.value if hasattr(item.label, 'value') else str(item.label)
         if label == 'title':
             item.label = DocItemLabel.SECTION_HEADER

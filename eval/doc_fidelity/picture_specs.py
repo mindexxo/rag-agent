@@ -14,7 +14,7 @@ VLM 경로를 타지 않는다. 분류가 어떻게 되는지도 결과의 일�
 
 from collections.abc import Mapping, Sequence
 from types import ModuleType
-from typing import TYPE_CHECKING, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 
 from PIL import Image, ImageDraw
 
@@ -444,7 +444,7 @@ FLOW_STOCK: FlowSpec = dict(
 
 # 그림 정의 — id: (문서 키, 그리는 함수, 정답). area는 PDF에 넣을 때 쪽 면적 대비 목표 비율(면적 하한 경계 시험용 —
 # P06 0.5%는 하한 1% 아래라 캡션이 없어야, P07 1.5%는 위라 붙어야 맞다).
-PICTURES = {
+PICTURES: dict[str, dict[str, Any]] = {
     'P01_bar': dict(
         doc='pdf',
         draw=lambda: bar_chart(

@@ -122,13 +122,19 @@ async def search_identifiers(tenant_id: str, tokens: list[str], limit: int) -> l
     return _ids(resp)
 
 
+# 어휘 채널에 넣는 질의 글자 상한. match는 토큰마다 절을 만들어 엔진 절 상한(1,024)을 넘거나, 같은 글자가 이어지면
+# 그래프 분석 재귀 한도에 걸려 400이 난다 — 같은 글자 반복이 가장 짧게(1,024자) 걸린다. dense 채널은 질의 전체를 쓴다.
+LEX_QUERY_MAX_CHARS = 1000
+
+
 async def search_lexical(tenant_id: str, query: str, limit: int) -> list[int]:
-    """어휘 채널 — BM25(Nori) 상위 limit개의 id.
+    """어휘 채널 — BM25(Nori) 상위 limit개의 id. 질의는 앞 LEX_QUERY_MAX_CHARS자만 쓴다.
 
     Nori 기본 사전은 고유명을 문맥에 따라 다르게 잘라 색인문과 질의문이 어긋날 수 있다(사용자 사전 없음).
     """
     if not query.strip():
         return []
+    query = query[:LEX_QUERY_MAX_CHARS]
     os_client = client()
     resp = await os_client.search(
         index=settings.opensearch_index,

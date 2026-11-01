@@ -78,7 +78,6 @@ async def test_query_길이_경계와_누락(client, tenant_id, fake_llm, pass_g
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(strict=True, reason='#385 어휘 검색이 약 3,400자부터 절 상한(1,024)에 걸려 500')
 async def test_상한_길이_실문장_질의도_SSE_200(client, tenant_id, fake_llm, pass_gate):
     """QRY-05 — 스키마 상한(4,000자)의 실문장 질의는 응답돼야 한다. 고쳐지면 xfail(strict)이 실패로 알린다."""
     await register_faq(client)

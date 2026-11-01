@@ -87,6 +87,16 @@ async def test_lexical_테넌트_격리(tenant_id, fake_embed):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('unit', ['ㄱ', 'a ', '반품a1 가ㄱ '], ids=['같은_글자', '한_글자_토큰', '혼합'])
+async def test_lexical은_스키마_상한_길이의_질의도_엔진_한도에_안_걸린다(tenant_id, fake_embed, unit):
+    """질의 4,000자 — 앞 1,000자만 넣어 절 상한·그래프 재귀 한도(같은 글자 반복이 1,024자에서 걸린다) 밖에 둔다."""
+    ids = await _seed(tenant_id)
+    assert await os_search.search_lexical(tenant_id, (unit * 4000)[:4000], 10) is not None
+    got = await os_search.search_lexical(tenant_id, QUERY + ' ' + 'ㄱ' * 4000, 10)
+    assert got and got[0] == ids['target']  # 앞부분의 어휘 일치는 그대로 1위
+
+
+@pytest.mark.asyncio
 async def test_dense가_놓친_어휘_일치가_주입된다(tenant_id, fake_embed):
     """candidates_per_branch=1 → dense는 최근접 1개만. 질의와 벡터가 다른 target이
     dense 후보 밖이어도, 어휘 주입으로 최종 후보에 들어와야 한다."""

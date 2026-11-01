@@ -25,7 +25,7 @@ from eval.doc_fidelity.review import load_jsonl, select_for_human, summarize, wr
 ROOT = Path('eval/results/doc_fidelity')
 
 
-def _dump(path: Path, rows) -> None:
+def _dump(path: Path, rows: list[dict]) -> None:
     path.write_text('\n'.join(json.dumps(r, ensure_ascii=False) for r in rows))
 
 
@@ -130,7 +130,7 @@ async def phase_coverage(tenant: str, out: Path, concurrency: int) -> None:
         chunks = await _chunks(d.id)
         units = cov.classify(cov.EXTRACTORS[fmt](d.id, Path(d.blob_path)), chunks)
 
-        async def judge_loss(u, chunks=chunks):
+        async def judge_loss(u: dict, chunks: list[dict] = chunks) -> dict:
             async with sem:
                 try:
                     raw = await client.acomplete(
@@ -421,7 +421,7 @@ def phase_summarize(out: Path, human_path: Path | None) -> None:
     print('\n'.join(lines))
 
 
-async def main():
+async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--tenant', default='inticube')
     ap.add_argument(

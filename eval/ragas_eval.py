@@ -35,21 +35,22 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from langchain_core.embeddings import Embeddings
-from ragas import EvaluationDataset, evaluate
-from ragas.embeddings import LangchainEmbeddingsWrapper
-from ragas.llms import LangchainLLMWrapper
-from ragas.metrics import (
+from langchain_core.embeddings import Embeddings  # noqa: E402 — .env를 먼저 읽어야 judge·임베딩 설정이 잡힌다
+from ragas import EvaluationDataset, evaluate  # noqa: E402
+from ragas.embeddings import LangchainEmbeddingsWrapper  # noqa: E402
+from ragas.llms import LangchainLLMWrapper  # noqa: E402
+from ragas.metrics import (  # noqa: E402
     LLMContextPrecisionWithoutReference,
     LLMContextRecall,
     answer_correctness,
     answer_relevancy,
     faithfulness,
 )
-from ragas.run_config import RunConfig
+from ragas.run_config import RunConfig  # noqa: E402
 
-from eval.ragas_adapter import build_samples
-from rag.search.embeddings import embed_query_sync, embed_texts_sync
+from config import settings  # noqa: E402
+from eval.ragas_adapter import build_samples  # noqa: E402
+from rag.search.embeddings import embed_query_sync, embed_texts_sync  # noqa: E402
 
 JUDGE = os.getenv("RAGAS_JUDGE", "settings")  # settings=rag/llm 공급자 설정 | claude=CLI (docstring 참조)
 SMOKE = int(os.getenv("SMOKE", "3"))  # 0이면 전체
@@ -64,9 +65,6 @@ class LocalBGEEmbeddings(Embeddings):
 
     def embed_query(self, text: str) -> list[float]:
         return embed_query_sync(text).dense
-
-
-from config import settings
 
 
 def _judge(kind: str):
@@ -115,7 +113,7 @@ def compute(smoke: int | None = None) -> dict:
     if n_smoke:
         rows = rows[:n_smoke]
     ref_rows = [r for r in rows if r["has_ref"]] if WITH_REF else []
-    ds = EvaluationDataset.from_list([r["sample"] for r in rows])
+    EvaluationDataset.from_list([r["sample"] for r in rows])
 
     judge, max_workers = _judge(JUDGE)
     emb = LangchainEmbeddingsWrapper(LocalBGEEmbeddings())
@@ -199,7 +197,7 @@ def compute(smoke: int | None = None) -> dict:
     )  # 최종 스냅샷(시각·문항수) — 덮어쓰기 사고 방지(07-18)
     df.to_csv(out, index=False)
 
-    def _mean(col):
+    def _mean(col: str) -> float | None:
         v = df[col].mean() if col in df.columns else float("nan")
         return None if (v is None or math.isnan(v)) else float(v)
 
@@ -222,7 +220,7 @@ def compute(smoke: int | None = None) -> dict:
     }
 
 
-def main():
+def main() -> None:
     print(f"judge={JUDGE}  |  SMOKE={SMOKE or '0(전체)'}")
     r = compute()
     print({k: (round(v, 3) if isinstance(v, float) else v) for k, v in r.items() if k not in ("missing",)})

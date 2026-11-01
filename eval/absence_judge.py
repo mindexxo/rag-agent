@@ -227,7 +227,7 @@ async def selftest(runs: int = SELFTEST_RUNS) -> dict:
                 per[f["id"]].append(v.label)
             except Exception as exc:  # 판정 불가도 관측 대상이다
                 per[f["id"]].append(f"error:{type(exc).__name__}")
-    ok = sum(1 for f in FIXTURES if all(l == f["expected"] for l in per[f["id"]]))
+    ok = sum(1 for f in FIXTURES if all(label == f["expected"] for label in per[f["id"]]))
     flaky = [f["id"] for f in FIXTURES if len(set(per[f["id"]])) > 1]
     return {
         "runs": runs,
@@ -237,7 +237,7 @@ async def selftest(runs: int = SELFTEST_RUNS) -> dict:
         "misses": [
             {"id": f["id"], "expected": f["expected"], "got": per[f["id"]], "defect": f["defect"]}
             for f in FIXTURES
-            if any(l != f["expected"] for l in per[f["id"]])
+            if any(label != f["expected"] for label in per[f["id"]])
         ],
     }
 

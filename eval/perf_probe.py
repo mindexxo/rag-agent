@@ -92,7 +92,7 @@ async def main() -> None:
     ap.add_argument("--sleep", type=float, default=1.0, help="턴 간 간격(s) — limiter·GPU 여유")
     args = ap.parse_args()
 
-    gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+    gold = [json.loads(line) for line in GOLD.read_text().splitlines() if line.strip()]
     sample = _smoke_sample([g for g in gold if g["type"] in GEN_TYPES], args.n)
 
     rows = []

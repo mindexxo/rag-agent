@@ -8,10 +8,15 @@ JSON 파싱·검증 실패는 1회 재시도, 그래도 실패하면 `error`로 
 import asyncio
 import json
 import re
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
 from eval.doc_fidelity.rubric import PROMPT, PROMPT_VERSION, Verdict, grade_of
+
+if TYPE_CHECKING:
+    from eval.claude_client import ClaudeCliClient
 
 DEFAULT_MODEL = 'claude-sonnet-4-5-20250929'  # 표 파싱 재판정자와 같은 모델(eval/table_parsing/llm_judge.py)
 _JSON = re.compile(r'\{.*\}', re.S)
@@ -24,7 +29,7 @@ def parse(text: str) -> Verdict:
     return Verdict.model_validate(json.loads(m.group(0)))
 
 
-async def judge_one(client, image_png: bytes, caption: str) -> dict:
+async def judge_one(client: ClaudeCliClient, image_png: bytes, caption: str) -> dict:
     prompt = PROMPT + (caption if caption else '(캡션 없음 — 이 그림은 색인에 글이 들어가지 않았다)')
     last = ''
     for _ in range(2):
@@ -47,7 +52,7 @@ async def judge_one(client, image_png: bytes, caption: str) -> dict:
 
 
 async def judge_all(
-    records: list[dict], crops_dir, concurrency: int = 3, model: str = DEFAULT_MODEL, sink=None
+    records: list[dict], crops_dir: Path, concurrency: int = 3, model: str = DEFAULT_MODEL, sink: Path | None = None
 ) -> list[dict]:
     """records(pictures 기록) → 판정 붙인 기록. 크롭이 없는 그림은 판정하지 않는다(error='크롭 없음').
 
@@ -63,7 +68,7 @@ async def judge_all(
     sem = asyncio.Semaphore(concurrency)
     fh = sink.open('a') if sink else None
 
-    async def one(r):
+    async def one(r: dict) -> dict:
         if not r.get('crop'):
             v = {'grade': None, 'error': '크롭 없음'}
         else:

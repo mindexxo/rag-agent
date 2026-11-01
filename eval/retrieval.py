@@ -1,7 +1,7 @@
 """검색 채점 공용부 — 골드의 안정 키(파일명·스니펫)를 현재 문서·청크 id로 바꾸고, 한 문항의 Recall@k·Hit@1·MRR을 계산한다."""
 
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
@@ -121,7 +121,7 @@ async def resolve_gold(session: AsyncSession, tenant_id: str, gold_rows: Sequenc
 
 
 # 한 문항 검색 채점
-def score_one(got_ids: list[int], gold_ids: list[int], ks=(5, 20)) -> dict | None:
+def score_one(got_ids: list[int], gold_ids: list[int], ks: Iterable[int] = (5, 20)) -> dict | None:
     """검색 결과 순위(got)와 정답 id(gold)로 Recall@k·Hit@1·MRR 계산.
 
     got_ids: 검색기가 가져온 id, RRF 순 (1등이 [0]).

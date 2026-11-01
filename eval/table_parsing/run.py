@@ -18,6 +18,7 @@ import json
 import time
 from collections import defaultdict
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import rag.chunking as ch
 from eval.table_parsing.build import build_all
@@ -35,24 +36,31 @@ from eval.table_parsing.score import (
 )
 from eval.table_parsing.specs import BY_ID, PATH_LABEL
 
+if TYPE_CHECKING:
+    from docling_core.types.doc import DoclingDocument
+
+    from rag.chunking.types import ChunkData
+
 PATHS = ('img', 'pdf', 'docx', 'xlsx')
 _ENGINE = 'triton'  # --engine 값(결과 행 자기서술)
 
 
-def _score_pair(spec, path, doc, chunks):
+def _score_pair(
+    spec: dict[str, Any], path: str, doc: DoclingDocument, chunks: list[ChunkData]
+) -> tuple[list[Score], list[Score], list[list[list[str]] | None]]:
     tables_l1 = expected_tables(spec, path, 'l1')
     tables = expected_tables(spec, path, 'l2')
     actuals = docling_tables(doc)
     pool = all_texts(actuals)
     l1 = [
         score_cells(expected_cells(t), a, flat(t), pool)
-        for t, a in zip(tables_l1, match_tables([expected_cells(t) for t in tables_l1], actuals))
+        for t, a in zip(tables_l1, match_tables([expected_cells(t) for t in tables_l1], actuals), strict=False)
     ]
     exp_rows = [expected_rows(spec, t, path) for t in tables]
     found = chunk_tables(chunks, xlsx=path == 'xlsx')
     pool2 = all_row_texts(found)
     actual_l2 = match_rows(exp_rows, found)
-    l2 = [score_rows(e, a, pool2) for e, a in zip(exp_rows, actual_l2)]
+    l2 = [score_rows(e, a, pool2) for e, a in zip(exp_rows, actual_l2, strict=False)]
     return l1, l2, actual_l2
 
 
@@ -69,7 +77,7 @@ def _convert_and_chunk(path_file: Path, path: str):
     return doc, chunks
 
 
-def _failed(spec, kind: str, err: Exception, path: str = 'docx') -> list[Score]:
+def _failed(spec: dict[str, Any], kind: str, err: Exception, path: str = 'docx') -> list[Score]:
     out = []
     for tbl in expected_tables(spec, path, 'l1'):
         s = score_cells(expected_cells(tbl), None, flat(tbl))
@@ -78,7 +86,15 @@ def _failed(spec, kind: str, err: Exception, path: str = 'docx') -> list[Score]:
     return out
 
 
-def _row(spec, path, k, s: Score, layer, seconds, actual_rows=None):
+def _row(
+    spec: dict[str, Any],
+    path: str,
+    k: int,
+    s: Score,
+    layer: str,
+    seconds: float,
+    actual_rows: list[list[str]] | None = None,
+) -> dict[str, Any]:
     return dict(
         id=spec['id'],
         axis=spec['axis'],
@@ -103,7 +119,7 @@ def _row(spec, path, k, s: Score, layer, seconds, actual_rows=None):
     )
 
 
-def _matrix(rows, layer) -> str:
+def _matrix(rows: list[dict[str, Any]], layer: str) -> str:
     """축 × 경로 — 칸: 셀 일치/전체 (숫자 일치/전체) + 오류 유형. 같은 축의 표들(짝 2개·나란히·중첩)을 합친다."""
     agg = defaultdict(lambda: dict(c=[0, 0], n=[0, 0], kinds=set(), present=[0, 0], clean=True))
     for r in rows:
@@ -144,7 +160,7 @@ def _matrix(rows, layer) -> str:
     return '\n'.join(lines)
 
 
-def _mismatch_report(rows) -> str:
+def _mismatch_report(rows: list[dict[str, Any]]) -> str:
     out = ['# 틀린 칸 — 기대 ↔ 실제', '']
     for r in rows:
         if r['clean']:
@@ -164,7 +180,7 @@ def _mismatch_report(rows) -> str:
     return '\n'.join(out)
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', default='eval/results/table_parsing/run1')
     ap.add_argument('--only', nargs='*')
@@ -200,7 +216,7 @@ def main():
     rows = []
     with open(out / 'results.jsonl', 'w') as f:
 
-        def emit(r):
+        def emit(r: dict[str, Any]) -> None:
             rows.append(r)
             f.write(json.dumps(r, ensure_ascii=False) + '\n')
             f.flush()
@@ -227,7 +243,7 @@ def main():
                 actuals = docling_tables(doc)
                 l1 = [
                     score_cells(expected_cells(tb), a, flat(tb), all_texts(actuals))
-                    for tb, a in zip(tables, match_tables([expected_cells(tb) for tb in tables], actuals))
+                    for tb, a in zip(tables, match_tables([expected_cells(tb) for tb in tables], actuals), strict=False)
                 ]
                 l2 = _failed(spec, '청킹실패', e, path)
                 act_rows = [None] * len(l2)

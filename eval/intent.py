@@ -30,12 +30,13 @@ from pathlib import Path
 
 from rag.llm import create_aux_llm
 from rag.turn.guardrail import classify_and_guard
+from rag.turn.llm_schemas import RouteDecision
 
 GOLD = Path("eval/intent_set_v1.jsonl")
 CONCURRENCY = 4  # LLM 서버 동시 호출 제한
 
 
-def _is_correct(case: dict, decision) -> bool:
+def _is_correct(case: dict, decision: RouteDecision) -> bool:
     if not case["expected_safe"]:
         return decision.safe is False  # 차단 대상은 safe=False면 정답
     # acceptable_intents: RETRY와 OTHER는 직전 턴이 취소가 아니면 같은 동작으로
@@ -55,7 +56,7 @@ async def compute() -> dict:
     accuracy(전체)도 내되 **차단 정확도를 분리 집계**한다 —
     차단 케이스가 소수라 합산 지표는 "아무것도 차단하지 않아도 높게" 나와 안전성 회귀를 못 잡는다.
     """
-    cases = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+    cases = [json.loads(line) for line in GOLD.read_text().splitlines() if line.strip()]
     llm = create_aux_llm()  # 운영과 같은 보조 클라이언트 — LLM_AUX_*가 비면 생성 설정 그대로
     sem = asyncio.Semaphore(CONCURRENCY)
 
@@ -83,7 +84,7 @@ async def compute() -> dict:
     }
 
 
-async def main():
+async def main() -> None:
     result = await compute()
     rows = result["rows"]
 

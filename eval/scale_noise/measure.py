@@ -11,6 +11,7 @@
 
 import json
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 
@@ -30,7 +31,7 @@ POOL = 30  # 운영 candidates_per_branch(rag/search/retriever.retrieve_candidat
 
 
 @contextmanager
-def condition(cond: str):
+def condition(cond: str) -> Iterator[None]:
     orig = settings.opensearch_index
     settings.opensearch_index = index_name(cond)
     try:
@@ -60,7 +61,7 @@ async def _pool_compare(gold_rows: list[dict], gold_ids: dict[str, set[int]]) ->
     """ⓐ — 문항마다 근사·정확 상위 30."""
     out = []
     vecs = await embed_texts([g['query'] for g in gold_rows], kind="query")
-    for g, v in zip(gold_rows, vecs):
+    for g, v in zip(gold_rows, vecs, strict=False):
         ids = gold_ids.get(g['id']) or set()
         if not ids:
             continue

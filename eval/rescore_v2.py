@@ -10,13 +10,17 @@ from pathlib import Path
 from eval.generation import citation_accuracy, expected_points_coverage, expected_points_hits
 
 ROOT = Path(__file__).resolve().parent
-GOLD = {json.loads(l)['id']: json.loads(l) for l in (ROOT / 'gold_set_v2.jsonl').read_text().splitlines() if l.strip()}
+GOLD = {
+    json.loads(line)['id']: json.loads(line)
+    for line in (ROOT / 'gold_set_v2.jsonl').read_text().splitlines()
+    if line.strip()
+}
 
 
 def main() -> None:
     for mode in ('oracle', 'retrieved'):
         path = ROOT / 'results' / f'generation_{mode}.jsonl'
-        rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+        rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
         changed = 0
         for r in rows:
             g = GOLD[r['id']]

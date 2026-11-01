@@ -12,16 +12,38 @@ VLM 경로를 타지 않는다. 분류가 어떻게 되는지도 결과의 일�
   sequence — 캡션에 이 순서로 나와야 할 단계(흐름도) · branches — (조건, 예 →, 아니오 →): 자동 채점 밖, 판정자·사람이 본다
 """
 
+from collections.abc import Mapping, Sequence
+from types import ModuleType
+from typing import TYPE_CHECKING, NotRequired, TypedDict
+
 from PIL import Image, ImageDraw
 
 from eval.table_parsing.render_image import font
+
+if TYPE_CHECKING:
+    from matplotlib.figure import Figure
+
+Node = tuple[int, int, int, int, str]
+Edge = tuple[str, str, str, str, str | None]
+Point = tuple[float, float]
+
+
+class FlowSpec(TypedDict):
+    """flow()에 **로 넘기는 흐름도 정의."""
+
+    title: str
+    owner: str
+    nodes: dict[str, Node]
+    edges: list[Edge]
+    size: NotRequired[tuple[int, int]]
+
 
 W, H = 1200, 720
 NAVY, GRAY, LINE_C = '#1f3b63', '#5b6573', '#c9ced6'
 PALETTE = ['#1f4e79', '#2e75b6', '#9dc3e6', '#bdd7ee']  # 사내 보고서 톤(남색 계열)
 
 
-def _mpl():
+def _mpl() -> ModuleType:
     import matplotlib
 
     matplotlib.use('Agg')
@@ -36,7 +58,7 @@ def _mpl():
     return plt
 
 
-def _fig_to_image(fig):
+def _fig_to_image(fig: Figure) -> Image.Image:
     import io
 
     buf = io.BytesIO()
@@ -48,12 +70,14 @@ def _fig_to_image(fig):
     return Image.open(buf).convert('RGB')
 
 
-def _canvas(w=W, h=H):
+def _canvas(w: int = W, h: int = H) -> tuple[Image.Image, ImageDraw.ImageDraw]:
     im = Image.new('RGB', (w, h), 'white')
     return im, ImageDraw.Draw(im)
 
 
-def _center_text(d, xy, text, size, fill='black'):
+def _center_text(
+    d: ImageDraw.ImageDraw, xy: tuple[float, float, float, float], text: str, size: int, fill: str = 'black'
+) -> None:
     f = font(size)
     lines = text.split('\n')
     lh = size + 6
@@ -64,12 +88,12 @@ def _center_text(d, xy, text, size, fill='black'):
         y += lh
 
 
-def bar_chart(title, items, unit, ylabel, source):
+def bar_chart(title: str, items: Sequence[tuple[str, int]], unit: str, ylabel: str, source: str) -> Image.Image:
     plt = _mpl()
     fig, ax = plt.subplots(figsize=(7.2, 4.2))
-    labels, values = zip(*items)
+    labels, values = zip(*items, strict=False)
     bars = ax.bar(labels, values, color=PALETTE[1], width=0.55, zorder=3)
-    for b, v in zip(bars, values):
+    for b, v in zip(bars, values, strict=False):
         ax.text(b.get_x() + b.get_width() / 2, v + max(values) * 0.02, f'{v:,}', ha='center', va='bottom', fontsize=11)
     ax.set_title(title, fontsize=14, fontweight='bold', loc='left', color=NAVY, pad=12)
     ax.set_ylabel(f'{ylabel}({unit})', fontsize=10, color=GRAY)
@@ -80,7 +104,14 @@ def bar_chart(title, items, unit, ylabel, source):
     return _fig_to_image(fig)
 
 
-def grouped_bar(title, cats, series, unit, ylabel, source):
+def grouped_bar(
+    title: str,
+    cats: Sequence[str],
+    series: Sequence[tuple[str, Sequence[int | None]]],
+    unit: str,
+    ylabel: str,
+    source: str,
+) -> Image.Image:
     """묶은 막대 — series: [(이름, [값…])]."""
     plt = _mpl()
     import numpy as np
@@ -89,7 +120,9 @@ def grouped_bar(title, cats, series, unit, ylabel, source):
     x = np.arange(len(cats))
     w = 0.36
     for i, (name, vals) in enumerate(series):
-        shown = [(xi, v) for xi, v in zip(x, vals) if v is not None]  # None = 집계 전 — 막대·숫자를 그리지 않는다
+        shown = [
+            (xi, v) for xi, v in zip(x, vals, strict=False) if v is not None
+        ]  # None = 집계 전 — 막대·숫자를 그리지 않는다
         bars = ax.bar(
             [xi + (i - 0.5) * w for xi, _ in shown],
             [v for _, v in shown],
@@ -98,7 +131,7 @@ def grouped_bar(title, cats, series, unit, ylabel, source):
             color=[PALETTE[2], PALETTE[0]][i],
             zorder=3,
         )
-        for b, (_, v) in zip(bars, shown):
+        for b, (_, v) in zip(bars, shown, strict=False):
             ax.text(b.get_x() + b.get_width() / 2, v + 4, f'{v:,}', ha='center', va='bottom', fontsize=9)
     ax.set_xticks(x, cats)
     ax.set_title(title, fontsize=14, fontweight='bold', loc='left', color=NAVY, pad=12)
@@ -111,12 +144,20 @@ def grouped_bar(title, cats, series, unit, ylabel, source):
     return _fig_to_image(fig)
 
 
-def combo_bar_line(title, cats, bars_v, line_v, bar_name, line_name, source):
+def combo_bar_line(
+    title: str,
+    cats: Sequence[str],
+    bars_v: Sequence[float],
+    line_v: Sequence[float],
+    bar_name: str,
+    line_name: str,
+    source: str,
+) -> Image.Image:
     """막대(왼쪽 축) + 꺾은선(오른쪽 보조축)."""
     plt = _mpl()
     fig, ax = plt.subplots(figsize=(7.4, 4.2))
     b = ax.bar(cats, bars_v, color=PALETTE[1], width=0.5, zorder=3, label=bar_name)
-    for r, v in zip(b, bars_v):
+    for r, v in zip(b, bars_v, strict=False):
         ax.text(
             r.get_x() + r.get_width() / 2, v * 0.5, f'{v}', ha='center', color='white', fontsize=10, fontweight='bold'
         )
@@ -126,7 +167,7 @@ def combo_bar_line(title, cats, bars_v, line_v, bar_name, line_name, source):
     ax.spines[['top']].set_visible(False)
     ax2 = ax.twinx()
     ax2.plot(cats, line_v, color='#c55a11', marker='o', linewidth=2, label=line_name)
-    for xi, v in zip(cats, line_v):
+    for xi, v in zip(cats, line_v, strict=False):
         ax2.annotate(
             f'{v:+.1f}%', (xi, v), textcoords='offset points', xytext=(0, 8), ha='center', fontsize=9, color='#c55a11'
         )
@@ -141,13 +182,15 @@ def combo_bar_line(title, cats, bars_v, line_v, bar_name, line_name, source):
     return _fig_to_image(fig)
 
 
-def stacked_bar(title, cats, series, unit, source):
+def stacked_bar(
+    title: str, cats: Sequence[str], series: Sequence[tuple[str, Sequence[int]]], unit: str, source: str
+) -> Image.Image:
     plt = _mpl()
     fig, ax = plt.subplots(figsize=(7.2, 4.2))
     bottom = [0] * len(cats)
     for i, (name, vals) in enumerate(series):
         bars = ax.bar(cats, vals, 0.55, bottom=bottom, label=name, color=[PALETTE[0], PALETTE[2]][i], zorder=3)
-        for r, v, b0 in zip(bars, vals, bottom):
+        for r, v, b0 in zip(bars, vals, bottom, strict=False):
             ax.text(
                 r.get_x() + r.get_width() / 2,
                 b0 + v / 2,
@@ -157,8 +200,8 @@ def stacked_bar(title, cats, series, unit, source):
                 fontsize=10,
                 color='white' if i == 0 else 'black',
             )
-        bottom = [b0 + v for b0, v in zip(bottom, vals)]
-    for xi, t in zip(cats, bottom):
+        bottom = [b0 + v for b0, v in zip(bottom, vals, strict=False)]
+    for xi, t in zip(cats, bottom, strict=False):
         ax.text(xi, t + 0.6, f'계 {t}', ha='center', fontsize=9, color=GRAY)
     ax.set_title(title, fontsize=14, fontweight='bold', loc='left', color=NAVY, pad=12)
     ax.set_ylabel(f'인원({unit})', fontsize=10, color=GRAY)
@@ -170,14 +213,14 @@ def stacked_bar(title, cats, series, unit, source):
     return _fig_to_image(fig)
 
 
-def hbar_chart(title, items, unit, source):
+def hbar_chart(title: str, items: Sequence[tuple[str, int]], unit: str, source: str) -> Image.Image:
     """가로 막대(순위형) — 큰 값이 위."""
     plt = _mpl()
     items = sorted(items, key=lambda x: x[1])
     fig, ax = plt.subplots(figsize=(7.0, 3.8))
-    labels, vals = zip(*items)
+    labels, vals = zip(*items, strict=False)
     bars = ax.barh(labels, vals, color=PALETTE[1], height=0.55, zorder=3)
-    for r, v in zip(bars, vals):
+    for r, v in zip(bars, vals, strict=False):
         ax.text(v + 1, r.get_y() + r.get_height() / 2, f'{v}{unit}', va='center', fontsize=10)
     ax.set_xlim(0, 100)
     ax.set_title(title, fontsize=14, fontweight='bold', loc='left', color=NAVY, pad=12)
@@ -187,16 +230,16 @@ def hbar_chart(title, items, unit, source):
     return _fig_to_image(fig)
 
 
-def pie_chart(title, items, source):
+def pie_chart(title: str, items: Sequence[tuple[str, int]], source: str) -> Image.Image:
     plt = _mpl()
     fig, ax = plt.subplots(figsize=(6.8, 4.2))
-    labels, values = zip(*items)
+    labels, values = zip(*items, strict=False)
     wedges, _ = ax.pie(
         values, colors=PALETTE, startangle=90, counterclock=False, wedgeprops=dict(width=0.42, edgecolor='white')
     )
     ax.legend(
         wedges,
-        [f'{l}  {v}%' for l, v in items],
+        [f'{label}  {v}%' for label, v in items],
         loc='center left',
         bbox_to_anchor=(1.0, 0.5),
         frameon=False,
@@ -207,7 +250,7 @@ def pie_chart(title, items, source):
     return _fig_to_image(fig)
 
 
-def formula(title, expr, notes):
+def formula(title: str, expr: str, notes: Sequence[str]) -> Image.Image:
     """사내 규정집의 '산식' 안내 상자 — 제목 띠 + 산식 + 비고."""
     h = 230 + 42 * len(notes)
     im, d = _canvas(1200, h)
@@ -221,7 +264,13 @@ def formula(title, expr, notes):
     return im
 
 
-def flow(title, nodes, edges, size=(1200, 860), owner=None):
+def flow(
+    title: str,
+    nodes: Mapping[str, Node],
+    edges: Sequence[Edge],
+    size: tuple[int, int] = (1200, 860),
+    owner: str | None = None,
+) -> Image.Image:
     """표준 기호 흐름도 — 시작·종료(둥근 사각형), 처리(사각형), 판단(마름모, 텍스트 끝 '?')."""
     im, d = _canvas(*size)
     d.text((30, 18), title, fill=NAVY, font=font(28))
@@ -241,7 +290,7 @@ def flow(title, nodes, edges, size=(1200, 860), owner=None):
             d.rectangle((x0, y0, x1, y1), fill='white', outline=NAVY, width=2)
             _center_text(d, (x0, y0, x1, y1), text, 20)
 
-    def mid(k, side):
+    def mid(k: str, side: str) -> Point:
         x0, y0, x1, y1, t = nodes[k]
         pad = 20 if t.endswith('?') else 0
         padv = 14 if t.endswith('?') else 0
@@ -257,7 +306,7 @@ def flow(title, nodes, edges, size=(1200, 860), owner=None):
     return im
 
 
-def _arrow(d, a, b, label=None):
+def _arrow(d: ImageDraw.ImageDraw, a: Point, b: Point, label: str | None = None) -> None:
     import math
 
     d.line([a, b], fill='#44546a', width=2)
@@ -274,7 +323,7 @@ def _arrow(d, a, b, label=None):
         d.text(((a[0] + b[0]) / 2 + 8, (a[1] + b[1]) / 2 - 24), label, fill='#a14a00', font=font(18))
 
 
-def small_card(title, body, w, h):
+def small_card(title: str, body: str, w: int, h: int) -> Image.Image:
     """본문 옆 작은 안내 박스 — 규정 문서의 '참고' 상자."""
     im, d = _canvas(w, h)
     d.rectangle([2, 2, w - 3, h - 3], outline='#7f9cc0', width=2, fill='#f5f8fc')
@@ -284,7 +333,14 @@ def small_card(title, body, w, h):
     return im
 
 
-def screen(title, menu, crumbs, fields, buttons, rows=None):
+def screen(
+    title: str,
+    menu: Sequence[str],
+    crumbs: str,
+    fields: Sequence[tuple[str, str]],
+    buttons: Sequence[tuple[str, bool]],
+    rows: Sequence[Sequence[str]] | None = None,
+) -> Image.Image:
     """사내 웹 시스템 화면 — 상단 바·좌측 메뉴·경로·입력 폼·버튼."""
     im, d = _canvas(1200, 760)
     d.rectangle([0, 0, 1200, 56], fill=NAVY)
@@ -317,7 +373,7 @@ def screen(title, menu, crumbs, fields, buttons, rows=None):
             for cx in cols[1:-1]:
                 d.line([(cx, y), (cx, y + 38)], fill=LINE_C)
             y += 38
-    x = 1170
+    x: float = 1170
     for label, primary in reversed(buttons):
         tw = d.textlength(label, font=font(18)) + 40
         d.rounded_rectangle([x - tw, 700, x, 744], radius=6, fill='#2e75b6' if primary else 'white', outline='#2e75b6')
@@ -326,7 +382,7 @@ def screen(title, menu, crumbs, fields, buttons, rows=None):
     return im
 
 
-def button_shot(label):
+def button_shot(label: str) -> Image.Image:
     im, d = _canvas(420, 150)
     d.rectangle([0, 0, 419, 149], fill='#f1f3f6', outline=LINE_C, width=2)
     d.rectangle([0, 0, 419, 30], fill=NAVY)
@@ -337,7 +393,7 @@ def button_shot(label):
     return im
 
 
-FLOW_REPAIR = dict(
+FLOW_REPAIR: FlowSpec = dict(
     title='매장 장비 고장 처리 절차',
     owner='담당: 시설관리팀',
     nodes={
@@ -361,7 +417,7 @@ FLOW_REPAIR = dict(
         ('h', 'r', 'f', 'r', '불합격 시 재수리'),
     ],
 )
-FLOW_STOCK = dict(
+FLOW_STOCK: FlowSpec = dict(
     title='매장 간 재고 이동 절차',
     owner='담당: 물류운영팀',
     nodes={
@@ -625,12 +681,12 @@ DOC_NAMES = {
 
 
 # ── 홀드아웃(과적합 점검) — 프롬프트 변형을 고를 때 **보지 않은** 그림. 튜닝에 쓰지 말 것 ─────────────
-def line_chart(title, items, unit, source):
+def line_chart(title: str, items: Sequence[tuple[str, float]], unit: str, source: str) -> Image.Image:
     plt = _mpl()
     fig, ax = plt.subplots(figsize=(7.2, 4.0))
-    labels, vals = zip(*items)
+    labels, vals = zip(*items, strict=False)
     ax.plot(labels, vals, marker='o', color=PALETTE[0], linewidth=2)
-    for x, v in zip(labels, vals):
+    for x, v in zip(labels, vals, strict=False):
         ax.annotate(f'{v}{unit}', (x, v), textcoords='offset points', xytext=(0, 8), ha='center', fontsize=10)
     ax.set_title(title, fontsize=14, fontweight='bold', loc='left', color=NAVY, pad=12)
     ax.grid(axis='y', color='#e3e6ea')
@@ -640,10 +696,10 @@ def line_chart(title, items, unit, source):
     return _fig_to_image(fig)
 
 
-def signed_hbar(title, items, unit, source):
+def signed_hbar(title: str, items: Sequence[tuple[str, int]], unit: str, source: str) -> Image.Image:
     plt = _mpl()
     fig, ax = plt.subplots(figsize=(7.0, 3.6))
-    labels, vals = zip(*items)
+    labels, vals = zip(*items, strict=False)
     ax.barh(labels, vals, color=[PALETTE[1] if v >= 0 else '#c55a11' for v in vals], height=0.5, zorder=3)
     for i, v in enumerate(vals):
         ax.text(
@@ -663,7 +719,7 @@ def signed_hbar(title, items, unit, source):
     return _fig_to_image(fig)
 
 
-ORG = dict(
+ORG: FlowSpec = dict(
     title='조직도',
     owner='2026년 10월 기준',
     nodes={
@@ -683,7 +739,7 @@ ORG = dict(
     ],
     size=(1200, 520),
 )
-FLOW_LEAVE = dict(
+FLOW_LEAVE: FlowSpec = dict(
     title='휴가 신청 처리 절차',
     owner='담당: 인사팀',
     nodes={
@@ -762,7 +818,7 @@ HOLDOUT = {
 
 
 # ── 홀드아웃 2 — V13(계층형 지시) 검증용. HOLDOUT의 조직도를 보고 문구를 고쳤으므로 그와 다른 새 그림으로 잰다 ─────
-ORG2 = dict(
+ORG2: FlowSpec = dict(
     title='고객지원본부 조직',
     owner='2026년 9월 개편',
     nodes={
@@ -784,7 +840,7 @@ ORG2 = dict(
     ],
     size=(1200, 520),
 )
-TREE = dict(
+TREE: FlowSpec = dict(
     title='문서 분류 체계',
     owner='총무팀 문서관리 기준',
     nodes={
@@ -804,7 +860,7 @@ TREE = dict(
     ],
     size=(1200, 520),
 )
-FLOW_PURCHASE = dict(
+FLOW_PURCHASE: FlowSpec = dict(
     title='비품 구매 절차',
     owner='담당: 구매팀',
     nodes={

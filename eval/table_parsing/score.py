@@ -8,8 +8,14 @@
 """
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from eval.table_parsing.expected import Cell, is_numeric, norm
+
+if TYPE_CHECKING:
+    from docling_core.types.doc import DoclingDocument
+
+    from rag.chunking.types import ChunkData
 
 
 @dataclass
@@ -56,7 +62,7 @@ class Score:
         return self.detected and self.dims_ok and self.span_ok == self.span_total and self.cells_ok == self.cells_total
 
 
-def docling_tables(doc) -> list[ActualTable]:
+def docling_tables(doc: DoclingDocument) -> list[ActualTable]:
     """DoclingDocument → 표 목록(읽기 순서). 병합 원점만 남긴다 — grid는 덮인 자리마다 같은 셀을 반복한다."""
     from docling_core.types.doc import TableItem  # 지연 import — docling은 톱레벨에 안 들인다
 
@@ -191,7 +197,7 @@ def all_texts(actuals: list[ActualTable]) -> set[str]:
 # ── L2: 청크 markdown ──────────────────────────────────────────────────────────
 
 
-def chunk_tables(chunks, *, xlsx: bool = False) -> list[list[list[str]]]:
+def chunk_tables(chunks: list[ChunkData], *, xlsx: bool = False) -> list[list[list[str]]]:
     """청크 목록 → markdown 표(행 목록)들. 구분선('---')이 나오면 그 윗줄이 헤더인 새 표 — 단 **직전 표와 헤더가 같으면 같은
     표의 다음 행 묶음**으로 잇는다(긴 표는 행 묶음마다 헤더를 반복한다). 긴 표가 청크 경계에서 갈려 뒷 청크가 '|' 행으로
     바로 시작하면 앞 표에 잇는다. xlsx는 시트 완성본(meta.table_text)이 전체라 그것만 읽는다. PDF·DOCX 큰 표 묶음도
@@ -231,7 +237,7 @@ def chunk_tables(chunks, *, xlsx: bool = False) -> list[list[list[str]]]:
     return tables
 
 
-def _rows_texts(rows) -> set[str]:
+def _rows_texts(rows: list[list[str]]) -> set[str]:
     return {_loose(norm(t)) for row in rows for t in row if norm(t)}
 
 

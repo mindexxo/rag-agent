@@ -8,17 +8,19 @@
 보인다. 그래서 정의마다 소재가 서로 겹치지 않고 모순도 없다. 새 축을 더할 때도 기존 정의와 겹치는 항목·값을 쓰지 말 것.
 """
 
+from typing import Any
+
 ALL = ('img', 'pdf', 'docx', 'xlsx')
 IMG_ONLY = ('img',)
 PATH_LABEL = {'img': '이미지 PDF', 'pdf': '텍스트 PDF', 'docx': '텍스트 DOCX', 'xlsx': '텍스트 XLSX'}
 
 
-def H(t, **k):
+def H(t: str, **k: Any) -> dict[str, Any]:
     """음영 헤더 칸."""
     return dict(t=t, bg='#d9d9d9', **k)
 
 
-def _long(n):
+def _long(n: int):
     return [['번호', '품목', '단가', '수량']] + [
         [str(i), f'품목-{i:03d}', f'{(i * 1234) % 97000 + 1000:,}원', str(i % 9 + 1)] for i in range(1, n + 1)
     ]
@@ -284,19 +286,19 @@ SPECS = [
 BY_ID = {s['id']: s for s in SPECS}
 
 
-def axis_no(spec) -> str:
+def axis_no(spec: dict[str, Any]) -> str:
     """'22 한 쪽에 표 2개 나란히' → '22'."""
     return spec['axis'].split(' ', 1)[0]
 
 
-def axis_name(spec) -> str:
+def axis_name(spec: dict[str, Any]) -> str:
     return spec['axis'].split(' ', 1)[1]
 
 
-def paths_of(spec) -> tuple[str, ...]:
+def paths_of(spec: dict[str, Any]) -> tuple[str, ...]:
     return tuple(spec.get('paths', ALL))
 
 
-def tables_of(spec) -> list[list[list]]:
+def tables_of(spec: dict[str, Any]) -> list[list[list]]:
     """정의 하나가 담는 표 목록 — 보통 1개, '나란히' 축은 2개."""
     return spec['side_by_side'] if spec.get('side_by_side') else [spec['rows']]

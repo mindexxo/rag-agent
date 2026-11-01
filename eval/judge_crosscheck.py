@@ -57,7 +57,7 @@ def _load_audit(path: Path) -> list[dict]:
     여러 버전이 섞인 파일이면 불일치가 judge 차이인지 프롬프트 버전 차이인지 구분 불가라
     중단한다(리뷰 발견 — 지금은 전부 v1이지만 재사용 시 조용히 오염될 구조였다).
     """
-    rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
     kept = [
         {
             "id": r["id"],
@@ -89,7 +89,7 @@ async def main() -> None:
     claude_results = await asyncio.gather(*(_claude_label(claude, sem, r["query"], r["answer"]) for r in rows))
 
     compared, agree, disagree, failed = [], 0, 0, 0
-    for r, (claude_label, reason) in zip(rows, claude_results):
+    for r, (claude_label, reason) in zip(rows, claude_results, strict=False):
         v = r["vllm"]
         if claude_label is None:
             failed += 1

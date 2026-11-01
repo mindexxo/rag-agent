@@ -24,6 +24,7 @@ import re
 from collections import defaultdict
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import AsyncSessionLocal
 from eval.claude_client import ClaudeCliClient
@@ -38,6 +39,7 @@ from eval.generation import (
     row_tenant,
     summarize,
 )
+from eval.rows import GoldRow
 from rag.models import Document
 
 SMOKE = int(os.getenv("SMOKE", "0")) or None
@@ -62,7 +64,7 @@ SYSTEM_PROMPT = """당신은 고객센터 상담사를 돕는 지식 어시스�
 # ===== 코퍼스 로드 =====================================================
 
 
-async def load_corpus(session, tenant: str) -> str:
+async def load_corpus(session: AsyncSession, tenant: str) -> str:
     """테넌트의 검색 대상 전체를 하나의 텍스트로 — 색인 파이프라인과 같은 원료.
 
     문서: ready·is_active·is_searchable (운영 검색 필터와 동일 조건) 청크를
@@ -156,8 +158,8 @@ def filename_citation_accuracy(cited: list[str], expected_docs: list[str]) -> fl
 # ===== 메인 ============================================================
 
 
-async def main():
-    gold = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+async def main() -> None:
+    gold = [json.loads(line) for line in GOLD.read_text().splitlines() if line.strip()]
     gen_gold = [g for g in gold if g["type"] in GEN_TYPES]
     if SMOKE:
         gen_gold = _smoke_sample(gen_gold, SMOKE)
@@ -177,7 +179,7 @@ async def main():
             flag = " ⚠ 컨텍스트 초과 가능" if len(corpus) > CORPUS_CHAR_WARN else ""
             print(f"[corpus] {tenant}: {len(corpus):,}자{flag}")
 
-    async def _run(g):
+    async def _run(g: GoldRow) -> dict:
         async with sem:
             answer = await client.acomplete(
                 [

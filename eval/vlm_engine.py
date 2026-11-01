@@ -13,10 +13,18 @@ VLM 주소·모델·키·온도는 캡션 설정(VLM_CAPTION_*)을 그대로 쓴
 
 import os
 import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Unpack
 from urllib.parse import urlsplit
 
 import rag.chunking as C
 from config import settings
+from rag.chunking.document_converter import ConvertKwargs
+
+if TYPE_CHECKING:
+    from docling.document_converter import DocumentConverter
+    from docling_core.types.doc import DoclingDocument
 
 PROMPT_V1 = (
     "이 쪽을 마크다운으로 옮겨 적어라. 표는 마크다운 표(| 칸 | 칸 |)로 — 병합된 칸은 그 값을 해당 칸마다 반복해 적고, 빈 칸은 비워 둔다. "
@@ -49,7 +57,7 @@ def label() -> str:
     return f"vlm_{settings.vlm_caption_model}@{host}".replace('/', '_').replace(':', '_')
 
 
-def build_converter():
+def build_converter() -> DocumentConverter:
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import VlmPipelineOptions
     from docling.datamodel.pipeline_options_vlm_model import ApiVlmOptions, ResponseFormat
@@ -84,9 +92,9 @@ _retries = [0]
 RAW: list[str] = []
 
 
-def _paced(fn):
-    def wrapper(*a, **kw):
-        for attempt in range(5):
+def _paced(fn: Callable[..., Any]) -> Callable[..., Any]:
+    def wrapper(*a: Any, **kw: Any) -> Any:
+        for _attempt in range(5):
             wait = _MIN_INTERVAL - (time.monotonic() - _last_call[0])
             if wait > 0:
                 time.sleep(wait)
@@ -120,7 +128,7 @@ def _patch_requests():
 # 문서 제목, 나머지를 절로 층을 다시 만든다. 절 제목이 평문이 되는 문제는 여기가 아니라 PROMPT_V2가 막는다.
 
 
-def _fix_headings(doc):
+def _fix_headings(doc: DoclingDocument) -> DoclingDocument:
     from docling_core.types.doc import DocItemLabel
 
     for item, _ in doc.iterate_items():
@@ -130,7 +138,7 @@ def _fix_headings(doc):
     return doc
 
 
-def _convert_vlm(file_path, **kwargs):
+def _convert_vlm(file_path: str | Path, **kwargs: Unpack[ConvertKwargs]) -> DoclingDocument:
     """PDF(표 이미지·스캔)만 VLM으로. 다른 형식은 원래 변환기 — 측정 대상이 아니다."""
     global _converter
     if str(file_path).lower().endswith('.pdf'):

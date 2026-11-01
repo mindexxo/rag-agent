@@ -18,6 +18,7 @@ bm25_100[[id,점수]]·ident_tokens·ident[id]·rerank{id:점수}. 조각은 {ch
 
 import random
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from eval.axis_common import evidence_has
@@ -83,9 +84,9 @@ def _blend(rec: dict, pool: list[RetrievedChunk], scores: list[float], cond: Con
     w = cond.w_key if is_keyword_query(rec["query"]) else cond.w_desc
     norm = [bm25.get(c.chunk_id, 0.0) / top for c in pool]
     if cond.blend == "add":
-        return [s + w * n for s, n in zip(scores, norm)]
+        return [s + w * n for s, n in zip(scores, norm, strict=False)]
     if cond.blend == "convex":
-        return [(1 - w) * s + w * n for s, n in zip(scores, norm)]
+        return [(1 - w) * s + w * n for s, n in zip(scores, norm, strict=False)]
     raise ValueError(f"알 수 없는 혼합 방식: {cond.blend}")
 
 
@@ -174,7 +175,7 @@ def diagnose(rec: dict, chunks: dict[int, RetrievedChunk]) -> dict:
     status = "hit" if ev["in_evidence"] else ("rerank_miss" if in_pool else "pool_miss")
     no_inject = evaluate(rec, assemble(rec, chunks, NO_LEXICAL), chunks)["in_evidence"]
 
-    def rank(ids):
+    def rank(ids: list[int]) -> int | None:
         return next((i + 1 for i, c in enumerate(ids) if c in gold), None)
 
     d, b = rank([c for c, _ in rec["dense100"]]), rank([c for c, _ in rec["bm25_100"]])
@@ -230,7 +231,7 @@ def paired_bootstrap(base: list[float], cand: list[float], n: int = 10_000, seed
         raise ValueError("짝지을 수 없다 — 문항 수가 다르다")
     if not base:
         return {"n": 0, "mean_diff": 0.0, "ci95": (0.0, 0.0), "wins": 0, "losses": 0, "ties": 0}
-    diffs = [c - b for b, c in zip(base, cand)]
+    diffs = [c - b for b, c in zip(base, cand, strict=False)]
     rng = random.Random(seed)
     m = len(diffs)
     means = sorted(sum(diffs[rng.randrange(m)] for _ in range(m)) / m for _ in range(n))
@@ -247,14 +248,14 @@ def paired_bootstrap(base: list[float], cand: list[float], n: int = 10_000, seed
 def compare(
     recs: list[dict],
     chunks: dict[int, RetrievedChunk],
-    conds=CANDIDATES,
+    conds: Iterable[Condition] = CANDIDATES,
     key: str = "set",
-    metrics=("in_evidence", "hit_at_1"),
+    metrics: Iterable[str] = ("in_evidence", "hit_at_1"),
     n_boot: int = 10_000,
 ) -> dict:
     """후보 조건 × 묶음(key) × 지표 → 현행 대비 짝 부트스트랩. 문항별 결과(이긴·진 문항 id)도 함께 — 원문과 나란히 볼 대상."""
 
-    def scores_of(cond):
+    def scores_of(cond: Condition) -> dict[str, dict]:
         return {r["qid"]: evaluate(r, assemble(r, chunks, cond), chunks) for r in recs}
 
     base = scores_of(BASELINE)

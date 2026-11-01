@@ -14,7 +14,7 @@ from eval.table_parsing.expected import is_numeric
 
 
 def _load(run: Path):
-    rows = [json.loads(l) for l in (run / 'results.jsonl').read_text().splitlines() if l.strip()]
+    rows = [json.loads(line) for line in (run / 'results.jsonl').read_text().splitlines() if line.strip()]
     return [r for r in rows if r['layer'] == 'l1' and r['path'] == 'img']
 
 
@@ -98,7 +98,7 @@ def scan_matrix(compare_json: Path) -> str:
     return '\n'.join(out)
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--runs', nargs='*', default=[])
     ap.add_argument('--scan')

@@ -27,7 +27,7 @@ _FENCE = re.compile(r'^```[a-z]*\n|\n```\s*$')
 def _done() -> set[str]:
     if not MANIFEST.exists():
         return set()
-    return {json.loads(l)['id'] for l in MANIFEST.read_text(encoding='utf-8').splitlines() if l.strip()}
+    return {json.loads(line)['id'] for line in MANIFEST.read_text(encoding='utf-8').splitlines() if line.strip()}
 
 
 async def generate(n: int) -> None:

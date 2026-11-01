@@ -16,10 +16,15 @@ MIN_CHARS 미만 단위(쪽 번호·'-'·단독 숫자)는 세지 않는다 — 
 
 import re
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from eval.doc_fidelity.pictures import norm as _norm
+
+if TYPE_CHECKING:
+    from docx.table import Table as DocxTable
 
 _PUNCT = re.compile(r'[\[\]()<>『』「」·•\-–—:;,.\'"‘’“”※①-⑳/→]')
 
@@ -60,7 +65,7 @@ def pdf_units(document_id: int, path: Path) -> list[Unit]:
             tables = page.find_tables()
             boxes = [t.bbox for t in tables]
 
-            def outside(obj, boxes=boxes):
+            def outside(obj: dict[str, Any], boxes: list[tuple[float, float, float, float]] = boxes) -> bool:
                 x0, top, x1, bottom = obj.get('x0', 0), obj.get('top', 0), obj.get('x1', 0), obj.get('bottom', 0)
                 return not any(b[0] <= x0 and x1 <= b[2] and b[1] <= top and bottom <= b[3] for b in boxes)
 
@@ -82,7 +87,7 @@ def docx_units(document_id: int, path: Path) -> list[Unit]:
     d = Document(str(path))
     units = [Unit(document_id, 'docx', '본문', None, s) for p in d.paragraphs for s in _sentences(p.text)]
 
-    def cells(table):
+    def cells(table: DocxTable) -> Iterator[str]:
         seen = set()
         for row in table.rows:
             for cell in row.cells:

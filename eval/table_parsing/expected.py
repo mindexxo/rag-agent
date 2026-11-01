@@ -11,6 +11,7 @@ L2 규칙은 코드의 현재 **설계**를 옮긴 것이다 — 정답이 아�
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from eval.table_parsing.render_image import cell_text
 
@@ -24,7 +25,7 @@ class Cell:
     text: str
 
 
-def norm(text) -> str:
+def norm(text: object) -> str:
     """비교용 정규화 — NBSP·연속 공백·줄바꿈을 공백 하나로, 앞뒤 공백 제거. 글자 자체는 바꾸지 않는다."""
     return re.sub(r'[\s ]+', ' ', str(text if text is not None else '')).strip()
 
@@ -34,11 +35,11 @@ def is_numeric(text: str) -> bool:
     return bool(re.search(r'\d', text))
 
 
-def flat(rows) -> tuple[int, int]:
+def flat(rows: list[list[Any]]) -> tuple[int, int]:
     return len(rows), max(len(r) for r in rows)
 
 
-def expected_cells(rows) -> list[Cell]:
+def expected_cells(rows: list[list[Any]]) -> list[Cell]:
     """정의 격자 → 병합 원점 셀 목록. 표 안의 표(nested)는 바깥 칸을 빈 글자로 두고, 안쪽 표는 별도 표로 센다(expected_tables)."""
     out = []
     for r, row in enumerate(rows):
@@ -52,7 +53,7 @@ def expected_cells(rows) -> list[Cell]:
     return out
 
 
-def flatten_nested(rows) -> list[list]:
+def flatten_nested(rows: list[list[Any]]) -> list[list]:
     """표 안의 표를 **docling PDF(TableFormer)가 내는 모양**으로 편다: 안쪽 표가 든 열은 안쪽 열 수만큼
     넓어지고, 안쪽 표가 든 행은 안쪽 행 수만큼 늘어난다. 그 행의 다른 칸은 세로 병합(안쪽 행 수), 다른 행의 그 열 칸은
     가로 병합(안쪽 열 수). 예: 3×2(안쪽 3×2) → 5×3 — '평가 항목'이 안쪽 3행에 반복, '세부'·'매년 12월'이 2열에 걸침.
@@ -91,7 +92,7 @@ def flatten_nested(rows) -> list[list]:
     return out
 
 
-def expected_tables(spec, path: str | None = None, layer: str = 'l2') -> list[list[list]]:
+def expected_tables(spec: dict[str, Any], path: str | None = None, layer: str = 'l2') -> list[list[list]]:
     """정의 하나가 담는 표(들)의 격자 목록 — 나란히 축은 2개. 중첩 축은 층·경로에 따라 다르다:
     - L2(색인 결과)는 어느 경로든 평탄화된 1개(flatten_nested — PDF는 TableFormer가, DOCX는 rag/chunking/docx.docx_table_rows가
       같은 모양으로).
@@ -108,7 +109,7 @@ def expected_tables(spec, path: str | None = None, layer: str = 'l2') -> list[li
     return [flatten_nested(spec['rows'])]
 
 
-def _filled_grid(rows) -> list[list[str]]:
+def _filled_grid(rows: list[list[Any]]) -> list[list[str]]:
     """병합 칸을 덮인 자리마다 반복한 글자 격자(docling grid와 같은 모양)."""
     n, m = flat(rows)
     g = [[''] * m for _ in range(n)]
@@ -119,7 +120,7 @@ def _filled_grid(rows) -> list[list[str]]:
     return g
 
 
-def expected_rows(spec, rows, path: str) -> list[list[str]]:
+def expected_rows(spec: dict[str, Any], rows: list[list[Any]], path: str) -> list[list[str]]:
     """L2 — 렌더 규칙(전 경로 공통 grid 규칙)을 적용한 markdown 행(첫 행 = 헤더). path는 호환용(규칙이 같다)."""
     g = _filled_grid(rows)
     out = []

@@ -47,7 +47,7 @@ class Verdict(BaseModel):
 
     @field_validator('evidence', mode='before')
     @classmethod
-    def _one_string_is_a_list(cls, v):
+    def _one_string_is_a_list(cls, v: object) -> object:
         # 판정자가 근거가 하나면 문자열로 답하기도 한다. 내용은 맞으니 목록으로 감싼다
         return [v] if isinstance(v, str) else v
 

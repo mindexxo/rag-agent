@@ -11,11 +11,14 @@
 
 import asyncio
 import os
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import AliasChoices, BaseModel, Field
 
 from rag.turn.llm_schemas import acomplete_validated
+
+if TYPE_CHECKING:
+    from rag.llm.base import LlmClient
 
 DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
 PROMPT_VERSION = "v2"  # v1은 JSON 키를 안 적어 Claude가 "verdict"로 답했다(22/22 검증 실패)
@@ -54,7 +57,7 @@ def judge_label() -> str:
     return f"{backend}:{model}:{PROMPT_VERSION}"
 
 
-def judge_llm():
+def judge_llm() -> LlmClient:
     backend, model = judge_spec()
     if backend == "claude":
         import shutil
@@ -80,11 +83,13 @@ def build_messages(question: str, expected: str, answer: str, chunks: list[str])
     ]
 
 
-async def judge_answer(llm, question: str, expected: str, answer: str, chunks: list[str]) -> AnswerJudgment:
+async def judge_answer(llm: LlmClient, question: str, expected: str, answer: str, chunks: list[str]) -> AnswerJudgment:
     return await acomplete_validated(llm, build_messages(question, expected, answer, chunks), AnswerJudgment)
 
 
-async def rejudge(rows: list[dict], chunks_by_doc: dict, *, llm=None, concurrency: int = 3) -> list[dict]:
+async def rejudge(
+    rows: list[dict], chunks_by_doc: dict, *, llm: LlmClient | None = None, concurrency: int = 3
+) -> list[dict]:
     """기계 판정 실패(또는 manual) 행에 LLM 판정을 붙인다 — 행에 llm_label·llm_reason·judge를 쓴다(제자리).
     실패(한도·타임아웃)는 llm_label=None·llm_error로 남기고 기계 판정을 유지한다."""
     llm = llm or judge_llm()
@@ -92,7 +97,7 @@ async def rejudge(rows: list[dict], chunks_by_doc: dict, *, llm=None, concurrenc
     sem = asyncio.Semaphore(concurrency)
     targets = [r for r in rows if not r.get('value_ok') or r.get('manual')]
 
-    async def _one(r):
+    async def _one(r: dict) -> None:
         async with sem:
             try:
                 v = await judge_answer(

@@ -21,8 +21,13 @@ import html
 import json
 import re
 import sys
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from eval.scan_quality.scans import OUT, SPECS
+
+if TYPE_CHECKING:
+    from rag.chunking.types import ChunkData
 
 _SENT = re.compile(r'(?<=[.!?。다요])\s+|\n')
 
@@ -31,7 +36,7 @@ def _ns(t: str) -> str:
     return re.sub(r'\s+', '', t)
 
 
-def _chunk(path, variant: str):
+def _chunk(path: Path, variant: str) -> list[ChunkData]:
     import rag.chunking as C
     from config import settings
     from eval import vlm_engine
@@ -46,7 +51,7 @@ def _chunk(path, variant: str):
     return C.chunk_file(path)
 
 
-def _headings(chunks) -> list[str]:
+def _headings(chunks: list[ChunkData]) -> list[str]:
     seen = []
     for c in chunks:
         for h in c.heading_path:
@@ -55,7 +60,7 @@ def _headings(chunks) -> list[str]:
     return seen
 
 
-def _sentences(chunks) -> list[str]:
+def _sentences(chunks: list[ChunkData]) -> list[str]:
     body = '\n'.join(c.text for c in chunks)
     return [s.strip() for s in _SENT.split(body) if len(_ns(s)) >= 8 and not s.strip().startswith('|')]
 
@@ -63,9 +68,10 @@ def _sentences(chunks) -> list[str]:
 def _space_kept(ref: str, hyp: str) -> float:
     """공백을 뺀 두 글을 정렬하고, 원본에서 공백 바로 앞이던 글자 중 스캔에서도 공백 앞인 비율."""
 
-    def strip(t):
-        chars, before_space = [], []
-        for i, ch in enumerate(t):
+    def strip(t: str) -> tuple[str, list[bool]]:
+        chars: list[str] = []
+        before_space: list[bool] = []
+        for _i, ch in enumerate(t):
             if ch.isspace():
                 if before_space:
                     before_space[-1] = True
@@ -85,7 +91,7 @@ def _space_kept(ref: str, hyp: str) -> float:
     return kept / total_all if total_all else 1.0
 
 
-def measure(digital, scan) -> dict:
+def measure(digital: list[ChunkData], scan: list[ChunkData]) -> dict:
     dh, sh = _headings(digital), _headings(scan)
     ds = _sentences(digital)
     scan_body = '\n'.join(c.text for c in scan)

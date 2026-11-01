@@ -6,6 +6,7 @@
 
 import json
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 
 RESULT_DIR = Path(__file__).resolve().parent / 'results'
@@ -17,12 +18,12 @@ def tenant_of(row_id: str) -> str:
     return p if p in TENANTS else 'demo'
 
 
-def _avg(rows, key):
+def _avg(rows: list[dict], key: str) -> float:
     vals = [r['scores'][key] for r in rows if r['scores'][key] is not None]
     return sum(vals) / len(vals) if vals else 0.0
 
 
-def table(rows, group_fn, label):
+def table(rows: list[dict], group_fn: Callable[[dict], str], label: str) -> None:
     groups = defaultdict(list)
     for r in rows:
         groups[group_fn(r)].append(r)
@@ -39,7 +40,7 @@ def table(rows, group_fn, label):
 def main() -> None:
     for mode in ('oracle', 'retrieved'):
         path = RESULT_DIR / f'generation_{mode}.jsonl'
-        rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+        rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
         # EPCov 판정자 — 다르면 같은 눈금이 아니다(규칙만 vs 규칙+심판, 심판 모델별)
         print(f'[{mode}] EPCov 판정자: {sorted({str(r.get("epcov_judge")) for r in rows})}')
         print(f'\n{"=" * 44}\nmode: {mode}  ({len(rows)}문항)\n{"=" * 44}')

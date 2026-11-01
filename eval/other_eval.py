@@ -59,7 +59,7 @@ async def compute() -> dict:
     off_scope는 '답할까/거절할까'가 확률적 경계라, 케이스마다 RUNS회 반복해
     일관성(flaky = 같은 입력에 통과/실패가 섞임)도 함께 본다.
     """
-    cases = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+    cases = [json.loads(line) for line in GOLD.read_text().splitlines() if line.strip()]
     sem = asyncio.Semaphore(CONCURRENCY)
 
     async def _one(c: dict, _i: int):

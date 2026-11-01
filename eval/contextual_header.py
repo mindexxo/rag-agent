@@ -30,6 +30,7 @@ import asyncio
 import json
 import sys
 from collections import defaultdict
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -41,6 +42,7 @@ from eval.chunk_boundary import context_losses  # noqa: E402
 from eval.generation import V2_TENANTS  # noqa: E402
 from rag.search.index_text import build_index_text  # noqa: E402
 from rag.search.os_client import LEX_BIGRAM_FIELD, MAPPING, NORI_FIELD, client  # noqa: E402
+from rag.search.retrieval_types import RetrievedChunk  # noqa: E402
 
 CONDITIONS = ('none', 'header', 'cr', 'rule')
 OUT = Path(__file__).resolve().parent / 'results' / 'ctx234'
@@ -167,7 +169,7 @@ async def make_contexts() -> None:
     ]
     print(f'조각 {sum(len(v) for v in docs.values())} · 이미 생성 {len(done)} · 남음 {len(jobs)}', flush=True)
 
-    async def one(chunks, i):
+    async def one(chunks: list[dict], i: int) -> tuple[str, str]:
         prompt = CR_PROMPT.format(doc=_window(chunks, i), chunk=chunks[i]['text'])
         async with sem:
             text = await llm.acomplete([{'role': 'user', 'content': prompt}])
@@ -205,7 +207,7 @@ async def build() -> None:
         await client().indices.create(name, body=MAPPING)
         texts = [variant_text(cond, d, cr, rule) for d in targets]
         vectors = await embed_texts(texts)
-        changed = {d['_id']: (t, v) for d, t, v in zip(targets, texts, vectors)}
+        changed = {d['_id']: (t, v) for d, t, v in zip(targets, texts, vectors, strict=False)}
         actions = []
         for d in docs:
             src = {k: v for k, v in d.items() if k != '_id'}
@@ -229,7 +231,7 @@ async def drop() -> None:
 
 
 @contextmanager
-def condition(cond: str, rerank_texts: dict[int, str]):
+def condition(cond: str, rerank_texts: dict[int, str]) -> Iterator[None]:
     """검색이 이 조건의 임시 인덱스를 보고, 리랭커가 이 조건의 텍스트를 보게 한다(운영 코드는 그대로)."""
     import rag.search.reranker as rr
 
@@ -238,7 +240,7 @@ def condition(cond: str, rerank_texts: dict[int, str]):
         cid >> 20 for cid in rerank_texts
     }  # 문서 조각 id = (문서 id << 20) | 순번(rag/search/os_index.chunk_os_id)
 
-    def rerank_text(chunk):
+    def rerank_text(chunk: RetrievedChunk) -> str:
         v = rerank_texts.get(chunk.chunk_id)
         if v is None:
             if chunk.faq_id is None and getattr(chunk, 'document_id', None) in target_docs:
@@ -268,14 +270,13 @@ async def _answers(cond: str, rows: list[dict], gold: dict, run: int) -> list[di
     from rag.turn.prompts import build_knowledge_generation_prompt
 
     llm, judge, sem, jsem = create_llm(), epcov_judge.judge_llm(), asyncio.Semaphore(8), asyncio.Semaphore(4)
-    out = []
     async with AsyncSessionLocal() as session:
         evid = {}
         for r in rows:  # 세션은 직렬(AsyncSession 동시 실행 불가)
             g = gold[r['id']]
             evid[g['id']] = (await retrieve(session, row_tenant(g), g['query'])).chunks
 
-    async def one(gid):
+    async def one(gid: str) -> dict:
         g = gold[gid]
         async with sem:
             ans = await llm.acomplete(

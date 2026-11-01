@@ -34,6 +34,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from sqlalchemy import delete
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database import AsyncSessionLocal
@@ -52,18 +53,18 @@ COMPOSITION = "v1-40p"
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     na = sum(x * x for x in a) ** 0.5
     nb = sum(y * y for y in b) ** 0.5
     return dot / (na * nb)
 
 
-async def _docids(session, tenant: str, query: str) -> list[int]:
+async def _docids(session: AsyncSession, tenant: str, query: str) -> list[int]:
     r = await retrieve(session, tenant, query)
     return _source_doc_ids(r.chunks)
 
 
-async def _clear(session) -> None:
+async def _clear(session: AsyncSession) -> None:
     await session.execute(delete(AnswerCacheRow).where(AnswerCacheRow.tenant_id == EVAL_TENANT))
     await session.commit()
 
@@ -87,7 +88,7 @@ async def compute() -> dict:
     rows(misses 포함)에는 similarity·failed_guard가 실린다 — 오판정이 어느 관문
     (floor/docset/verifier) 탓인지 목록에서 바로 읽기 위함.
     """
-    pairs = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+    pairs = [json.loads(line) for line in GOLD.read_text().splitlines() if line.strip()]
     rows = []
     from rag.clients import shared_aux_llm
 

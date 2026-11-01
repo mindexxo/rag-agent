@@ -45,9 +45,9 @@ def _noise_docs(limit: int, tenant: str) -> tuple[list[dict], int]:
     옛 문서가 남으므로 **kept 교집합**만 쓴다."""
     kept = set(json.loads(FILTER.read_text(encoding='utf-8'))['kept'])
     by_doc = defaultdict(list)
-    for l in CHUNKS.read_text(encoding='utf-8').splitlines():
-        if l.strip():
-            c = json.loads(l)
+    for line in CHUNKS.read_text(encoding='utf-8').splitlines():
+        if line.strip():
+            c = json.loads(line)
             if c['doc'] in kept:
                 by_doc[c['doc']].append(c)
     order = sorted(by_doc)

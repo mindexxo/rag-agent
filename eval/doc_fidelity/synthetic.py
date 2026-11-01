@@ -9,14 +9,18 @@
 
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from eval.doc_fidelity.pictures import norm
 from eval.table_parsing.expected import expected_cells, flatten_nested, is_numeric
 
+if TYPE_CHECKING:
+    from PIL import Image
+
 TARGETS = ('V12_small', 'V23_lowq', 'V15_nested')
 
 
-def spec_values(spec) -> list[str]:
+def spec_values(spec: dict[str, Any]) -> list[str]:
     rows = spec['rows']
     if any(isinstance(c, dict) and c.get('nested') for r in rows for c in r):
         rows = flatten_nested(rows)
@@ -125,12 +129,14 @@ def score_picture(spec: dict, caption: str) -> dict:
     }
 
 
-def _thumb(image):
+def _thumb(image: Image.Image):
     """짝짓기용 지문 — 회색 24×24. 크롭은 쪽 렌더(PDF)·원본(DOCX)이라 크기·여백이 조금 달라도 모양은 같다."""
     return list(image.convert('L').resize((24, 24)).getdata())
 
 
-def match_pictures(specs: list[tuple[str, dict]], records: list[dict], crops_dir) -> list[tuple[str, dict | None]]:
+def match_pictures(
+    specs: list[tuple[str, dict]], records: list[dict], crops_dir: Path
+) -> list[tuple[str, dict | None]]:
     """정의 ↔ 추출 그림 짝짓기 — **크롭 이미지와 정의 그림의 모양**으로 짓는다(캡션과 무관).
 
     캡션 글자로 지으면 틀린다: 적중 1개면 남의 그림을 가져오고('22:00'), 한 자리 숫자('2','1')는 어느 캡션에나
@@ -149,7 +155,7 @@ def match_pictures(specs: list[tuple[str, dict]], records: list[dict], crops_dir
         ref = _thumb(spec['draw']())
         for r in records:
             if r['picture_id'] in fps:
-                dist = sum(abs(a - b) for a, b in zip(ref, fps[r['picture_id']])) / len(ref)
+                dist = sum(abs(a - b) for a, b in zip(ref, fps[r['picture_id']], strict=False)) / len(ref)
                 pairs.append((dist, sid, r['picture_id']))
     used_s, used_r, got = set(), set(), {}
     for dist, sid, pid in sorted(pairs):

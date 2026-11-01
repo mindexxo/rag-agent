@@ -26,6 +26,7 @@ import json
 from pathlib import Path
 
 from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import AsyncSessionLocal
 from eval.axis_common import commit
@@ -33,8 +34,10 @@ from eval.generation import CONCURRENCY, RESULT_DIR, generate, retrieved_context
 from rag.llm import LlmClient, create_llm
 from rag.models import Faq
 from rag.search import os_index
+from rag.search.retrieval_types import RetrievedChunk
 from rag.turn.citation_labels import sources_from_chunks
 from rag.turn.citation_tail import TailSplitter, resolve_citations
+from schemas.kms import SourceCitation
 
 FAQ_EVAL_TENANT = (
     "faq_eval"  # 전용 테넌트 — 다른 축의 측정 테넌트에 FAQ를 섞지 않는다(eval/axis_common.load_chunks 전제)
@@ -46,7 +49,7 @@ def load_set() -> list[dict]:
     return [json.loads(line) for line in SET.read_text().splitlines() if line.strip()]
 
 
-async def load(session) -> None:
+async def load(session: AsyncSession) -> None:
     """세트를 테넌트에 적재 — 기존 FAQ(행·색인)를 지우고 다시 넣는다. 색인은 워커를 거치지 않고 바로(os_index.index_faq_chunks)."""
     old_ids = (await session.execute(select(Faq.id).where(Faq.tenant_id == FAQ_EVAL_TENANT))).scalars().all()
     if old_ids:
@@ -64,14 +67,14 @@ async def load(session) -> None:
     print(f"{FAQ_EVAL_TENANT}: FAQ {len(faqs)}건 적재·색인 (기존 {len(old_ids)}건 삭제)")
 
 
-def _cited(answer: str, chunks) -> list:
+def _cited(answer: str, chunks: list[RetrievedChunk]) -> list[SourceCitation]:
     splitter = TailSplitter()
     splitter.feed(answer)
     splitter.finish()
     return resolve_citations(splitter.tail_raw, sources_from_chunks(chunks), [])
 
 
-async def measure(session, llm: LlmClient, label: str) -> list[dict]:
+async def measure(session: AsyncSession, llm: LlmClient, label: str) -> list[dict]:
     rows = load_set()
     by_question = {
         q: i
@@ -89,14 +92,14 @@ async def measure(session, llm: LlmClient, label: str) -> list[dict]:
 
     sem = asyncio.Semaphore(CONCURRENCY)
 
-    async def _gen(q, chunks):
+    async def _gen(q: dict, chunks: list[RetrievedChunk]) -> str:
         async with sem:
             return await generate(llm, q["text"], chunks)
 
     answers = await asyncio.gather(*(_gen(q, c) for _, q, c in work))
 
     out = []
-    for (r, q, chunks), answer in zip(work, answers):
+    for (r, q, chunks), answer in zip(work, answers, strict=False):
         expected = by_question[r["question"]]
         cited = _cited(answer, chunks)
         cited_faq_ids = [getattr(c, "faq_id", None) for c in cited]
@@ -113,7 +116,9 @@ async def measure(session, llm: LlmClient, label: str) -> list[dict]:
                 "answer": answer,
                 "cited": [c.filename for c in cited],
                 "cited_faq_ids": [i for i in cited_faq_ids if i is not None],
-                "faq_cited": any(i is not None or c.filename == "FAQ" for i, c in zip(cited_faq_ids, cited)),
+                "faq_cited": any(
+                    i is not None or c.filename == "FAQ" for i, c in zip(cited_faq_ids, cited, strict=False)
+                ),
                 "correct": (expected in cited_faq_ids) if per_item else None,
                 "retrieved": bool(ranks),
                 "rank": ranks[0] if ranks else None,
@@ -127,7 +132,7 @@ async def measure(session, llm: LlmClient, label: str) -> list[dict]:
 
 
 def summarize(rows: list[dict]) -> None:
-    def _rate(rs, key):
+    def _rate(rs: list[dict], key: str) -> str:
         vals = [r[key] for r in rs if r[key] is not None]
         return f"{sum(vals) / len(vals):.3f}" if vals else "-"
 

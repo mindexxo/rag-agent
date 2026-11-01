@@ -26,7 +26,7 @@ RESULT_DIR = Path("eval/results")
 
 
 def _load_jsonl(path: Path) -> list[dict]:
-    return [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 def build_dataset(mode: str = "retrieved", ref_only: bool = False) -> EvaluationDataset:

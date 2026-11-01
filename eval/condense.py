@@ -51,7 +51,7 @@ async def compute(multi: bool = False) -> dict:
     multi=True면 condense_to_queries(#5)의 첫 줄(standalone)을 같은 규칙으로 채점 —
     변형 생성을 얹었을 때 재작성 품질이 회귀하지 않는지 본다. 변형 줄은 채점 대상 아님.
     """
-    cases = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
+    cases = [json.loads(line) for line in GOLD.read_text().splitlines() if line.strip()]
     llm = create_aux_llm()  # 운영과 같은 보조 클라이언트 — LLM_AUX_*가 비면 생성 설정 그대로
     sem = asyncio.Semaphore(CONCURRENCY)
 

@@ -14,6 +14,7 @@
 import datetime as dt
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import openpyxl
 from docx import Document as DocxDocument
@@ -30,13 +31,17 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 from eval.table_parsing.render_image import cell_text, render_spec
 from eval.table_parsing.specs import SPECS, paths_of, tables_of
 
+if TYPE_CHECKING:
+    from docx.table import Table as DocxTable
+    from openpyxl.worksheet.worksheet import Worksheet
+
 pdfmetrics.registerFont(UnicodeCIDFont('HYGothic-Medium'))
 _BODY = ParagraphStyle('b', fontName='HYGothic-Medium', fontSize=10, leading=14)
 _CELL = ParagraphStyle('c', fontName='HYGothic-Medium', fontSize=9, leading=12)
 _INTRO = '아래 표는 사내 기준을 정리한 것이다.'  # 쪽에 글자가 표만 있으면 레이아웃 모델이 흔들려 짧은 본문을 둔다
 
 
-def _span_cells(rows):
+def _span_cells(rows: list[list[Any]]):
     """(r, c, rs, cs) 목록 — 병합 원점만."""
     out = []
     for r, row in enumerate(rows):
@@ -53,7 +58,7 @@ _CAPS = ParagraphStyle(
 )
 
 
-def _ctx_story(spec, body: list) -> list:
+def _ctx_story(spec: dict[str, Any], body: list) -> list:
     """--context 문서: 제목·목적·절 제목·도입 문장 → 표(body) → 표 제목 줄·해설·문의. 문맥에는 표 값을 쓰지 않는다(context.py)."""
     from eval.table_parsing.context import blocks
 
@@ -78,7 +83,7 @@ def _ctx_story(spec, body: list) -> list:
 # ── img: PNG를 PDF에 붙인다 ─────────────────────────────────────────────────────
 
 
-def build_img_pdf(spec, out: Path, png_dir: Path, context: bool = False) -> Path:
+def build_img_pdf(spec: dict[str, Any], out: Path, png_dir: Path, context: bool = False) -> Path:
     im = render_spec(spec)
     png = png_dir / f"{spec['id']}.png"
     im.save(png)
@@ -98,7 +103,7 @@ def build_img_pdf(spec, out: Path, png_dir: Path, context: bool = False) -> Path
 # ── pdf: reportlab 네이티브 표 ──────────────────────────────────────────────────
 
 
-def _rl_table(rows, *, nested_ok=True, style_kind='grid'):
+def _rl_table(rows: list[list[Any]], *, nested_ok: bool = True, style_kind: str = 'grid'):
     """style_kind: grid(격자) · hlines(가로선만 — 테두리 없는 표) · striped(헤더 음영 + 짝수 행 연한 회색)."""
     data = []
     for row in rows:
@@ -128,7 +133,7 @@ def _rl_table(rows, *, nested_ok=True, style_kind='grid'):
     return t
 
 
-def build_text_pdf(spec, out: Path, context: bool = False) -> Path:
+def build_text_pdf(spec: dict[str, Any], out: Path, context: bool = False) -> Path:
     story = [] if context else [Paragraph(_INTRO, _BODY), Spacer(1, 6)]
     if spec.get('title'):
         story.append(Paragraph(spec['title'], _BODY))
@@ -151,7 +156,7 @@ def build_text_pdf(spec, out: Path, context: bool = False) -> Path:
 # ── docx ────────────────────────────────────────────────────────────────────────
 
 
-def _docx_fill(table, rows):
+def _docx_fill(table: DocxTable, rows: list[list[Any]]):
     for r, row in enumerate(rows):
         for c, cell in enumerate(row):
             if cell is None:
@@ -171,7 +176,7 @@ def _docx_fill(table, rows):
         table.cell(r, c).merge(table.cell(r + rs - 1, c + cs - 1))
 
 
-def build_docx(spec, out: Path, context: bool = False) -> Path:
+def build_docx(spec: dict[str, Any], out: Path, context: bool = False) -> Path:
     d = DocxDocument()
     if context:
         from eval.table_parsing.context import blocks
@@ -217,7 +222,7 @@ def build_docx(spec, out: Path, context: bool = False) -> Path:
 # ── xlsx ────────────────────────────────────────────────────────────────────────
 
 
-def _xlsx_value(cell, typed: bool):
+def _xlsx_value(cell: Any, typed: bool):
     if cell is None:
         return None
     raw = cell.get('t') if isinstance(cell, dict) else cell
@@ -226,7 +231,15 @@ def _xlsx_value(cell, typed: bool):
     return raw if raw != '' else None
 
 
-def _xlsx_fill(ws, rows, *, typed: bool, col_offset: int = 0, striped: bool = False, row_offset: int = 0):
+def _xlsx_fill(
+    ws: Worksheet,
+    rows: list[list[Any]],
+    *,
+    typed: bool,
+    col_offset: int = 0,
+    striped: bool = False,
+    row_offset: int = 0,
+):
     for r, row in enumerate(rows, start=1 + row_offset):
         for c, cell in enumerate(row, start=1 + col_offset):
             v = _xlsx_value(cell, typed)
@@ -251,7 +264,7 @@ def _xlsx_fill(ws, rows, *, typed: bool, col_offset: int = 0, striped: bool = Fa
         )
 
 
-def build_xlsx(spec, out: Path, context: bool = False) -> Path:
+def build_xlsx(spec: dict[str, Any], out: Path, context: bool = False) -> Path:
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = '표'

@@ -122,7 +122,12 @@ async def selftest(runs: int = 3) -> dict:
             except Exception as exc:
                 labels.append(f"error:{type(exc).__name__}")
         out.append(
-            {"id": f["id"], "expected": f["expected"], "labels": labels, "ok": all(l == f["expected"] for l in labels)}
+            {
+                "id": f["id"],
+                "expected": f["expected"],
+                "labels": labels,
+                "ok": all(label == f["expected"] for label in labels),
+            }
         )
     return {"runs": runs, "fixtures": out, "all_ok": all(o["ok"] for o in out)}
 

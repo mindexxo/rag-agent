@@ -21,6 +21,7 @@ _generate(동기)는 RAGAS가 안 부르므로 스텁이다.
 
 from typing import Any
 
+from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.messages.utils import convert_to_openai_messages
@@ -37,12 +38,24 @@ class LlmClientChatModel(BaseChatModel):
     def _llm_type(self) -> str:
         return "llm-client"
 
-    async def _agenerate(self, messages: list[BaseMessage], stop=None, run_manager=None, **kwargs: Any) -> ChatResult:
+    async def _agenerate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
         # BaseMessage(system/human/ai) → {"role","content"} — LlmClient.acomplete가 받는 형태.
         dict_messages = convert_to_openai_messages(messages)
         text = await self.client.acomplete(dict_messages)  # 제약 의도 없음 = 스키마 강제 불가
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
 
-    def _generate(self, messages: list[BaseMessage], stop=None, run_manager=None, **kwargs: Any) -> ChatResult:
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
         # RAGAS evaluate()는 async만 탄다 — 동기 경로는 호출되지 않는다(추상 요건 충족용 스텁).
         raise NotImplementedError("RAGAS judge는 async(_agenerate)만 사용한다")

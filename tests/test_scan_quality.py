@@ -1,4 +1,4 @@
-"""#224 스캔 품질 도구(eval/scan_quality) — 대조 지표와 합성 열화가 의도대로 세는지. 변환·OCR 없이 도는 순수 부분만."""
+"""스캔 품질 도구(eval/scan_quality) — 대조 지표와 합성 열화가 의도대로 세는지. 변환·OCR 없이 도는 순수 부분만."""
 
 from types import SimpleNamespace
 

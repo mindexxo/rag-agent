@@ -1,7 +1,7 @@
 """청킹 파서 단위 테스트 — 첨부 추출(plain.pdf_pages / docx.docx_text)과 형식 분기(chunk_file)의 계약.
 
-chunk_file 케이스는 전부 docling 변환 프로세스를 탄다(_needs_docling 표시) — PDF·DOCX·XLSX·MD 색인 경로가 docling 하나뿐이라서
-(#143·#220·#267, 비상 스위치는 #272에서 없앴다). 첨부 추출과 순수 함수는 docling 없이 돈다. docling 경로의 세부(제목 층·표·캡션)는
+chunk_file 케이스는 전부 docling 변환 프로세스를 탄다(_needs_docling 표시) — 색인 경로가 docling 하나뿐이라서.
+첨부 추출과 순수 함수는 docling 없이 돈다. docling 경로의 세부(제목 층·표·캡션)는
 tests/test_chunking_docling.py·tests/test_chunking_office_docling.py.
 
 입력은 corpus_v2 합성 문서 실물. heading_path는 pdf·docx·md 모두 채워진다
@@ -128,8 +128,8 @@ class TestChunkFile:
 @_needs_docling
 class TestMdSections:
     """md 섹션 파서가 pdf·docx와 같은 계약(헤딩은 본문 밖·본문 없는 헤딩은 섹션 아님·코드 펜스 안 '#'은 헤딩 아님·레벨 건너뛰기)을
-    지키는지. 위 TestChunkFile의 md 케이스는 `any(...)`·`len(...) > 1`로 헐거워 이 클래스가 계약을 못박는다(#42에서 세움).
-    파서는 #267부터 docling(MD 백엔드) — 이 클래스가 정규식 시절 계약의 회귀 검사다. docling 보정은 tests/test_chunking_md.py.
+    지키는지. 위 TestChunkFile의 md 케이스는 `any(...)`·`len(...) > 1`로 헐거워 이 클래스가 계약을 못박는다.
+    docling 보정은 tests/test_chunking_md.py.
     """
 
     def _write(self, tmp_path, text):
@@ -138,8 +138,7 @@ class TestMdSections:
         return p
 
     def test_본문_없는_헤딩은_섹션이_아니다(self, tmp_path):
-        # 옛 MarkdownNodeParser 경로는 '## 2. 봉제 불량' 한 줄짜리 청크를 만들었다
-        # (실측 md 청크의 19%). docx는 진작 막고 있던 것을 md에도 맞춘 것.
+        # 한 줄짜리 헤딩 청크를 만들지 않는다(docx와 같은 계약).
         p = self._write(tmp_path, '# 제목\n\n## 2. 상위\n\n### 2.1 하위\n\n실제 본문이다.\n')
         bodies = [s.body for s in md_sections(p)]
         assert bodies == ['실제 본문이다.']
@@ -153,7 +152,7 @@ class TestMdSections:
 
     def test_문단은_줄로_나뉜다(self, tmp_path):
         # md는 빈 줄이 문단 구분 — 걷어내면 문단이 붙어버린다. docling은 문단을 요소 하나씩 주고 조립(build_sections)이 줄바꿈
-        # 하나로 잇는다 — PDF·DOCX와 같은 모양(#267 전 정규식 파서는 빈 줄까지 그대로 뒀다)
+        # 하나로 잇는다 — PDF·DOCX와 같은 모양
         p = self._write(tmp_path, '# 제목\n\n첫 문단.\n\n둘째 문단.\n')
         assert md_sections(p)[0].body == '첫 문단.\n둘째 문단.'
 
@@ -174,7 +173,7 @@ class TestMdSections:
         assert [s.heading_path for s in md_sections(p)] == [['제목']]
 
     def test_들여쓰기_코드블록의_샾도_헤딩이_아니다(self, tmp_path):
-        # CommonMark상 들여쓴 줄은 코드블록이다 — docling이 문법대로 거른다(#267 전 정규식은 열 0 요구로 걸렀다)
+        # CommonMark상 들여쓴 줄은 코드블록이다 — docling이 문법대로 거른다
         p = self._write(tmp_path, '# 제목\n\n    # 들여쓴 코드\n\n본문.\n')
         assert [s.heading_path for s in md_sections(p)] == [['제목']]
 
@@ -195,7 +194,7 @@ class TestMdSections:
 
 
 class TestChunkFileDispatch:
-    """형식 분기가 chunk_file 한 곳뿐임을 고정 (#42 — 두 곳이던 게 xlsx 버그의 원인)."""
+    """형식 분기가 chunk_file 한 곳뿐임을 고정 — 두 곳이면 형식별 동작이 어긋난다."""
 
     @_needs_docling
     def test_xlsx는_chunk_xlsx로_위임된다(self):
@@ -213,7 +212,7 @@ class TestChunkFileDispatch:
 
 
 class TestDocxFallbackHeadings:
-    """Heading 스타일 없는 docx의 조문 패턴 승격 (#205). 튜플 단위 + python-docx 생성 fixture."""
+    """Heading 스타일 없는 docx의 조문 패턴 승격. 튜플 단위 + python-docx 생성 fixture."""
 
     def test_스타일_헤딩이_하나라도_있으면_무변경(self):
         from rag.chunking.docx import docx_fallback_headings
@@ -290,7 +289,7 @@ class TestDocxFallbackHeadings:
         ]
 
     def test_인용_문단은_승격하지_않는다(self):
-        # #233: 예전 _ARTICLE_RE(조 번호 뒤 공백·괄호·줄끝)가 이 꼴을 전부 제목으로 올려, 뒤에 다른 제목이 오면 문장이 사라졌다
+        # 조 번호 뒤 공백·괄호·줄끝만 보고 제목으로 올리면, 뒤에 다른 제목이 올 때 인용 문장이 사라진다
         from rag.chunking.docx import docx_fallback_headings
 
         cites = [
@@ -306,7 +305,7 @@ class TestDocxFallbackHeadings:
         ]
 
     def test_괄호_중첩_제목은_짝까지가_머리(self):
-        # #233: 예전 머리 정규식은 안쪽 닫는 괄호에서 잘라 '제2조(시향 예약(단체)'와 본문 ')'로 갈랐다
+        # 안쪽 닫는 괄호에서 자르면 '제2조(시향 예약(단체)'와 본문 ')'로 갈라진다
         from rag.chunking.docx import docx_fallback_headings
 
         items = [(False, 0, '제목', False), (False, 0, '제2조(시향 예약(단체)) 예약은 전화로 받는다.', False)]

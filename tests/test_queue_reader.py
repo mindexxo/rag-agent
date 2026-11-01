@@ -2,7 +2,7 @@
 
 백그라운드 생성(_run_generation)이 큐에 넣은 이벤트를 SSE로 흘리는 코어.
 LLM·DB 없이 큐에 이벤트를 직접 넣어 순서·형식을 검증한다.
-#56 계약: 리더는 meta만 자체 생성하고 나머지는 순수 전달 — done도 큐로 온다(리더가 합성하지 않음).
+계약: 리더는 meta만 자체 생성하고 나머지는 순수 전달 — done도 큐로 온다(리더가 합성하지 않음).
 """
 
 import asyncio
@@ -53,7 +53,7 @@ async def test_이벤트_순서_meta_delta_done():
 
 @pytest.mark.asyncio
 async def test_done은_리더가_합성하지_않고_큐의_페이로드를_그대로_전달():
-    # 구 계약에선 리더가 빈 done을 하드코딩으로 붙였다 — 이제 최종 상태는 생성 태스크만 안다 (#56)
+    # 최종 상태는 생성 태스크만 안다
     queue = asyncio.Queue()
     payload = {
         'finish_reason': 'cancelled',
@@ -123,7 +123,7 @@ async def test_큐_get_취소_직전에_들어온_아이템은_유실되지_않�
 
 @pytest.mark.asyncio
 async def test_유휴_시_ping이_나오고_이후_이벤트는_유실_없이_도착(monkeypatch):
-    """ping 타임아웃(wait_for)이 큐 대기를 취소해도 아이템이 유실되지 않는다 (#56 회귀 고정).
+    """ping 타임아웃(wait_for)이 큐 대기를 취소해도 아이템이 유실되지 않는다.
 
     시간 sleep 최소화: 주기를 0.05초로 줄이고 생산자는 그보다 늦게 넣는다.
     """

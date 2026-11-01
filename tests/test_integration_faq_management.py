@@ -1,4 +1,4 @@
-"""FAQ 관리 통합 테스트 (#278, FE 요청 4~6) — 카테고리·응답 필드(등록/변경자·시각·ref_count)·목록 검색/필터/페이징.
+"""FAQ 관리 통합 테스트 — 카테고리·응답 필드(등록/변경자·시각·ref_count)·목록 검색/필터/페이징.
 
 항목별 FAQ 인용(저장·대화 이력·ref_count)이 여기 들어간다 — 번호·표시명 단위는 tests/test_prompts.py,
 SSE done.citations는 tests/test_integration_query_sse.py, 통계 집계는 tests/test_integration_stats.py.
@@ -53,7 +53,7 @@ async def test_목록_모양_최신순_페이징(client, tenant_id):
     ids = [(await _faq(client, f'질문 {i}'))['id'] for i in range(3)]
 
     body = (await client.get('/kms/faqs')).json()
-    assert set(body) == {'items', 'total', 'has_more'}  # #278: 배열 → 문서 목록과 같은 모양
+    assert set(body) == {'items', 'total', 'has_more'}  # 문서 목록과 같은 모양
     assert [f['id'] for f in body['items']] == ids[::-1]  # 최신 등록이 위
     assert body['total'] == 3 and body['has_more'] is False
 
@@ -78,7 +78,7 @@ async def test_q_검색은_질문_유사질문_답변_중_하나라도_대소문
     assert [f['id'] for f in await _items(client, '?q=100%25')] == [c['id']]  # %는 와일드카드가 아니라 글자
     assert await _items(client, '?q=없는말') == []
     assert len(await _items(client, '?q=%20%20')) == 3  # 공백뿐인 q = 미전송
-    # 유사 질문은 원소별로 본다(리뷰 지적 2) — JSON 배열의 따옴표·쉼표·대괄호는 검색 대상이 아니다
+    # 유사 질문은 원소별로 본다 — JSON 배열의 따옴표·쉼표·대괄호는 검색 대상이 아니다
     assert (
         await _items(client, '?q=%22') == []
         and await _items(client, '?q=,') == []
@@ -202,7 +202,7 @@ async def test_등록자_변경자_시각(client, tenant_id):
     assert body['created_by'] == 'agent-kim' and body['updated_by'] == 'agent-lee'  # 켜고 끄기도 '손댄 것'
     assert body['updated_at'] >= f['updated_at']
 
-    res = await client.patch(f"/kms/faqs/{f['id']}", json={'answer': '7일'})  # 헤더 없음 → null로 덮는다(결정 5)
+    res = await client.patch(f"/kms/faqs/{f['id']}", json={'answer': '7일'})  # 헤더 없음 → null로 덮는다
     assert res.json()['updated_by'] is None and res.json()['created_by'] == 'agent-kim'
 
     g = await _faq(client, '배송은?')  # 헤더 없이 등록
@@ -249,7 +249,7 @@ async def test_항목별_인용_저장_ref_count_대화이력(client, tenant_id,
 
 @pytest.mark.asyncio
 async def test_여러_FAQ_중_인용된_항목만_센다(client, tenant_id, fake_llm, pass_gate, relaxed_quota):
-    """항목마다 번호가 다르다 — 2번만 인용하면 2번 항목만 ref_count가 오른다(#278 전엔 'FAQ' 하나로 접혀 구분 불가)."""
+    """항목마다 번호가 다르다 — 2번만 인용하면 2번 항목만 ref_count가 오른다."""
     a = await _faq(client, '환불 기간은?', answer='7일')
     b = await _faq(client, '환불 수수료는?', answer='없음')
     fake_llm.answer = f'수수료는 없습니다. {citation_tail([2])}'

@@ -1,30 +1,15 @@
-"""eval의 condense 입력이 운영과 같은 예산으로 잘리는지 (#81).
+"""eval의 condense 입력이 운영과 같은 예산으로 잘리는지.
 
-운영은 rag/turn/service.py에서 trim_messages_for_condense(messages, 600)을 거쳐 condense를
-부른다. eval 세 축(condense·generation·retrieval_mt)이 그걸 안 태우던 것이 #81이었다 —
-긴 이력을 그대로 넘기면 이전 답변의 수치가 재작성 질의에 주입된다(실측: 1751tk 전제보존
-1/5 → 493tk 5/5, config.py의 condense_history_budget_tokens 주석).
-
-**소스를 AST로 검사한다.** 트리밍이 실제로 무는 문항이 gold 130개 중 5개뿐이라
-(전부 multi_turn_long) 실행 테스트로는 "함수가 호출됐는지"를 안정적으로 못 잡는다.
-문자열 검색은 쓰지 않는다 — 호출을 지워도 import 줄에 이름이 남아 통과한다(만들면서 실제로
-그렇게 새는 것을 확인했다). 이 리포에서 소스를 읽는 테스트는 이 파일이 유일하다.
+운영은 trim_messages_for_condense를 거쳐 condense를 부른다 — 긴 이력을 그대로 넘기면 이전 답변의
+수치가 재작성 질의에 주입된다. **소스를 AST로 검사한다**: 트리밍이 무는 문항이 드물어 실행 테스트로는
+호출 여부를 안정적으로 못 잡고, 문자열 검색은 호출을 지워도 import 줄의 이름 때문에 통과한다.
 """
 
 import ast  # noqa: F401  (각 테스트가 지역 import하지 않도록 모듈 상단에 둔다)
 
 
 class TestCondenseTrimParity:
-    """eval의 condense 입력이 운영과 같은 예산으로 잘리는지 (#81).
-
-    운영은 rag/turn/service.py에서 trim_messages_for_condense(messages, 600)을 거쳐 condense를
-    부른다. eval 세 축(condense·generation·retrieval_mt)이 그걸 안 태우던 것이 #81이었다 —
-    긴 이력을 그대로 넘기면 이전 답변의 수치가 재작성 질의에 주입된다(실측: 1751tk 전제보존
-    1/5 → 493tk 5/5, config.py의 condense_history_budget_tokens 주석).
-
-    소스를 문자열로 검사한다. LLM·DB를 태우지 않고 "그 호출이 있는지"만 보는 게 목적이라
-    실행 테스트로는 예산 일치를 확인할 수 없다(트리밍이 무는 문항이 축마다 다르다).
-    """
+    """eval 세 축(condense·generation·retrieval_mt)이 운영과 같은 condense 트리밍을 태운다."""
 
     _AXES = ('eval/condense.py', 'eval/generation.py', 'eval/retrieval_mt.py')
 

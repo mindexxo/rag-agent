@@ -1,4 +1,4 @@
-"""OTel 계측(#7) 단위 테스트 — endpoint 미설정(no-op) 경로가 핵심.
+"""OTel 계측 단위 테스트 — endpoint 미설정(no-op) 경로가 핵심.
 
 운영 기본값이 no-op이므로 "계측 코드가 깔려 있어도 아무 일도 안 일어난다"가
 가장 중요한 계약이다. 실제 전송은 로컬 Phoenix E2E로 검증 (자동 테스트 밖).
@@ -49,7 +49,7 @@ def test_set_documents_no_op에서_무해():
 
 
 def test_record_turn_result_no_op에서_무해_그리고_clip_비용_회피():
-    """턴 결과 기록(#54, #56에서 TurnResult 소비로 전환) — no-op 스팬에서 무해해야 하고,
+    """턴 결과(TurnResult) 기록 — no-op 스팬에서 무해해야 하고,
     is_recording 가드가 먼저라 clip(문자열 절단) 비용도 없어야 한다(otel.py 모듈 docstring 규약)."""
     from unittest.mock import patch
 

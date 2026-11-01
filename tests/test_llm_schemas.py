@@ -1,9 +1,7 @@
-"""구조화 출력 공용 헬퍼 계약 테스트 (#43) — rag/turn/llm_schemas.acomplete_validated.
+"""구조화 출력 공용 헬퍼(rag/turn/llm_schemas.acomplete_validated) 계약.
 
-고정하는 것: (a) 스키마가 **의도**(schema=)로 공급자에 넘어간다(#287 — 서버 문법은 구현 몫)
-(b) 응답의 펜스·부연 방어 (c) 비JSON·스키마 위반→LlmJudgmentFailed, 부분 복구 없음
-(d) 호출 자체 실패→예외 전파(재시도 없음). 구 방어 파서(_as_bool)가 pydantic lax 파싱으로
-대체됐음도 여기서 회귀 고정한다. 스키마 거부 서버를 위한 무스키마 재시도는 #287에서 지웠다.
+스키마는 **의도**(schema=)로 공급자에 넘기고(서버 문법은 구현 몫), 펜스·부연은 벗기며,
+비JSON·스키마 위반은 부분 복구 없이 LlmJudgmentFailed, 호출 실패는 재시도 없이 전파한다.
 """
 
 import pytest
@@ -35,13 +33,13 @@ async def test_정상_스키마_경로():
 
 
 def test_RETRY는_스키마_화이트리스트에_있다():
-    """#59 — 전이 인텐트 RETRY가 guided enum·검증 양쪽에서 유효해야 분류기가 낼 수 있다."""
+    """전이 인텐트 RETRY가 guided enum·검증 양쪽에서 유효해야 분류기가 낼 수 있다."""
     assert RouteDecision(safe=True, intent='RETRY').intent == 'RETRY'
     assert 'RETRY' in RouteDecision.model_json_schema()['properties']['intent']['enum']
 
 
 def test_ATTACHMENT는_스키마_화이트리스트에_있다():
-    """#63 — RETRY와 같은 전이 인텐트 확장 패턴."""
+    """RETRY와 같은 전이 인텐트 확장 패턴."""
     assert RouteDecision(safe=True, intent='ATTACHMENT').intent == 'ATTACHMENT'
     assert 'ATTACHMENT' in RouteDecision.model_json_schema()['properties']['intent']['enum']
 
@@ -63,8 +61,7 @@ async def test_비JSON_응답은_판단실패():
 
 @pytest.mark.asyncio
 async def test_스키마_위반은_판단실패_부분복구_없음():
-    # #72로 None 반환이 예외가 됐다 — 판단하지 못한 상태에서 호출부가 기본값을 추측하던
-    # 폴백을 없앴기 때문. 부분·퍼지 복구를 하지 않는다는 계약 자체는 그대로다.
+    # 판단하지 못한 상태에서 호출부가 기본값을 추측하지 않게 None이 아니라 예외다. 부분·퍼지 복구도 하지 않는다.
     llm = _StubLlm(['{"safe": true, "intent": "knowledge"}'])  # enum 밖 — 소문자 이탈
     with pytest.raises(LlmJudgmentFailed):
         await acomplete_validated(llm, [], RouteDecision)
@@ -75,7 +72,7 @@ async def test_스키마_위반은_판단실패_부분복구_없음():
 
 @pytest.mark.asyncio
 async def test_호출_실패는_재시도_없이_전파():
-    """타임아웃도, 스키마 거부(400)도 그대로 전파된다 — #287에서 무스키마 재시도를 지웠다."""
+    """타임아웃도, 스키마 거부(400)도 그대로 전파된다 — 무스키마 재시도는 없다."""
     llm = _StubLlm([TimeoutError('서버 무응답')])
     with pytest.raises(TimeoutError):
         await acomplete_validated(llm, [], RouteDecision)

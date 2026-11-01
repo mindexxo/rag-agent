@@ -81,7 +81,7 @@ class TestChunkXlsx:
             (True, '등급별쿠폰'),
             (True, '포인트정책'),
         ]
-        assert all(c.meta['table_text'] == c.text for c in chunks)  # 한 묶음 = 시트 전체(#222 이전과 같은 모양)
+        assert all(c.meta['table_text'] == c.text for c in chunks)  # 작은 시트는 한 묶음 = 시트 전체
         assert [c.chunk_index for c in chunks] == [0, 1, 2]
 
     def test_표_설명_병합(self):
@@ -105,7 +105,7 @@ class TestChunkXlsx:
         assert chunks[0].text.splitlines()[0] == '| 품목 | 가격 |'
 
     def test_큰_시트는_행_묶음으로_나뉘고_묶음마다_설명과_헤더를_반복한다(self, tmp_path):
-        # #222 — 검색은 작은 묶음으로, 모델에는 시트 완성본으로
+        # 검색은 작은 묶음으로, 모델에는 시트 완성본으로
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = '단가'
@@ -143,7 +143,7 @@ class TestChunkXlsx:
         ids=['헤더_줄바꿈', '칸_줄바꿈_뒤_파이프', '대시_든_칸', '빈_칸'],
     )
     def test_행_묶음은_행_단계에서_나눠_헤더와_행이_깨지지_않는다(self, header, body):
-        # #222 리뷰 — 렌더한 글을 줄 단위로 다시 해석하던 첫 구현은 앞의 두 경우에서 헤더가 깨지고 행이 중간에서 잘렸다
+        # 렌더한 글을 줄 단위로 다시 해석하면 앞의 두 경우에서 헤더가 깨지고 행이 중간에서 잘린다
         batches = batch_table_rows(header, body, budget_chars=400)
         head = to_markdown_table(header, [])
         assert len(batches) > 1 and all(b.startswith(head + '\n') for b in batches)  # 묶음마다 헤더 전체 + 구분선
@@ -185,7 +185,7 @@ class TestChunkXlsx:
         with pytest.raises(XlsxTableTooLarge) as exc:
             chunk_xlsx(p)
         msg = str(exc.value)
-        # #222 결정 9 — 허용 크기 대비 %와 현재 행×열. 토큰이라는 말·나눠 올리라는 안내는 없다
+        # 허용 크기 대비 %와 현재 행×열. 토큰이라는 말·나눠 올리라는 안내는 없다
         assert msg.startswith("시트 '단가표'의 표가 허용 크기의 1") and '%입니다(현재 ' in msg and '행 × 1열)' in msg
         assert '토큰' not in msg and '나눠' not in msg and '줄여 다시 올려 주세요' in msg
 
@@ -195,12 +195,12 @@ class TestChunkXlsx:
         assert xlsx_plain_text(p).splitlines()[2:] == ['| 1 |', '| 2 |']
 
     def test_docling은_완전히_빈_행에서_표를_가르지만_값은_한_청크에_남는다(self, tmp_path):
-        # #220 결정 9 — docling 기본(gap_tolerance=0)은 완전히 빈 행을 표 경계로 본다. 아랫부분은 첫 데이터 행이
+        # docling 기본(gap_tolerance=0)은 완전히 빈 행을 표 경계로 본다. 아랫부분은 첫 데이터 행이
         # 헤더가 되지만 값은 빠지지 않고 같은 시트 청크에 이어진다. 허용치 1은 안내문·양식 시트를 openpyxl처럼
-        # 잘못 읽어(실문서 2건 모두 해당) 기각했다. 이 테스트는 그 대가를 고정한다 — 바뀌면 결정을 다시 볼 것.
+        # 잘못 읽는다. 이 테스트는 그 대가를 고정한다 — 바뀌면 설계를 다시 볼 것.
         p = _gap_xlsx(tmp_path)
         chunks = chunk_xlsx(p)
-        assert len(chunks) == 2  # 표 두 개 → 묶음 두 개(#222), 같은 시트 완성본
+        assert len(chunks) == 2  # 표 두 개 → 묶음 두 개, 같은 시트 완성본
         whole = chunks[0].meta['table_text'].splitlines()
         assert whole[:3] == ['| col |', '| --- |', '| 1 |'] and '| 2 |' in whole  # 갈린 아랫부분 — 값 보존
 
@@ -226,7 +226,7 @@ class TestChunkXlsx:
         assert xlsx_plain_text(p).count('| col |') == 1
 
     def test_첨부는_색인용_크기_상한을_걸지_않는다(self, tmp_path):
-        # #222 리뷰 — 첨부엔 자체 상한(6천 자, 라우터가 사유 안내)이 있다. 여기서 막으면 "추출할 수 없는 파일"로 가려진다
+        # 첨부엔 자체 상한(6천 자, 라우터가 사유 안내)이 있다. 여기서 막으면 "추출할 수 없는 파일"로 가려진다
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.append(['col'])
@@ -255,7 +255,7 @@ def _xlsx_bytes(n_rows: int, *, blank_in_middle: int = 0) -> bytes:
 
 
 class TestValidateXlsxUpload:
-    """업로드 사전검증 (#194·#222) — 라우터가 blob을 쓰기 전에 부른다. 거절은 전부 XlsxUploadRejected 하위."""
+    """업로드 사전검증 — 라우터가 blob을 쓰기 전에 부른다. 거절은 전부 XlsxUploadRejected 하위."""
 
     def test_설명_없으면_거절(self):
         with pytest.raises(XlsxDescriptionRequired):

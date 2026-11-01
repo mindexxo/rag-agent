@@ -1,10 +1,7 @@
-"""문서 관리 통합 테스트 — xlsx 표 설명 필수·표 크기 사전검증(#222)·설정 계승 출처·설명 PATCH (#194).
+"""문서 관리 통합 테스트 — xlsx 표 설명 필수·표 크기 사전검증·설정 계승 출처·설명 PATCH.
 
-공용 헬퍼는 tests/helpers_documents.py. 설정 계승 출처(C절)는 xlsx 전용이 아니지만 여기 둔다 —
-"xlsx 설명을 계승하려면 출처가 ALIVE여야 한다"는 요구가 `latest_alive`로 기준을 좁힌 계기라
-한 파일에서 읽히는 게 낫다.
-
-E2E 목록(PR 본문)의 A·B·C·D·E·F1을 덮는다. F2(101쪽 PDF)·G(동시성·FE)는 수동으로 남긴다.
+설정 계승 출처(C절)는 xlsx 전용이 아니지만 "xlsx 설명을 계승하려면 출처가 ALIVE여야 한다"는 요구와
+한 파일에서 읽히도록 여기 둔다. 공용 헬퍼는 tests/helpers_documents.py.
 """
 
 import pytest
@@ -139,7 +136,7 @@ async def test_A5_재업로드_설명_전송이면_덮어쓴다(client, tenant_i
 
 @pytest.mark.asyncio
 async def test_A6_failed만_있으면_설명_없는_재업로드는_400(client, tenant_id, fake_queue, blob_tmp):
-    """failed는 "없는 문서"(#161) — 그 위에 올리는 건 신규 업로드라 설명이 필요하다(사용자 결정 2026-10-03).
+    """failed는 "없는 문서" — 그 위에 올리는 건 신규 업로드라 설명이 필요하다.
     failed 행에 설명이 남아 있어도 계승 출처가 아니다. 설명을 보내면 그 행이 되살아난다(version 유지)."""
     await _insert_failed(tenant_id, '혜택표.xlsx', version=1, blob_tmp=blob_tmp, description='남은 설명')
     assert (await _post_xlsx(client, '혜택표.xlsx')).status_code == 400
@@ -163,19 +160,19 @@ async def test_A8_비xlsx는_설명_없어도_그대로_통과(client, tenant_id
 
 @pytest.mark.asyncio
 async def test_A9_A10_201자_설명은_두_수신_경로_모두_422(client, tenant_id, fake_queue, blob_tmp):
-    """평면 Form 경로는 #194 전까지 ValidationError를 안 잡아 500이 났을 자리다."""
+    """JSON 파트와 평면 Form 둘 다 ValidationError를 422로 돌려야 한다(평면 Form은 놓치면 500)."""
     too_long = 'x' * (DOCUMENT_DESCRIPTION_MAX + 1)
     assert (await _post_xlsx(client, '혜택표.xlsx', description=too_long)).status_code == 422  # JSON 파트
     assert (await _post_xlsx(client, '혜택표.xlsx', form={'description': too_long})).status_code == 422  # 평면 Form
     assert _blob_names(blob_tmp, tenant_id) == []
 
 
-# ── B. 업로드 — xlsx 표 크기 상한(#222, 옛 150행) ─────────────────────────────
+# ── B. 업로드 — xlsx 표 크기 상한 ─────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_B1_크기_상한_초과는_업로드_즉시_400(client, tenant_id, fake_queue, blob_tmp):
-    """전에는 200 pending → 1분 뒤 failed였다(#139 이후). 이제 라우터가 막는다. 문구는 #222 결정 9 그대로."""
+    """워커에서 뒤늦게 failed가 되지 않고 라우터가 업로드 시점에 막는다."""
     res = await _post_xlsx(client, '큰표.xlsx', _xlsx_bytes(_max_rows_at_limit() + 1), description='설명')
     assert res.status_code == 400
     detail = res.json()['detail']
@@ -204,8 +201,8 @@ async def test_B3_손상된_xlsx는_400이지_500이_아니다(client, tenant_id
 
 @pytest.mark.asyncio
 async def test_C1_failed_버전이_더_높아도_살아있는_버전에서_계승(client, tenant_id, fake_queue, blob_tmp):
-    """v1 ready(폴더 A) + v2 failed(폴더 B, 옛 코드 이력). 전에는 번호가 큰 v2에서 물려받았다 —
-    "없는 문서"의 설정이 신규 업로드에 묻어가는 셈. 이제 v1에서 계승하고 번호만 v3다."""
+    """v1 ready(폴더 A) + v2 failed(폴더 B). 번호가 큰 v2에서 물려받으면 "없는 문서"의 설정이
+    신규 업로드에 묻어간다 — v1에서 계승하고 번호만 v3다."""
     fa, fb = await make_folder(client, 'A'), await make_folder(client, 'B')
     v1 = await upload(client, '환불정책.md', MD, extra_parts=doc_data(folder_id=fa, description='X'))
     await ingest(v1['document_id'])
@@ -296,7 +293,7 @@ async def test_D4_비xlsx_설명_변경은_컬럼만_바꾼다(client, tenant_id
 
 @pytest.mark.asyncio
 async def test_D5_failed_xlsx_설명_변경은_되살리지_않는다(client, tenant_id, fake_queue, blob_tmp):
-    """되살리기는 재업로드 경로의 역할(#161). 설명만 고쳤는데 재처리가 돌면 안 된다."""
+    """되살리기는 재업로드 경로의 역할이다. 설명만 고쳤는데 재처리가 돌면 안 된다."""
     did = await _insert_failed(tenant_id, '혜택표.xlsx', version=1, blob_tmp=blob_tmp, description='A')
     res = await _patch(client, did, description='B')
     assert res.status_code == 200 and res.json()['status'] == 'failed'
@@ -355,7 +352,7 @@ async def test_E1_E2_description_indexed_at이_모든_응답에_나온다(client
     await ingest(doc['document_id'])
 
     single = (await client.get(f"/kms/documents/{doc['document_id']}")).json()
-    assert single['indexed_at'] is not None and single['indexed_at'].endswith('+09:00')  # KST(#181)
+    assert single['indexed_at'] is not None and single['indexed_at'].endswith('+09:00')  # KST
     listed = (await client.get('/kms/documents')).json()['items'][0]
     patched = (await _patch(client, doc['document_id'], is_searchable=False)).json()
     for body in (single, listed, patched):
@@ -366,7 +363,7 @@ async def test_E1_E2_description_indexed_at이_모든_응답에_나온다(client
 
 
 def test_F1_쪽수_가드가_타임아웃보다_먼저_걸린다():
-    """정상 최악 = 100쪽 ≈ 610초(쪽당 6.1초, #168 실측) + 그림 100장 ≈ 200초(동시 1, #223 실측) < 변환 마감
+    """정상 최악 = 100쪽 ≈ 610초(쪽당 6.1초) + 그림 100장 ≈ 200초(동시 1) < 변환 마감
     ≤ 회차 예산(arq job_timeout) − 꼬리. 순서가 깨지면 상한 안의 정상 문서가 마감에 걸리거나(앞),
     첫 행조차 회차 예산에 못 들어가 arq 취소로 헛돈다(뒤)."""
     from config import settings
@@ -381,7 +378,7 @@ def test_F1_쪽수_가드가_타임아웃보다_먼저_걸린다():
     )
 
 
-# ── G. docling 경로 (#220) — 업로드 → 워커 색인까지 실제 경로 ─────────────────────
+# ── G. docling 경로 — 업로드 → 워커 색인까지 실제 경로 ─────────────────────
 
 
 def _wb_bytes(build) -> bytes:
@@ -398,7 +395,7 @@ def _wb_bytes(build) -> bytes:
 
 @pytest.mark.asyncio
 async def test_G1_숨긴_시트는_업로드를_막지_않고_색인에서_빠진다(client, tenant_id, fake_queue, blob_tmp):
-    """숨긴 시트가 있으면 문서 전체가 failed였다(리뷰). 서비스 결정: 숨긴 시트는 읽지 않는다 — 행 상한에도 안 센다."""
+    """숨긴 시트는 읽지 않는다 — 문서를 failed로 만들지 않고 행 상한에도 안 센다."""
 
     def build(wb):
         wb.active.title = '보임'
@@ -430,12 +427,12 @@ async def test_G2_병합_제목은_한_번만_색인된다(client, tenant_id, fa
     await ingest(doc['document_id'])
     assert (await get_doc(doc['document_id'])).status == 'ready'
     texts = await chunk_texts(doc['document_id'])
-    assert '\n'.join(texts).count('업무 교통비 청구서') == 1  # 제목 블록·표 묶음으로 나뉘어도(#222) 제목은 한 번
+    assert '\n'.join(texts).count('업무 교통비 청구서') == 1  # 제목 블록·표 묶음으로 나뉘어도 제목은 한 번
 
 
 @pytest.mark.asyncio
 async def test_G4_큰_시트는_행_묶음으로_색인되고_근거는_시트_완성본이다(client, tenant_id, fake_queue, blob_tmp):
-    """#222 — 색인(행 묶음·묶음마다 완성본) → 조회(fetch_chunk_map이 table_text를 돌려줌) → 근거 준비(완성본으로 확장)"""
+    """색인(행 묶음·묶음마다 완성본) → 조회(fetch_chunk_map이 table_text를 돌려줌) → 근거 준비(완성본으로 확장)"""
     from rag.search import os_search
     from rag.search.retriever import prepare_evidence
 
@@ -460,7 +457,7 @@ async def test_G4_큰_시트는_행_묶음으로_색인되고_근거는_시트_�
     assert all(c.is_table and c.table_text == chunks[0].table_text for c in chunks)
     ev = prepare_evidence(chunks[::-1], top_k=5)  # 아무 묶음이 걸려도
     assert len(ev) == 1  # 한 칸으로 접히고
-    whole = ev[0].text.split('[표 전체]\n', 1)[1]  # 걸린 묶음 먼저 + 표 전체(#268 결정 4)
+    whole = ev[0].text.split('[표 전체]\n', 1)[1]  # 걸린 묶음 먼저 + 표 전체
     assert ev[0].text.startswith('[검색에 걸린 행]\n')
     assert (
         whole == chunks[0].table_text and whole.count('| 상품코드 |') == 1 and 'A-0000' in whole and 'A-0199' in whole
@@ -501,15 +498,15 @@ async def test_G3_docx_중첩_표_내용이_색인된다(client, tenant_id, fake
 
 @pytest.mark.asyncio
 async def test_G5_첨부_엑셀이_크면_추출_불가가_아니라_첨부_상한_안내가_나간다(client, tenant_id):
-    """#222 리뷰 — 색인용 크기 상한을 첨부에도 걸었더니 라우터의 일반 예외 처리에 걸려 "추출할 수 없는 파일"(422)로
-    사유가 가려졌다. 첨부는 자체 상한(6천 자)의 413 안내를 받아야 한다."""
+    """색인용 크기 상한이 첨부에 걸리면 "추출할 수 없는 파일"(422)로 사유가 가려진다.
+    첨부는 자체 상한(6천 자)의 413 안내를 받아야 한다."""
     content = _xlsx_bytes(_max_rows_at_limit() + 50)
     res = await client.post('/kms/attachments/extract', files={'file': ('큰표.xlsx', content, XLSX_MIME)})
     assert res.status_code == 413, res.text
     assert '필요한 부분만 잘라 첨부' in res.json()['detail']
 
 
-# ── H. 색인 시간 상한·캡션 실패 (#223) — 업로드 → 워커 drain까지 실제 경로 ─────────────────
+# ── H. 색인 시간 상한·캡션 실패 — 업로드 → 워커 drain까지 실제 경로 ─────────────────
 # VLM은 로컬 대역(conftest.fake_vlm). 변환은 변환 프로세스에서, 분류·재시도는 outbox에서 — 둘의 이음매를 본다.
 
 DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
@@ -546,7 +543,7 @@ async def _outbox_row(doc_id: int) -> SearchIndexOutbox:
 
 @pytest.mark.asyncio
 async def test_H1_VLM_장애면_문서는_대기로_재시도되고_복구되면_ready(client, tenant_id, fake_queue, blob_tmp, fake_vlm):
-    """#223 결정 3 — 전에는 VLM이 죽어 있으면 그림이 자리표시로 남은 채 ready가 됐다(조용한 불완전 색인)."""
+    """VLM 장애는 일시 실패다 — 그림이 자리표시로 남은 채 ready가 되면 조용한 불완전 색인이 된다."""
     fake_vlm.status = 500
     res = await client.post('/kms/documents', files={'file': ('매뉴얼.docx', _docx_with_pictures(1), DOCX_MIME)})
     assert res.status_code == 200, res.text
@@ -569,7 +566,7 @@ async def test_H1_VLM_장애면_문서는_대기로_재시도되고_복구되면
 async def test_H2_그림이_상한을_넘으면_사유와_함께_바로_failed(
     client, tenant_id, fake_queue, blob_tmp, fake_vlm, monkeypatch
 ):
-    """#223 결정 4 — 결정적 실패라 재시도 없이 1회로 확정되고, 사유가 FE에 그대로 보인다."""
+    """결정적 실패라 재시도 없이 1회로 확정되고, 사유가 FE에 그대로 보인다."""
     from config import settings
 
     monkeypatch.setattr(settings, 'docling_max_pictures', 2)

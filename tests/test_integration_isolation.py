@@ -51,10 +51,10 @@ async def test_대화_목록과_메시지_격리(client, tenant_id, other_tenant
 
     async with _client_for(other_tenant_id) as other:
         listing = (await other.get('/kms/conversations')).json()
-        assert all(c['conversation_id'] != conv_id for c in listing['items'])  # 목록 격리 (#10: {items, has_more})
+        assert all(c['conversation_id'] != conv_id for c in listing['items'])  # 목록 격리
 
         res = await other.get(f'/kms/conversations/{conv_id}/messages')
-        assert res.status_code == 404  # 메시지 격리 (#10: 소유 검증으로 404)
+        assert res.status_code == 404  # 메시지 격리 (소유 검증으로 404)
 
 
 @pytest.mark.asyncio
@@ -77,12 +77,12 @@ async def test_FAQ_목록_격리(client, tenant_id, other_tenant_id):
     )
     async with _client_for(other_tenant_id) as other:
         listing = (await other.get('/kms/faqs')).json()
-        assert listing['items'] == [] and listing['total'] == 0  # #278: {items,total,has_more}
+        assert listing['items'] == [] and listing['total'] == 0
 
 
 @pytest.mark.asyncio
 async def test_문서_일괄변경_격리(client, tenant_id, other_tenant_id, fake_queue, blob_tmp):
-    """#166으로 늘어난 표면 — 요청 바디로 id 목록을 받는 첫 API라 격리를 여기에 남긴다.
+    """요청 바디로 id 목록을 받는 API의 격리.
 
     이 경로가 새면 피해가 조용하다: 대상 확정이 tenant를 안 걸면 남의 문서 id가 그대로
     outbox payload에 실리고, os_index.sync_meta_documents_now는 document_ids에 tenant 필터를
@@ -118,7 +118,7 @@ async def test_문서_일괄변경_격리(client, tenant_id, other_tenant_id, fa
 
 @pytest.mark.asyncio
 async def test_문서_일괄삭제_격리(client, tenant_id, other_tenant_id, fake_queue, blob_tmp):
-    """#174로 늘어난 표면 — 쿼리 파라미터로 받은 id 목록이 tenant 스코프를 지나야 한다.
+    """쿼리 파라미터로 받은 id 목록이 tenant 스코프를 지나야 한다.
 
     이 경로가 새면 피해가 크고 조용하다: 대상 확정이 tenant를 안 걸면 남의 문서가
     soft delete되고, 그 id가 DROP_DOCUMENTS payload에 실려 색인에서도 청크가 지워진다
@@ -151,7 +151,7 @@ async def test_문서_일괄삭제_격리(client, tenant_id, other_tenant_id, fa
 async def test_같은_파일명이_두_테넌트에_있어도_내_것만_지운다(
     client, tenant_id, other_tenant_id, fake_queue, blob_tmp
 ):
-    """삭제는 id가 아니라 **filename**으로 전 버전을 매칭한다(#174) — 그래서 UPDATE에 tenant
+    """삭제는 id가 아니라 **filename**으로 전 버전을 매칭한다 — 그래서 UPDATE에 tenant
     필터가 빠지면 같은 이름을 쓰는 남의 문서까지 지워진다. 흔한 파일명일수록 위험하다."""
     md = '# 제목\n\n본문 내용\n'.encode()
     same_name = '환불정책.md'
@@ -169,7 +169,7 @@ async def test_같은_파일명이_두_테넌트에_있어도_내_것만_지운�
 
 @pytest.mark.asyncio
 async def test_문서_목록_필터_격리(client, tenant_id, other_tenant_id, fake_queue, blob_tmp):
-    """#176으로 늘어난 표면 — 검색·필터 **어떤 조합으로도** 남의 문서가 새면 안 된다.
+    """검색·필터 **어떤 조합으로도** 남의 문서가 새면 안 된다.
 
     total·has_more가 필터와 같은 WHERE에서 나오므로, 격리가 빠지면 목록 본문뿐 아니라
     건수까지 남의 데이터를 센다(화면에 '전체 12건'인데 6건만 보이는 형태로 드러난다).

@@ -1,9 +1,9 @@
-"""상용 벤더 구현 계약 (#288) — 키·네트워크 없이, litellm.acompletion을 가짜로 바꿔 요청 인자와 응답 해석을 고정한다.
+"""상용 벤더 구현 계약 — 키·네트워크 없이, litellm.acompletion을 가짜로 바꿔 요청 인자와 응답 해석을 고정한다.
 
-고정하는 것(#288 결정):
-1. 모델 접두·키는 공통 설정에서(결정 6), max_tokens는 vLLM과 같은 값, temperature·reasoning_effort는 설정됐을 때만(결정 5)
-2. schema= → JSON 모드만(결정 3 = b), citations= → 요청에 아무것도 싣지 않는다(결정 2 = a, 파서 검증)
-3. 캐시 표시는 anthropic에만 붙고(openai·gemini는 자동 캐싱 — Gemini에 표시하면 명시적 캐싱으로 번역돼 429) 호출부 메시지는 안 바뀐다(결정 4)
+고정하는 것:
+1. 모델 접두·키는 공통 설정에서, max_tokens는 vLLM과 같은 값, temperature·reasoning_effort는 설정됐을 때만
+2. schema= → JSON 모드만, citations= → 요청에 아무것도 싣지 않는다(프롬프트 + 파서)
+3. 캐시 표시는 anthropic에만 붙고(openai·gemini는 자동 캐싱 — Gemini에 표시하면 명시적 캐싱으로 번역돼 429) 호출부 메시지는 안 바뀐다
 4. 스트리밍: 텍스트 조각·종료 사유(OpenAI 어휘 → 공통 어휘)·usage(캐시 토큰) 콜백 — include_usage는 세 벤더 모두 요청
 5. 등록부: gemini·openai·anthropic 이름으로 생긴다
 실제 벤더가 요청을 받아 주는지(JSON 모드·캐싱 적중·꼬리 위반율)는 키 확보 후 라이브로 잰다 — 여기 범위 밖.
@@ -94,9 +94,9 @@ class TestRequest:
 
     def test_스키마는_JSON_모드만_꼬리는_안_보낸다(self):
         kw = LiteLlmClient('openai')._request_kwargs(RouteDecision, None)
-        assert kw['response_format'] == {'type': 'json_object'}  # 결정 3 = b — 스키마 강제 아님
+        assert kw['response_format'] == {'type': 'json_object'}  # 스키마 강제 아님
         kw = LiteLlmClient('openai')._request_kwargs(None, CitationTail(count=3, start='«', end='»'))
-        assert 'response_format' not in kw and 'extra_body' not in kw  # 결정 2 = a — 프롬프트 + 파서
+        assert 'response_format' not in kw and 'extra_body' not in kw  # 프롬프트 + 파서
 
 
 class TestCacheMark:

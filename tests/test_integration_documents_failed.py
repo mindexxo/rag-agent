@@ -1,4 +1,4 @@
-"""failed 문서는 사용자에게 "없는 문서"다 — 재업로드는 새 version 대신 그 행을 되살린다 (#161).
+"""failed 문서는 사용자에게 "없는 문서"다 — 재업로드는 새 version 대신 그 행을 되살린다.
 
 exists·current_version·handle_upload 셋이 한 기준(ALIVE_DOCUMENT_STATUSES)으로 답해야 하고,
 되살릴 때 잔여 청크·캐시·경합까지 함께 정리된다. 규칙의 정의점은 rag/documents.py의 handle_upload.
@@ -18,7 +18,7 @@ from rag.turn import cache
 from tests.conftest import ingest
 from tests.helpers_documents import MD, chunk_texts, doc_data, get_doc, list_docs, make_folder, post_upload, upload
 
-# ── #161 failed 문서는 "없는 문서" — 재업로드는 그 행을 되살린다 ──
+# ── failed 문서는 "없는 문서" — 재업로드는 그 행을 되살린다 ──
 
 
 async def _make_failed(doc_id: int) -> None:
@@ -68,7 +68,7 @@ async def test_failed_재업로드는_같은_행을_되살린다(client, tenant_
     after = await get_doc(v1['document_id'])
     assert after.blob_path != before.blob_path
     assert not old_blob.exists() and Path(after.blob_path).exists()  # 옛 blob 삭제, 새 blob 존재
-    assert after.uploaded_at > before.uploaded_at  # 목록 최신순에서 위로 온다 (#164)
+    assert after.uploaded_at > before.uploaded_at  # 목록 최신순에서 위로 온다
     # 처음 올린 것과 같은 출발점 — "색인됨" 흔적이 남으면 안 된다
     assert after.is_active is False
     assert after.indexed_at is None and after.char_count is None
@@ -127,7 +127,7 @@ async def test_failed_재사용_경합은_한_명만_성공(client, tenant_id, f
 
 @pytest.mark.asyncio
 async def test_failed가_둘이면_최신을_되살리고_나머지는_내린다(client, tenant_id, fake_queue, blob_tmp):
-    """옛 코드가 남긴 이력(v1 failed + v2 failed)도 정리된다 — 개발계 실측 0건이지만 방어."""
+    """옛 코드가 남긴 이력(v1 failed + v2 failed)도 정리된다 — 방어용."""
     v1 = await upload(client, '환불정책.md', MD)
     await _make_failed(v1['document_id'])
     async with AsyncSessionLocal() as s:  # 옛 방식으로 만들어졌을 v2 failed
@@ -170,8 +170,8 @@ async def _make_failed_with_chunks(client, doc_id: int) -> list[str]:
 
 @pytest.mark.asyncio
 async def test_내려가는_failed의_잔여_청크는_DROP으로_지운다(client, tenant_id, fake_queue, blob_tmp):
-    """리뷰 지적: 나머지 failed를 deleted로만 바꾸면 ③ 실패로 남은 청크가 정리 경로 없이 검색에
-    영구 노출된다(예전엔 목록에 failed로 보여 사람이 지울 수 있었다). soft_delete와 같은 세 동작."""
+    """나머지 failed를 deleted로만 바꾸면 ③ 실패로 남은 청크가 정리 경로 없이 검색에
+    영구 노출된다(목록에서도 사라져 사람이 지울 수 없다). soft_delete와 같은 세 동작."""
     v1 = await upload(client, '환불정책.md', MD)
     await _make_failed_with_chunks(client, v1['document_id'])  # v1: 청크 남은 failed
     async with AsyncSessionLocal() as s:  # v2 failed (옛 이력)
@@ -240,7 +240,7 @@ async def test_되살린_failed의_잔여_청크는_재색인이_교체한다(cl
 
 @pytest.mark.asyncio
 async def test_deleted_이력이_섞여_있어도_failed만_살아있으면_되살린다(client, tenant_id, fake_queue, blob_tmp):
-    """v1 deleted + v2 failed — 개발계 실측(id 7503)과 같은 이력. deleted는 '살아 있는 행'이 아니므로
+    """v1 deleted + v2 failed 이력. deleted는 '살아 있는 행'이 아니므로
     v2를 되살린다(v3를 만들지 않는다). v1은 deleted 그대로."""
     v1 = await upload(client, '환불정책.md', MD)
     await ingest(v1['document_id'])  # v1 ready
@@ -261,7 +261,7 @@ async def test_deleted_이력이_섞여_있어도_failed만_살아있으면_되�
 
 @pytest.mark.asyncio
 async def test_되살릴_때_폴더와_설명은_유지하고_보내면_갱신한다(client, tenant_id, fake_queue, blob_tmp):
-    """#165 규칙이 재사용 경로에서도 그대로 — 미전송이면 그 행의 값, 보냈으면 그 값(null이면 미분류)."""
+    """폴더·설명 갱신 규칙이 재사용 경로에서도 그대로 — 미전송이면 그 행의 값, 보냈으면 그 값(null이면 미분류)."""
     fa = await make_folder(client, '규정집')
     fb = await make_folder(client, '대외비')
     doc = await upload(client, '환불정책.md', MD, extra_parts=doc_data(folder_id=fa, description='표 설명 1'))
@@ -284,8 +284,8 @@ async def test_되살릴_때_폴더와_설명은_유지하고_보내면_갱신�
 
 @pytest.mark.asyncio
 async def test_ready와_failed가_공존하면_기존_규칙으로_새_version(client, tenant_id, fake_queue, blob_tmp):
-    """옛 코드가 남긴 'ready v1 + failed v2' 이력(개발계 실측 0건). 살아 있는 행이 있으니 재사용하지 않고
-    v3를 만든다 — failed v2는 그대로 남고, 정리는 목록 필터(#176)+삭제(#174)로 한다(스콥 밖 동작을 고정)."""
+    """옛 코드가 남긴 'ready v1 + failed v2' 이력. 살아 있는 행이 있으니 재사용하지 않고
+    v3를 만든다 — failed v2는 그대로 남고, 정리는 목록 필터+삭제로 한다(스콥 밖 동작을 고정)."""
     v1 = await upload(client, '환불정책.md', MD)
     await ingest(v1['document_id'])  # v1 ready
     async with AsyncSessionLocal() as s:  # v2 failed (직접 심음)

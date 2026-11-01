@@ -1,7 +1,7 @@
-"""하이브리드 가중치 검증(#248) 재생 계산부 — 운영 조립과의 동치·진단·부트스트랩. DB·엔진 불필요(운영 단계 함수는 합성 값으로 대체).
+"""하이브리드 가중치 검증 재생 계산부 — 운영 조립과의 동치·진단·부트스트랩. DB·엔진 불필요(운영 단계 함수는 합성 값으로 대체).
 
 핵심은 동치 테스트다: 같은 합성 값을 운영 rag/search/retriever.retrieve_candidates에 끼워 **실제로 돌린 결과**와 eval/hybrid_replay.assemble이
-같아야 하고, 재생을 일부러 망가뜨리면 그 비교가 반드시 실패해야 한다(#128 1차 측정은 조립이 틀린 채 기준선과 같은 값이 나왔다).
+같아야 하고, 재생을 일부러 망가뜨리면 그 비교가 반드시 실패해야 한다(조립이 틀린 채 기준선과 같은 값이 나오는 것을 막는다).
 """
 
 import pytest
@@ -59,7 +59,7 @@ CHUNKS = {c: _chunk(c) for c in DENSE + BM25[2:] + [3000]}
 CHUNKS[1001] = _chunk(1001, identifiers=["11조"])
 CHUNKS[3000] = _chunk(3000, identifiers=["11조"])
 CHUNKS[2003] = _chunk(2003, table_sheet="시트A")
-CHUNKS[2004] = _chunk(2004, table_sheet="시트B")  # 다른 시트 — #257부터 둘 다 남는다
+CHUNKS[2004] = _chunk(2004, table_sheet="시트B")  # 다른 시트 — 둘 다 남는다
 RERANK = {c: 0.5 - 0.001 * i for i, c in enumerate(DENSE + BM25[2:] + [3000])}
 RERANK.update({2003: 0.95, 2004: 0.94, 3000: 0.70, 1001: 0.69, 1007: 0.69, 2010: 0.69})  # 동점 묶음 포함
 CASES = {
@@ -170,7 +170,7 @@ async def test_가산이_빠진_재생도_동치_검사에서_걸린다(producti
 
 
 def test_다른_시트의_표도_남고_top_n개다():
-    # #257 결정 1 — '한 시트만' 필터가 없어졌다(옛 동작: 2004를 버리고 TOP_N - 1개)
+    # '한 시트만' 필터는 없다 — 다른 시트 표를 버리지 않고 TOP_N개를 채운다
     out = [c.chunk_id for c in hr.assemble(CASES["식별자_없음"], CHUNKS)]
     assert 2003 in out and 2004 in out and len(out) == hr.TOP_N
 

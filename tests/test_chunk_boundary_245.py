@@ -1,4 +1,4 @@
-"""#245 청크 경계 — 진단 규칙(eval/chunk_boundary)과 합성 최악 사례 5건(sample_docs/corpus_v2/*_18_*).
+"""청크 경계 — 진단 규칙(eval/chunk_boundary)과 합성 최악 사례 5건(sample_docs/corpus_v2/*_18_*).
 
 측정 결론(eval/report_chunk_boundary.md): 경계는 글자를 잃지 않고 **맥락**을 잃는다. 여기서 고정하는 것:
   1. 진단 규칙이 경계·맥락 손실을 맞게 가른다(손으로 만든 조각 — 문서 변환 없이 수 초)
@@ -210,12 +210,12 @@ def test_알려진_결함_재현(name, kind, case, chunked):
     ],
 )
 def test_표_설명과_주석은_모델이_받는_표_전체에_있다(name, kind, case, chunked):
-    # #268 — 큰 표 묶음은 근거 준비에서 표 전체(table_text)로 바뀐다(#257). 그 표 전체에 앞 설명 여러 줄·아래 주석을 싣는다
+    # 큰 표 묶음은 근거 준비에서 표 전체(table_text)로 바뀐다. 그 표 전체에 앞 설명 여러 줄·아래 주석을 싣는다
     assert kind not in _kinds(chunked, name), case
 
 
 def test_B6_MD_표는_묶음마다_열_이름을_단다_267(chunked):
-    """#267로 해소 — MD가 docling을 타 표가 행 묶음(열 이름 반복)이 됐다. 그 전에는 글로 분할기를 타 뒤 조각에 열 이름이 없었다."""
+    """MD 표는 docling을 타 행 묶음(열 이름 반복)이 된다 — 글 분할기를 타면 뒤 조각에 열 이름이 없어진다."""
     assert 'table_header' not in _kinds(chunked, 'aromanica_18_향료원료입고기준.md')
 
 

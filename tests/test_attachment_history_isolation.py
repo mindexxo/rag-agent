@@ -1,7 +1,7 @@
-"""차단 턴 첨부 격리 (#63 커밋 A) — 주입만 막고 저장은 유지.
+"""차단 턴 첨부 격리 — 주입만 막고 저장은 유지.
 
 가드가 질문을 막아도 그 턴의 첨부가 이후 턴 <첨부 문서> 블록으로 재진입하면 차단이
-반쪽이 된다(첨부 텍스트 인젝션 통과). 이력 격리(#22)와 같은 원칙의 첨부판:
+반쪽이 된다(첨부 텍스트 인젝션 통과). 이력 격리와 같은 원칙의 첨부판:
 프롬프트 재료에서만 제외, DB·조회 API는 그대로.
 """
 
@@ -17,7 +17,7 @@ from tests.conftest import seed_turn
 async def _seed_attach_turn(
     tenant_id: str, question: str, status: str, attachments: list[dict], conversation_id: int | None = None
 ) -> int:
-    """첨부 달린 턴 시딩 — conftest.seed_turn 위임 (헬퍼 단일화, #63 리뷰 반영)."""
+    """첨부 달린 턴 시딩 — conftest.seed_turn 위임."""
     return await seed_turn(
         tenant_id, question, '', status=status, attachments=attachments, conversation_id=conversation_id
     )
@@ -40,7 +40,7 @@ async def test_차단_턴의_첨부는_주입에서_제외(tenant_id):
 
 @pytest.mark.asyncio
 async def test_실패_취소_턴의_첨부는_유지(tenant_id):
-    """failed/cancelled는 질문·첨부 모두 정상인 턴 — 제외 대상이 아니다 (#63 결정)."""
+    """failed/cancelled는 질문·첨부 모두 정상인 턴 — 제외 대상이 아니다."""
     cid = await _seed_attach_turn(tenant_id, '요약해줘', 'cancelled', [{'filename': '영수증.pdf', 'text': '내역'}])
     await _seed_attach_turn(
         tenant_id, '이건?', 'failed', [{'filename': '계약서.pdf', 'text': '조항'}], conversation_id=cid

@@ -1,8 +1,4 @@
-"""D-2: FAQ 수명주기 통합 테스트.
-
-등록→수정(재임베딩·캐시 무효화)→is_active 토글(검색 제외·복귀·캐시 자가치유)→삭제(cascade).
-리뷰 발견(P1-15 PATCH 빈 문자열, P1-16 is_active 캐시 빈틈)의 회귀 방어를 겸한다.
-"""
+"""FAQ 수명주기 통합 테스트 — 등록→수정(재임베딩·캐시 무효화)→is_active 토글(검색 제외·복귀·캐시 자가치유)→삭제(cascade)."""
 
 import pytest
 from sqlalchemy import select
@@ -16,7 +12,7 @@ from tests.conftest import FakeLlm, faq_doc, sync_faq
 
 
 async def _create_faq(client, question='환불 기간은?', answer='7일 이내 처리됩니다.') -> int:
-    """등록 + 대기열 drain — 라우터는 색인을 직접 하지 않으므로(#139) 검색 상태를 보려면 drain이 필요하다."""
+    """등록 + 대기열 drain — 라우터는 색인을 직접 하지 않으므로 검색 상태를 보려면 drain이 필요하다."""
     res = await client.post(
         '/kms/faqs',
         json={
@@ -116,15 +112,14 @@ async def test_is_active_토글_검색_제외와_복귀(client, tenant_id):
 
 @pytest.mark.asyncio
 async def test_꺼진_동안_캐시는_켠_후_doc집합_비교로_자가치유(client, tenant_id, fake_embed):
-    """리뷰 P1-16 검증: off 동안 저장된 캐시(FAQ 미반영)가 on 후에도 서빙되는 빈틈.
-    exact 캐시 제거 후 semantic의 doc-set 비교가 이를 구조적으로 막는지 확인."""
+    """off 동안 저장된 캐시(FAQ 미반영)가 on 후에도 서빙되는 빈틈을 semantic의 doc-set 비교가 막는지."""
     faq_id = await _create_faq(client)
     async with AsyncSessionLocal() as session:
         # off 기간의 답변: 문서 123만 근거 (FAQ 미포함)
         await cache.save_answer(session, tenant_id, '배송비 얼마예요', 'FAQ 없던 시절 답', [], [123])
         await session.commit()
 
-        # 같은 근거 집합이면 hit (전제 확인 — 판정 승인 없이는 히트 없음 #113)
+        # 같은 근거 집합이면 hit (전제 확인 — 판정 승인 없이는 히트 없음)
         hit = await cache.get_semantic(session, tenant_id, '배송비 얼마예요', [123], llm=FakeLlm())
         assert hit is not None
 
@@ -178,7 +173,7 @@ async def test_타_테넌트_FAQ는_404(client, tenant_id):
         assert (await other.delete(f'/kms/faqs/{faq_id}')).status_code == 404
 
 
-# ---------- #276 입력 상한·중복 거절 ----------
+# ---------- 입력 상한·중복 거절 ----------
 
 
 @pytest.mark.asyncio
@@ -259,7 +254,7 @@ async def test_앱_검사를_지나친_경쟁은_DB_UNIQUE가_409로(client, ten
 
 @pytest.mark.asyncio
 async def test_PATCH로_대표_질문을_남의_것과_같게_바꾸면_409(client, tenant_id):
-    """리뷰 지적 1 — 대입을 먼저 하면 autoflush UPDATE가 DB UNIQUE에 걸려 500이었다."""
+    """중복 검사보다 대입이 먼저면 autoflush UPDATE가 DB UNIQUE에 걸려 500이 난다."""
     a = await _create_faq(client, question='환불 기간은?')
     res = await client.post('/kms/faqs', json={'question': '배송 기간은?', 'answer': 'a'})
     b = res.json()['id']
@@ -271,7 +266,7 @@ async def test_PATCH로_대표_질문을_남의_것과_같게_바꾸면_409(clie
 
 @pytest.mark.asyncio
 async def test_PATCH_경쟁도_DB_UNIQUE가_409로(client, tenant_id, monkeypatch):
-    """리뷰 지적 2 — rollback 뒤 만료된 faq.question을 읽으면 500이었다."""
+    """경쟁으로 DB UNIQUE에 걸려도 409 — rollback 뒤 만료된 faq.question을 읽으면 500이 난다."""
     import rag.faq as faq_svc
 
     await _create_faq(client, question='환불 기간은?')

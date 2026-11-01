@@ -20,7 +20,7 @@ def test_한글_이스케이프_안함():
 
 
 def test_done_페이로드_형식():
-    """done은 빈 객체가 아니라 최종 상태를 싣는다 (#56) — 필드 셋이 FE 계약."""
+    """done은 빈 객체가 아니라 최종 상태를 싣는다 — 필드 셋이 FE 계약."""
     from rag.turn.streaming import TurnResult, _done_payload
     from schemas.kms import SourceCitation
 
@@ -33,7 +33,7 @@ def test_done_페이로드_형식():
     assert _done_payload(result) == {
         'finish_reason': 'done',
         'latency_ms': 123,
-        # faq_id는 항상 실린다(#278) — 문서는 null, FAQ 항목 인용은 id. FE는 faq_id 유무로 종류를 가른다
+        # faq_id는 항상 실린다 — 문서는 null, FAQ 항목 인용은 id. FE는 faq_id 유무로 종류를 가른다
         'citations': [{'document_id': 5, 'filename': '정책.pdf', 'version': 2, 'faq_id': None}],
     }
 

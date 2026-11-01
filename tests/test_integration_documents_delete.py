@@ -1,8 +1,7 @@
-"""문서 삭제 — 단건과 일괄이 **같은 경로**(rag.documents.soft_delete_documents)를 탄다 (#174).
+"""문서 삭제 — 단건과 일괄이 **같은 경로**(rag.documents.soft_delete_documents)를 탄다.
 
 소프트 삭제의 네 동작(상태·캐시·색인 DROP·row 보존)과 일괄 삭제의 전부-또는-무 규칙,
 그리고 "이미 삭제된 문서는 통과"라는 멱등 규칙을 고정한다.
-공용 헬퍼는 tests/helpers_documents.py.
 """
 
 import pytest
@@ -42,7 +41,7 @@ async def test_소프트_삭제_청크와_캐시_제거_row_보존(client, tenan
         assert rows == []  # 근거 캐시 무효화
 
 
-# ── #174 문서 일괄 삭제 (DELETE /kms/documents?ids=) ──────────
+# ── 문서 일괄 삭제 (DELETE /kms/documents?ids=) ──────────
 
 
 async def _bulk_delete(client, ids, tenant=None):

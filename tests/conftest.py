@@ -1,4 +1,4 @@
-"""통합 테스트 공용 fixture (D-1).
+"""통합 테스트 공용 fixture.
 
 원칙:
 - 실제 앱(main.app)·Postgres·Redis를 그대로 쓴다. 가짜는 외부 의존(임베딩 TEI·LLM)만.
@@ -19,7 +19,7 @@ import uuid
 import pytest
 import pytest_asyncio
 
-# ── SSE 파싱 (비스트리밍 JSON 경로 삭제 #26로 전 테스트가 SSE를 읽는다) ──
+# ── SSE 파싱 ──
 
 
 def sse_events(res_or_text) -> list[tuple[str, object]]:
@@ -45,12 +45,12 @@ def sse_answer(res_or_text) -> str:
 
 
 def sse_done(res_or_text) -> dict:
-    """done 이벤트 payload — finish_reason·latency_ms·citations (#56)."""
+    """done 이벤트 payload — finish_reason·latency_ms·citations."""
     return next(data for event, data in sse_events(res_or_text) if event == 'done')
 
 
 async def register_faq(client) -> int:
-    """검색 근거용 FAQ 1건 등록 — 4개 테스트 파일이 같은 것을 복붙하던 것을 공용 승격."""
+    """검색 근거용 FAQ 1건 등록."""
     res = await client.post(
         '/kms/faqs',
         json={
@@ -60,7 +60,7 @@ async def register_faq(client) -> int:
         },
     )
     faq_id = res.json()['id']
-    await sync_faq(faq_id)  # 라우터는 대기열 행만 남긴다(#139) — 검색에 보이려면 drain
+    await sync_faq(faq_id)  # 라우터는 대기열 행만 남긴다 — 검색에 보이려면 drain
     return faq_id
 
 
@@ -74,9 +74,7 @@ async def seed_turn(
     conversation_id: int | None = None,
     attachments: list[dict] | None = None,
 ) -> int:
-    """user/assistant 한 턴 시딩 → conversation_id (register_faq와 같은 공용 승격 — #59에서
-    이력 격리·RETRY 테스트 2파일이 거의 같은 헬퍼를 복붙하던 것. #63 리뷰에서 첨부 시딩
-    복붙이 또 생겨 attachments 인자로 흡수). conversation_id를 주면 기존 대화에 턴을
+    """user/assistant 한 턴 시딩 → conversation_id. conversation_id를 주면 기존 대화에 턴을
     이어 붙인다(연속 취소 체인 시딩용)."""
     from database import AsyncSessionLocal
     from rag.models import Conversation, Message
@@ -114,15 +112,14 @@ async def seed_turn(
 
 @pytest.fixture
 def fake_queue():
-    """(호환용 더미) 업로드가 arq 잡을 등록하던 시절의 픽스처. #139 outbox 전환으로 업로드는
-    문서와 같은 트랜잭션에 대기열 행을 남길 뿐 Redis를 만지지 않는다 — 패치할 것이 없다.
+    """호환용 더미 — 업로드는 대기열 행만 남기고 Redis를 만지지 않아 패치할 것이 없다.
     시그니처에 남아 있는 테스트들이 그대로 돌게 빈 리스트만 돌려준다."""
     return []
 
 
 async def ingest(document_id: int) -> dict:
     """문서 하나에 걸린 outbox 행만 워커처럼 처리한다 — 업로드 뒤엔 INDEX_DOCUMENT, 삭제·토글
-    뒤엔 DROP/META_DOCUMENTS. 라우터는 색인을 직접 하지 않으므로(#139) 검색 상태를 보려면 이걸 부른다.
+    뒤엔 DROP/META_DOCUMENTS. 라우터는 색인을 직접 하지 않으므로 검색 상태를 보려면 이걸 부른다.
 
     공유 개발계 DB에서 전체 drain을 돌리면 다른 세션의 pending 업로드까지 처리해 버리므로
     row_ids로 한정한다. 실패 판정(attempts→failed)까지 운영과 같은 경로를 탄다.
@@ -137,7 +134,7 @@ async def ingest(document_id: int) -> dict:
 
 async def sync_faq(faq_id: int) -> dict:
     """FAQ 하나에 걸린 대기열 행(INDEX_FAQ·META_FAQS·DROP_FAQS)만 drain — 라우터가 색인을 직접
-    하지 않으므로(#139) 등록·수정·토글·삭제 뒤 검색 상태를 보려면 이걸 불러야 한다."""
+    하지 않으므로 등록·수정·토글·삭제 뒤 검색 상태를 보려면 이걸 불러야 한다."""
     from database import AsyncSessionLocal
     from rag import outbox
 
@@ -147,7 +144,7 @@ async def sync_faq(faq_id: int) -> dict:
 
 
 async def faq_doc(faq_id: int) -> dict | None:
-    """FAQ 청크의 색인 문서(_source). 없으면 None — 청크는 OpenSearch에만 있다(#139)."""
+    """FAQ 청크의 색인 문서(_source). 없으면 None — 청크는 OpenSearch에만 있다."""
     from config import settings
     from rag.search import os_client, os_index
 
@@ -158,7 +155,7 @@ async def faq_doc(faq_id: int) -> dict | None:
 
 
 async def indexed_chunk_texts(document_id: int) -> list[str]:
-    """문서의 색인 청크 본문들(chunk_index 순). PG `chunks`는 더 쓰지 않는다(#139)."""
+    """문서의 색인 청크 본문들(chunk_index 순)."""
     from config import settings
     from rag.search import os_client
 
@@ -205,7 +202,7 @@ def fake_embed(monkeypatch):
     각 모듈의 이름을 개별 패치한다 (rag.search.embeddings만 패치하면 안 먹음).
     리랭커(외부 TEI)도 함께 끈다.
 
-    반환값의 `.embed_calls`는 누적 TEI 왕복 횟수다 (#50 — 턴당 1회 검증용).
+    반환값의 `.embed_calls`는 누적 TEI 왕복 횟수다 (턴당 1회 검증용).
     값이 아니라 **횟수**를 세는 이유: fake_vector는 텍스트 결정적이라 같은 질의는 항상
     같은 벡터고, "재사용했는지"와 "다시 계산했는지"를 값으로는 구별할 수 없다.
     세는 단위는 embed_texts/embed_query 호출 1건 = 왕복 1회다 (배치 안의 텍스트 개수가
@@ -234,11 +231,11 @@ def fake_embed(monkeypatch):
     from config import settings
 
     # 톱레벨로 이름을 당겨온 모듈은 개별 패치가 필요하다 — 원본 모듈 속성만 바꾸면 그 바인딩은
-    # 옛 함수를 계속 가리킨다(조용히 실제 TEI를 때린다). os_index는 index_faq_chunks가 쓴다(#146).
+    # 옛 함수를 계속 가리킨다(조용히 실제 TEI를 때린다). os_index는 index_faq_chunks가 쓴다.
     monkeypatch.setattr(rag.search.embeddings, 'embed_texts', _texts)
     monkeypatch.setattr(rag.search.os_index, 'embed_texts', _texts)
     monkeypatch.setattr(rag.ingestion, 'embed_texts', _texts)
-    monkeypatch.setattr(rag.search.retriever, 'embed_texts', _texts)  # 쿼리 확장(#5)으로 배치 임베딩 전환
+    monkeypatch.setattr(rag.search.retriever, 'embed_texts', _texts)  # 쿼리 확장의 배치 임베딩
     monkeypatch.setattr(rag.turn.cache, 'embed_query', _query)
     monkeypatch.setattr(settings, 'rerank_enabled', False)
     return counting
@@ -246,8 +243,7 @@ def fake_embed(monkeypatch):
 
 @pytest.fixture
 def pass_gate(monkeypatch):
-    """근거 게이트 무조건 통과 — 가짜 벡터로는 임계(0.6)를 못 넘어서.
-    (4개 테스트 파일에 복붙되던 것을 공용 승격 — #10 리뷰)"""
+    """근거 게이트 무조건 통과 — 가짜 벡터로는 임계(0.6)를 못 넘어서."""
     import rag.search.retriever as rt
 
     monkeypatch.setattr(rt, 'apply_gate', lambda cands, max_dense_distance=0.6: rt.GateVerdict(False, None))
@@ -255,13 +251,12 @@ def pass_gate(monkeypatch):
 
 @pytest_asyncio.fixture
 async def relaxed_quota(tenant_id):
-    """동시 in-flight 상한을 넉넉히 준다 — 같은 사용자로 연달아 질의하는 테스트용 (#170).
+    """동시 in-flight 상한을 넉넉히 준다 — 같은 사용자로 연달아 질의하는 테스트용.
 
     사용자별 기본 상한이 1건이라(config.user_concurrency_default), 같은 X-User-Id로 연속
     질의하면 **앞 요청의 슬롯이 아직 반납되기 전**이라 429를 맞을 수 있다. 생성 경로는 반납을
     백그라운드 태스크로 넘기므로(routers/kms.py의 concurrency_guard — 연결이 끊겨도 태스크가
-    도는 동안 슬롯을 쥐고 있어야 한다) 응답이 끝나도 슬롯이 잠깐 남는다. 그래서 통과·실패가
-    머신 속도에 따라 갈렸다.
+    도는 동안 슬롯을 쥐고 있어야 한다) 응답이 끝나도 슬롯이 잠깐 남아 머신 속도에 따라 결과가 갈린다.
 
     상한만 올릴 뿐 limiter를 무력화하지 않는다 — 실제 경로(concurrency_guard → limiter)는
     그대로 탄다. 동시성 제한 자체를 검증하는 테스트에는 쓰지 마라.
@@ -293,11 +288,9 @@ class FakeLlm:
     """
 
     def __init__(self, answer: str | None = None):
-        # 기본 답변은 **1번 문서를 인용하는** 출처 꼬리를 단다 (#56 도입, #61에서 빈 꼬리→1번).
-        # 빈 꼬리였던 것을 바꾼 이유: #61부터 인용 0건이 "근거없음"의 정의가 되어 캐시 제외·
-        # 지표 분자에 걸린다. 빈 꼬리를 기본값으로 두면 대다수 테스트의 "정상 답변"이 근거없음으로
-        # 분류돼(실제로 캐시 저장이 스킵돼 3개 테스트가 깨졌다) 픽스처가 비현실적인 전제를 깔게 된다.
-        # 후보가 없는 테스트(차단·근거없음·OTHER)에서는 1번이 범위 밖이라 resolve_citations가
+        # 기본 답변은 **1번 문서를 인용하는** 출처 꼬리를 단다. 인용 0건이 "근거없음"의 정의라
+        # (캐시 제외·지표 분자) 빈 꼬리를 기본값으로 두면 대다수 테스트의 "정상 답변"이 근거없음으로
+        # 분류된다. 후보가 없는 테스트(차단·근거없음·OTHER)에서는 1번이 범위 밖이라 resolve_citations가
         # 걸러내 citations=[]가 그대로 유지된다 — 그 경로의 기대값은 안 바뀐다.
         # 인용 검증 테스트는 여전히 answer를 직접 교체해서 쓴다.
         # 어절 3개 유지 주의: pause_after_tokens=2(셋째 토큰 정지)를 쓰는 취소 테스트들의 전제.
@@ -305,18 +298,18 @@ class FakeLlm:
 
         self.answer = answer if answer is not None else f'테스트 답변입니다. {citation_tail([1])}'
         self.intent_json = '{"safe": true, "intent": "KNOWLEDGE"}'
-        self.reuse_judge_json = '{"same_answer": true, "reason": "테스트 고정 승인"}'  # 캐시 판정 (#113)
+        self.reuse_judge_json = '{"same_answer": true, "reason": "테스트 고정 승인"}'  # 캐시 판정
         self.calls: list[str] = []  # 어떤 용도로 호출됐는지 기록 (검증용)
         self.system_prompts: list[tuple[str, str]] = []  # (용도, 시스템 프롬프트) — 주입 내용 검증용
-        self.citation_tails: list = []  # astream별 citations 의도(CitationTail|None) — 꼬리 제약 주입 검증용(#56·#65·#287)
-        self.schemas: list = []  # acomplete별 schema 의도 — 스키마 주입 증거(#43·#287)
-        # 취소 테스트용 정지 지점 (#30). None이면 기존 동작 그대로.
+        self.citation_tails: list = []  # astream별 citations 의도(CitationTail|None) — 꼬리 제약 주입 검증용
+        self.schemas: list = []  # acomplete별 schema 의도 — 스키마 주입 증거
+        # 취소 테스트용 정지 지점. None이면 멈추지 않는다.
         # 왜 필요한가: astream에 진짜 await가 없으면 이벤트 루프에 제어가 넘어가지 않아
-        # task.cancel()이 전달될 지점 자체가 없다 — 생성이 그대로 완주한다(실측).
+        # task.cancel()이 전달될 지점 자체가 없다 — 생성이 그대로 완주한다.
         # 시간(sleep) 대신 Event로 멈추는 이유: 테스트가 "정확히 N토큰 뒤"를 잡을 수 있어
         # CI에서 타이밍 플레이크가 나지 않는다.
         self.pause_after_tokens: int | None = None
-        self.finish_reason = 'stop'  # astream 완주 시 콜백에 전달 (#129) — 'length'로 바꿔 잘림 재현
+        self.finish_reason = 'stop'  # astream 완주 시 콜백에 전달 — 'length'로 바꿔 잘림 재현
         # 생성 실패 테스트용 — N번째 토큰에서 스트림이 끊긴 상황(LLM·네트워크 장애) 주입.
         # pause와 달리 재개가 없다: 실패 경로의 저장 규칙을 보려는 것이라 중단 자체가 목적.
         self.raise_after_tokens: int | None = None
@@ -327,11 +320,11 @@ class FakeLlm:
         system = messages[0]['content'] if messages else ''
         if '분류기' in system or '입력 검사' in system:
             return 'intent'
-        if '질문 여러 개' in system:  # CONDENSE_MULTI(#5) — '재작성'보다 먼저 (문자열 겹침)
+        if '질문 여러 개' in system:  # CONDENSE_MULTI — '재작성'보다 먼저 (문자열 겹침)
             return 'condense_multi'
         if '재작성' in system:
             return 'condense'
-        if '재사용 판정기' in system:  # 캐시 재사용 판정 (#113)
+        if '재사용 판정기' in system:  # 캐시 재사용 판정
             return 'reuse_judge'
         return 'generate'
 
@@ -346,15 +339,14 @@ class FakeLlm:
         if kind == 'intent':
             return self.intent_json
         if kind == 'reuse_judge':
-            # 캐시 재사용 판정(#113) — 판정 승인 없이는 히트가 없으므로 기본 승인.
+            # 판정 승인 없이는 캐시 히트가 없으므로 기본 승인.
             # 거절 시나리오는 reuse_judge_json을 교체해서 쓴다.
             return self.reuse_judge_json
         if kind == 'condense':
-            # 실제 질문을 JSON으로 반향 (#43). 구현 주의: 옛 코드는 마지막 줄을 반향했는데
-            # 그건 질문이 아니라 라벨이었다(잠복 버그 — 이 값을 검증하는 테스트가 없어 안 드러남).
+            # 마지막 줄이 아니라 '현재 질문:' 라벨 다음 줄(실제 질문)을 JSON으로 반향한다.
             return json.dumps({'standalone': _current_question(messages[-1]['content'])}, ensure_ascii=False)
         if kind == 'condense_multi':
-            # 멀티쿼리(#5) 규격 반향 — variants를 채워야 플래그 on 통합 테스트가
+            # 멀티쿼리 규격 반향 — variants를 채워야 플래그 on 통합 테스트가
             # off와 동일 경로로 축소되지 않는다.
             q = _current_question(messages[-1]['content'])
             return json.dumps({'standalone': q, 'variants': [f'{q} 변형A', f'{q} 변형B']}, ensure_ascii=False)
@@ -372,7 +364,7 @@ class FakeLlm:
                 self.paused.set()
                 await self.resume.wait()  # 취소 테스트가 여기서 task.cancel()을 건다
             yield token + ' '
-        # 실제 구현(rag/llm/openai_compat.py)처럼 완주 시 종료 사유를 콜백으로 알린다 (#129).
+        # 실제 구현(rag/llm/openai_compat.py)처럼 완주 시 종료 사유를 콜백으로 알린다.
         # finish_reason 속성을 'length'로 바꾸면 잘림 시나리오를 흉내 낼 수 있다.
         if on_finish_reason:
             on_finish_reason(self.finish_reason)
@@ -380,7 +372,7 @@ class FakeLlm:
 
 @pytest.fixture
 def fake_llm(monkeypatch):
-    """RagService가 쓰는 공용 LLM(shared_llm)과 보조 LLM(shared_aux_llm, #297)을 같은 가짜로 치환."""
+    """RagService가 쓰는 공용 LLM(shared_llm)과 보조 LLM(shared_aux_llm)을 같은 가짜로 치환."""
     fake = FakeLlm()
     import rag.turn.service
 
@@ -402,13 +394,13 @@ async def _loop_hygiene():
     from database import engine
 
     await engine.dispose()
-    # 공용 Redis 하나만 정리하면 된다 (#30: limiter·취소 pub/sub이 clients.shared_redis를 공유)
+    # 공용 Redis 하나만 정리하면 된다 (limiter·취소 pub/sub이 clients.shared_redis를 공유)
     await clients.shared_redis.connection_pool.disconnect()
     # http_async는 aclose 후 재사용 불가 → 새 인스턴스로 교체
     # (호출부가 함수 안에서 지연 import하므로 모듈 속성 교체가 먹는다)
     await clients.http_async.aclose()
     clients.http_async = httpx.AsyncClient()
-    # OpenSearch 클라이언트(aiohttp)도 루프에 묶인다 — 닫고 비워 다음 테스트가 새로 만들게 (#139)
+    # OpenSearch 클라이언트(aiohttp)도 루프에 묶인다 — 닫고 비워 다음 테스트가 새로 만들게
     from rag.search import os_client
 
     await os_client.close_client()
@@ -443,7 +435,7 @@ async def purge_tenant(t: str) -> None:
 
     async with AsyncSessionLocal() as session:
         # FK 순서: 자식(청크·메시지) 먼저. outbox 행(done/failed 포함)도 테넌트 단위로 지운다 —
-        # 운영은 행을 보존하지만(이력) 테스트의 랜덤 테넌트 행이 공유 DB에 쌓일 이유는 없다 (#139).
+        # 운영은 행을 보존하지만(이력) 테스트의 랜덤 테넌트 행이 공유 DB에 쌓일 이유는 없다.
         for model in (
             Message,
             Conversation,
@@ -466,8 +458,8 @@ async def purge_tenant(t: str) -> None:
 
 
 async def _ensure_search_index() -> None:
-    """검색 인덱스는 테스트 스위트의 전제다(#139 — 청크는 OpenSearch에만 있다). 픽스처 **시작**에서
-    보장한다 — 정리(purge_tenant)에서만 부르면 첫 테스트가 없는 인덱스에 색인하다 404로 죽는다(실측).
+    """검색 인덱스는 테스트 스위트의 전제다(청크는 OpenSearch에만 있다). 픽스처 **시작**에서
+    보장한다 — 정리(purge_tenant)에서만 부르면 첫 테스트가 없는 인덱스에 색인하다 404로 죽는다.
     엔진이 안 떠 있으면 여기서 바로 실패한다 — 조용히 PG만으로 도는 척하지 않는다."""
     from rag.search import os_client
 
@@ -515,24 +507,24 @@ async def client(tenant_id, fake_embed):
 
 @pytest.fixture(autouse=True, scope='session')
 def _no_remote_ocr():
-    """OCR 엔진은 원격 Triton이라(#168) 기본값(True) 그대로면 PDF를 태우는 모든 테스트가 그 서버에 묶인다
+    """OCR 엔진은 원격 Triton이라 기본값(True) 그대로면 PDF를 태우는 모든 테스트가 그 서버에 묶인다
     — 도달 불가면 _docling_sections가 실패로 올려 문서 테스트가 전부 깨진다. 임베딩을 fake로 바꾸는 것과
     같은 이유로 세션 시작에 한 번 끈다. OCR 자체는 tests/test_chunking_docling.py::TestRemoteOcr가 자기
     monkeypatch로 켜고(끝나면 되돌아온다) 컨버터 싱글턴도 스스로 비운다.
 
     **함수 스코프 + monkeypatch로 만들면 안 된다** — autouse가 monkeypatch를 먼저 붙잡아 비동기 클라이언트·
     이벤트 루프 픽스처와의 해제 순서가 바뀌고, 루프가 닫힌 뒤 undo가 돌아 test_limiter_fail_open·
-    test_retry_dispatch가 teardown에서 'Event loop is closed'로 깨졌다(2026-09-17 실측, origin/main에선 통과)."""
+    test_retry_dispatch가 teardown에서 'Event loop is closed'로 깨진다."""
     from config import settings
 
     settings.docling_do_ocr = False
-    settings.ocr_provider = 'triton'  # 상용 OCR(#299)도 같은 이유로 끈다 — .env가 llm이면 PDF 테스트가 상용 LLM을 부른다. 켜는 건 tests/test_ocr_llm.py
+    settings.ocr_provider = 'triton'  # 상용 OCR도 같은 이유로 끈다 — .env가 llm이면 PDF 테스트가 상용 LLM을 부른다. 켜는 건 tests/test_ocr_llm.py
 
 
-# ── 그림 캡션 VLM 대역 (#223) ──
+# ── 그림 캡션 VLM 대역 ──
 # docling 캡션은 OpenAI 호환 /v1/chat/completions를 HTTP로 부른다. 테스트는 로컬 HTTP 서버로 대신한다 —
-# 외부 서비스 없이 결정적이고, 실패(5xx)·지연까지 주입할 수 있다. 이전에는 VLM을 죽인 채 돌려
-# '캡션 실패 = 자리표시'를 고정했는데, #223부터 캡션 실패는 문서 재시도라 그 길로는 그림 문서를 변환할 수 없다.
+# 외부 서비스 없이 결정적이고, 실패(5xx)·지연까지 주입할 수 있다. 캡션 실패는 문서 재시도라
+# VLM을 죽인 채로는 그림 문서를 변환할 수 없다.
 # 변환은 자식 프로세스(rag/chunking/convert_process.ConvertProcess)에서 일어나지만 HTTP라 그대로 닿는다 — 설정(URL)은
 # 부모의 스냅숏이 자식에 넘어간다.
 FAKE_CAPTION = '테스트 캡션: 로그인 화면'
@@ -544,7 +536,7 @@ class FakeVlm:
         self.status = 200  # 5xx로 바꾸면 docling은 빈 캡션을 준다 → CaptionFailedError
         self.delay = 0.0  # 초 — 마감 테스트용
         self.calls = 0
-        self.finish_reason = 'stop'  # 'length'면 출력이 상한에서 잘린 응답(#299 — 상용 OCR은 결정적 실패로 올린다)
+        self.finish_reason = 'stop'  # 'length'면 출력이 상한에서 잘린 응답(상용 OCR은 결정적 실패로 올린다)
 
 
 @pytest.fixture(scope='session')

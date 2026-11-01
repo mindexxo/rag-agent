@@ -28,7 +28,7 @@ async def test_같은_질의_같은_근거집합이면_hit(tenant_id, fake_embed
 
         hit = await cache.get_semantic(
             session, tenant_id, '배송비 얼마예요', [5], llm=FakeLlm()
-        )  # 판정 승인 없이는 히트 없음 (#113)
+        )  # 판정 승인 없이는 히트 없음
         assert hit is not None
         assert hit.answer == '3천원입니다'
         assert hit.sources == src
@@ -78,7 +78,7 @@ async def _prepared_with_conversation(session, tenant_id: str) -> PreparedRag:
     await session.flush()
     return PreparedRag(
         conversation_id=conv.id,
-        assistant_message_id=1,  # __post_init__ 불변식 (#72)
+        assistant_message_id=1,  # __post_init__ 불변식
         original_query='배송비 얼마예요',
         standalone_query='배송비 얼마예요',
         prior_turns=[],
@@ -93,7 +93,7 @@ async def test_정상_답변은_캐시_저장(tenant_id, fake_embed):
     async with AsyncSessionLocal() as session:
         prepared = await _prepared_with_conversation(session, tenant_id)
         svc = RagService(tenant_id=tenant_id, session=session)
-        # 캐시 정책 단위 검증 — 적재 진입점은 maybe_cache (save에서 분리, #56 재배치)
+        # 캐시 정책 단위 검증 — 적재 진입점은 maybe_cache
         await svc.maybe_cache(prepared, '배송비는 3천원입니다.', list(prepared.sources))
         await session.commit()
 
@@ -108,9 +108,7 @@ async def test_근거없는_답변은_캐시_제외(tenant_id, fake_embed):
     async with AsyncSessionLocal() as session:
         prepared = await _prepared_with_conversation(session, tenant_id)
         svc = RagService(tenant_id=tenant_id, session=session)
-        # 판정 기준은 citations=[] — 답변 문구가 아니다 (#61에서 문구 부분일치 폐기).
-        # 문구가 거절이든 아니든 인용이 없으면 제외된다: 여기 넘기는 답변 텍스트는
-        # 이제 판정에 관여하지 않고 캐시 저장 대상 본문으로만 쓰인다.
+        # 판정 기준은 citations=[] — 답변 문구가 아니다. 문구가 거절이든 아니든 인용이 없으면 제외된다.
         await svc.maybe_cache(prepared, f'죄송합니다. {NO_EVIDENCE_ANSWER} 다른 질문을 주세요.', [])
         await session.commit()
 
@@ -171,12 +169,12 @@ async def test_무효화는_해당_문서_참조_행만(tenant_id, fake_embed):
         assert remain == ['답3']  # 7을 참조한 두 행만 제거
 
 
-# ── #16 캐시 경화: FAQ 낙관적 검증 + fail-open ──────────────────
+# ── 캐시 경화: FAQ 낙관적 검증 + fail-open ──────────────────
 
 
 @pytest.mark.asyncio
 async def test_생성_중_FAQ_수정되면_캐시_저장_스킵(tenant_id, fake_embed):
-    """write-back 레이스(#16): prepare 스냅샷 이후 FAQ가 바뀌면 set이 저장을 스킵.
+    """write-back 레이스: prepare 스냅샷 이후 FAQ가 바뀌면 set이 저장을 스킵.
     FAQ는 id 불변이라 doc집합 비교가 자가치유 못 하는 유일한 출처 — 이 검증이 마지막 방어선."""
     from rag.models import Faq
     from rag.turn.cache import snapshot_faq_versions
@@ -222,11 +220,10 @@ async def test_FAQ_변경_없으면_스냅샷_검증_통과_저장(tenant_id, fa
 
 @pytest.mark.asyncio
 async def test_캐시_조회_저장_실패는_요청을_죽이지_않는다(tenant_id, monkeypatch):
-    """fail-open(#16): DB 실행 실패 시 조회는 miss, 저장은 스킵 — 예외 전파 금지.
+    """fail-open: DB 실행 실패 시 조회는 miss, 저장은 스킵 — 예외 전파 금지.
 
-    실패 주입을 임베딩(TEI)에서 DB로 바꿨다 (#50): 운영 경로는 검색이 만든 벡터를 받아
-    쓰므로 캐시 안에서 embed_query를 타지 않는다 — 임베딩 실패를 주입하면 운영에서
-    도달하지 않는 폴백 경로만 검증하는 셈이다. 남은 실질 실패 모드가 DB 쪽이다.
+    실패는 DB에 주입한다 — 운영 경로는 검색이 만든 벡터를 받아 캐시 안에서 embed_query를 타지 않으므로
+    임베딩 실패 주입은 운영에서 도달하지 않는 폴백만 검증한다.
     """
     vec = [0.0] * 1024  # 값은 무관 — 넘겨주는 것 자체가 embed_query 폴백을 비켜가게 한다
 
@@ -251,7 +248,7 @@ async def test_캐시_조회_저장_실패는_요청을_죽이지_않는다(tena
 
 @pytest.mark.asyncio
 async def test_벡터를_넘기면_임베딩을_다시_하지_않는다(tenant_id, monkeypatch):
-    """#50 계약: query_embedding이 주어지면 cache는 embed_query를 부르지 않는다.
+    """계약: query_embedding이 주어지면 cache는 embed_query를 부르지 않는다.
 
     embed_query를 터지게 두고도 조회·저장이 정상 동작하는 것으로 증명한다 — 호출하면
     RuntimeError가 fail-open에 삼켜져 miss/스킵이 되므로, 성공했다는 것 자체가 미호출의 증거다.
@@ -274,9 +271,9 @@ async def test_벡터를_넘기면_임베딩을_다시_하지_않는다(tenant_i
 
 @pytest.mark.asyncio
 async def test_턴당_임베딩_왕복은_1회(client, tenant_id, fake_llm, pass_gate, fake_embed):
-    """#50: 한 턴에 같은 질의를 세 번 임베딩하던 것을 검색 1회로 통일.
+    """한 턴의 질의 임베딩은 검색 1회뿐이다.
 
-    HTTP 전체 턴으로 재는 이유: 이 변경의 실체는 retriever→service→cache 배선이라
+    HTTP 전체 턴으로 재는 이유: 실체가 retriever→service→cache 배선이라
     함수 단위 테스트로는 "벡터가 실제로 끝까지 전달되는지"가 안 잡힌다. 중간 어느 고리가
     끊기면 cache가 None 폴백으로 조용히 되돌아가 **에러 없이 왕복만 늘어난다** —
     그 회귀를 잡는 게 이 테스트의 목적이다.
@@ -301,7 +298,7 @@ async def test_턴당_임베딩_왕복은_1회(client, tenant_id, fake_llm, pass
 
 @pytest.mark.asyncio
 async def test_보존기간_지난_미히트_캐시만_청소(tenant_id, fake_embed):
-    """sweep_stale(#16): last_hit_at이 cache_retention_days를 넘긴 row만 삭제."""
+    """sweep_stale: last_hit_at이 cache_retention_days를 넘긴 row만 삭제."""
     from sqlalchemy import func
     from sqlalchemy import update as sa_update
 
@@ -355,14 +352,11 @@ async def test_FAQ_스냅샷_검증도_테넌트_격리(tenant_id, other_tenant_
 
 @pytest.mark.asyncio
 async def test_주입상한0이어도_신규첨부가_있으면_캐시를_우회한다(client, tenant_id, fake_llm, pass_gate, monkeypatch):
-    """#36 버그 수정 — 캐시 가드는 주입용·신규분 첨부를 **둘 다** 봐야 한다.
+    """캐시 가드는 주입용·신규분 첨부를 **둘 다** 봐야 한다.
 
     max_attachments<=0이면 주입용(attachment_dicts)이 강제로 비므로, 신규분을 함께 보지 않으면
-    첨부가 있는 턴이 캐시 가드를 통과해 캐시 답변이 재생된다.
-
-    #72로 저장 구조가 바뀌어 유실 메커니즘 자체는 사라졌다 — 첨부는 이제 턴 시작(_open_turn)에
-    user 메시지로 곧장 들어가지, 저장 시점에 PreparedRag에서 읽어오지 않는다. 그래도 이 가드는
-    유효하다: 첨부가 있는 턴은 그 문서에 종속된 답을 내야 하므로 공용 캐시 답변을 재생하면 안 된다.
+    첨부가 있는 턴이 캐시 가드를 통과해 캐시 답변이 재생된다. 첨부가 있는 턴은 그 문서에 종속된
+    답을 내야 하므로 공용 캐시 답변을 재생하면 안 된다.
     """
     from config import settings
     from rag.models import Message

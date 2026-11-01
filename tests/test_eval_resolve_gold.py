@@ -1,4 +1,4 @@
-"""resolve_gold의 매칭 규칙(match_expected_chunks) — 색인 없이 튜플만으로 (#209)."""
+"""resolve_gold의 매칭 규칙(match_expected_chunks) — 색인 없이 튜플만으로."""
 
 from eval.retrieval import match_expected_chunks
 

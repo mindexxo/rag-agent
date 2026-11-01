@@ -1,10 +1,9 @@
-"""OpenSearch 매핑·인덱스 생성 계약 (#139, #146에서 모듈 분리에 맞춰 3파일로 나눔)
-— DB·OpenSearch 없이 도는 순수 테스트.
+"""OpenSearch 매핑·인덱스 생성 계약 — DB·OpenSearch 없이 도는 순수 테스트.
 
 매핑은 색인 생성 시점에 굳고(ensure_index) 바꾸면 재색인이다. 여기 묶는 값들이 조용히 어긋나면
 검색은 계속 돌면서 틀린 답을 낸다 — 그래서 코드로 고정한다.
 
-  1. BM25·HNSW 파라미터를 매핑에 명시하지 않는다      (엔진 기본값 — 사용자 결정 2026-09-13)
+  1. BM25·HNSW 파라미터를 매핑에 명시하지 않는다      (엔진 기본값)
   2. dense 차원·엔진·space_type이 고정돼 있다          (임베딩 1024·lucene·cosinesimil)
   3. bigram 필드는 공백만 자른다                       (토큰은 rag/search/lexical.py가 만든다)
   4. 엔진이 돌려준 청크에 인용 메타가 다 실린다        (PG를 되묻지 않으므로)
@@ -18,8 +17,7 @@ from rag.search import os_client as C
 
 
 def test_bm25_hnsw_파라미터는_엔진_기본값을_쓴다():
-    """k1·b·m·ef_construction·ef_search를 매핑에 박지 않는다 — A/B 때 pgvector와 맞춘 값(k1 1.5, ef 64/40)은
-    도입 판정용이었고, 도입 후엔 표준 기본값으로 간다(사용자 결정). 누가 다시 박으면 여기서 걸린다."""
+    """k1·b·m·ef_construction·ef_search를 매핑에 박지 않고 엔진 기본값을 쓴다. 누가 다시 박으면 여기서 걸린다."""
     settings_ = C.MAPPING["settings"]["index"]
     assert "similarity" not in settings_
     assert not any(k.startswith("knn.algo_param") for k in settings_)
@@ -67,14 +65,14 @@ def test_엔진이_돌려준_청크에_인용_메타가_다_실린다():
         'folder_description',
         'identifiers',
         'headings',
-    ):  # 식별자 채널(#238)
+    ):  # identifiers·headings = 식별자 채널
         assert f in props, f
     assert props['identifiers']['type'] == 'keyword'  # 정확 일치(terms) — 분석기로 쪼개면 채널 자체가 무의미
 
 
 @pytest.mark.asyncio
 async def test_엔진에_못_붙으면_ensure_index가_예외를_올린다(monkeypatch):
-    """OpenSearch 없이 기동하면 죽어야 한다(E2E #10) — 검색 없는 서버가 조용히 뜨는 것을 막는 계약.
+    """OpenSearch 없이 기동하면 죽어야 한다 — 검색 없는 서버가 조용히 뜨는 것을 막는 계약.
     main.lifespan·worker.startup이 이 함수를 첫 줄에서 부른다."""
 
     class _Indices:
@@ -126,8 +124,8 @@ async def test_이미_있는_인덱스는_건드리지_않고_경합의_already_
 
 @pytest.mark.asyncio
 async def test_ensure_index_soft는_못_붙어도_예외_없이_False(monkeypatch, caplog):
-    """기동 경로(main lifespan·worker startup·drain)는 이걸 쓴다 — 로컬 개발에서 OpenSearch 없이도 앱이 뜨게
-    (사용자 결정 2026-09-13). 실패는 삼키지 않고 ERROR 로그로 남긴다."""
+    """기동 경로(main lifespan·worker startup·drain)는 이걸 쓴다 — 로컬 개발에서 OpenSearch 없이도 앱이 뜨게.
+    실패는 삼키지 않고 ERROR 로그로 남긴다."""
 
     class _Indices:
         async def exists(self, *a, **k):
@@ -145,7 +143,7 @@ async def test_ensure_index_soft는_못_붙어도_예외_없이_False(monkeypatc
 
 
 class TestConnectionPool:
-    """#201 — OpenSearch 커넥션 상한을 명시하는가.
+    """OpenSearch 커넥션 상한을 명시하는가.
 
     생략하면 opensearchpy 기본 10이고, 그 값이 그대로 aiohttp TCPConnector(limit=)이 되어
     **프로세스 전체의 동시 OS 요청 상한**이 된다. 한 턴이 3~5회 부르므로(dense 쿼리별 +
@@ -193,7 +191,7 @@ class TestConnectionPool:
 
 @pytest.mark.asyncio
 async def test_보관_필드가_이미_있으면_추가하지_않고_추가_실패는_색인을_막지_않는다(monkeypatch):
-    # #222 리뷰 — ensure_index는 drain이 매 회차 부른다. 매핑 추가 실패가 예외로 올라가면 색인 전체가 멈췄다
+    # ensure_index는 drain이 매 회차 부른다. 매핑 추가 실패가 예외로 올라가면 색인 전체가 멈춘다
     calls = []
 
     class _Indices:

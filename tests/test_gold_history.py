@@ -1,9 +1,5 @@
-"""gold 이력 어댑터 통합 회귀 (#77).
-
-막으려는 버그 클래스: rag/turn/conversation.py의 이력 함수가 **새 속성을 읽기 시작했는데**
-eval 픽스처가 그 속성이 없는 객체를 만들어 AttributeError로 죽는 것. 실제로 두 번 났다
-(#59 status 도입, #72 failed 분기 추가) — 두 번 다 사람이 우연히 발견했고 그 사이
-생성축·멀티턴검색축이 정지해 있었다.
+"""gold 이력 어댑터 통합 회귀 — 이력 함수가 새 속성을 읽기 시작했는데 eval 픽스처가 그 속성이 없는
+객체를 만들어 AttributeError로 죽는 것을 막는다.
 
 **어댑터 단위 검증만으로는 못 잡는다.** 크래시는 어댑터가 아니라 소비 함수 안쪽
 (_history_content)에서 나기 때문이다. 그래서 실제 소비 경로 셋을 다 태운다 —
@@ -11,7 +7,7 @@ build_prior_turns · condense_query · condense_to_queries. 셋 다 _history_con
 
 **gold 파일을 읽지 않는다.** 사용자가 gold를 상시 편집 중이라(라벨 감사·케이스 추가)
 무관한 데이터 변경에 이 테스트가 흔들린다. 대신 gold의 **계약**(role·content 두 키,
-status 없음 — 2026-08 시점 608행 전수)을 인라인으로 고정한다. gold가 status를 갖게 되면
+status 없음)을 인라인으로 고정한다. gold가 status를 갖게 되면
 이 상수도 함께 갱신할 것.
 
 DB·LLM 없음 — Message는 세션 없이 transient로만 쓰고, LLM은 conftest의 FakeLlm을 직접
@@ -35,7 +31,7 @@ _GOLD_TURN = [
 
 class TestAdapter:
     def test_진짜_Message를_돌려준다(self):
-        """SimpleNamespace류 부분 객체로 퇴행하면 여기서 걸린다 — 그게 #77의 원인이었다."""
+        """SimpleNamespace류 부분 객체로 퇴행하면 여기서 걸린다 — 이력 함수가 Message 속성을 직접 읽기 때문이다."""
         assert all(isinstance(m, Message) for m in messages_from_conversation(_GOLD_TURN))
 
     def test_status가_없으면_운영_기본값으로_채운다(self):
@@ -54,7 +50,7 @@ class TestAdapter:
 
 
 class TestConsumerPaths:
-    """#77의 실제 크래시 경로. 어댑터가 아니라 이 함수들 안쪽에서 터졌다."""
+    """크래시가 나는 곳은 어댑터가 아니라 이 함수들 안쪽이다."""
 
     def test_build_prior_turns를_통과한다(self):
         turns = build_prior_turns(messages_from_conversation(_GOLD_TURN), 2000)
@@ -74,7 +70,7 @@ class TestConsumerPaths:
 
 
 class TestStatusRendering:
-    """#72가 추가한 분기가 조용히 바뀌는 것을 잡는다. 문구는 상수로 비교한다."""
+    """취소·실패 턴 렌더 분기가 조용히 바뀌는 것을 잡는다. 문구는 상수로 비교한다."""
 
     def _rendered(self, status: str, content: str) -> str:
         msgs = messages_from_conversation(
@@ -96,11 +92,8 @@ class TestStatusRendering:
 
 
 class TestSmokeSample:
-    """스모크셋이 타입을 누락하지 않는지 (#77).
-
-    옛 구현(rows[:n])은 gold의 테넌트 블록 순서 때문에 SMOKE<61에서 multi_turn을 한 건도
-    포함하지 않았다 — #77이 고친 경로가 바로 그것이라, 빨리 확인하려고 SMOKE를 쓰면
-    이 버그를 못 잡았다. 그 함정을 되돌리지 못하게 고정한다.
+    """스모크셋이 타입을 누락하지 않는지 — 앞에서 자르면(rows[:n]) gold의 테넌트 블록 순서 때문에
+    작은 SMOKE에 multi_turn이 한 건도 안 들어와, 빨리 확인하려고 SMOKE를 쓰면 이력 경로를 못 탄다.
     """
 
     def test_작은_스모크에도_모든_타입이_들어온다(self):
@@ -108,8 +101,7 @@ class TestSmokeSample:
 
         # 타입이 블록으로 뭉친 모양을 만든다 — gold가 그렇게 생겼고, 앞에서 자르면 뒤쪽 타입이
         # 통째로 빠지는 상황이 이 테스트가 재현하려는 것이다.
-        # 목록을 손으로 적지 않고 GEN_TYPES에서 만드는 이유: 손으로 적었더니 #95가 고난도 6종을
-        # 합류시킨 뒤로 이 픽스처만 5종에 머물러, 통과할 수 없는 단언이 2주 넘게 빨간 채였다(#173).
+        # 목록을 GEN_TYPES에서 만든다 — 손으로 적으면 타입이 늘 때 픽스처만 뒤처진다.
         rows = [{'type': t} for t in sorted(GEN_TYPES) for _ in range(10)]
         for n in (1, 5, 10):
             got = {r['type'] for r in smoke_sample(rows, n)}

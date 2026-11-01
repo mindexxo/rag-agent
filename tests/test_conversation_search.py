@@ -1,4 +1,4 @@
-"""대화 히스토리 검색(#28) — q 부분일치·스니펫·total.
+"""대화 히스토리 검색 — q 부분일치·스니펫·total.
 
 실제 앱 + DB (conftest client 패턴). LLM 불필요 — 검색은 조회 경로라 생성이 끼지 않는다.
 
@@ -90,7 +90,7 @@ def test_스니펫_매칭_못찾으면_None():
 
 
 def test_이스케이프_와일드카드():
-    # 패턴 조립은 text_norm.like_pattern으로 옮겼다 (#176) — 문서 목록 검색도 같은 규칙을 쓴다.
+    # 패턴 조립은 text_norm.like_pattern — 문서 목록 검색도 같은 규칙을 쓴다.
     assert like_pattern('a_b') == r'%a\_b%'
     assert like_pattern('50%') == r'%50\%%'
     assert like_pattern(r'a\b') == r'%a\\b%'  # 백슬래시가 먼저 — 이후 치환분을 재이스케이프하지 않는다
@@ -210,7 +210,7 @@ async def test_차단된_턴의_본문도_검색된다(client, tenant_id):
 
 @pytest.mark.asyncio
 async def test_와일드카드_이스케이프(client, tenant_id):
-    """이스케이프가 없으면 'a_b'가 'axb'까지 잡는다 (실측 확인된 오탐)."""
+    """이스케이프가 없으면 'a_b'가 'axb'까지 잡는다."""
     literal = await _seed_conv(tenant_id, 'a_b 파일명 규칙', ['내용'], minutes=1)
     await _seed_conv(tenant_id, 'axb 파일명 규칙', ['내용'], minutes=2)
     body = await _search(client, 'a_b')

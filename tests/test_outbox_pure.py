@@ -1,4 +1,4 @@
-"""outbox 실패 분류·백오프 눈금 — DB 없이 (#185). 정의점은 rag/outbox.py의 is_transient·backoff_delay."""
+"""outbox 실패 분류·백오프 눈금 — DB 없이. 정의점은 rag/outbox.py의 is_transient·backoff_delay."""
 
 from datetime import timedelta
 
@@ -52,11 +52,11 @@ def _http_status(code: int) -> httpx.HTTPStatusError:
         TransportError('N/A', 'conn', None),
         OperationalError('SELECT 1', {}, Exception('connection was closed')),  # PG 커넥션 순단(SQLAlchemy 래핑)
         InterfaceError('SELECT 1', {}, Exception('connection is closed')),
-        CaptionFailedError('그림 캡션 실패'),  # #223 결정 3 — VLM이 살아나면 저절로 ready
-        TimeoutError('docling 변환이 900초를 넘겨 중단했다'),  # #223 결정 5 — 마감 초과도 일시(24회)
+        CaptionFailedError('그림 캡션 실패'),  # VLM이 살아나면 저절로 ready
+        TimeoutError('docling 변환이 900초를 넘겨 중단했다'),  # 마감 초과도 일시
         _litellm('RateLimitError'),
         _litellm('ServiceUnavailableError'),
-        _litellm('InternalServerError'),  # #289 상용 임베딩 — 벤더 순단·한도
+        _litellm('InternalServerError'),  # 상용 임베딩 — 벤더 순단·한도
         _litellm('Timeout'),
         _litellm('APIConnectionError'),
     ],
@@ -79,10 +79,10 @@ def test_일시_실패로_분류(exc):
         RequestError(400, 'parsing_exception', None),
         IntegrityError('INSERT', {}, Exception('unique_violation')),  # DB지만 연결 문제가 아니다
         ProgrammingError('SELECT nope', {}, Exception('column does not exist')),
-        PictureLimitError('그림 101장'),  # #223 결정 4 — 다시 돌려도 그림 수는 같다
+        PictureLimitError('그림 101장'),  # 다시 돌려도 그림 수는 같다
         _litellm('AuthenticationError'),
         _litellm('BadRequestError'),
-        _litellm('NotFoundError'),  # #289 키·모델명 오류
+        _litellm('NotFoundError'),  # 키·모델명 오류
     ],
 )
 def test_결정적_실패로_분류(exc):
@@ -98,7 +98,7 @@ def test_백오프는_두_배씩_커지다_상한에_멈춘다():
 
 
 class TestDrainRoundBudget:
-    """회차 예산(#223 결정 2) — 행을 시작하기 전에 "최악으로 걸려도 arq job_timeout 안인가"를 본다."""
+    """회차 예산 — 행을 시작하기 전에 "최악으로 걸려도 arq job_timeout 안인가"를 본다."""
 
     def test_첫_행은_항상_시작한다(self):
         assert outbox._fits_round(0.0)
@@ -110,7 +110,7 @@ class TestDrainRoundBudget:
         assert outbox._fits_round(edge) and not outbox._fits_round(edge + 0.1)
 
     def test_회차_예산은_마감에서_계산된다(self):
-        # 고정값이면 마감을 올렸을 때 첫 행조차 예산에 못 들어가 대기열이 로그 없이 멈췄다(#223 리뷰)
+        # 고정값이면 마감을 올렸을 때 첫 행조차 예산에 못 들어가 대기열이 로그 없이 멈춘다
         assert outbox.DRAIN_ROUND_SECONDS == (
             settings.docling_document_timeout_seconds + outbox.INDEX_TAIL_SECONDS + outbox.ROUND_SLACK_SECONDS
         )

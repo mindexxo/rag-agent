@@ -1,4 +1,4 @@
-"""테스트 증거 — pytest JUnit 리포트를 PR "테스트" 절에 붙일 표로 바꾼다(#311).
+"""테스트 증거 — pytest JUnit 리포트를 PR "테스트" 절에 붙일 표로 바꾼다.
 
 사람이 "N건 통과"를 손으로 쓰지 않는다 — 이 출력이 증거다(chat-service `scripts/test-evidence.py`와 같은 발상).
 스킵·xfail을 통과와 섞지 않고 **사유별로** 보인다: "ruff 미설치"·"docling 미설치" 같은 스킵이 통과로 묻히던 것을 막는 게 목적이다.

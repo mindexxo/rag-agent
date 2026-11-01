@@ -289,4 +289,4 @@ def test_히스토리_표지는_주석과_docstring에서만_센다():
     texts = _explanations(source)
     assert (
         sum(len(HISTORY.findall(t)) for t in texts) == 8
-    )  # #123·날짜·실측·기각·결정 3·#287·날짜·PR#141 — 줄 넘은 '결정/3개'는 아님
+    )  # 이슈 번호 셋(PR 포함)·날짜 둘·경위어 둘·결정 번호 하나 — 줄을 넘긴 '결정'과 '3개'는 안 센다

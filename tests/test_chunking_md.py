@@ -1,8 +1,8 @@
-"""MD 파서 = docling + 보정 3개(#267, 정의점 rag/chunking/markdown.md_sections).
+"""MD 파서 = docling + 보정 3개(정의점 rag/chunking/markdown.md_sections).
 
 docling(2.126) MD 백엔드를 그대로 쓰면 표 칸 '\\|'의 내용을 버리고, '<br>'이 든 행을 표 밖으로 흩뜨리고, 링크 주소를 빼고, 인라인
-서식으로 문장을 조각낸다(#267 실측). 그 보정과, 정규식 파서가 못 하던 구조 인식(밑줄식 헤딩·닫는 '#'·표 블록)을 고정한다.
-운영에는 원문 소실 가드를 두지 않았다(#267 결정 4) — 대신 여기서 저장소의 MD 문서 전부에 "원문 소실 0"을 건다. docling이 또 모르는
+서식으로 문장을 조각낸다. 그 보정과 구조 인식(밑줄식 헤딩·닫는 '#'·표 블록)을 고정한다.
+운영에는 원문 소실 가드를 두지 않는다 — 대신 여기서 저장소의 MD 문서 전부에 "원문 소실 0"을 건다. docling이 또 모르는
 데서 내용을 버리면 이 테스트가 먼저 깨진다. 합성 문서 생성의 정본은 sample_docs/corpus_v2/_src/build_md_docs.py.
 """
 
@@ -79,7 +79,7 @@ def test_인라인_서식으로_쪼개진_문장은_원문_띄어쓰기대로_�
 
 
 def test_코드_블록은_들여쓰기를_지킨다(tmp_path):
-    # docling_norm은 공백을 접는다 — 코드에 태우면 YAML 구조가 깨졌다(#267 리뷰 A: 'root:\n child:\n leaf: 1')
+    # docling_norm은 공백을 접는다 — 코드 블록에 태우면 YAML 구조가 깨진다
     assert _body(tmp_path, '# 제목\n\n```yaml\nroot:\n  child:\n    leaf: 1\n```\n') == 'root:\n  child:\n    leaf: 1'
 
 
@@ -106,7 +106,7 @@ def test_앞머리_메타는_빈_헤딩을_만들지_않는다(tmp_path):
 
 
 def test_큰_MD_표는_행_단위로_나뉘고_묶음마다_열_이름이_있다():
-    # #245 B6: 정규식 시절에는 글로 분할기를 타 행 한가운데서 잘리고 뒤 조각에 열 이름이 없었다
+    # 글 분할기를 타면 행 한가운데서 잘리고 뒤 조각에 열 이름이 없어진다
     chunks = chunk_file(CORPUS / 'aromanica' / 'aromanica_18_향료원료입고기준.md')
     batches = [c for c in chunks if '| AQ-50' in c.text]
     assert len(batches) >= 2
@@ -115,7 +115,7 @@ def test_큰_MD_표는_행_단위로_나뉘고_묶음마다_열_이름이_있다
     assert all(
         line.endswith('|') for c in batches for line in c.text.split('\n') if line.startswith('|')
     )  # 행 중간에서 안 잘림
-    assert {(c.meta or {}).get('table_key') for c in batches} != {None}  # #257 표 전체 확장 대상
+    assert {(c.meta or {}).get('table_key') for c in batches} != {None}  # 표 전체 확장 대상
 
 
 # ── 원문 소실 0 — 저장소의 MD 전부 ───────────────────────────────────────────────

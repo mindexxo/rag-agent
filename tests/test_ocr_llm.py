@@ -1,4 +1,4 @@
-"""상용 OCR(OCR_PROVIDER=llm, #299) — 사진 표는 잘라서, 스캔 쪽은 쪽 통째로 LLM이 읽는다. 정의점은 rag/chunking/ocr_llm.py.
+"""상용 OCR(OCR_PROVIDER=llm) — 사진 표는 잘라서, 스캔 쪽은 쪽 통째로 LLM이 읽는다. 정의점은 rag/chunking/ocr_llm.py.
 
 두 층:
   - 순수 함수(판정·묶음·자를 영역·답 해석·라우팅): docling 모델 없이 몇 초.
@@ -30,7 +30,7 @@ class TestScanJudgement:
         )  # 쪽 번호·도장 몇 글자는 허용
 
     def test_글자가_있거나_사진이_작거나_없으면_스캔이_아니다(self):
-        assert not is_scan_page(self._page(ch.ocr_llm.SCAN_MAX_CHARS, 1.0))  # 실측 최소 21자(표 이미지 축)가 이쪽
+        assert not is_scan_page(self._page(ch.ocr_llm.SCAN_MAX_CHARS, 1.0))  # 글자가 조금이라도 있으면 디지털 쪽
         assert not is_scan_page(self._page(0, 0.4))
         assert not is_scan_page(self._page(0, 0))  # 글자 없는 빈 쪽·표지
 
@@ -44,7 +44,7 @@ class TestPhotoBox:
     TABLE = (100.0, 200.0, 400.0, 400.0)  # 300×200
 
     def test_표를_담은_사진_전체를_자른다(self):
-        # 결정 4 — 사진 안 표 제목이 docling 표 영역 밖에 있다(실문서 07: 사진 247pt 중 위 39pt)
+        # 사진 안 표 제목이 docling 표 영역 밖에 있다 — 사진 전체를 잘라야 제목이 따라온다
         photo = (90.0, 160.0, 410.0, 420.0)
         assert photo_box(self.TABLE, (photo,)) == photo
 
@@ -86,7 +86,7 @@ class TestRouting:
         assert Settings.model_fields['ocr_provider'].default == 'triton'
 
     def test_triton_모드는_상용_경로를_안_탄다(self, monkeypatch, tmp_path):
-        # 사내 모드 불변(결정 1) — PDF도 예전 그대로 document_converter.docling_converter 하나로 변환한다
+        # 사내 모드 불변 — PDF도 document_converter.docling_converter 하나로 변환한다
         monkeypatch.setattr(settings, 'ocr_provider', 'triton')
         monkeypatch.setattr(ch.ocr_llm, 'convert_pdf', lambda *a, **k: pytest.fail('상용 경로를 탔다'))
         monkeypatch.setattr(ch.document_converter, 'convert_with', lambda conv, p, **k: ('기존', conv))
@@ -127,7 +127,7 @@ class TestEmptyReply:
         require_pages(doc, 3, 3)  # 3쪽에 글이 있으면 통과
         with pytest.raises(LlmReadFailedError, match=r'\[4\]') as e:
             require_pages(doc, 3, 4)
-        assert is_transient(e.value)  # outbox가 문서를 다시 처리한다(결정 5)
+        assert is_transient(e.value)  # outbox가 문서를 다시 처리한다
 
 
 # ── 실변환 (docling + 가짜 VLM) ────────────────────────────────────────────────────
@@ -189,7 +189,7 @@ def _pdf(path: Path, pages: list) -> Path:
 
 
 def _mixed_pdf(tmp_path) -> Path:
-    """1쪽 디지털(본문+사진 표) · 2쪽 스캔(쪽 전체 사진) · 3쪽 디지털 — 섞인 문서(결정 3)."""
+    """1쪽 디지털(본문+사진 표) · 2쪽 스캔(쪽 전체 사진) · 3쪽 디지털 — 섞인 문서."""
     photo = _table_photo_png(tmp_path / 'photo.png')
     scan = _text_png(tmp_path / 'scan.png', ['Scanned page', 'scanned body text'])
     return _pdf(
@@ -227,7 +227,7 @@ class TestRealConversion:
         assert sorted(by_page) == [1, 2, 3]
         page1, page2 = '\n'.join(by_page[1]), '\n'.join(by_page[2])
         assert 'First page digital body text.' in page1  # 디지털 글은 글자층 그대로
-        assert 'Motor | 48000' in page1 and 'Table 1. Warranty fees' in page1  # 사진 표 칸 + 제목 줄(결정 4)
+        assert 'Motor | 48000' in page1 and 'Table 1. Warranty fees' in page1  # 사진 표 칸 + 제목 줄
         assert page1.index('Table 1. Warranty fees') < page1.index('Motor | 48000')  # 제목은 표 앞
         assert '48000' in page2  # 스캔 쪽은 LLM 마크다운
         assert 'Third page digital body text.' in '\n'.join(by_page[3])
@@ -236,7 +236,7 @@ class TestRealConversion:
         assert '| Motor | 48000 |' in body and 'Third page digital body text.' in body
 
     def test_스캔_쪽의_문서_제목은_헤딩이_된다(self, tmp_path, llm_ocr):
-        # '#' 줄은 docling title 라벨 — section_header로 안 바꾸면 PDF 청킹이 본문 줄로 떨어뜨린다(#296)
+        # '#' 줄은 docling title 라벨 — section_header로 안 바꾸면 PDF 청킹이 본문 줄로 떨어뜨린다
         p = _pdf(tmp_path / 'scan.pdf', [('scan', _text_png(tmp_path / 's.png', ['x']))])
         llm_ocr.caption = '# Scan Title\n\n## 1. Section\n\nbody line'
         chunks = chunk_file(p)
@@ -244,7 +244,7 @@ class TestRealConversion:
         assert any(c.heading_path[-1] == '1. Section' for c in chunks)
 
     def test_LLM이_실패하면_문서가_일시_실패한다(self, tmp_path, llm_ocr):
-        # docling은 5xx를 몇 번 재시도한 뒤 빈 글자를 준다 — 빈 표·빈 쪽으로 ready가 되면 안 된다(결정 5)
+        # docling은 5xx를 몇 번 재시도한 뒤 빈 글자를 준다 — 빈 표·빈 쪽으로 ready가 되면 안 된다
         from rag.outbox import is_transient
 
         llm_ocr.status = 500

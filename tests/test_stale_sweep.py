@@ -1,9 +1,6 @@
-"""고착 generating 스윕 통합 테스트 — rag.turn.turn_state.sweep_stale_generating (#46).
+"""고착 generating 스윕(rag.turn.turn_state.sweep_stale_generating) 통합 테스트 — 스윕은 워커 cron 단독이다.
 
-lazy 스윕(GET 조회 시 정리)을 cron 단독으로 옮긴 변경의 회귀 그물이다.
-옮기기 전엔 스윕 자체를 고정하는 테스트가 0건이었다.
-
-실제 DB 사용 (conftest 패턴). LLM·TEI 불필요 — 스윕은 순수 UPDATE다.
+실제 DB 사용. LLM·TEI 불필요 — 스윕은 순수 UPDATE다.
 """
 
 from datetime import timedelta
@@ -95,10 +92,8 @@ async def test_전역이다_다른_테넌트도_함께_치유된다(tenant_id, o
 
 @pytest.mark.asyncio
 async def test_GET은_더이상_상태를_바꾸지_않는다(client, tenant_id):
-    """lazy 스윕 제거의 증명 — 이 케이스가 없으면 '지웠다고 착각'을 못 잡는다(#42 유형).
-
-    오래된 generating을 심고 메시지 조회 API를 때려도 응답·DB 모두 generating 그대로여야
-    한다. 치유는 이제 워커 cron(rag/worker.py)만의 소관이다.
+    """조회는 스윕하지 않는다 — 오래된 generating을 심고 메시지 조회 API를 때려도 응답·DB 모두
+    generating 그대로여야 한다. 치유는 워커 cron(rag/worker.py)만의 소관이다.
     """
     stale = await _seed_turn(tenant_id, status='generating', age_seconds=GENERATION_STALE_SECONDS + 60)
     async with AsyncSessionLocal() as s:
@@ -117,23 +112,19 @@ def test_cron에_등록돼_있다():
     names = [c.name for c in WorkerSettings.cron_jobs]
     assert 'cron:sweep_stale_generating' in names  # arq가 'cron:' 접두사를 붙인다
     job = next(c for c in WorkerSettings.cron_jobs if c.name == 'cron:sweep_stale_generating')
-    # 1분 주기 (#72에서 5분→1분). 임계(GENERATION_STALE_SECONDS=500)는 살아 있는 요청을
-    # 보호하는 값이라 LLM 타임아웃 300초 위에 있어야 해서 못 내린다 — 대신 순수 지연인
-    # 주기만 줄여 회복 최악을 ~800초에서 ~560초로 당겼다.
+    # 1분 주기. 임계(GENERATION_STALE_SECONDS=500)는 살아 있는 요청을 보호하려고 LLM 타임아웃
+    # 300초 위에 있어야 해서 못 내린다 — 순수 지연인 주기를 줄여 회복 최악을 줄인다.
     assert job.minute == set(range(0, 60, 1))
     assert job.unique  # 워커 다중화 시 1회 실행 보장
 
 
 @pytest.mark.asyncio
 async def test_스윕이_만든_failed는_RETRY_대상이_된다(tenant_id):
-    """스윕(#46)과 RETRY 디스패치(#59)의 교차 지점 — #85 E2E에서 손으로 재현한 체인의 고정.
+    """스윕과 RETRY 디스패치의 교차 지점.
 
     시나리오: 웹 프로세스가 죽어 generating이 고착 → cron 스윕이 failed로 회수 →
-    사용자가 "다시" → 그 고착됐던 질문이 재실행돼야 한다. 두 기능은 각자 테스트돼
-    있었지만(이 파일·test_retry_dispatch.py) **서로 물리는 지점은 어디에도 없었다** —
-    스윕이 만드는 상태(failed)가 UNANSWERED에 속하는 건 상수 정의의 우연이 아니라
-    이 체인이 성립하기 위한 계약이다. failed가 UNANSWERED에서 빠지면 죽은 프로세스의
-    턴은 "다시"로 되살릴 수 없게 된다 — 그 회귀를 여기서 잡는다.
+    사용자가 "다시" → 그 고착됐던 질문이 재실행돼야 한다. 스윕이 만드는 상태(failed)가
+    UNANSWERED에 속하는 건 이 체인의 계약이다 — 빠지면 죽은 프로세스의 턴은 "다시"로 되살릴 수 없다.
     """
     from rag.turn.conversation import load_recent_messages
     from rag.turn.turn_state import last_unanswered_turn

@@ -1,4 +1,4 @@
-"""클라이언트 조기 disconnect 계약 테스트 (#26).
+"""클라이언트 조기 disconnect 계약 테스트.
 
 이 기능의 존재 이유를 검증한다 — **연결이 끊겨도 생성 태스크는 완주하고, DB finalize와
 리미터 슬롯 반납이 보장된다.** 이게 깨지면 이미 GPU를 쓴 답변이 버려지고(이력 구멍),
@@ -33,7 +33,7 @@ async def test_소비자가_없어도_태스크는_완주해_finalize한다(clie
     # prepare까지는 정상 경로로 만들고(자리표시 확보), 그 다음을 소비자 없이 돌린다
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
-        prepared = await svc.prepare('환불 기간 알려줘')  # 자리표시는 prepare가 커밋한다 (#72)
+        prepared = await svc.prepare('환불 기간 알려줘')  # 자리표시는 prepare가 커밋한다
         assistant_id = prepared.assistant_message_id
     assert assistant_id is not None
 
@@ -67,8 +67,8 @@ async def test_소비자가_없어도_태스크는_완주해_finalize한다(clie
 
 @pytest.mark.asyncio
 async def test_캐시_저장이_실패해도_턴은_done이다(client, tenant_id, fake_llm, pass_gate, monkeypatch):
-    """캐시 적재는 done 뒤의 부가물(#56 재배치) — 저장 실패(TEI 블립 등)가 완결된 턴을
-    failed로 오염시키지 않아야 한다. 재배치 전엔 finalize 안에 있어서 턴 전체가 failed였다."""
+    """캐시 적재는 done 뒤의 부가물 — 저장 실패(TEI 블립 등)가 완결된 턴을
+    failed로 오염시키지 않아야 한다."""
     await register_faq(client)
     from rag.turn import cache
 
@@ -79,7 +79,7 @@ async def test_캐시_저장이_실패해도_턴은_done이다(client, tenant_id
 
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
-        prepared = await svc.prepare('환불 기간 알려줘')  # 자리표시는 prepare가 커밋한다 (#72)
+        prepared = await svc.prepare('환불 기간 알려줘')  # 자리표시는 prepare가 커밋한다
         assistant_id = prepared.assistant_message_id
 
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
@@ -104,16 +104,16 @@ async def test_캐시_저장이_실패해도_턴은_done이다(client, tenant_id
 
 @pytest.mark.asyncio
 async def test_생성_실패도_failed로_남고_정리가_끝난다(client, tenant_id, fake_llm, pass_gate, monkeypatch):
-    """단위: 생성 도중 예외 → except Exception 분기(#54에서 스팬 기록 추가)가 통째로 도는지.
+    """단위: 생성 도중 예외 → except Exception 분기가 통째로 도는지.
 
-    이 분기는 다른 테스트가 아무도 안 탄다(리뷰 지적) — failed 기록·에러 이벤트·슬롯 반납·
+    이 분기는 다른 테스트가 아무도 안 탄다 — failed 기록·에러 이벤트·슬롯 반납·
     no-op 스팬 기록(_record_turn_result)이 예외 없이 지나가는 것까지 여기서 고정한다.
     """
     await register_faq(client)
 
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
-        prepared = await svc.prepare('환불 기간 알려줘')  # 자리표시는 prepare가 커밋한다 (#72)
+        prepared = await svc.prepare('환불 기간 알려줘')  # 자리표시는 prepare가 커밋한다
         assistant_id = prepared.assistant_message_id
 
     async def _boom(self, prepared):
@@ -126,15 +126,14 @@ async def test_생성_실패도_failed로_남고_정리가_끝난다(client, ten
     queue: asyncio.Queue = asyncio.Queue()
     root_span, token = otel.start_turn()
     try:
-        # 실제 기준점을 넘긴다 — 실패도 소요시간을 남기게 됐으므로(#75 후속) 0.0을 넘기면
+        # 실제 기준점을 넘긴다 — 실패도 소요시간을 남기므로 0.0을 넘기면
         # 부팅 이후 경과가 통째로 latency로 들어간다.
         await _run_generation(prepared, queue, lease, t_request=time.monotonic(), root_span=root_span)
     finally:
         otel.detach_turn(token)
 
     # 실패 기록: _finalize_out_of_band가 새 세션으로 failed를 남긴다.
-    # latency는 예전엔 규칙상 NULL이었는데 이제 남긴다 — '얼마 만에 실패했는지'가
-    # 장애 분석의 기본 값이라, 취소 분기와 같은 규칙으로 맞췄다.
+    # latency도 남긴다 — '얼마 만에 실패했는지'가 장애 분석의 기본 값이라 취소 분기와 같은 규칙이다.
     async with AsyncSessionLocal() as session:
         msg = await session.get(Message, assistant_id)
         assert msg.status == 'failed'

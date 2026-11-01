@@ -1,10 +1,10 @@
-"""ATTACHMENT 디스패치 (#63) — 첨부 전용 질의의 검색 스킵.
+"""ATTACHMENT 디스패치 — 첨부 전용 질의의 검색 스킵.
 
 분류기는 "첨부 자체를 대상으로 한 요청"이라는 표면 사실만 인식하고(RouteDecision.intent
 ='ATTACHMENT'), 디스패처가 첨부 유무로 해소한다:
   첨부 있음 → knowledge 경로, 검색·condense 스킵 (첨부만 근거 — KB 혼입 차단)
   첨부 없음 → OTHER (가리킬 문서가 없다 — 되묻기 유도)
-RETRY(#59)와 같은 전이 인텐트 — 단 저장 라벨(intent)은 ATTACHMENT로 남는다(stats 분리, 리뷰 반영).
+RETRY와 같은 전이 인텐트 — 단 저장 라벨(intent)은 ATTACHMENT로 남는다(stats 분리).
 """
 
 import pytest
@@ -98,14 +98,13 @@ async def test_ATTACHMENT_유일첨부가_차단턴이면_OTHER(client, tenant_i
 
 @pytest.mark.asyncio
 async def test_RETRY는_ATTACHMENT턴의_검색스킵을_복원하지_않는다(client, tenant_id, fake_llm, fake_embed, pass_gate):
-    """의도된 수용(#63 결정): 재실행은 일반 knowledge로 검색이 돈다 — 장애가 아니라
+    """의도된 수용: 재실행은 일반 knowledge로 검색이 돈다 — 장애가 아니라
     코너 케이스의 비효율. 이 테스트는 그 동작을 '현재 의도'로 고정한다(무단 "수정" 방지).
-    저장 라벨(intent='ATTACHMENT')이 리뷰 반영으로 생겨 이제 복원이 기술적으론 쉬워졌지만
-    (prev_assistant.intent 확인 한 줄), 빈도 극저라 여전히 안 한다 — 필요해지면 별건."""
+    복원은 prev_assistant.intent 확인 한 줄로 가능하지만 빈도가 극히 낮아 안 한다 — 필요해지면 별건."""
     from tests.conftest import register_faq
 
     await register_faq(client)
-    # ATTACHMENT 턴이 취소된 모양 시드 — 저장 라벨은 intent='ATTACHMENT' (#63 리뷰 반영분)
+    # ATTACHMENT 턴이 취소된 모양 시드 — 저장 라벨은 intent='ATTACHMENT'
     from tests.conftest import seed_turn
 
     cid = await seed_turn(

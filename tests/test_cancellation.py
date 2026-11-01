@@ -1,16 +1,7 @@
-"""생성 취소 계약 테스트 (#30).
+"""생성 취소 계약 — 명시적 정지는 실제로 멈추고, 부분 답변을 cancelled로 남기고, 정리(리미터 반납·큐 sentinel·스팬 종료)를 끝낸다.
 
-검증하는 계약은 하나다 — **명시적 정지는 실제로 멈추고, 부분 답변을 cancelled로 남기고,
-정리(리미터 반납·큐 sentinel·스팬 종료)를 온전히 끝낸다.** 연결 끊김(#26, 완주해서 저장)과
-정반대 방향이라 그쪽 테스트(test_stream_disconnect.py)와 짝으로 읽어야 한다.
-
-레이어를 셋으로 나눈다:
-  순수      레지스트리 pop-then-cancel 규약 (asyncio만, DB·Redis 없음)
-  단위      _run_generation을 직접 취소 — 취소 분기·정리 보장의 정본
-  통합      HTTP 취소 엔드포인트 + 실제 Redis pub/sub 왕복
-
-FakeLlm.pause_after_tokens로 정지 지점을 잡는다 — 시간(sleep) 기반이면 CI에서 플레이크가
-난다. astream에 진짜 await가 없으면 취소가 전달될 지점 자체가 없다는 것도 여기서 전제한다.
+연결 끊김(완주해서 저장, test_stream_disconnect.py)과 정반대 방향이다. 정지 지점은 시간이 아니라
+FakeLlm.pause_after_tokens로 잡는다 — sleep 기반이면 플레이크가 난다.
 """
 
 import asyncio
@@ -37,15 +28,14 @@ OTHER_USER = {'X-User-Id': 'agent-other'}
 async def cancel_subscriber():
     """취소 채널 구독 루프만 띄운다.
 
-    httpx ASGITransport가 lifespan을 호출하지 않으므로(실측) main.py의 배선으로는 구독
+    httpx ASGITransport가 lifespan을 호출하지 않으므로 main.py의 배선으로는 구독
     루프가 테스트에서 뜨지 않는다. 그래서 함수를 직접 기동한다.
 
     공용 Redis 클라이언트(clients.shared_redis)를 이 테스트의 루프에 맞는 새 인스턴스로
     교체한다. 앞선 테스트의 루프에 묶인 커넥션이 남아 있으면 구독 루프가 "Future attached to
-    a different loop"로 죽고(실측), 그 커넥션은 루프가 이미 닫혀 disconnect()조차 "Event loop
+    a different loop"로 죽고, 그 커넥션은 루프가 이미 닫혀 disconnect()조차 "Event loop
     is closed"로 실패한다. 그래서 정리가 아니라 교체다 — _loop_hygiene가 http_async에 쓰는 방식.
     limiter·취소가 이 속성을 호출 시점에 읽으므로 교체가 양쪽에 그대로 먹는다.
-    conftest에 두지 않는 이유: 이 파일만 쓰는 fixture다(리포 관례 — 단일 파일 전용은 로컬).
     """
     import redis.asyncio as aioredis
 
@@ -67,7 +57,7 @@ async def _prepare_turn(tenant_id: str):
     """정상 경로로 prepare + 자리표시(generating)까지 만들고 그 뒤를 테스트가 조작한다."""
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
-        prepared = await svc.prepare('환불 기간 알려줘')  # 자리표시는 prepare가 커밋한다 (#72)
+        prepared = await svc.prepare('환불 기간 알려줘')  # 자리표시는 prepare가 커밋한다
         return prepared
 
 
@@ -168,8 +158,7 @@ async def test_취소하면_부분답변이_cancelled로_남고_정리가_끝난
 
 @pytest.mark.asyncio
 async def test_취소하면_done이_cancelled와_빈_인용을_싣는다(client, tenant_id, fake_llm, pass_gate):
-    """#56 계약: 인용은 done에서만 확정된다 — 구 계약의 '낙관 전송 후 [] 정정' 자체가 사라졌고,
-    취소 턴은 done.finish_reason='cancelled'·citations=[]로 닫힌다(저장 규칙과 같은 값)."""
+    """인용은 done에서만 확정된다 — 취소 턴은 done.finish_reason='cancelled'·citations=[]로 닫힌다(저장 규칙과 같은 값)."""
     await register_faq(client)
     fake_llm.pause_after_tokens = 2
     prepared = await _prepare_turn(tenant_id)
@@ -264,7 +253,7 @@ async def test_첫_토큰_전에_취소하면_빈_답변으로_남는다(client,
 @pytest.mark.asyncio
 async def test_정리_도중_취소요청은_대상을_못_찾는다(client, tenant_id, fake_llm, pass_gate):
     """레이스 회귀 고정: 답변이 done으로 커밋된 뒤 finally에서 반납하는 찰나에 취소가 오면
-    self-pop이 없을 때 정리가 파괴된다(실측). 자기를 먼저 빼두므로 요청은 빈손이어야 한다."""
+    self-pop이 없으면 정리가 파괴된다. 자기를 먼저 빼두므로 요청은 빈손이어야 한다."""
     await register_faq(client)
     prepared = await _prepare_turn(tenant_id)
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
@@ -290,7 +279,7 @@ async def test_생성_중_취소요청은_204이고_cancelled로_귀결(client, 
     """HTTP 취소 엔드포인트 → 레지스트리 → 태스크 → DB까지 한 줄로 검증.
 
     스트림을 열어둔 채 취소를 보내는 형태로는 쓸 수 없다 — httpx ASGITransport는 응답 본문이
-    끝날 때까지 client.stream()을 반환하지 않아서(실측) 생성 중에 다른 요청을 보낼 수가 없다.
+    끝날 때까지 client.stream()을 반환하지 않아서 생성 중에 다른 요청을 보낼 수가 없다.
     실서버(uvicorn)는 점진 전송이라 FE의 동시 POST가 정상 동작하지만, 그 배선의 최종 확인은
     실기동 몫이다 — test_stream_disconnect.py가 같은 한계를 docstring에 적어둔 것과 같은 이유.
     그래서 여기서는 spawn_generation으로 실제 태스크를 띄워 레지스트리에 올린 뒤 HTTP로 취소한다.

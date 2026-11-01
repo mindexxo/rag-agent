@@ -1,7 +1,6 @@
-"""eval/assign_folders.py — 폴더 배정이 PG와 엔진 청크 메타를 함께 바꾸는가 (#187).
+"""eval/assign_folders.py — 폴더 배정이 PG와 엔진 청크 메타를 함께 바꾸는가.
 
-스크립트는 운영 이미지 밖이지만 골드셋 구축 때 사람이 실제로 돌린다. PG만 바꾸고 outbox 행을 안 남기던
-결함(엔진 메타 드리프트 영구, reconcile로도 안 잡힘)을 고정한다. classify 순서 규칙도 여기서 본다.
+PG만 바꾸고 outbox 행을 안 남기면 엔진 메타가 영구히 어긋난다(reconcile로도 안 잡힘). classify 순서 규칙도 여기서 본다.
 """
 
 import sys

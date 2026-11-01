@@ -15,7 +15,7 @@ from rag.turn.citation_labels import citation_tail
 def _tail(*nums: int) -> str:
     """출처 꼬리 픽스처 — 운영이 내는 형태 그대로.
 
-    형식을 손으로 조립하지 않고 citation_tail을 거친다 (#65) — 픽스처가 옛 형식으로
+    형식을 손으로 조립하지 않고 citation_tail을 거친다 — 픽스처가 옛 형식으로
     낡으면 채점기 테스트가 "현실적인 입력"을 안 보게 된다.
     """
     return citation_tail(nums)
@@ -23,7 +23,7 @@ def _tail(*nums: int) -> str:
 
 def _chunks(*filenames: str) -> list[RetrievedChunk]:
     """문서당 청크 1개 — 등장 순서가 곧 인용 번호(sources_from_chunks 불변식).
-    'FAQ'는 운영과 같게 faq_id 청크로 만든다(#278부터 항목마다 번호 — 여기선 항목 하나라 등장 순서 그대로)."""
+    'FAQ'는 운영과 같게 faq_id 청크로 만든다(항목마다 번호 — 여기선 항목 하나라 등장 순서 그대로)."""
     out = []
     for i, fn in enumerate(filenames, start=1):
         faq = fn == 'FAQ'
@@ -57,7 +57,7 @@ class TestCitationMatch:
 
 
 class TestCitationAccuracy:
-    """v3 (#56): 인용은 답변 끝 출처 꼬리(번호 목록)에서만 — 운영과 같은 배관으로 해석한다."""
+    """인용은 답변 끝 출처 꼬리(번호 목록)에서만 — 운영과 같은 배관으로 해석한다."""
 
     def test_전_기대문서_인용시_만점(self):
         score = citation_accuracy(
@@ -80,7 +80,7 @@ class TestCitationAccuracy:
         assert citation_accuracy('답변 ' + _tail(1), ['환불정책.pdf'], _chunks('엉뚱문서.pdf', '환불정책.pdf')) == 0.0
 
     def test_꼬리_없으면_0(self):
-        # 형식 미준수(꼬리 누락)는 인용 0으로 집계 — 그게 사실이다 (#56)
+        # 형식 미준수(꼬리 누락)는 인용 0으로 집계 — 그게 사실이다
         assert citation_accuracy('인용 없는 답변', ['환불정책.pdf'], _chunks('환불정책.pdf')) == 0.0
 
     def test_본문_숫자는_스캔하지_않는다(self):
@@ -111,7 +111,7 @@ def fake_embed(monkeypatch):
 
     가짜 코사인은 "포인트 텍스트가 답변 조각에 들어 있으면 1"이라, 1단을 살려두면
     같은 조건에서 1단이 먼저 잡아 2단이 영영 실행되지 않는다. 의미 유사도를
-    흉내내지는 않는다 — 그건 실측(생성물 900행 눈검증)이 맡는 몫이고, 여기서는
+    흉내내지는 않는다 — 그건 생성물 눈검증이 맡는 몫이고, 여기서는
     **판정 구조**(어떤 조각과 대조하는가)만 본다.
     """
     from rag.search.embeddings import Embedding
@@ -135,9 +135,9 @@ class TestSplitSegments:
     def test_숫자_사이_쉼표는_절_경계가_아니다(self):
         assert '3,000원을 지급합니다' in ' '.join(gen._split_segments('보상으로 3,000원을 지급합니다.'))
 
-    # --- 목록 블록 결합 (#196) — 한 사실이 "머리말 + 불릿"으로 쪼개진 경우 -------------
+    # --- 목록 블록 결합 — 한 사실이 "머리말 + 불릿"으로 쪼개진 경우 -------------
     # 생성 프롬프트 규칙 8이 목록 서식을 지시하므로 이 형태는 정상 출력이다. 결합 후보가
-    # 없으면 주어가 든 줄과 값이 든 줄이 따로 놀아 어느 쪽도 포인트와 안 닮는다(#196 실측).
+    # 없으면 주어가 든 줄과 값이 든 줄이 따로 놀아 어느 쪽도 포인트와 안 닮는다.
 
     def test_머리말과_불릿을_묶은_후보가_생긴다(self):
         segs = gen._split_segments(
@@ -152,7 +152,7 @@ class TestSplitSegments:
         assert any('HR팀장 합의 - 재무팀장 합의 - 경영전략부문장 결재' in x for x in segs), segs
 
     def test_런_전체를_묶는다_고정윈도우가_아니다(self):
-        # 결재선 4줄을 2줄씩 묶으면 체인 절반만 모여 여전히 미달이었다(#196 실측 0.734)
+        # 고정 2줄 윈도우로 묶으면 결재선 4줄 체인이 절반만 모여 미달한다
         segs = gen._split_segments('- 작성자\n- HR팀장\n- 재무팀장\n- 경영전략부문장')
         assert any(all(k in x for k in ('작성자', 'HR팀장', '재무팀장', '경영전략부문장')) for x in segs), segs
 
@@ -167,7 +167,7 @@ class TestSplitSegments:
 
     def test_마침표_번호목록도_묶는다(self):
         # _SENT_SPLIT이 숫자 뒤 마침표를 문장 경계로 잘라 '1. 신청'이 ['1','신청']이 된다 —
-        # 문장 분리 결과로 탐지하면 이 형태가 영영 안 걸린다(리뷰 지적). 원문 줄로 봐야 한다.
+        # 문장 분리 결과로 탐지하면 이 형태가 영영 안 걸린다. 원문 줄로 봐야 한다.
         segs = gen._split_segments('절차는 다음과 같습니다\n1. 신청\n2. 승인')
         assert any('1. 신청 2. 승인' in x for x in segs), segs
 
@@ -239,7 +239,7 @@ class TestExpectedPointsCoverage:
 
 
 class TestMustNotContainViolations:
-    """오정보 채점 (#95) — 금지값이 답변에 섞였는지. 매칭 정의점은 contains_point 재사용."""
+    """오정보 채점 — 금지값이 답변에 섞였는지. 매칭 정의점은 contains_point 재사용."""
 
     def test_필드_없으면_None(self):
         # None = 해당 없음 — 위반율 분모에서 제외된다 (빈 리스트=위반 없음과 다른 값)
@@ -279,10 +279,9 @@ class TestMustNotContainViolations:
 
 
 class TestGoldLoading:
-    """#196 2단계 — 실문서 골드가 생성·RAGAS 축에 실제로 도달하는가.
+    """실문서 골드가 생성·RAGAS 축에 실제로 도달하는가.
 
-    이 셋이 전부 맞아야 실문서가 측정에 들어온다. 하나라도 어긋나면 조용히 0건이 된다 —
-    #114의 9B A/B 540건이 실문서 0건이었던 것이 정확히 그 사고였다.
+    이 셋이 전부 맞아야 실문서가 측정에 들어온다. 하나라도 어긋나면 조용히 0건이 된다.
     """
 
     def test_load_gold가_실문서를_합친다(self):
@@ -336,7 +335,7 @@ class TestGoldLoading:
         assert len(ds) == 1, '실문서 행이 gold 조회 실패로 스킵됐다'
 
     def test_생성축_main이_정본만_읽지_않는다(self):
-        # main()이 GOLD를 직접 읽으면 gold_private가 통째로 빠진다 (#196의 원인)
+        # main()이 GOLD를 직접 읽으면 gold_private가 통째로 빠진다
         import inspect
 
         import eval.generation as g
@@ -346,10 +345,9 @@ class TestGoldLoading:
 
 
 class TestRefusalConsistencyGold:
-    """#199 — 거절·consistency 축도 실문서 골드를 읽는가.
+    """거절·consistency 축도 실문서 골드를 읽는가.
 
-    거절 정확도는 모델 교체 판단의 실제 축이고(#114에서 9B가 이기는 몇 안 되는 축),
-    그 값이 모의 코퍼스에서만 나오면 전환 판정이 틀린다.
+    거절 정확도는 모델 교체 판단의 실제 축이라 그 값이 모의 코퍼스에서만 나오면 전환 판정이 틀린다.
     """
 
     def test_거절축이_정본만_읽지_않는다(self):
@@ -377,7 +375,7 @@ class TestRefusalConsistencyGold:
 
 
 class TestVersionKeyTuple:
-    """#199 — version_key가 둘 이상일 때 **하나라도** 바뀌면 비교 불가여야 한다.
+    """version_key가 둘 이상일 때 **하나라도** 바뀌면 비교 불가여야 한다.
 
     거절 부재단정률은 judge 버전과 골드 구성이 **동시에** 기준이다. 하나만 걸면
     다른 쪽 변경이 회귀 경고로 샌다.

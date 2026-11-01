@@ -1,11 +1,11 @@
-"""#233 조문 인용 ≠ 조 제목 — 업로드 → 워커 색인 → OpenSearch까지 실제 경로(E2E 목록에서 옮긴 것).
+"""조문 인용 ≠ 조 제목 — 업로드 → 워커 색인 → OpenSearch까지 실제 경로.
 
 청킹 단위 판정은 tests/test_citation_headings.py가 본다. 여기는 그 결과가 **색인 필드**(본문·`identifiers`)까지 그대로
 가는지와 업로드 계약을 본다:
   1. 스타일 없는 워드(조문 폴백): 인용 문장이 본문으로 색인되고, 문서에 없는 조('12조')의 이름표가 없고, 본문 없는 조('7조')와
-     '의' 생략 가지 조('5조의1', #250)의 이름표는 있다
+     '의' 생략 가지 조('5조의1')의 이름표는 있다
   2. PDF(docling): '(이하 …)' 인용 줄이 가짜 이름표('15조')가 되지 않고, 문서 끝 '제 7 조(삭제)'가 색인된다
-  3. 헤딩만 있는 문서는 ready가 아니라 failed — 결정 3(섹션 0개 → "추출된 텍스트 없음")
+  3. 헤딩만 있는 문서는 ready가 아니라 failed(섹션 0개 → "추출된 텍스트 없음")
 
 문서는 sample_docs/corpus_v2의 합성 문서(정본 생성기 _src/build_citation_docs.py) — 내용은 전부 지어낸 것이다.
 """
@@ -42,7 +42,7 @@ async def test_스타일_없는_워드_인용은_본문_없는_조는_이름표(
     assert '제6조 제2항의 휴관일은 매월 첫째 월요일로 한다.' in text
     assert await os_search.search_identifiers(tenant_id, ['12조'], 10) == []  # 예전: "(이하 …)에 따른" 줄이 이름표
     assert await os_search.search_identifiers(tenant_id, ['7조'], 10)  # 본문 없는 '제7조(삭제)'
-    assert await os_search.search_identifiers(tenant_id, ['5조의1'], 10)  # '제 5 조1(분실 신고)' (#250)
+    assert await os_search.search_identifiers(tenant_id, ['5조의1'], 10)  # '제 5 조1(분실 신고)'
 
 
 @pytest.mark.asyncio

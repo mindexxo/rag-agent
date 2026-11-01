@@ -1,9 +1,4 @@
-"""문서 속성 — 등록일시·등록자(#164), 업로드 시 폴더 지정(#165), 일괄 변경(#166).
-
-"누가 언제 올렸고 어느 폴더에 있고 검색에 쓰이는가"를 다룬다. 폴더 소속과 참조 on/off는
-단건 PATCH와 일괄 PATCH가 같은 규칙을 써야 하므로 한 파일에 둔다.
-공용 헬퍼는 tests/helpers_documents.py.
-"""
+"""문서 속성(등록일시·등록자·폴더·참조 on/off) — 단건 PATCH와 일괄 PATCH가 같은 규칙을 써야 해서 한 파일에 둔다."""
 
 import json
 from datetime import timedelta
@@ -20,12 +15,12 @@ from rag.turn import cache
 from tests.conftest import ingest
 from tests.helpers_documents import MD, doc_data, get_doc, make_folder, upload
 
-# ── #164 등록일시·등록자 ──────────────────────────────────────
+# ── 등록일시·등록자 ──────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_목록은_등록일시_내림차순이고_등록자를_싣는다(client, tenant_id, fake_queue, blob_tmp):
-    """목록 API의 기본 정렬 키는 uploaded_at이다 (#164).
+    """목록 API의 기본 정렬 키는 uploaded_at이다.
 
     정렬 키가 정말 uploaded_at인지 보려면 id 순서와 어긋나게 만들어야 한다 —
     그냥 두면 id.desc()와 결과가 같아 무엇으로 정렬했는지 구분되지 않는다.
@@ -51,7 +46,7 @@ async def test_목록은_등록일시_내림차순이고_등록자를_싣는다(
 
 @pytest.mark.asyncio
 async def test_등록자는_X_User_Id로_기록되고_미전송이면_null(client, tenant_id, fake_queue, blob_tmp):
-    """#164: 헤더가 없으면 NULL로 남긴다 — conversation의 'test-user' 폴백을 쓰지 않는다.
+    """헤더가 없으면 NULL로 남긴다 — conversation의 'test-user' 폴백을 쓰지 않는다.
     그 가짜 값이 문서 관리 화면의 등록자 칸에 그대로 뜨기 때문."""
     with_user = await upload(client, '가정책.md', MD, headers={'X-User-Id': 'agent-a'})
     without = await upload(client, '나정책.md', MD)
@@ -64,7 +59,7 @@ async def test_등록자는_X_User_Id로_기록되고_미전송이면_null(clien
 
 @pytest.mark.asyncio
 async def test_재업로드_등록자는_계승하지_않는다(client, tenant_id, fake_queue, blob_tmp):
-    """#164: 문서에 건 설정(is_searchable)은 개정판에 계승되지만, 등록자는 그 버전을 올린
+    """문서에 건 설정(is_searchable)은 개정판에 계승되지만, 등록자는 그 버전을 올린
     사람으로 갱신된다 — 계승하면 최신 개정을 누가 했는지 화면에서 알 수 없다."""
     v1 = await upload(client, '환불정책.md', MD, headers={'X-User-Id': 'agent-a'})
     await ingest(v1['document_id'])
@@ -82,7 +77,7 @@ async def test_재업로드_등록자는_계승하지_않는다(client, tenant_i
     assert v3['uploaded_by'] is None
 
 
-# ── #165 업로드 시 폴더 지정 (document-data 파트) ─────────────
+# ── 업로드 시 폴더 지정 (document-data 파트) ─────────────
 
 
 @pytest.mark.asyncio
@@ -197,7 +192,7 @@ async def test_신규_문서에_폴더를_안_주면_미분류(client, tenant_id
     assert a['folder_id'] is None and b['folder_id'] is None
 
 
-# ── #166 문서 일괄 변경 (PATCH /kms/documents) ────────────────
+# ── 문서 일괄 변경 (PATCH /kms/documents) ────────────────
 
 
 async def _bulk(client, **body):
@@ -320,7 +315,7 @@ async def test_일괄_바꿀_것이_없으면_무동작(client, tenant_id, fake_
 
 @pytest.mark.asyncio
 async def test_삭제된_문서는_단건_PATCH도_404(client, tenant_id, fake_queue, blob_tmp):
-    """#166: 목록에 뜨지도 않는 죽은 행의 컬럼이 조용히 바뀌던 것을 막는다."""
+    """목록에 뜨지도 않는 죽은 행의 컬럼이 조용히 바뀌지 않게 한다."""
     doc = await upload(client, '환불정책.md', MD)
     assert (await client.delete(f"/kms/documents/{doc['document_id']}")).status_code == 204
     res = await client.patch(f"/kms/documents/{doc['document_id']}", json={'is_searchable': False})

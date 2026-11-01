@@ -1,4 +1,4 @@
-"""EPCov 2단계 판정 (#221) — 결정적 부분만 고정한다. 실판정자 품질은 `python -m eval.epcov_judge`(selftest)로 본다.
+"""EPCov 2단계 판정 — 결정적 부분만 고정한다. 실판정자 품질은 `python -m eval.epcov_judge`(selftest)로 본다.
 
 가짜 판정자로 LLM·Claude를 부르지 않는다. 임베딩(TEI)도 타지 않게 입력을 고른다 — 규칙 단계에서
 부분문자열로 끝나거나(적중), 금액 게이트에서 막히거나, rule_hits를 직접 넘긴다.
@@ -57,7 +57,7 @@ class TestConfirmPoints:
 
 class TestEpcovScores:
     def test_금액이_빠진_미적중은_심판에_넘기지_않는다(self):
-        # vLLM 판정자가 '9,600원 기대 / 9,000원 답'을 담김으로 본 오판(#221 실측) — 게이트가 판정 전에 막는다
+        # 판정자가 '9,600원 기대 / 9,000원 답'을 담김으로 오판할 수 있다 — 게이트가 판정 전에 막는다
         judge = _FakeJudge({"적립금은 9,600원": "covered"})
         s = _run(
             G.epcov_scores(
@@ -68,8 +68,8 @@ class TestEpcovScores:
         assert s["expected_points_coverage"] == 0.0 and s["expected_points_audit"] == []
 
     def test_최종과_규칙_커버리지를_둘_다_남긴다(self):
-        # 이중 기록 — 규칙만의 값으로 #221 이전 수치와 비교할 수 있어야 한다. 두 포인트 모두 정상 판정돼야 한다
-        # (리뷰: 두 번째 라벨이 없어 판정 '실패'로도 같은 0.5가 나와 우연히 통과하던 것을 고침)
+        # 이중 기록 — 규칙만의 값으로 옛 수치와 비교할 수 있어야 한다. 두 포인트 모두 정상 판정돼야
+        # 판정 '실패'로 같은 0.5가 나와 우연히 통과하는 일이 없다
         judge = _FakeJudge({"데님 이염은 보상 대상이 아닙니다": "covered", "개별 심사 가능": "not_covered"})
         s = _run(
             G.epcov_scores(
@@ -86,7 +86,7 @@ class TestEpcovScores:
         assert s["expected_points_judge_errors"] == 0
 
     def test_판정_실패_수를_행에_남긴다(self):
-        # 한도·로그인 만료로 전부 실패하면 '심판 반영'처럼 보이는 규칙 결과가 된다 — 실패는 보여야 한다(리뷰)
+        # 한도·로그인 만료로 전부 실패하면 '심판 반영'처럼 보이는 규칙 결과가 된다 — 실패는 보여야 한다
         judge = _FakeJudge({}, fail={"p1", "p2"})
         s = _run(G.epcov_scores(judge, asyncio.Semaphore(2), "답", ["p1", "p2"], [False, False]))
         assert s["expected_points_judge_errors"] == 2
@@ -105,11 +105,11 @@ class TestEpcovScores:
 
 class TestRuleStage:
     def test_마크다운_굵게_표시가_부분문자열_일치를_깨지_않는다(self):
-        # '총 … = **240,000원**입니다'를 기대 '240,000원입니다'가 놓쳤다(#221 실측, 사람 판정 '담김')
+        # 굵게 표시를 지우지 않으면 '**240,000원**입니다'가 기대 '240,000원입니다'에 안 맞는다
         assert G.expected_points_hits("합계는 **240,000원**입니다.", ["240,000원입니다"]) == [True]
 
     def test_골드_포인트_쪽의_굵게_표시도_지운다(self):
-        # 골드 5행은 포인트에 '**SK-250 베이비**'가 있다 — 답변만 지우면 부분문자열 단계에서 영영 안 맞았다(리뷰·확인)
+        # 골드 5행은 포인트에 '**SK-250 베이비**'가 있다 — 답변만 지우면 부분문자열 단계에서 영영 안 맞는다
         assert G.expected_points_hits(
             "제일 가벼운 제품은 SK-250 베이비입니다", ["제일 가벼운 제품은 **SK-250 베이비**입니다"]
         ) == [True]
@@ -136,7 +136,7 @@ class TestJudgeSwitch:
         assert E.judge_spec()[0] == "vllm"
 
     def test_claude_CLI가_없으면_바로_실패하고_vllm을_안내한다(self, monkeypatch):
-        # 조용히 규칙만으로 진행하지 않는다 — 다른 눈금이 '심판 반영'으로 착각되는 것을 막는다(리뷰 결정 a)
+        # 조용히 규칙만으로 진행하지 않는다 — 다른 눈금이 '심판 반영'으로 착각되는 것을 막는다
         import shutil
 
         monkeypatch.delenv("EPCOV_JUDGE", raising=False)
@@ -167,7 +167,7 @@ class TestFixturesAndPrompt:
 
 def test_생성_일관성_축은_EPCov_심판을_끈다(monkeypatch, tmp_path):
     # 규칙 판정의 런간 일치를 재는 축 — 심판을 R회 부르면 비용이 R배이고 눈금도 달라진다.
-    # 소스 문자열이 아니라 실제 run_mode 호출 인자를 본다(리뷰: 주석만 있어도 통과하던 테스트)
+    # 소스 문자열이 아니라 실제 run_mode 호출 인자를 본다 — 주석만 있어도 통과하지 않게
     from contextlib import asynccontextmanager
 
     from eval import consistency as C
@@ -197,7 +197,7 @@ def test_생성_일관성_축은_EPCov_심판을_끈다(monkeypatch, tmp_path):
 
 
 def test_재채점은_심판_반영분을_지우지_않는다(monkeypatch, tmp_path):
-    # rescore_v2: 규칙만으로 다시 계산해 덮으면 심판 반영분이 사라진다 — 최종 = 새 규칙 적중 ∪ 감사의 covered (리뷰)
+    # rescore_v2: 규칙만으로 다시 계산해 덮으면 심판 반영분이 사라진다 — 최종 = 새 규칙 적중 ∪ 감사의 covered
     from eval import rescore_v2 as R
 
     row = {
@@ -225,7 +225,7 @@ def test_재채점은_심판_반영분을_지우지_않는다(monkeypatch, tmp_p
 
 
 def test_요약은_판정자와_판정_실패를_크게_찍는다(capsys):
-    # 전부 실패하면 EPCov = EPCov규칙인데 '심판 반영'처럼 보인다 — 요약에서 바로 보여야 한다(리뷰)
+    # 전부 실패하면 EPCov = EPCov규칙인데 '심판 반영'처럼 보인다 — 요약에서 바로 보여야 한다
     rows = [
         {
             "type": "single_fact",

@@ -1,5 +1,5 @@
-"""#234 측정 도구(eval/contextual_header) — 조건별 텍스트 조립과 운영 검색 바꿔 끼우기가 맞는지. 측정 결과가 이 조립에 달려 있어
-(조립이 틀린 채 측정한 사고 #128), 수치보다 먼저 고정한다. DB·OpenSearch·LLM 불필요."""
+"""머리말 측정 도구(eval/contextual_header) — 조건별 텍스트 조립과 운영 검색 바꿔 끼우기가 맞는지.
+측정 결과가 이 조립에 달려 있어 수치보다 먼저 고정한다. DB·OpenSearch·LLM 불필요."""
 
 from types import SimpleNamespace
 
@@ -74,7 +74,7 @@ def test_조건_안에서만_임시_인덱스와_변형_리랭커_입력():
 
 
 def test_변형_텍스트가_없는_측정_조각은_조용히_운영_머리말로_돌아가지_않는다():
-    # 스냅숏과 어긋나면 cr·rule의 리랭커 입력이 몰래 header가 된다(#234 리뷰 지적 1) — 터뜨린다
+    # 스냅숏과 어긋나면 cr·rule의 리랭커 입력이 몰래 header가 된다 — 터뜨린다
     import pytest
 
     import rag.search.reranker as rr

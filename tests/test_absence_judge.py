@@ -1,4 +1,4 @@
-"""부재단정 판정기의 **결정적인 부분만** 단위로 고정 (#76).
+"""부재단정 판정기의 **결정적인 부분만** 단위로 고정.
 
 judge 자체의 정확도는 비결정적이라 여기서 안 본다 — `python -m eval.absence_judge`의
 FIXTURES 대조(RUNS=3)가 그 몫이다. 여기서 지키는 것은 세 계약이다:
@@ -15,7 +15,7 @@ from rag.turn.prompt_texts import NO_EVIDENCE_ANSWER
 
 class TestPromptAssembly:
     def test_정상형_문구가_상수에서_온다(self):
-        """손으로 베끼면 문구가 갈린다 — #62에서 실제로 겪은 실패다."""
+        """손으로 베끼면 문구가 갈린다."""
         system = _build_messages('q', 'a')[0]['content']
         assert NO_EVIDENCE_ANSWER in system
 
@@ -86,8 +86,7 @@ class TestTwoStageGate:
         monkeypatch.setattr(R, '_refused', _fake_refused)
         monkeypatch.setattr(R, 'row_tenant', lambda g: 't')
         monkeypatch.setattr(R, 'save_audit', lambda rows, stamp=None: 'audit.jsonl')
-        # compute()는 load_gold()로 읽는다(#199 — 정본 직독이면 실문서가 빠져서 바꿨다).
-        # GOLD 상수를 패치하면 더 이상 안 먹는다 — 실제로 쓰는 진입점을 패치한다.
+        # compute()는 load_gold()로 읽는다(정본 직독이면 실문서가 빠진다) — GOLD 상수 패치는 안 먹는다.
         monkeypatch.setattr(
             R,
             'load_gold',
@@ -105,7 +104,7 @@ class TestTwoStageGate:
     async def test_OTHER_라우팅은_판정하지_않는다(self, monkeypatch):
         """OTHER는 규칙 3을 안 타고 sources가 항상 빈 목록이라 무조건 근거없음으로 집계된다.
         판정 대상에 넣으면 분모가 라우팅 확률에 좌우되고, 다른 프롬프트의 화법을
-        규칙 3 기준으로 재는 오염이 된다(#76 리뷰에서 실측으로 잡힌 문제)."""
+        규칙 3 기준으로 재는 오염이 된다."""
         import eval.refusal as R
 
         calls = []
@@ -123,7 +122,7 @@ class TestTwoStageGate:
             return True, 'body', ('other' if query == 'other' else 'knowledge')
 
         monkeypatch.setattr(R, '_refused', _fake_refused)
-        # GOLD 상수가 아니라 load_gold()를 패치한다 — compute()가 그걸 쓴다 (#199)
+        # GOLD 상수가 아니라 load_gold()를 패치한다 — compute()가 그걸 쓴다
         monkeypatch.setattr(
             R,
             'load_gold',

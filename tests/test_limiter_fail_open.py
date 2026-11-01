@@ -1,7 +1,7 @@
-"""리미터의 Redis 장애 방침 — fail-open (2026-08-23 결정).
+"""리미터의 Redis 장애 방침 — fail-open.
 
-이전엔 예외가 그대로 전파돼 `/kms/query`가 500을 뱉었다. 상담 중단을 더 큰 손실로 보고
-"상한 없이 통과"로 뒤집었다. 근거와 대가는 rag/limiter.py의 모듈 docstring에 있다.
+예외를 전파하면 `/kms/query`가 500을 뱉는다. 상담 중단을 더 큰 손실로 보고 "상한 없이 통과"한다.
+근거와 대가는 rag/limiter.py의 모듈 docstring에 있다.
 
 여기서 지키려는 것은 두 가지다.
   ① Redis가 죽어도 질문이 받아들여진다 (본 결정)
@@ -99,11 +99,11 @@ async def test_정상_Redis에서는_상한이_그대로_동작한다(tenant_id)
 
 @pytest.mark.asyncio
 async def test_Redis가_죽어도_질문은_받아진다(client, tenant_id, fake_llm, pass_gate, monkeypatch):
-    """이 결정의 실제 목적 — 상담이 멈추지 않는 것. 단위 테스트가 아니라 요청 전체로 고정한다.
+    """fail-open의 실제 목적 — 상담이 멈추지 않는 것. 단위 테스트가 아니라 요청 전체로 고정한다.
 
-    예전엔 concurrency_guard가 ConnectionError를 그대로 전파해 **500 Internal Server Error**가
-    나갔다(실기동 재현). 같은 원인에 /events·/cancel은 503을 주고 있어 표면도 갈렸다.
-    미러링(#75)이 함께 실패하지만 그건 삼켜지므로 답변은 끝까지 나와야 한다.
+    concurrency_guard가 ConnectionError를 전파하면 **500 Internal Server Error**가 나가고,
+    같은 원인에 /events·/cancel은 503을 줘 표면도 갈린다.
+    미러링이 함께 실패하지만 그건 삼켜지므로 답변은 끝까지 나와야 한다.
     """
     from rag import clients
     from tests.conftest import register_faq, sse_done

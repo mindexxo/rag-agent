@@ -1,11 +1,4 @@
-"""docling PDF 경로 (#143) — 매핑 규칙은 docling 없이, 실변환은 설치 시에만.
-
-두 층으로 나눈다:
-  - `sections_from_docling_elements` 단위 테스트: 튜플만 먹인다. 헤딩 층 복원·표·그림·NBSP.
-    모델 다운로드가 없어 항상 돈다.
-  - 실변환 테스트: `pytest.importorskip("docling")` — 패키지 1.4GB + 첫 실행 모델 다운로드가
-    필요해 CI에선 건너뛰고 로컬·워커에서 돈다.
-"""
+"""docling PDF 경로 — 요소→섹션 매핑은 튜플만 먹여 항상 돌리고, 실변환은 docling이 설치된 환경에서만 돈다."""
 
 from pathlib import Path
 
@@ -78,7 +71,7 @@ class TestHeadingLevels:
         )
         assert len(_common_prefix([s.heading_path for s in secs])) == 2
 
-    # ── 조 제목 보정(#240·#241) — 레이아웃 모델이 같은 꼴의 조 제목을 들쭉날쭉 text로 낸다(회계 규정 35/97) ──
+    # ── 조 제목 보정 — 레이아웃 모델이 같은 꼴의 조 제목을 들쭉날쭉 text로 낸다 ──
 
     def test_text로_나온_조_제목은_제목으로_올린다(self):
         secs = sections_from_docling_elements(
@@ -104,7 +97,7 @@ class TestHeadingLevels:
         assert secs[0].heading_path == ['규정', '제 1 장 총칙', '제 1 조(목적)']
 
     def test_제목과_첫_문장이_한_요소면_떼어서_제목과_본문으로(self):
-        # '제1조 (목적) 이 규정은 …' — 조 제목 뒤 간격이 좁으면 docling이 한 덩어리로 낸다(실측 간격 합성 규정 30/30, 회계 규정 3건)
+        # '제1조 (목적) 이 규정은 …' — 조 제목 뒤 간격이 좁으면 docling이 한 덩어리로 낸다
         secs = sections_from_docling_elements(
             [
                 _h('규정'),
@@ -118,7 +111,7 @@ class TestHeadingLevels:
         assert secs[-1].body == '회사의 자금은 재무팀장이 총괄한다.\n둘째 줄'
 
     def test_알려진_한계_괄호_뒤_공백_인용으로_시작하는_문단은_제목이_된다(self):
-        # DOCX 폴백(#205)과 같은 규칙·같은 위험(#233 결정 2) — 글은 남는다. 이 동작이 바뀌면 이 단언을 고친다
+        # DOCX 폴백과 같은 규칙·같은 위험 — 글은 남는다. 이 동작이 바뀌면 이 단언을 고친다
         secs = sections_from_docling_elements(
             [_h('규정'), _h('제1조 (목적)'), _t('본문'), _t('제3조(보상) 규정에 따라 지급한다')]
         )
@@ -142,7 +135,7 @@ class TestHeadingLevels:
         assert [(s.heading_path, s.body) for s in secs] == [([], '제1조 (목적)'), (['규정', '제2조 (적용)'], '본문')]
 
     def test_닫는_괄호가_다음_요소로_떨어진_조_제목은_잇는다(self):
-        # 징계규정 실문서 3건(#241) — 전에는 ')'가 따로 제목이 되어 제목 경로가 [... , ')']였다
+        # 잇지 않으면 ')'가 따로 제목이 되어 제목 경로가 [... , ')']가 된다
         secs = sections_from_docling_elements(
             [
                 _h('징계규정'),
@@ -161,7 +154,7 @@ class TestHeadingLevels:
         ]
 
     def test_괄호가_떨어진_조_제목이_text로_나와도_잇고_올린다(self):
-        # 제목 쪽이 text로 오면(①이 올릴 꼴) ②가 먼저 잇는다 — 안 그러면 ')'가 본문 첫 줄로 남는다(리뷰 지적)
+        # 제목 쪽이 text로 오면(①이 올릴 꼴) ②가 먼저 잇는다 — 안 그러면 ')'가 본문 첫 줄로 남는다
         secs = sections_from_docling_elements([_h('규정'), _t('제 7 조 ( 징계종류'), _t(')'), _t('본문')])
         assert [(s.heading_path, s.body) for s in secs] == [(['규정', '제 7 조 ( 징계종류 )'], '본문')]
 
@@ -188,8 +181,7 @@ class TestElementMapping:
         assert secs[0].body.split('\n') == [PICTURE_PLACEHOLDER, '설명']
 
     def test_헤더_푸터는_요소로_오지_않는다는_전제(self):
-        # docling은 page_header/page_footer를 iterate_items()에 넣지 않는다(실측). 만약 들어오면
-        # 본문으로 취급되므로 여기서 그 라벨이 본문에 섞이지 않게 막을지는 #143 후속 판단 — 현재 전제만 고정.
+        # docling은 page_header/page_footer를 iterate_items()에 넣지 않는다 — 그 전제만 고정한다.
         secs = sections_from_docling_elements([_h('제목'), _t('본문')])
         assert secs[0].body == '본문'
 
@@ -227,7 +219,7 @@ class TestElementMapping:
 
 
 class TestPictureCaption:
-    """그림 캡션(#162) — 캡션이 자리표시를 대체한다. 튜플만 먹이므로 VLM·모델 없이 돈다."""
+    """그림 캡션이 자리표시를 대체한다. 튜플만 먹이므로 VLM·모델 없이 돈다."""
 
     def test_캡션이_있으면_자리표시_대신_캡션이_본문에_들어간다(self):
         cap = '4단계 흐름도: 신청 접수 → 자격 심사 → 매칭 승인 → 집행·보고'
@@ -257,8 +249,7 @@ class TestPictureCaption:
         assert secs[0].body.split('\n') == ['그림1 설명', '본문1', PICTURE_PLACEHOLDER, '본문2']
 
     def test_캡션은_annotations에서_꺼낸다(self):
-        # 캡션은 element.text가 아니라 annotations에 붙는다. text만 보면 조용히 버려진다 —
-        # 실제로 그 상태였고(#162 실측) 캡션이 청크에 안 실렸다.
+        # 캡션은 element.text가 아니라 annotations에 붙는다. text만 보면 조용히 버려진다.
         from types import SimpleNamespace as NS
 
         def pic(annotations):
@@ -361,9 +352,7 @@ class TestRealConversion:
         assert docling_converter() is docling_converter()
 
     def test_메모리_설정이_파이프라인에_실제로_전달된다(self):
-        # 조용히 무시되는 설정을 잡기 위한 테스트다. docling_page_batch_size가 정확히 그랬다 —
-        # 값은 들어가는데 2.126의 기본 파이프라인이 그 필드를 읽지 않아 아무 효과가 없었고,
-        # 그 사실이 개발계 OOM으로 드러나기 전까지 아무도 몰랐다(#151).
+        # 조용히 무시되는 설정(값은 들어가는데 파이프라인이 그 필드를 안 읽는 경우)을 잡는다.
         # PdfPipelineOptions는 pydantic 모델이라 필드명이 바뀌면 대입 자체가 실패한다 —
         # docling 업그레이드 때 이 테스트가 먼저 깨진다.
         from docling.datamodel.base_models import InputFormat
@@ -378,9 +367,8 @@ class TestRealConversion:
         assert opts.do_ocr is settings.docling_do_ocr
 
     def test_캡션_설정이_파이프라인에_실제로_전달된다(self):
-        # 위와 같은 이유(#151). 특히 scale은 조용히 틀리면 VLM이 글자를 못 읽고 **원문에 없는
-        # 내용을 지어낸다**(#162 실측: scale 1.0에서 3회 모두 환각). 값이 안 걸리면 기본 2.0으로
-        # 도는데 에러가 없어 아무도 모른다 — 그래서 값까지 단언한다.
+        # 위와 같은 이유. 특히 scale이 틀리면 VLM이 글자를 못 읽고 원문에 없는 내용을 지어내는데
+        # 에러가 없어 드러나지 않는다 — 그래서 값까지 단언한다.
         from docling.datamodel.base_models import InputFormat
 
         from rag.chunking.document_converter import PICTURE_CAPTION_PROMPT, caption_headers, docling_converter
@@ -392,18 +380,18 @@ class TestRealConversion:
         api = opts.picture_description_options
         assert api.scale == settings.vlm_caption_scale
         assert api.timeout == settings.vlm_caption_timeout_seconds
-        assert api.headers == caption_headers() == {}  # 키 비면 전과 같은 요청(#290) — 기본 .env는 사내
-        # temperature 0 = 결정적 캡션(#209): 3회 재변환 25/25 동일 실측. 빠지면 샘플링으로 돌아가 재인제스트마다 캡션이 달라진다
+        assert api.headers == caption_headers() == {}  # 키가 비면 인증 헤더 없음 — 기본 .env는 사내
+        # temperature 0 = 결정적 캡션. 빠지면 샘플링으로 돌아가 재인제스트마다 캡션이 달라진다
         assert api.params == {
             'model': settings.vlm_caption_model,
             'temperature': settings.vlm_caption_temperature,
             'max_completion_tokens': settings.vlm_caption_max_tokens,
-        }  # 새 표기(#290 결정 3) — gpt-5가 max_tokens 거부
-        # 출력 상한(#247 결정 16) — 빠지면 7B 반복 고리 폭주(실측 6천 자대)가 색인되고 45초 상한을 넘겨 문서 재시도로 번진다
+        }  # max_completion_tokens — gpt-5가 max_tokens를 거부한다
+        # 출력 상한 — 빠지면 반복 고리 폭주가 색인되고 45초 상한을 넘겨 문서 재시도로 번진다
         assert 655 * 2 <= api.params['max_completion_tokens'] <= 4000
-        # 면적 하한(#247 결정 17) — 0.05면 내용 있는 작은 캡처(1.2~4.6%)가 캡션 없이 빠졌다. 아이콘(0.39%)은 계속 제외
+        # 면적 하한 1% — 내용 있는 작은 캡처는 캡션하고 아이콘은 제외한다
         assert api.picture_area_threshold == settings.vlm_caption_area_threshold == 0.01
-        # XLSX만 하한 0(#249 결정 1) — 엑셀은 시트 칸 단위라 면적 비율이 그림 크기를 반영하지 못한다. DOCX는 1% 그대로
+        # XLSX만 하한 0 — 엑셀은 시트 칸 단위라 면적 비율이 그림 크기를 반영하지 못한다. DOCX는 1% 그대로
         office = {
             fmt: converter.format_to_options[fmt].pipeline_options.picture_description_options
             for fmt in (InputFormat.DOCX, InputFormat.XLSX)
@@ -422,14 +410,13 @@ class TestRealConversion:
         ]
         assert len(guarded) >= 3
         assert api.params['temperature'] == 0.0 and api.timeout == 45.0  # .env.dev가 config를 덮으므로 값 자체도 단언
-        # 동시 1(#223 결정 7) — 동시로 보내면 vLLM 배치 탓에 온도 0이어도 캡션이 실행마다 갈린다(실문서 실측). 올리기 전에 config 주석부터
+        # 동시 1 — 동시로 보내면 vLLM 배치 탓에 온도 0이어도 캡션이 실행마다 갈린다. 올리기 전에 config 주석부터
         assert api.concurrency == settings.vlm_caption_concurrency == 1
         assert api.prompt == PICTURE_CAPTION_PROMPT
         assert str(api.url) == settings.vlm_caption_url  # AnyUrl — str 캐스팅 후 비교
 
     def test_VLM이_실패하면_문서가_일시_실패한다(self, tmp_path, fake_vlm):
-        """#223 결정 3 — #162 이래 VLM 실패는 자리표시로 ready가 됐다(docling이 오류를 삼켜 빈 캡션을 준다).
-        그림 내용이 빠진 문서가 "완료"로 보이는 조용한 불완전 색인이라, 이제 CaptionFailedError(일시)로 올린다.
+        """docling은 VLM 오류를 삼켜 빈 캡션을 준다 — 그림 내용이 빠진 채 "완료"가 되지 않게 CaptionFailedError(일시)로 올린다.
         docling 업그레이드로 실패를 삼키는 방식이 바뀌면(예: 예외로 바뀜) 이 테스트가 먼저 알려준다."""
         from rag.chunking import CaptionFailedError
 
@@ -446,7 +433,7 @@ class TestRealConversion:
 
 
 def _picture_pdf(tmp_path, pictures: int = 1):
-    """그림이 든 PDF — 1×1 PNG를 300×200pt로(쪽 면적의 약 12%, 캡션 하한 5% 위). 내용은 무관하다."""
+    """그림이 든 PDF — 1×1 PNG를 300×200pt로(쪽 면적의 약 12%, 캡션 면적 하한 위). 내용은 무관하다."""
     from reportlab.lib.pagesizes import A4
     from reportlab.platypus import Image as RLImage
     from reportlab.platypus import PageBreak, SimpleDocTemplate
@@ -466,7 +453,7 @@ def _picture_pdf(tmp_path, pictures: int = 1):
     return p
 
 
-# ── 원격 OCR (#168) ─────────────────────────────────────────────────────────────────
+# ── 원격 OCR ─────────────────────────────────────────────────────────────────
 # 표 이미지(TableItem)의 셀은 Triton에 올린 RapidOCR이 읽는다. 여기서 고정하는 것 셋:
 #   ① 옵션이 실제로 파이프라인에 들어가는가(특히 scale 3.0 — KServe 옵션 기본값 2.0과 다르다)
 #   ② 원격이 죽으면 문서가 **실패**하는가(조용한 빈 격자 색인 금지 — docling은 삼키므로 우리가 올린다)
@@ -559,8 +546,8 @@ class TestConversionGuard:
 
 class TestRemoteOcr:
     def test_OCR_설정이_파이프라인에_실제로_전달된다(self, monkeypatch):
-        # 캡션 테스트와 같은 이유(#151·#162) — 조용히 무시되는 설정을 잡는다. scale이 특히 그렇다:
-        # KserveV2OcrOptions 기본값은 2.0이라 빠뜨리면 에러 없이 인프로세스 실측(3.0)과 다른 결과가 나온다.
+        # 캡션 테스트와 같은 이유 — 조용히 무시되는 설정을 잡는다. scale이 특히 그렇다:
+        # KserveV2OcrOptions 기본값은 2.0이라 빠뜨리면 에러 없이 3.0과 다른 결과가 나온다.
         from docling.datamodel.base_models import InputFormat
         from docling.datamodel.pipeline_options import OcrMode
 
@@ -585,11 +572,10 @@ class TestRemoteOcr:
             _reset_converter(ch)
 
     def test_원격_OCR이_죽으면_문서가_실패한다(self, tmp_path, monkeypatch):
-        """VLM(#162)과 반대다 — 캡션은 없어도 진행하지만 OCR 실패는 문서를 failed로 확정한다.
+        """VLM과 반대다 — 캡션은 없어도 진행하지만 OCR 실패는 문서를 failed로 확정한다.
 
         docling은 KServe 실패를 삼키고 쪽을 그대로 내보내므로(errors에만 기록) 그대로 두면 표가
-        **빈 격자로 조용히 색인**된다. 그게 #168 이전 상태와 같아 보여도 '읽는다'는 약속이 깨진 것이라
-        실패로 올린다. 오래 죽어 있으면 docling_do_ocr로 끄는 게 운영 절차다(config.py).
+        **빈 격자로 조용히 색인**된다. '읽는다'는 약속이 깨진 것이라 실패로 올린다. 오래 죽어 있으면 docling_do_ocr로 끄는 게 운영 절차다(config.py).
         """
         import rag.chunking as ch
 
@@ -621,8 +607,7 @@ class TestRemoteOcr:
 
 
 class TestFootnoteMarkers:
-    """위첨자 각주 참조 'N)' (#204). 열거 '1) …'와 글자 모양이 같아 **글자 크기 비율**로만 가른다.
-    실측(타임레포트 매뉴얼): 각주 7.3~8.0 / 본문 11~12 → 비율 0.67~0.73. 정의 줄·열거는 1.0."""
+    """위첨자 각주 참조 'N)'. 열거 '1) …'와 글자 모양이 같아 **글자 크기 비율**로만 가른다(각주는 본문의 약 0.7배)."""
 
     def test_같은_줄_본문보다_작은_N괄호_토큰만_각주(self):
         words = [
@@ -674,7 +659,7 @@ class TestFootnoteMarkers:
         assert strip_footnote_markers(enum, {'3)'}) == enum  # 다른 번호면 무변경
 
     def test_더_큰_숫자의_일부는_각주가_아니다(self):
-        # 리뷰(#204): lookbehind의 \\w가 숫자를 포함해 "서식 12)"의 "2)"를 지우면 숫자가 변조된다
+        # lookbehind의 \\w가 숫자를 포함해 "서식 12)"의 "2)"를 지우면 숫자가 변조된다
         assert strip_footnote_markers('서식 12) 참조', {'2)'}) == '서식 12) 참조'
         assert strip_footnote_markers('총 1000 2) 명', {'2)'}) == '총 1000 명'  # 공백 뒤는 각주
 
@@ -704,7 +689,7 @@ class TestFootnoteMarkers:
 
 
 class TestFootnoteSidecarPdf:
-    """pdf_footnote_markers I/O 래퍼 — reportlab으로 그린 실제 PDF에서 위첨자만 잡히는지(#204). docling 불필요."""
+    """pdf_footnote_markers I/O 래퍼 — reportlab으로 그린 실제 PDF에서 위첨자만 잡히는지. docling 불필요."""
 
     def _pdf(self, tmp_path):
         from reportlab.pdfgen import canvas
@@ -740,9 +725,9 @@ class TestFootnoteSidecarPdf:
         assert any('각주 사이드카 실패' in r.message for r in caplog.records)
 
 
-# ── 변환 프로세스 (#223 결정 1·2) ─────────────────────────────────────────────────────
-# docling에는 취소 API가 없다 — 스레드로 돌면 마감을 넘겨도 멈출 수 없어 고아 스레드가 세마포어를 쥐고 남았다.
-# 그래서 변환을 자식 프로세스로 옮기고 마감에 kill한다. 여기서 고정하는 것:
+# ── 변환 프로세스 ─────────────────────────────────────────────────────
+# docling에는 취소 API가 없다 — 스레드로 돌면 마감을 넘겨도 멈출 수 없어 고아 스레드가 세마포어를 쥐고 남는다.
+# 그래서 변환을 자식 프로세스로 돌리고 마감에 kill한다. 여기서 고정하는 것:
 #   ① 마감을 넘기면 TimeoutError이고, 자식이 교체돼 다음 변환은 정상이다
 #   ② 자식이 죽어 있어도 다음 요청이 새로 띄운다
 #   ③ 자식을 거쳐 온 문서가 이 프로세스에서 변환한 것과 같다(직렬화 무손실)
@@ -754,7 +739,7 @@ class TestConvertProcess:
 
         p = _picture_pdf(tmp_path)
         deadline = settings.docling_document_timeout_seconds
-        fake_vlm.delay = 30  # 캡션 단계에서 멈춘다 — #223 전에는 어떤 마감도 이 단계를 못 끊었다
+        fake_vlm.delay = 30  # 캡션 단계에서 멈춘다 — 이 단계도 마감이 끊어야 한다
         monkeypatch.setattr(settings, 'docling_document_timeout_seconds', 3.0)
         with pytest.raises(TimeoutError, match='3초'):
             ch.docling_convert(p)
@@ -776,7 +761,6 @@ class TestConvertProcess:
 
     def test_자식을_거친_문서가_이_프로세스_변환과_같다(self, tmp_path, fake_vlm):
         # 자식은 DoclingDocument를 피클로 돌려준다. 손실이 있으면 청크가 조용히 달라진다 — 형식별로 대조한다
-        # (보유 코퍼스 전수 대조는 #223 PR의 실측 — 이 테스트는 그 회귀 고정).
         from io import BytesIO
 
         import openpyxl
@@ -811,7 +795,7 @@ class TestConvertProcess:
             ), path
 
     def test_abort하면_기다리던_변환이_바로_끝나고_다음_변환은_정상(self, tmp_path, fake_vlm):
-        # 색인 잡이 취소될 때(rag/ingestion.py) 부른다 — 기다리던 스레드가 마감(900초)까지 잠금을 쥐지 않게(#223 리뷰)
+        # 색인 잡이 취소될 때(rag/ingestion.py) 부른다 — 기다리던 스레드가 마감(900초)까지 잠금을 쥐지 않게
         import threading
         import time
 
@@ -833,7 +817,7 @@ class TestConvertProcess:
         assert ch.docling_convert(p).pictures
 
     def test_변환과_무관한_설정이_바뀌면_자식을_다시_띄우지_않는다(self, tmp_path, monkeypatch):
-        # #267 — 설정 전체를 비교하던 때는 테스트가 임베딩 주소·한도를 바꿔 끼울 때마다 콜드 기동(8.5초)이 났다
+        # 자식 재기동은 콜드 기동(수 초)이라 변환 설정이 바뀔 때만 해야 한다
         import rag.chunking as ch
 
         p = tmp_path / 'a.md'
@@ -868,7 +852,7 @@ def _raises(fn, *args):
     return None
 
 
-# ── 표 블록 분할·쪽 넘김 잇기·칸 글자 정리 (#252) ─────────────────────────────────────
+# ── 표 블록 분할·쪽 넘김 잇기·칸 글자 정리 ─────────────────────────────────────
 
 
 class TestTableBlocks:
@@ -878,7 +862,7 @@ class TestTableBlocks:
         ]
 
     def test_긴_표는_행_묶음으로_나뉘고_묶음마다_헤더가_반복되며_행이_잘리지_않는다(self):
-        # #246 실측: 45행 표가 SentenceSplitter 경계에서 `30,` / `148원 | 5 |`로 쪼개지고 뒷 청크에 헤더가 없었다(결함 B)
+        # 표를 그냥 SentenceSplitter에 맡기면 행 중간에서 쪼개지고 뒷 청크에 헤더가 없다
         from llama_index.core.node_parser import SentenceSplitter
 
         from rag.chunking import Section, TableBlock, to_markdown_table
@@ -890,7 +874,7 @@ class TestTableBlocks:
         chunks = split_section(sec, SentenceSplitter(chunk_size=512, chunk_overlap=50))
         tables = [
             t.removeprefix('머리말\n') for t, *_ in chunks if '| 번호 |' in t
-        ]  # 큰 표는 묶음마다 표 위 한 줄(결정 7)
+        ]  # 큰 표는 묶음마다 표 위 한 줄이 붙는다
         assert len(tables) >= 2  # 1,000토큰 예산이라 둘 이상
         body_lines = [l for t in tables for l in t.split('\n')[2:]]  # 헤더·구분선 뺀 데이터 행
         assert body_lines == to_markdown_table(rows[0], rows[1:]).split('\n')[2:]  # 행이 하나도 안 잘리고 순서 그대로
@@ -906,10 +890,10 @@ class TestTableBlocks:
         body = '앞 글.\n' + block.render() + '\n뒤 글.'
         sec = Section(['문서'], 1, body, [1, 1, 1, 2, 2], blocks=['앞 글.', block, '뒤 글.'])
         chunks = split_section(sec, SentenceSplitter(chunk_size=512, chunk_overlap=50))
-        assert chunks == [(body, 0, None)]  # 결정 7(c): 예산 안이면 블록 사이를 다시 잇는다
+        assert chunks == [(body, 0, None)]  # 예산 안이면 블록 사이를 다시 잇는다
 
     def test_쪽을_넘긴_표는_헤더가_같으면_하나로_이어진다(self):
-        # #252 결정 5(E): docling은 쪽마다 표를 따로 낸다(45행 → 36 + 10). 바로 이어지고 첫 행이 같으면 뒤 표 헤더를 떼고 잇는다
+        # docling은 쪽마다 표를 따로 낸다. 바로 이어지고 첫 행이 같으면 뒤 표 헤더를 떼고 잇는다
         from rag.chunking import TableBlock
         from rag.chunking.docling_elements import sections_from_docling_elements
 
@@ -958,7 +942,7 @@ class TestTableBlocks:
         assert packed.body == '\n'.join(['1.1', '글', '1.2', block.render()])
 
     def test_이어진_표의_행_묶음은_자기_쪽_번호를_가진다(self):
-        # 리뷰 지적: 잇기(E)로 한 표가 되면 뒷 쪽 행 묶음이 앞 쪽 번호를 물려받는다(#137 결함 6) — row_pages로 막는다
+        # 쪽 넘김 잇기로 한 표가 되면 뒷 쪽 행 묶음이 앞 쪽 번호를 물려받는다 — row_pages로 막는다
         from llama_index.core.node_parser import SentenceSplitter
 
         from rag.chunking.docling_elements import sections_from_docling_elements
@@ -999,7 +983,7 @@ class TestTableBlocks:
         assert secs[0].blocks == [TableBlock(a, [1, 1]), '캡션', TableBlock(a, [2, 2])]
 
     def test_작은_표는_앞_문장과_한_청크에_남는다(self):
-        # 결정 7(c): 블록마다 따로 자르면 '2. 사이즈 스펙 (단위: cm)'만 혼자 남고 표가 맥락을 잃었다(실문서 diff)
+        # 블록마다 따로 자르면 '2. 사이즈 스펙 (단위: cm)'만 혼자 남고 표가 맥락을 잃는다
         from llama_index.core.node_parser import SentenceSplitter
 
         from rag.chunking import Section, TableBlock
@@ -1051,7 +1035,7 @@ class TestTableBlocks:
         assert all(t.startswith(intro + '\n| 번호 |') for t in chunks) and len(chunks) >= 2
 
 
-# ── 큰 표 묶음의 표 정보·크기 상한 (#257) ────────────────────────────────────────────
+# ── 큰 표 묶음의 표 정보·크기 상한 ────────────────────────────────────────────
 
 
 class TestTableExpansionMeta:
@@ -1113,8 +1097,8 @@ class TestTableExpansionMeta:
             )
         msg = str(e.value)
         assert msg.startswith("7쪽 표('번호 | 품목 | 단가')가 허용 크기의 ") and '(현재 400행 × 3열)' in msg
-        assert '토큰' not in msg  # 엑셀 거절 문구 규칙(#222)
-        assert not is_transient(e.value)  # 재시도 없이 바로 failed(#257 결정 3)
+        assert '토큰' not in msg  # 거절 문구에 토큰은 쓰지 않는다(엑셀 거절 문구와 같은 규칙)
+        assert not is_transient(e.value)  # 재시도 없이 바로 failed
 
     def test_상한_바로_아래_표는_통과한다(self):
         from llama_index.core.node_parser import SentenceSplitter
@@ -1139,7 +1123,7 @@ class TestTableExpansionMeta:
         )
 
 
-# ── 표 전체에 싣는 표 앞뒤 글 (#268) ──────────────────────────────────────────────────
+# ── 표 전체에 싣는 표 앞뒤 글 ──────────────────────────────────────────────────
 
 
 class TestTableContext:
@@ -1154,7 +1138,7 @@ class TestTableContext:
     def test_앞_설명은_합계_200자를_넘기지_않는다(self):
         from rag.chunking.split import _TABLE_CONTEXT_CHARS, _table_lead_lines
 
-        assert _TABLE_CONTEXT_CHARS == 200  # B2 실측 문단 196자를 덮는 최소선(#268 결정 3)
+        assert _TABLE_CONTEXT_CHARS == 200  # 실문서 설명 문단(196자)을 덮는 최소선
         long = '가' * 150
         assert _table_lead_lines(f'{long}\n{long}', set()) == [long]
         assert _table_lead_lines('가' * 196, set()) == ['가' * 196]
@@ -1168,7 +1152,7 @@ class TestTableContext:
         assert _table_note_lines('불합격 업체는 공지한다.\n※ 뒤에 와도 안 가져온다') == []
         assert _table_note_lines('단위: kg당 원\n출처: 구매팀') == ['단위: kg당 원', '출처: 구매팀']
         assert _table_note_lines('**굵은 글씨 문장**') == []  # 마크다운 강조는 표지가 아니다
-        assert _table_note_lines(f'※ {"가" * 120}\n※ 짧은 주석') == []  # 합계 100자 상한(#268 리뷰 1)
+        assert _table_note_lines(f'※ {"가" * 120}\n※ 짧은 주석') == []  # 합계 100자 상한
         assert _table_note_lines('※ 짧은 주석\n※ ' + '가' * 120) == ['※ 짧은 주석']
 
     def test_큰_표의_표_전체에만_앞뒤_글이_붙고_묶음_본문은_그대로다(self):
@@ -1192,6 +1176,6 @@ class TestTableContext:
         assert whole == '\n'.join([*intro.split('\n'), block.render(), '※ 부가세는 포함하지 않는다.'])
         assert all(
             p.text.startswith('단가 단위는 kg당 원이다.\n| 번호 |') for p in batches
-        )  # 묶음 머리는 예전처럼 한 줄
+        )  # 묶음 머리는 표 위 한 줄만
         assert not any('※' in p.text for p in batches)  # 주석은 묶음 본문에 안 들어간다
         assert any('※ 부가세는 포함하지 않는다.' in p.text for p in pieces if p.table is None)  # 원래 자리에도 그대로

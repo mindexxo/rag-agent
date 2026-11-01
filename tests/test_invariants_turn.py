@@ -1,4 +1,4 @@
-"""불변식 대장(INVARIANTS.md) "턴·스트리밍·취소" 절의 빈 칸·부분 칸을 채우는 테스트 (#315).
+"""불변식 대장(INVARIANTS.md) "턴·스트리밍·취소" 절의 빈 칸·부분 칸을 채우는 테스트.
 
 각 테스트는 이름이 INV 번호로 시작하고, docstring 첫 줄이 그 규칙이다. 규칙의 정의점은
 rag/turn/streaming.py(이벤트 방출·finally 정리), rag/turn/cancellation.py(레지스트리), rag/turn/stream_resume.py
@@ -8,7 +8,7 @@ rag/turn/streaming.py(이벤트 방출·finally 정리), rag/turn/cancellation.p
   - 리미터 슬롯은 Redis ZSET 카드널리티(inflight_count)와 limiter.release 호출 기록을 함께 본다.
     zrem이 멱등이라 ZSET만 보면 이중 반납이 숨는다 — 호출 횟수를 따로 세는 이유.
   - "연결이 끊긴 뒤에도 태스크가 슬롯을 쥐고 있는가"는 httpx ASGITransport로 재현할 수 없다
-    (응답 본문이 끝날 때까지 stream()이 반환되지 않는다 — tests/test_cancellation.py 실측).
+    (응답 본문이 끝날 때까지 stream()이 반환되지 않는다 — tests/test_cancellation.py 참고).
     그래서 ASGI 앱을 직접 불러 meta를 받은 뒤 http.disconnect를 보낸다(_query_then_disconnect).
 """
 
@@ -58,7 +58,7 @@ def lease_spy(monkeypatch):
 
 
 async def _prepared(tenant_id: str):
-    """정상 경로로 prepare(자리표시 커밋 #72)까지 만든다."""
+    """정상 경로로 prepare(자리표시 커밋)까지 만든다."""
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
         return await svc.prepare('환불 기간 알려줘')
@@ -316,7 +316,7 @@ async def fresh_redis():
 
     재접속 리더의 XREAD BLOCK·writer flush·관측용 XLEN이 동시에 커넥션을 요구해 풀 내부 Lock에 경합이 생기고,
     그 Lock은 처음 경합한 루프에 묶인다. 앞선 테스트 루프에 묶인 풀을 쓰면 "bound to a different event loop"로
-    죽고(실측 — 이 파일의 INV-35 테스트를 둘로 나눠 연달아 돌리면 둘째가 죽었다), 이 테스트가 묶은 풀을 남기면 다음
+    죽고, 이 테스트가 묶은 풀을 남기면 다음
     테스트가 죽는다. 그래서 정리가 아니라 앞뒤 **교체**다.
     """
     import redis.asyncio as aioredis

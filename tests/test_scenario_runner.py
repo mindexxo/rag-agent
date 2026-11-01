@@ -1,8 +1,6 @@
-"""시나리오 러너 순수 함수 단위 테스트 (#99) — DB·LLM 없이 판정 로직을 고정.
+"""시나리오 러너의 판정 함수(_check)와 시드 가드(_seed_turn의 cancelled 제약)를 DB·LLM 없이 고정한다.
 
-러너 본체는 실서버 축(vLLM 필요)이라 CI에서 못 돌리지만, 판정 함수(_check)와 시드
-가드(_seed_turn의 cancelled 제약)는 순수 로직이라 여기서 값싸게 고정한다. 리뷰에서
-숫자 경계 오탐("5만원"이 "15만원"에 걸림)이 지적됐으므로 그 회귀를 특히 래칫한다.
+특히 숫자 경계 오탐("5만원"이 "15만원"에 걸림)을 막는다.
 """
 
 from eval.scenario import _check
@@ -20,7 +18,7 @@ def _obs(route="knowledge", citations=None, answer="", attachment_files=None):
 
 class TestCheckContains:
     def test_숫자_경계_오탐_방지(self):
-        # "5만원" 기대인데 답변이 "15만원"이면 실패해야 한다 (리뷰 발견 회귀 래칫)
+        # "5만원" 기대인데 답변이 "15만원"이면 실패해야 한다
         fails = _check({"expect_contains": ["5만원"]}, _obs(answer="무료배송 기준은 15만원입니다"))
         assert any("5만원" in f for f in fails)
 
@@ -52,7 +50,7 @@ class TestCheckStructure:
         assert _check({"expect_docs": ["환불반품정책"]}, _obs(citations=["summers_01_환불반품정책.pdf"])) == []
 
     def test_차단_첨부_주입되면_실패(self):
-        # 격리 회귀 탐지 — 차단 턴 첨부가 다음 턴 주입 목록에 있으면 실패 (#63 코드 레벨)
+        # 격리 회귀 탐지 — 차단 턴 첨부가 다음 턴 주입 목록에 있으면 실패
         fails = _check({"expect_not_attached": ["인젝션.txt"]}, _obs(attachment_files=["인젝션.txt"]))
         assert fails
         assert _check({"expect_not_attached": ["인젝션.txt"]}, _obs(attachment_files=["정상.pdf"])) == []

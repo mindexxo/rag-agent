@@ -1,11 +1,11 @@
-"""측정용 VLM 엔진·요약 계약(#296) — 네트워크·키 없이.
+"""측정용 VLM 엔진·요약 계약 — 네트워크·키 없이.
 
 고정하는 것:
 1. 헤딩 연결: VLM이 '#'로 쓴 title 라벨은 section_header로 바뀌고(PDF 청킹이 헤딩으로 보는 라벨), 글·목록은 그대로다 —
-   글 모양으로 헤딩을 추측하던 보정은 오탐(목록 → 헤딩)으로 기각했으므로 되살아나면 안 된다
+   글 모양으로 헤딩을 추측하는 보정은 오탐(목록 → 헤딩)을 내므로 되살아나면 안 된다
 2. install/uninstall은 rag.chunking의 변환기를 바꿨다가 정확히 원복한다 — 스캔 대조의 디지털 기준 변환이 VLM을 타면 비교가 무너진다
 3. PDF만 VLM으로, 다른 형식은 원래 변환기
-4. 빈 응답이 5회 연속이면 측정을 멈춘다 — 한도 초과가 '미검출 0점'으로 둔갑하지 않게(10/24 실측 사고)
+4. 빈 응답이 5회 연속이면 측정을 멈춘다 — 한도 초과가 '미검출 0점'으로 둔갑하지 않게
 5. 엔진 이름표에 키가 섞이지 않는다
 6. 요약: 숫자 오독(기대가 숫자인 칸의 오독)·추가(환각 후보)를 센다
 """
@@ -85,7 +85,7 @@ def test_빈_응답_뒤_재시도로_성공(monkeypatch):
 
 
 def test_온도는_옵션_필드로_넘어간다(monkeypatch):
-    """docling ApiVlmModel은 params 위에 vlm_options.temperature를 덮어쓴다 — params에만 넣으면 기본 0.0이 나가 gpt-5가 400(10/25 실측)."""
+    """docling ApiVlmModel은 params 위에 vlm_options.temperature를 덮어쓴다 — params에만 넣으면 기본 0.0이 나가 gpt-5가 400을 낸다."""
     from config import settings
 
     monkeypatch.setattr(settings, 'vlm_caption_temperature', 1.0)
@@ -96,7 +96,7 @@ def test_온도는_옵션_필드로_넘어간다(monkeypatch):
     assert vo.temperature == 1.0 and 'temperature' not in vo.params
     assert (
         vo.params['max_completion_tokens'] == vlm_engine.MAX_TOKENS and 'max_tokens' not in vo.params
-    )  # gpt-5는 max_tokens 거부(#290)
+    )  # gpt-5는 max_tokens 거부
 
 
 def test_헤딩_보정_스위치(monkeypatch):

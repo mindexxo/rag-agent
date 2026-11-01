@@ -56,7 +56,7 @@ def _t(chunk_id, doc=1, sheet='시트1', **kw):
 
 
 def _pt(chunk_id, key, doc=1, **kw):
-    """PDF·DOCX 큰 표의 묶음(#257) — table_key는 문서 안 표 순번."""
+    """PDF·DOCX 큰 표의 묶음 — table_key는 문서 안 표 순번."""
     return _chunk(
         chunk_id=chunk_id,
         document_id=doc,
@@ -69,14 +69,14 @@ def _pt(chunk_id, key, doc=1, **kw):
 
 
 def test_한_시트만_필터는_없다():
-    # #257 결정 1 — 표는 몇 개든 후보에 남는다(PDF는 한 문서에 표가 여럿인 게 정상). 접기·확장·예산은 prepare_evidence
+    # 표는 몇 개든 후보에 남는다(PDF는 한 문서에 표가 여럿인 게 정상). 접기·확장·예산은 prepare_evidence
     import rag.search.retriever as R
 
     assert not hasattr(R, '_keep_single_table')
 
 
 class TestPrepareEvidence:
-    """근거 준비(#222·#257) — 같은 표 접기 → top_k 자르기 → 표 전체로 확장 → 근거 예산. 운영·생성 평가 공용."""
+    """근거 준비 — 같은 표 접기 → top_k 자르기 → 표 전체로 확장 → 근거 예산. 운영·생성 평가 공용."""
 
     def test_같은_시트_묶음은_한_칸으로_접히고_빈_칸은_아래_순위가_채운다(self):
         from rag.search.retriever import prepare_evidence
@@ -106,7 +106,7 @@ class TestPrepareEvidence:
         assert out[1].text == '산문'
 
     def test_완성본이_없는_표_청크는_그대로(self):
-        # #257 이전에 색인된 표(재인제스트 전)는 table_text가 없다 — 본문 그대로 넣는다
+        # table_text 없이 색인된 옛 표는 본문 그대로 넣는다
         from rag.search.retriever import prepare_evidence
 
         assert prepare_evidence([_t(1, text='옛 시트 본문')], top_k=5)[0].text == '옛 시트 본문'
@@ -120,7 +120,7 @@ class TestPrepareEvidence:
         assert [c.chunk_id for c in out] == [1]  # 표는 남기고 낮은 순위 산문부터 제거
 
     def test_인용_후보는_문서_단위라_바뀌지_않는다(self):
-        # 묶음이 여럿 걸려도 한 시트 = 한 문서 = 인용 번호 하나(#222 교차 지점)
+        # 묶음이 여럿 걸려도 한 시트 = 한 문서 = 인용 번호 하나
         from rag.search.retriever import prepare_evidence
         from rag.turn.citation_labels import sources_from_chunks
 
@@ -128,7 +128,7 @@ class TestPrepareEvidence:
         assert [s.document_id for s in sources_from_chunks(prepare_evidence(chunks, 5))] == [1, 9]
 
     def test_서로_다른_표는_모두_남고_각자_표_전체로_바뀐다(self):
-        # #257 결정 1 — 옛 '한 시트만' 필터라면 시트2·다른 파일 표는 빠졌다
+        # 시트2·다른 파일 표도 빠지지 않는다
         from rag.search.retriever import prepare_evidence
 
         chunks = [
@@ -157,7 +157,7 @@ class TestPrepareEvidence:
         assert [(c.chunk_id, c.text.rsplit('\n', 1)[-1]) for c in out] == [(1, 'A표'), (3, 'B표'), (4, '산문')]
 
     def test_산문이_없으면_순위가_낮은_표를_통째로_뺀다(self, monkeypatch):
-        # #257 결정 4 — 예전엔 표만 남으면 멈춰 예산을 넘긴 채 넘겼다(표가 하나뿐이라 닿지 않았다)
+        # 표만 남아도 예산을 넘기면 낮은 순위 표를 뺀다
         import rag.search.retriever as R
 
         monkeypatch.setattr(R, 'EVIDENCE_BUDGET_TOKENS', 100)
@@ -190,7 +190,7 @@ class TestPrepareEvidence:
         assert [c.chunk_id for c in out] == [1]
 
     def test_식별자로_걸린_표_묶음도_표_전체가_그대로_들어간다(self):
-        # #238 오리기는 확장 뒤에 돈다 — 묶음 머리로 옮겨 온 조 제목(headings)이 있어도 표 전체엔 그 줄이 없어 바뀌지 않는다
+        # 식별자 구간 오리기는 확장 뒤에 돈다 — 묶음 머리로 옮겨 온 조 제목(headings)이 있어도 표 전체엔 그 줄이 없어 바뀌지 않는다
         from rag.search.retriever import prepare_evidence
 
         whole = '[별표 1] 징계 양정 기준\n| 사유 | 양정 |\n| --- | --- |\n| 횡령 | 파면 |\n| 지각 | 견책 |'
@@ -211,7 +211,7 @@ class TestPrepareEvidence:
 
 
 class TestTableEvidenceText:
-    """표 근거 모양(#268 결정 4) — 걸린 묶음 먼저 + 표 전체."""
+    """표 근거 모양 — 걸린 묶음 먼저 + 표 전체."""
 
     def test_걸린_묶음을_먼저_보이고_표_전체를_뒤에_싣는다(self):
         from rag.search.retriever import TABLE_HIT_LABEL, TABLE_WHOLE_LABEL, table_evidence_text
@@ -222,7 +222,7 @@ class TestTableEvidenceText:
         assert table_evidence_text(ch) == f'{TABLE_HIT_LABEL}\n{ch.text}\n\n{TABLE_WHOLE_LABEL}\n{ch.table_text}'
 
     def test_묶음이_곧_표_전체면_한_번만(self):
-        # 작은 시트는 묶음 = 완성본(#222) — 같은 글을 두 번 싣지 않는다
+        # 작은 시트는 묶음 = 완성본 — 같은 글을 두 번 싣지 않는다
         from rag.search.retriever import table_evidence_text
 
         assert table_evidence_text(_t(1, text='| h |\n| 1 |', table_text='| h |\n| 1 |')) == '| h |\n| 1 |'

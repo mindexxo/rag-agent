@@ -1,11 +1,8 @@
-"""한글 파일명 유니코드 정규화 회귀 테스트 (#34).
+"""한글 파일명 유니코드 정규화 회귀 테스트.
 
-이 버그는 **에러 없이 조용히 지표만 틀리는** 종류였다 — 답변에 인용 라벨이 멀쩡히 있고
-검색도 정상인데 `cited_docs`만 빈 배열이 되어 FE 각주와 인용 통계가 0이 됐다.
-
-eval의 `citation_accuracy`는 이걸 원리적으로 못 잡는다 — gold(NFC)와 LLM 출력(NFC)만
-비교하고 **DB filename이 개입하지 않기** 때문이다. 그래서 Cite 지표가 만점인데 운영은
-깨져 있었다. 이 파일이 그 구멍을 메운다: **NFD로 업로드해 DB를 거친 뒤** 인용이 잡히는지 본다.
+이 결함은 **에러 없이 조용히 지표만 틀린다** — `cited_docs`가 어긋나 FE 각주와 인용 통계가 깨진다.
+eval의 `citation_accuracy`는 DB filename을 거치지 않아 원리적으로 못 잡으므로, 여기서
+**NFD로 업로드해 DB를 거친 뒤** 인용이 잡히는지 본다.
 """
 
 import unicodedata
@@ -55,12 +52,10 @@ async def test_NFD_파일명_업로드는_NFC로_저장된다(client, tenant_id,
 async def test_NFD로_올린_문서의_인용은_NFC_파일명으로_잡힌다(
     client, tenant_id, fake_llm, pass_gate, fake_queue, blob_tmp
 ):
-    """#34의 본질 — 업로드부터 DB를 거쳐 인용까지 관통 검증.
+    """업로드부터 DB를 거쳐 인용까지 관통 검증.
 
-    꼬리가 번호가 되면서(#56 개정) 라벨 문자열 매칭 자체는 사라졌지만, cited_docs의
-    파일명 값은 여전히 DB 저장값이다 — 저장이 NFD로 남으면 FE 각주·통계의 파일명이
-    분해형으로 새는 같은 계열의 회귀다. (모델이 NFD 라벨을 내는 경우의 매칭 방어
-    테스트는 전제가 소멸해 삭제 — 숫자에는 정규형이 없다.)
+    cited_docs의 파일명 값은 DB 저장값이다 — 저장이 NFD로 남으면 FE 각주·통계의 파일명이
+    분해형으로 샌다.
     """
     body = await _upload(client, FILENAME_NFD)
     await ingest(body['document_id'])

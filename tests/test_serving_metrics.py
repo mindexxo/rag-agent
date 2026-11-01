@@ -1,7 +1,7 @@
-"""서빙 관측 단위 테스트 (#129) — DB·Redis·vLLM 불필요 (빠른 서브셋 편입 가능).
+"""서빙 관측 단위 테스트 — DB·Redis·vLLM 불필요 (빠른 서브셋 편입 가능).
 
 검증 대상 셋:
-1. OpenAI 호환 바탕(VllmClient).astream의 on_finish_reason 배선 — 마지막 청크(델타 없음)가 예전처럼 유실되지
+1. OpenAI 호환 바탕(VllmClient).astream의 on_finish_reason 배선 — 마지막 청크(델타 없음)가 유실되지
    않고 콜백으로 종료 사유가 나오는가. 텍스트 스트림은 기존과 동일한가(동작 보존).
 2. rag/metrics.py의 지표가 기록되는가 — 전역 REGISTRY 누적 대비 **델타**로 단언한다
    (절대값 단언은 테스트 실행 순서에 따라 깨진다 — 이 파일의 모든 지표 단언 공통 규율).
@@ -63,7 +63,7 @@ async def test_마지막_청크의_finish_reason이_콜백으로_나온다():
         [
             _chunk('안'),
             _chunk('녕'),
-            _chunk(None, finish_reason='length'),  # 예전 `if delta:` 가드가 삼키던 청크
+            _chunk(None, finish_reason='length'),  # 델타 없는 마지막 청크 — `if delta:` 가드로는 삼켜진다
         ],
     )
     got: list[str] = []

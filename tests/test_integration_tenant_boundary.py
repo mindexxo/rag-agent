@@ -5,22 +5,15 @@ id를 직접 지목하는 단건 경로와 집계 SQL(통계·FAQ 인용 수)까
 """
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
 from database import AsyncSessionLocal
 from rag.models import Conversation, Document, Message
 from tests.conftest import sse_meta
 from tests.helpers_documents import MD, upload
+from tests.tenant_client import client_for
 
 # 테넌트 헤더 없이 동작하는 것이 현재 동작인 경로 — 검증 기준은 스펙 결정 대기다.
-
-
-def _client_for(tenant: str | None) -> AsyncClient:
-    from main import app
-
-    headers = {'X-Tenant-Id': tenant} if tenant is not None else {}
-    return AsyncClient(transport=ASGITransport(app=app), base_url='http://testserver', headers=headers)
 
 
 def _kms_routes() -> list[tuple[str, str, str]]:
@@ -44,7 +37,7 @@ async def test_KMS_전_라우트는_테넌트_헤더가_없으면_422(_loop_hygi
     listed = {(method, path) for method, path, _ in routes}
     assert ('POST', '/kms/query') in listed  # 열거가 비어 통과하는 일을 막는다
 
-    async with _client_for(None) as bare:
+    async with client_for(None) as bare:
         for method, path, url in routes:
             res = await bare.request(method, url)
             assert res.status_code == 422, f'{method} {path}: {res.status_code}'
@@ -61,7 +54,7 @@ async def test_다른_테넌트_문서는_단건_조회_수정_삭제_다운로�
     assert (await client.get(f'/kms/documents/{doc_id}')).status_code == 200  # 양성 대조 — 주인에겐 보인다
     assert (await client.get(f'/kms/documents/{doc_id}/download')).status_code == 200
 
-    async with _client_for(other_tenant_id) as other:
+    async with client_for(other_tenant_id) as other:
         assert (await other.get(f'/kms/documents/{doc_id}')).status_code == 404
         assert (await other.get(f'/kms/documents/{doc_id}/download')).status_code == 404
         assert (await other.patch(f'/kms/documents/{doc_id}', json={'is_searchable': False})).status_code == 404
@@ -78,7 +71,7 @@ async def test_다른_테넌트_대화는_제목_변경과_삭제가_404(client,
     """ISO-11 — 사용자 헤더는 양쪽 모두 생략(같은 기본 사용자)이라 테넌트만 다르다."""
     conv_id = sse_meta(await client.post('/kms/query', json={'query': 'A사 질문입니다'}))['conversation_id']
 
-    async with _client_for(other_tenant_id) as other:
+    async with client_for(other_tenant_id) as other:
         assert (await other.patch(f'/kms/conversations/{conv_id}', json={'title': '탈취'})).status_code == 404
         assert (await other.delete(f'/kms/conversations/{conv_id}')).status_code == 404
 
@@ -99,7 +92,7 @@ async def test_다른_테넌트_대화_id로_질의하면_404이고_어느_쪽�
     conv_id = sse_meta(await client.post('/kms/query', json={'query': 'A사 질문입니다'}))['conversation_id']
     before = await _message_count(tenant_id)
 
-    async with _client_for(other_tenant_id) as other:
+    async with client_for(other_tenant_id) as other:
         res = await other.post('/kms/query', json={'query': '남의 대화에 끼어들기', 'conversation_id': conv_id})
     assert res.status_code == 404
     assert res.json() == {'detail': '대화를 찾을 수 없습니다.'}
@@ -160,7 +153,7 @@ async def test_통계는_인용_문서와_미답변까지_다른_테넌트를_�
     mine_unanswered = (await client.get('/kms/stats/unanswered', params={'days': 1})).json()
     assert [u['question'] for u in mine_unanswered] == ['A 미답변']
 
-    async with _client_for(other_tenant_id) as other:
+    async with client_for(other_tenant_id) as other:
         theirs = (await other.get('/kms/stats', params={'days': 1})).json()
         unanswered = (await other.get('/kms/stats/unanswered', params={'days': 1})).json()
     assert theirs['top_documents'] == [], f'남의 인용이 순위에 섞였다: {theirs["top_documents"]}'

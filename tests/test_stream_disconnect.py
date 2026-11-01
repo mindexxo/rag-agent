@@ -19,6 +19,7 @@ from rag.models import Message
 from rag.turn.service import RagService
 from rag.turn.streaming import _run_generation
 from tests.conftest import register_faq
+from tests.helpers_turn import prepare_turn
 from tests.polling import inflight_count, wait_inflight
 
 
@@ -31,10 +32,8 @@ async def test_소비자가_없어도_태스크는_완주해_finalize한다(clie
     await register_faq(client)
 
     # prepare까지는 정상 경로로 만들고(자리표시 확보), 그 다음을 소비자 없이 돌린다
-    async with AsyncSessionLocal() as session:
-        svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
-        prepared = await svc.prepare('환불 기간 알려줘')  # 자리표시는 prepare가 커밋한다
-        assistant_id = prepared.assistant_message_id
+    prepared = await prepare_turn(tenant_id)  # 자리표시는 prepare가 커밋한다
+    assistant_id = prepared.assistant_message_id
     assert assistant_id is not None
 
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
@@ -77,10 +76,8 @@ async def test_캐시_저장이_실패해도_턴은_done이다(client, tenant_id
 
     monkeypatch.setattr(cache, 'save_answer', boom)
 
-    async with AsyncSessionLocal() as session:
-        svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
-        prepared = await svc.prepare('환불 기간 알려줘')  # 자리표시는 prepare가 커밋한다
-        assistant_id = prepared.assistant_message_id
+    prepared = await prepare_turn(tenant_id)  # 자리표시는 prepare가 커밋한다
+    assistant_id = prepared.assistant_message_id
 
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
     queue: asyncio.Queue = asyncio.Queue()
@@ -111,10 +108,8 @@ async def test_생성_실패도_failed로_남고_정리가_끝난다(client, ten
     """
     await register_faq(client)
 
-    async with AsyncSessionLocal() as session:
-        svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
-        prepared = await svc.prepare('환불 기간 알려줘')  # 자리표시는 prepare가 커밋한다
-        assistant_id = prepared.assistant_message_id
+    prepared = await prepare_turn(tenant_id)  # 자리표시는 prepare가 커밋한다
+    assistant_id = prepared.assistant_message_id
 
     async def _boom(self, prepared):
         raise RuntimeError('LLM down')

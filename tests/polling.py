@@ -2,7 +2,9 @@
 
 import asyncio
 
+from database import AsyncSessionLocal
 from rag import limiter
+from rag.models import Message
 
 
 async def inflight_count(tenant_id: str) -> int:
@@ -17,3 +19,16 @@ async def wait_inflight(tenant_id: str, expected: int = 0, tries: int = 100) -> 
             return n
         await asyncio.sleep(0.05)
     return await inflight_count(tenant_id)
+
+
+async def wait_message_status(message_id: int, expected: str, tries: int = 100) -> str:
+    """Message.status가 expected가 될 때까지 기다린다 — 백그라운드 태스크가 별도 세션으로 커밋한다. 없으면 'MISSING'."""
+    for _ in range(tries):
+        async with AsyncSessionLocal() as session:
+            msg = await session.get(Message, message_id)
+            if msg is not None and msg.status == expected:
+                return msg.status
+        await asyncio.sleep(0.05)
+    async with AsyncSessionLocal() as session:
+        msg = await session.get(Message, message_id)
+        return msg.status if msg else 'MISSING'

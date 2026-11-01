@@ -80,16 +80,7 @@
   "rag/turn/prompt_texts.py::<module>": 402,
   "rag/turn/service.py::<module>": 355,
   "routers/stats.py::stats_summary": 78,
-  "tests/conftest.py::<module>": 354,
   "tests/test_assign_folders.py::test_apply는_PG와_엔진_메타를_같은_커밋의_META_행으로_맞춘다": 56,
-  "tests/test_cancellation.py::<module>": 324,
-  "tests/test_chunking_docling.py::<module>": 894,
-  "tests/test_chunking_office_docling.py::<module>": 385,
-  "tests/test_integration_documents.py::<module>": 338,
-  "tests/test_integration_documents_xlsx.py::<module>": 415,
-  "tests/test_integration_index_sync.py::<module>": 405,
-  "tests/test_stream_resume.py::<module>": 345,
-  "tests/test_table_parsing_eval.py::<module>": 373,
-  "tests/test_table_parsing_eval.py::TestLlmJudge.test_재판정은_기계_실패분만_묻고_결과를_행에_쓴다": 51
+  "tests/test_table_parsing_harness.py::TestLlmJudge.test_재판정은_기계_실패분만_묻고_결과를_행에_쓴다": 51
  }
 }

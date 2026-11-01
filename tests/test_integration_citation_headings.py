@@ -16,12 +16,11 @@ import pytest
 
 from rag.search import os_search
 from tests.conftest import ingest
-from tests.helpers_documents import chunk_texts, get_doc, upload
+from tests.helpers_documents import DOCX_MIME, chunk_texts, get_doc, upload
 
 pytest.importorskip('docling')
 
 CORPUS = Path(__file__).resolve().parent.parent / 'sample_docs' / 'corpus_v2'
-DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 
 
 async def _ingest_file(client, path: Path, mime: str) -> int:

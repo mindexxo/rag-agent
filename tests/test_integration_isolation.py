@@ -6,17 +6,11 @@ RLS 없이 WHERE 절이 유일한 방어선이라는 설계 전제의 전수 검
 """
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 
 from database import AsyncSessionLocal
 from rag.search.retriever import retrieve_candidates
 from tests.conftest import sse_meta, sync_faq
-
-
-def _client_for(tenant: str) -> AsyncClient:
-    from main import app
-
-    return AsyncClient(transport=ASGITransport(app=app), base_url='http://testserver', headers={'X-Tenant-Id': tenant})
+from tests.tenant_client import client_for
 
 
 @pytest.mark.asyncio
@@ -27,7 +21,7 @@ async def test_검색_후보에_타_테넌트_청크가_없다(client, tenant_id
             await client.post('/kms/faqs', json={'question': 'A사 반품 기간은?', 'variants': [], 'answer': '14일'})
         ).json()['id']
     )
-    async with _client_for(other_tenant_id) as other:
+    async with client_for(other_tenant_id) as other:
         await sync_faq(
             (
                 await other.post('/kms/faqs', json={'question': 'B사 반품 기간은?', 'variants': [], 'answer': '7일'})
@@ -49,7 +43,7 @@ async def test_대화_목록과_메시지_격리(client, tenant_id, other_tenant
     res = await client.post('/kms/query', json={'query': 'A사 질문입니다'})
     conv_id = sse_meta(res)['conversation_id']
 
-    async with _client_for(other_tenant_id) as other:
+    async with client_for(other_tenant_id) as other:
         listing = (await other.get('/kms/conversations')).json()
         assert all(c['conversation_id'] != conv_id for c in listing['items'])  # 목록 격리
 
@@ -63,7 +57,7 @@ async def test_폴더_격리(client, tenant_id, other_tenant_id):
     assert res.status_code == 200, res.text
     folder_id = res.json()['id']
 
-    async with _client_for(other_tenant_id) as other:
+    async with client_for(other_tenant_id) as other:
         listing = (await other.get('/kms/folders')).json()
         assert all(f['id'] != folder_id for f in listing)  # 목록 격리
         assert (await other.patch(f'/kms/folders/{folder_id}', json={'name': '탈취'})).status_code == 404
@@ -75,7 +69,7 @@ async def test_FAQ_목록_격리(client, tenant_id, other_tenant_id):
     await sync_faq(
         (await client.post('/kms/faqs', json={'question': 'A사 전용', 'variants': [], 'answer': 'a'})).json()['id']
     )
-    async with _client_for(other_tenant_id) as other:
+    async with client_for(other_tenant_id) as other:
         listing = (await other.get('/kms/faqs')).json()
         assert listing['items'] == [] and listing['total'] == 0
 
@@ -91,7 +85,7 @@ async def test_문서_일괄변경_격리(client, tenant_id, other_tenant_id, fa
     md = '# 제목\n\n본문 내용\n'.encode()
     mine = (await client.post('/kms/documents', files={'file': ('A사문서.md', md, 'text/markdown')})).json()
 
-    async with _client_for(other_tenant_id) as other:
+    async with client_for(other_tenant_id) as other:
         theirs = (await other.post('/kms/documents', files={'file': ('B사문서.md', md, 'text/markdown')})).json()
         folder = (await other.post('/kms/folders', json={'name': 'B사 폴더'})).json()
 
@@ -127,7 +121,7 @@ async def test_문서_일괄삭제_격리(client, tenant_id, other_tenant_id, fa
     md = '# 제목\n\n본문 내용\n'.encode()
     mine = (await client.post('/kms/documents', files={'file': ('A사문서.md', md, 'text/markdown')})).json()
 
-    async with _client_for(other_tenant_id) as other:
+    async with client_for(other_tenant_id) as other:
         theirs = (await other.post('/kms/documents', files={'file': ('B사문서.md', md, 'text/markdown')})).json()
 
         # 남의 문서를 섞어 보내면 전체 404 — 자기 문서(theirs)도 지워지면 안 된다
@@ -156,7 +150,7 @@ async def test_같은_파일명이_두_테넌트에_있어도_내_것만_지운�
     md = '# 제목\n\n본문 내용\n'.encode()
     same_name = '환불정책.md'
     mine = (await client.post('/kms/documents', files={'file': (same_name, md, 'text/markdown')})).json()
-    async with _client_for(other_tenant_id) as other:
+    async with client_for(other_tenant_id) as other:
         theirs = (await other.post('/kms/documents', files={'file': (same_name, md, 'text/markdown')})).json()
 
         assert (
@@ -178,7 +172,7 @@ async def test_문서_목록_필터_격리(client, tenant_id, other_tenant_id, f
     same_name = '환불정책.md'
     (await client.post('/kms/documents', files={'file': (same_name, md, 'text/markdown')})).json()
 
-    async with _client_for(other_tenant_id) as other:
+    async with client_for(other_tenant_id) as other:
         await other.post('/kms/documents', files={'file': (same_name, md, 'text/markdown')})
         await other.post('/kms/documents', files={'file': ('B사전용.md', md, 'text/markdown')})
 

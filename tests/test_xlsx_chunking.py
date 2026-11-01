@@ -3,13 +3,12 @@
 is_table·table_key·table_text meta와 표 설명 병합은 근거 준비(retriever.prepare_evidence)의 표 접기·확장과 검색 보강이 의존한다.
 """
 
-from io import BytesIO
 from pathlib import Path
 
 import openpyxl
 import pytest
 
-from rag.chunking import TABLE_BATCH_TOKENS, TABLE_MAX_TOKENS, batch_table_rows, to_markdown_table
+from rag.chunking import TABLE_BATCH_TOKENS, batch_table_rows, to_markdown_table
 from rag.chunking.xlsx import (
     XlsxDescriptionRequired,
     XlsxTableTooLarge,
@@ -20,7 +19,8 @@ from rag.chunking.xlsx import (
     validate_xlsx_upload,
     xlsx_plain_text,
 )
-from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN, estimate_tokens_conservative
+from rag.tokens import CONSERVATIVE_CHARS_PER_TOKEN
+from tests.helpers_xlsx import max_rows_at_limit, xlsx_bytes
 
 CORPUS_XLSX = (
     Path(__file__).resolve().parent.parent / 'sample_docs' / 'corpus_v2' / 'homeplus' / 'homeplus_10_멤버십혜택표.xlsx'
@@ -59,16 +59,6 @@ class TestToMarkdown:
         lines = md.splitlines()
         assert lines[2] == '| 1 |  |'
         assert lines[3] == '| 1 | 2 |'
-
-
-def _max_rows_at_limit() -> int:
-    """헤더 'col' + 숫자 1열 표에서 추정 토큰이 상한 이하인 최대 데이터 행 수 — 경계 테스트용(off-by-one 회귀 방지)."""
-    n = 1
-    while (
-        estimate_tokens_conservative(to_markdown_table(['col'], [[str(i)] for i in range(n + 1)])) <= TABLE_MAX_TOKENS
-    ):
-        n += 1
-    return n
 
 
 class TestChunkXlsx:
@@ -178,7 +168,7 @@ class TestChunkXlsx:
         ws = wb.active
         ws.title = '단가표'
         ws.append(['col'])
-        for i in range(_max_rows_at_limit() + 1):
+        for i in range(max_rows_at_limit() + 1):
             ws.append([i])
         p = tmp_path / 'big.xlsx'
         wb.save(p)
@@ -209,7 +199,7 @@ class TestChunkXlsx:
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.append(['col'])
-        for i in range(_max_rows_at_limit()):
+        for i in range(max_rows_at_limit()):
             ws.append([i])
         p = tmp_path / 'exact.xlsx'
         wb.save(p)
@@ -230,7 +220,7 @@ class TestChunkXlsx:
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.append(['col'])
-        for i in range(_max_rows_at_limit() + 50):
+        for i in range(max_rows_at_limit() + 50):
             ws.append([i])
         p = tmp_path / 'big.xlsx'
         wb.save(p)
@@ -239,39 +229,24 @@ class TestChunkXlsx:
         assert xlsx_plain_text(p)  # 첨부 추출은 통과(크기는 라우터의 6천 자 상한이 판단)
 
 
-def _xlsx_bytes(n_rows: int, *, blank_in_middle: int = 0) -> bytes:
-    """헤더 1행 + 데이터 n_rows행을 메모리에서 만든다 — 라우터가 받는 것과 같은 '디스크 안 거친 bytes'."""
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.append(['col'])
-    for i in range(n_rows):
-        ws.append([i])
-        if blank_in_middle and i == n_rows // 2:
-            for _ in range(blank_in_middle):
-                ws.append([None])
-    buf = BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
-
-
 class TestValidateXlsxUpload:
     """업로드 사전검증 — 라우터가 blob을 쓰기 전에 부른다. 거절은 전부 XlsxUploadRejected 하위."""
 
     def test_설명_없으면_거절(self):
         with pytest.raises(XlsxDescriptionRequired):
-            validate_xlsx_upload(_xlsx_bytes(1), None)
+            validate_xlsx_upload(xlsx_bytes(1), None)
 
     def test_공백만이면_미전송과_동일(self):
         with pytest.raises(XlsxDescriptionRequired):
-            validate_xlsx_upload(_xlsx_bytes(1), '  \t ')
+            validate_xlsx_upload(xlsx_bytes(1), '  \t ')
 
     def test_설명_있고_정확히_상한이면_통과(self):
-        validate_xlsx_upload(_xlsx_bytes(_max_rows_at_limit()), '멤버십 혜택표')  # off-by-one 회귀 방지
+        validate_xlsx_upload(xlsx_bytes(max_rows_at_limit()), '멤버십 혜택표')  # off-by-one 회귀 방지
 
     def test_상한_초과면_설명이_있어도_거절(self):
-        n = _max_rows_at_limit() + 1
+        n = max_rows_at_limit() + 1
         with pytest.raises(XlsxTableTooLarge) as exc:
-            validate_xlsx_upload(_xlsx_bytes(n), '설명')
+            validate_xlsx_upload(xlsx_bytes(n), '설명')
         assert exc.value.rows == n and exc.value.cols == 1 and exc.value.percent > 100
 
     def test_설명_검사가_워크북보다_먼저다(self):
@@ -281,13 +256,13 @@ class TestValidateXlsxUpload:
 
     def test_두_거절_모두_공통_베이스로_잡힌다(self):
         """라우터는 XlsxUploadRejected 하나만 잡는다 — 하위 타입이 늘어도 라우터를 안 고치게."""
-        for content, desc in [(_xlsx_bytes(1), None), (_xlsx_bytes(_max_rows_at_limit() + 1), 'x')]:
+        for content, desc in [(xlsx_bytes(1), None), (xlsx_bytes(max_rows_at_limit() + 1), 'x')]:
             with pytest.raises(XlsxUploadRejected):
                 validate_xlsx_upload(content, desc)
 
     def test_크기_재는_기준이_chunk_xlsx와_같다(self, tmp_path):
         """중간 빈 행은 둘 다 세지 않는다 — 같은 _iter_sheets·렌더를 쓰므로 '검증 통과·색인 거절'이 없다."""
-        content = _xlsx_bytes(_max_rows_at_limit(), blank_in_middle=3)
+        content = xlsx_bytes(max_rows_at_limit(), blank_in_middle=3)
         validate_xlsx_upload(content, '설명')  # 사전검증 통과
         p = tmp_path / 'edge.xlsx'
         p.write_bytes(content)

@@ -2,7 +2,7 @@
 
 chunk_file 케이스는 전부 docling 변환 프로세스를 탄다(_needs_docling 표시) — 색인 경로가 docling 하나뿐이라서.
 첨부 추출과 순수 함수는 docling 없이 돈다. docling 경로의 세부(제목 층·표·캡션)는
-tests/test_chunking_docling.py·tests/test_chunking_office_docling.py.
+tests/test_chunking_docling*.py·tests/test_chunking_docx_docling.py·tests/test_chunking_xlsx_docling.py.
 
 입력은 corpus_v2 합성 문서 실물. heading_path는 pdf·docx·md 모두 채워진다
 (txt만 헤딩 개념이 없어 빈다).

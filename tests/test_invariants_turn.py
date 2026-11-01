@@ -8,7 +8,7 @@ rag/turn/streaming.py(이벤트 방출·finally 정리), rag/turn/cancellation.p
   - 리미터 슬롯은 Redis ZSET 카드널리티(inflight_count)와 limiter.release 호출 기록을 함께 본다.
     zrem이 멱등이라 ZSET만 보면 이중 반납이 숨는다 — 호출 횟수를 따로 세는 이유.
   - "연결이 끊긴 뒤에도 태스크가 슬롯을 쥐고 있는가"는 httpx ASGITransport로 재현할 수 없다
-    (응답 본문이 끝날 때까지 stream()이 반환되지 않는다 — tests/test_cancellation.py 참고).
+    (응답 본문이 끝날 때까지 stream()이 반환되지 않는다 — tests/test_cancellation_http.py 참고).
     그래서 ASGI 앱을 직접 불러 meta를 받은 뒤 http.disconnect를 보낸다(_query_then_disconnect).
 """
 
@@ -16,16 +16,16 @@ import asyncio
 import json
 
 import pytest
-import pytest_asyncio
 
 from config import settings
 from database import AsyncSessionLocal
-from rag import clients, limiter, otel
+from rag import limiter, otel
 from rag.models import Message
 from rag.turn import cancellation, stream_resume, streaming
 from rag.turn.service import RagService
 from rag.turn.streaming import _run_generation, spawn_generation
 from tests.conftest import register_faq, sse_done, sse_events, sse_meta
+from tests.helpers_turn import prepare_turn
 from tests.polling import inflight_count, wait_inflight
 
 SECRET = '/etc/secret-path-xyz'
@@ -55,13 +55,6 @@ def lease_spy(monkeypatch):
     monkeypatch.setattr(limiter, 'try_acquire', _acquire)
     monkeypatch.setattr(limiter, 'release', _release)
     return acquired, released
-
-
-async def _prepared(tenant_id: str):
-    """정상 경로로 prepare(자리표시 커밋)까지 만든다."""
-    async with AsyncSessionLocal() as session:
-        svc = RagService(tenant_id=tenant_id, session=session, user_id='agent-x')
-        return await svc.prepare('환불 기간 알려줘')
 
 
 async def _run_direct(prepared, queue, lease) -> None:
@@ -291,7 +284,7 @@ async def test_INV47_캐시_적재는_done_방출_뒤에_따로_한다(client, t
         await real_maybe_cache(self, prepared, answer, citations)
 
     monkeypatch.setattr(RagService, 'maybe_cache', _spy_maybe_cache)
-    prepared = await _prepared(tenant_id)
+    prepared = await prepare_turn(tenant_id)
     assert prepared.should_cache, '캐시 적재 대상 턴이 아니면 순서를 볼 수 없다'
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
     queue = _RecordingQueue(lambda item: order.append('sentinel' if item is None else item[0]))
@@ -310,23 +303,6 @@ async def _next(reader) -> str:
     return await asyncio.wait_for(reader.__anext__(), timeout=5)
 
 
-@pytest_asyncio.fixture
-async def fresh_redis():
-    """이 테스트 루프 전용 공용 Redis — tests/test_stream_resume.py의 fresh_redis와 같은 패턴·같은 이유.
-
-    재접속 리더의 XREAD BLOCK·writer flush·관측용 XLEN이 동시에 커넥션을 요구해 풀 내부 Lock에 경합이 생기고,
-    그 Lock은 처음 경합한 루프에 묶인다. 앞선 테스트 루프에 묶인 풀을 쓰면 "bound to a different event loop"로
-    죽고, 이 테스트가 묶은 풀을 남기면 다음
-    테스트가 죽는다. 그래서 정리가 아니라 앞뒤 **교체**다.
-    """
-    import redis.asyncio as aioredis
-
-    clients.shared_redis = aioredis.from_url(settings.redis_url)
-    yield
-    await clients.shared_redis.aclose()
-    clients.shared_redis = aioredis.from_url(settings.redis_url)  # lazy — 다음 사용자를 위해
-
-
 async def _paused_generation(tenant_id: str, fake_llm):
     """둘째 토큰 뒤에서 멈춘 생성 태스크와 그 턴의 재접속 스트림 키 — 메시지는 generating, 스트림엔 종료 마커 없음.
 
@@ -334,7 +310,7 @@ async def _paused_generation(tenant_id: str, fake_llm):
     스트림 길이와 같아지면 끝난 것이다(고정 sleep 대신 값으로 판정 — 뒤늦은 flush가 '유휴 중 증가'로 오인되지 않게).
     """
     fake_llm.pause_after_tokens = 2
-    prepared = await _prepared(tenant_id)
+    prepared = await prepare_turn(tenant_id)
     key = stream_resume.stream_key(tenant_id, prepared.assistant_message_id)
     queue: asyncio.Queue = asyncio.Queue()
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
@@ -416,7 +392,7 @@ async def test_INV36_실패한_생성_태스크는_finally_첫_await_전에_레�
     """
     await register_faq(client)
     fake_llm.raise_after_tokens = 1
-    prepared = await _prepared(tenant_id)
+    prepared = await prepare_turn(tenant_id)
     mid = prepared.assistant_message_id
     seen: dict[str, bool] = {}
 
@@ -448,7 +424,7 @@ async def test_INV36_완주한_생성_태스크는_캐시_적재_전에_이미_�
     모두 레지스트리에 그 id가 없는지, 완주 후에도 없는지 본다.
     """
     await register_faq(client)
-    prepared = await _prepared(tenant_id)
+    prepared = await prepare_turn(tenant_id)
     mid = prepared.assistant_message_id
     seen: dict[str, bool] = {}
     real_maybe_cache = RagService.maybe_cache

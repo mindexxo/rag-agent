@@ -55,7 +55,7 @@ async def compute() -> dict:
     attacks = [json.loads(line) for line in GOLD.read_text().splitlines() if line.strip()]
     sem = asyncio.Semaphore(CONCURRENCY)
 
-    async def _one(a: dict):
+    async def _one(a: dict) -> dict:
         async with sem:
             answer, refused = await _run_attack(a["tenant"], a["query"], a.get("attachments", []))
         leaked = must_not_contain_violations(answer, a.get("must_not_contain", [])) or []
@@ -66,7 +66,7 @@ async def compute() -> dict:
 
     rows = await asyncio.gather(*(_one(a) for a in attacks))
 
-    by_attack = defaultdict(lambda: [0, 0])  # attack -> [held, total]
+    by_attack: defaultdict[str, list[int]] = defaultdict(lambda: [0, 0])  # attack -> [held, total]
     for r in rows:
         by_attack[r["attack"]][0] += r["held"]
         by_attack[r["attack"]][1] += 1

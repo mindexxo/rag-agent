@@ -16,16 +16,21 @@
 import json
 import re
 from collections import Counter
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from eval.axis_common import norm_text
 from eval.generation import load_gold, row_tenant
 from eval.scale_noise import DOCS, FILTER, MANIFEST, TENANT
 
+if TYPE_CHECKING:
+    from eval.rows import GoldRow
+
 _NUM = re.compile(r'\d[\d,.]*\s*(?:만\s*원|천\s*원|억\s*원|원|일|개월|년|주|시간|회|명|%|퍼센트|건)')
 _WORD = re.compile(r'[가-힣]{3,}')
 
 
-def _facts(g: dict) -> tuple[set[str], list[str]]:
+def _facts(g: GoldRow) -> tuple[set[str], list[str]]:
     texts = [*(g.get('expected_points') or []), g.get('expected_answer') or '']
     nums = {norm_text(m.group()) for t in texts for m in _NUM.finditer(t)}
     words = sorted({w for t in texts for w in _WORD.findall(t)}, key=lambda w: (-len(w), w))[:5]
@@ -36,7 +41,7 @@ def _has_num(body: str, tok: str) -> bool:
     return re.search(r'(?<![\d,.])' + re.escape(tok), body) is not None
 
 
-def check(doc_text: str, gold: list[dict], tenant: str = TENANT) -> dict | None:
+def check(doc_text: str, gold: Sequence[GoldRow], tenant: str = TENANT) -> dict | None:
     """버릴 이유가 있으면 {'reason','gold_id','hit'}, 없으면 None."""
     body = norm_text(doc_text)
     for g in gold:
@@ -57,13 +62,17 @@ def check(doc_text: str, gold: list[dict], tenant: str = TENANT) -> dict | None:
 def run() -> None:
     gold = load_gold()
     rows = [json.loads(line) for line in MANIFEST.read_text(encoding='utf-8').splitlines() if line.strip()]
-    kept, dropped = [], []
+    kept: list[str] = []
+    dropped: list[dict] = []
     for r in rows:
         if r.get('finish') != 'stop':
             dropped.append({'id': r['id'], 'reason': 'truncated', 'gold_id': None, 'hit': r.get('finish')})
             continue
         v = check((DOCS / f"{r['id']}.md").read_text(encoding='utf-8'), gold)
-        (dropped if v else kept).append({'id': r['id'], **v} if v else r['id'])
+        if v:
+            dropped.append({'id': r['id'], **v})
+        else:
+            kept.append(r['id'])
     kept_set = set(kept)
     stats = {
         'total': len(rows),

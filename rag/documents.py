@@ -6,7 +6,7 @@
 
 import mimetypes
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -113,7 +113,7 @@ class FailedReuseConflict(Exception):
     """failed 행을 되살리려는 순간 다른 요청이 먼저 되살렸다. 라우터가 409로 바꾼다."""
 
 
-async def _reuse_failed_row(session: AsyncSession, target_id: int, **values) -> int | None:
+async def _reuse_failed_row(session: AsyncSession, target_id: int, **values: Any) -> int | None:
     """failed 행 하나를 pending으로 되살리는 조건부 UPDATE — 동시 재업로드에 진 쪽은 0행이라 None.
 
     별도 함수로 둘 것 — 테스트가 이 경합을 monkeypatch로 재현한다.

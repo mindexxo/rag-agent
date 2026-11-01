@@ -89,7 +89,7 @@ async def subscribe_forever() -> None:
         delay = min(delay * 2, SUBSCRIBE_RETRY_MAX_SECONDS)
 
 
-def _handle_signal(data) -> None:
+def _handle_signal(data: str | bytes) -> None:
     """채널 payload → 로컬 취소. 남의 신호(내가 안 들고 있는 id)는 조용히 무시한다."""
     try:
         message_id = int(data)

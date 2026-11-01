@@ -9,9 +9,10 @@
 스팬 텍스트: 질문·재작성은 전문, 청크 본문·답변은 otel_text_limit로 절단(진단 가치와 개인정보 노출의 절충).
 """
 
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import Token
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from opentelemetry import context as otel_context
 from opentelemetry import trace
@@ -53,7 +54,7 @@ def clip(text: str | None) -> str:
 
 
 @contextmanager
-def span(name: str, kind: str):
+def span(name: str, kind: str) -> Iterator[trace.Span]:
     with _tracer.start_as_current_span(name) as sp:
         if sp.is_recording():
             sp.set_attribute(SPAN_KIND, kind)
@@ -77,18 +78,18 @@ def start_turn(name: str = 'kms.query') -> TurnSpan:
     return TurnSpan(sp, token)
 
 
-def detach_turn(token) -> None:
+def detach_turn(token: Token) -> None:
     otel_context.detach(token)
 
 
-def mark_error(sp, exc: BaseException) -> None:
+def mark_error(sp: trace.Span, exc: BaseException) -> None:
     """예상외 예외만 ERROR로 — 정상 클라이언트 오류(404 등)는 호출부가 이 함수를 건너뛴다."""
     if sp.is_recording():
         sp.record_exception(exc)
         sp.set_status(trace.StatusCode.ERROR)
 
 
-def set_attrs(sp, attrs: dict) -> None:
+def set_attrs(sp: trace.Span, attrs: dict) -> None:
     """None 값은 걸러서 일괄 세팅 (OTel은 None 속성 비허용)."""
     if not sp.is_recording():
         return
@@ -97,7 +98,7 @@ def set_attrs(sp, attrs: dict) -> None:
             sp.set_attribute(k, v)
 
 
-def set_documents(sp, chunks) -> None:
+def set_documents(sp: trace.Span, chunks: Iterable[Any]) -> None:
     """검색 결과 청크를 OpenInference 문서 속성으로 평탄화(순서·본문만). 채택 점수는 rerank 스팬이 기록한다."""
     if not sp.is_recording():
         return

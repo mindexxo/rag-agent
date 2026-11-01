@@ -19,6 +19,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -73,12 +74,12 @@ async def _chunks(document_id: int) -> list[dict]:
 
 async def phase_upload(base: str, out: Path, only: set[str] | None, paths: list, context: bool = False) -> list[dict]:
     made = build_all(out / 'docs', only, set(paths), context=context)
-    manifest = []
+    manifest: list[dict[str, Any]] = []
     async with httpx.AsyncClient(base_url=base, timeout=120) as client:
         for spec_id, path, file in made:
             spec = BY_ID[spec_id]
             fname = f'{spec_id}.{path}{file.suffix}'
-            files = {'file': (fname, file.read_bytes(), MIME[file.suffix.lstrip(".")])}
+            files: dict[str, Any] = {'file': (fname, file.read_bytes(), MIME[file.suffix.lstrip(".")])}
             if path == 'xlsx':
                 files['document-data'] = (
                     'blob',
@@ -100,6 +101,7 @@ async def phase_upload(base: str, out: Path, only: set[str] | None, paths: list,
 
             async with AsyncSessionLocal() as s:
                 d = await s.get(Document, doc_id)
+                assert d is not None
                 status, reason = d.status, d.status_reason
             chunks = await _chunks(doc_id) if status == 'ready' else []
             manifest.append(
@@ -125,7 +127,7 @@ async def phase_upload(base: str, out: Path, only: set[str] | None, paths: list,
 # ── 질문 ────────────────────────────────────────────────────────────────────────
 
 
-def _sse(text: str):
+def _sse(text: str) -> list[tuple[str, Any]]:
     events = []
     for block in text.strip().split('\n\n'):
         lines = block.splitlines()
@@ -156,7 +158,7 @@ async def phase_ask(base: str, out: Path, manifest: list[dict], only: set[str] |
                 )
                 events = _sse(res.text) if res.status_code == 200 else []
                 answer = ''.join(d.get('text', '') for e, d in events if e == 'delta')
-                done = next((d for e, d in events if e == 'done'), {})
+                done: dict[str, Any] = next((d for e, d in events if e == 'done'), {})
                 cited = [c.get('filename') for c in done.get('citations', [])]
                 row = dict(
                     id=m['id'],
@@ -217,7 +219,7 @@ async def phase_cleanup(base: str, manifest: list[dict]) -> None:
             .all()
         )
     if rows:
-        print('drain', await outbox.drain_once(row_ids=rows))
+        print('drain', await outbox.drain_once(row_ids=list(rows)))
 
 
 async def main() -> None:

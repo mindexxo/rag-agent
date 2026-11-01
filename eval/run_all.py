@@ -45,6 +45,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 HISTORY = Path(__file__).resolve().parent / "results" / "history"
 
@@ -196,7 +197,7 @@ def _history_view() -> None:
         print(f"{stamp:<12}{label:<22}{cells}")
 
 
-def _get(summary: dict | None, axis: str, key: str):
+def _get(summary: dict | None, axis: str, key: str) -> Any:
     if not summary:
         return None
     return (summary.get(axis) or {}).get(key)

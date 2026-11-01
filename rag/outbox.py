@@ -23,11 +23,11 @@ import asyncio
 import logging
 import time
 from datetime import timedelta
-from typing import NamedTuple
+from typing import Any, NamedTuple, cast
 
 import httpx
 import openai
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import Select, func, or_, select, update
 from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -62,7 +62,7 @@ DRAIN_ROUND_SECONDS = int(settings.docling_document_timeout_seconds) + INDEX_TAI
 _drain_lock = asyncio.Lock()  # cron 겹침 방지 — 단일 워커 전제
 
 
-def enqueue(session, tenant_id: str, op: str, **payload):
+def enqueue(session: AsyncSession, tenant_id: str, op: str, **payload: Any) -> SearchIndexOutbox:
     """대기열 등재 — **commit하지 않는다.** 호출부의 트랜잭션에 얹히는 것이 요점이다."""
     row = SearchIndexOutbox(tenant_id=tenant_id, op=op, payload=payload, status=PENDING)
     session.add(row)
@@ -73,12 +73,12 @@ async def _set_row(session: AsyncSession, row_id: int, **values: object) -> None
     await session.execute(update(SearchIndexOutbox).where(SearchIndexOutbox.id == row_id).values(**values))
 
 
-async def mark_done(session, row_id: int) -> None:
+async def mark_done(session: AsyncSession, row_id: int) -> None:
     """행을 done으로 — INDEX_DOCUMENT 핸들러가 ready 승격과 **같은 커밋**에 넣기 위해 쓴다."""
     await _set_row(session, row_id, status=DONE)
 
 
-async def _apply(session, op: str, payload: dict, row_id: int) -> None:
+async def _apply(session: AsyncSession, op: str, payload: dict, row_id: int) -> None:
     """행 하나를 실제로 반영한다. 실패는 예외로 올린다 — 횟수·failed 판정은 drain이 한다."""
     if op == INDEX_DOCUMENT:
         from rag.ingestion import index_pending_document  # 지연 import — ingestion이 이 모듈을 import
@@ -158,7 +158,7 @@ def _on_failed(op: str, row_id: int, err: str) -> None:
     logger.error('outbox failed 확정 (op=%s id=%s): %s', op, row_id, err)
 
 
-def due_pending_stmt(limit: int = BATCH, *, row_ids: list[int] | None = None):
+def due_pending_stmt(limit: int = BATCH, *, row_ids: list[int] | None = None) -> Select[Any]:
     """drain이 이번 회차에 집을 행 — pending이고 시도 시각이 됐거나 정해지지 않은 것, id 순.
 
     row_ids를 주면 그 행들만 고르고 **백오프와 limit을 무시한다**("지정한 행을 지금 전부 처리").
@@ -184,7 +184,7 @@ class _Row(NamedTuple):
     payload: dict
 
 
-async def drain(session, limit: int = BATCH, *, row_ids: list[int] | None = None) -> dict:
+async def drain(session: AsyncSession, limit: int = BATCH, *, row_ids: list[int] | None = None) -> dict:
     """pending 행을 id 순으로 행 단위 격리·행 단위 commit으로 처리한다. 반환의 failed는 재시도·확정을 합친 수.
 
     row_ids는 테스트·eval용(공유 DB에서 남의 행을 처리하지 않게) — 운영 cron은 넘기지 않는다.
@@ -217,14 +217,17 @@ async def _record_failure(session: AsyncSession, row: _Row, exc: Exception) -> N
     """실패를 행에 기록하고 재시도·확정을 갈라 한 커밋으로 끝낸다. 결정적 실패는 횟수를 안 본다 — 다시 돌려도 같다."""
     await session.rollback()  # 핸들러가 이 세션을 더럽혔을 수 있다
     err = str(exc)[:500]
-    attempts = (
-        await session.execute(
-            update(SearchIndexOutbox)
-            .where(SearchIndexOutbox.id == row.id)
-            .values(attempts=SearchIndexOutbox.attempts + 1, last_error=err)
-            .returning(SearchIndexOutbox.attempts)
-        )
-    ).scalar()
+    attempts = cast(
+        int,
+        (
+            await session.execute(
+                update(SearchIndexOutbox)
+                .where(SearchIndexOutbox.id == row.id)
+                .values(attempts=SearchIndexOutbox.attempts + 1, last_error=err)
+                .returning(SearchIndexOutbox.attempts)
+            )
+        ).scalar(),
+    )  # 방금 갱신한 행이라 값이 있다
     terminal = not is_transient(exc) or attempts >= MAX_ATTEMPTS
     if terminal:
         await _mark_terminal(session, row, attempts, err)
@@ -288,7 +291,9 @@ async def drain_once(limit: int = BATCH, *, row_ids: list[int] | None = None) ->
             return await drain(session, limit, row_ids=row_ids)
 
 
-async def pending_row_ids(session, *, document_id: int | None = None, faq_id: int | None = None) -> list[int]:
+async def pending_row_ids(
+    session: AsyncSession, *, document_id: int | None = None, faq_id: int | None = None
+) -> list[int]:
     """한 문서 또는 한 FAQ를 가리키는 pending 행 id(op 무관) — 테스트·eval이 row_ids로 넘길 값. 둘 중 하나만 넘긴다."""
     assert (document_id is None) != (faq_id is None), 'document_id 또는 faq_id 하나만'
     stmt = select(SearchIndexOutbox.id).where(SearchIndexOutbox.status == PENDING).order_by(SearchIndexOutbox.id)

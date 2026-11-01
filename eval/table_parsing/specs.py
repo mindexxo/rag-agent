@@ -20,13 +20,13 @@ def H(t: str, **k: Any) -> dict[str, Any]:
     return dict(t=t, bg='#d9d9d9', **k)
 
 
-def _long(n: int):
+def _long(n: int) -> list[list[str]]:
     return [['번호', '품목', '단가', '수량']] + [
         [str(i), f'품목-{i:03d}', f'{(i * 1234) % 97000 + 1000:,}원', str(i % 9 + 1)] for i in range(1, n + 1)
     ]
 
 
-def _wide():
+def _wide() -> list[list[str]]:
     return [
         ['지점'] + [f'{m}월' for m in range(1, 12)],
         ['강남점'] + [f'{(m * 37) % 90 + 10}' for m in range(1, 12)],
@@ -35,7 +35,7 @@ def _wide():
     ]
 
 
-SPECS = [
+SPECS: list[dict[str, Any]] = [
     # ── 구조 축 (4경로) ──
     dict(
         id='S01_basic',
@@ -283,7 +283,7 @@ SPECS = [
     ),
 ]
 
-BY_ID = {s['id']: s for s in SPECS}
+BY_ID: dict[str, dict[str, Any]] = {s['id']: s for s in SPECS}
 
 
 def axis_no(spec: dict[str, Any]) -> str:

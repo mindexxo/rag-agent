@@ -24,7 +24,7 @@ def main() -> None:
         changed = 0
         for r in rows:
             g = GOLD[r['id']]
-            new_cite = citation_accuracy(r['answer'], g.get('expected_docs', []))
+            new_cite = citation_accuracy(r['answer'], g.get('expected_docs', []))  # type: ignore[call-arg]  # v2 라벨 꼬리 전용 — 지금 시그니처로는 동작하지 않는다(citation_accuracy docstring)
             # 심판 도입 이후 행의 expected_points_coverage는 규칙 + 2단계 심판 값이다 — 규칙만으로 다시 계산해 덮으면
             # 심판 반영분이 조용히 지워진다. 그런 행은 규칙을 다시 계산하고, 최종은 "새 규칙 적중 ∪ 감사의 covered"로
             # 다시 짓는다(심판은 다시 부르지 않는다 — 새로 미적중이 된 포인트는 판정 없이 미적중으로 남는다).

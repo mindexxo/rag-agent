@@ -157,7 +157,7 @@ def summarize(records: list[dict], human: dict | None = None) -> dict:
     errors = [
         r for r in rows if not r['final'] and (r.get('verdict') or {}).get('error') and r['picture_id'] not in human
     ]
-    by_type = defaultdict(Counter)
+    by_type: defaultdict[str, Counter[str]] = defaultdict(Counter)
     for r in judged:
         by_type[(r.get('verdict') or {}).get('type', '?')][r['final']] += 1
     agree = [

@@ -61,10 +61,12 @@ def _grid_sizes(
             if cell is None:
                 continue
             rs, cs = _span(cell)
+            w: float
+            h: float
             if (r, c) in nested_imgs:
                 w, h = nested_imgs[(r, c)].size
             else:
-                w, h = _text_size(cell_text(cell), f, isinstance(cell, dict) and cell.get('v'))
+                w, h = _text_size(cell_text(cell), f, bool(isinstance(cell, dict) and cell.get('v')))
             if cs == 1:
                 col_w[c] = max(col_w[c], w + 2 * PAD)
             if rs == 1:
@@ -165,9 +167,9 @@ def render_spec(spec: dict[str, Any]) -> Image.Image:
     if note:
         d.text((20, y), note, fill='black', font=font(fs - 2))
     if spec.get('skew'):
-        im = im.rotate(spec['skew'], expand=True, fillcolor='white', resample=Image.BICUBIC)
+        im = im.rotate(spec['skew'], expand=True, fillcolor='white', resample=Image.Resampling.BICUBIC)
     if spec.get('scale'):
-        im = im.resize((int(im.width * spec['scale']), int(im.height * spec['scale'])), Image.LANCZOS)
+        im = im.resize((int(im.width * spec['scale']), int(im.height * spec['scale'])), Image.Resampling.LANCZOS)
     if spec.get('jpeg_quality'):
         buf = io.BytesIO()
         im.save(buf, 'JPEG', quality=spec['jpeg_quality'])

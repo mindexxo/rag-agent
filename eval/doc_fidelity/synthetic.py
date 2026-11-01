@@ -129,7 +129,7 @@ def score_picture(spec: dict, caption: str) -> dict:
     }
 
 
-def _thumb(image: Image.Image):
+def _thumb(image: Image.Image) -> list[Any]:
     """짝짓기용 지문 — 회색 24×24. 크롭은 쪽 렌더(PDF)·원본(DOCX)이라 크기·여백이 조금 달라도 모양은 같다."""
     return list(image.convert('L').resize((24, 24)).getdata())
 

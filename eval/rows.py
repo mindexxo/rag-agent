@@ -11,6 +11,7 @@ class ConversationTurn(TypedDict):
 
     role: str
     content: str
+    status: NotRequired[str]  # 중단된 턴 재현용 — 없으면 완료 턴
 
 
 class ExpectedChunk(TypedDict):

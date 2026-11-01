@@ -185,7 +185,7 @@ async def phase_synthetic_pictures(out: Path) -> None:
         matched = match_pictures(specs, [r for r in recs if r['filename'] == name], out / 'crops')
         uses = Counter((r or {}).get('picture_id') for _, r in matched if r)
         for sid, r in matched:
-            merged = bool(r) and uses[r['picture_id']] > 1
+            merged = uses[r['picture_id']] > 1 if r else False
             rows.append(_synthetic_row(sid, fmt, r, merged, index_text.get(name, ('', ''))))
     dump_jsonl(out / 'synthetic_pictures.jsonl', rows)
     for r in rows:
@@ -231,7 +231,7 @@ def phase_prompt_ab(only: list[str] | None) -> None:
 
     variants = {k: v for k, v in ab.VARIANTS.items() if not only or k in only}
     syn = [r for r in load_jsonl(ROOT / 'homeplus' / 'synthetic_pictures.jsonl') if r.get('picture_id')]
-    spec_of = {}
+    spec_of: dict[str, list[str]] = {}
     for r in syn:
         spec_of.setdefault(r['picture_id'], []).append(r['id'])
     real = [r for r in load_jsonl(ROOT / 'inticube' / 'pictures.jsonl') if r.get('crop')]
@@ -239,7 +239,7 @@ def phase_prompt_ab(only: list[str] | None) -> None:
         (r['picture_id'], ROOT / 'inticube' / 'crops' / r['crop']) for r in real
     ]
     rows = ab.run(targets, variants, ROOT / 'prompt_ab.jsonl')
-    table = defaultdict(lambda: Counter())
+    table: defaultdict[str, Counter[str]] = defaultdict(lambda: Counter())
     for r in rows:
         if r['variant'] not in variants or r['picture_id'] not in spec_of:
             continue

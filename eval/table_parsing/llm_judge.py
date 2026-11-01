@@ -11,7 +11,7 @@
 
 import asyncio
 import os
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import AliasChoices, BaseModel, Field
 
@@ -66,7 +66,7 @@ def judge_llm() -> LlmClient:
             raise SystemExit("판정자가 claude(기본)인데 claude CLI가 PATH에 없다 — 설치·로그인하거나 TABLE_JUDGE=vllm")
         from eval.claude_client import ClaudeCliClient
 
-        return ClaudeCliClient(model=model)
+        return cast('LlmClient', ClaudeCliClient(model=model))  # acomplete만 쓰는 판정 경로의 대체 주입
     from rag.llm import create_llm
 
     return create_llm()

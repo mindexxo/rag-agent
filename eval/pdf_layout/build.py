@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.pdfgen.canvas import Canvas
-    from reportlab.platypus import BaseDocTemplate, Flowable
+    from reportlab.platypus import BaseDocTemplate, Flowable, Frame
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -22,7 +22,7 @@ from eval.pdf_layout.specs import SPECS  # noqa: E402
 SIZE, LEADING = 11.6, 13.8  # 실문서 규정 문서의 본문 글자 크기·행간
 
 
-def _styles():
+def _styles() -> tuple[ParagraphStyle, ParagraphStyle, ParagraphStyle, ParagraphStyle]:
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
@@ -55,7 +55,9 @@ def _png(tmp: Path) -> Path:
     return f
 
 
-def _flow(block: tuple, styles: tuple[ParagraphStyle, ParagraphStyle, ParagraphStyle, ParagraphStyle], tmp: Path):
+def _flow(
+    block: tuple, styles: tuple[ParagraphStyle, ParagraphStyle, ParagraphStyle, ParagraphStyle], tmp: Path
+) -> Flowable:
     from reportlab.lib import colors
     from reportlab.platypus import FrameBreak, Image, Paragraph, Table, TableStyle
 
@@ -80,7 +82,7 @@ def _flow(block: tuple, styles: tuple[ParagraphStyle, ParagraphStyle, ParagraphS
     raise ValueError(kind)
 
 
-def _columns(w: float, h: float, n: int, gap: float, margin: float = 15 * 2.835):
+def _columns(w: float, h: float, n: int, gap: float, margin: float = 15 * 2.835) -> list[Frame]:
     from reportlab.platypus import Frame
 
     cw = (w - 2 * margin - gap * (n - 1)) / n

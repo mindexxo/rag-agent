@@ -18,7 +18,7 @@
 
 import asyncio
 import os
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel
 
@@ -75,7 +75,7 @@ def judge_llm() -> LlmClient:
             )
         from eval.claude_client import ClaudeCliClient
 
-        return ClaudeCliClient(model=model)
+        return cast('LlmClient', ClaudeCliClient(model=model))  # acomplete만 쓰는 판정 경로의 대체 주입
     from rag.llm import create_llm
 
     return create_llm()
@@ -160,7 +160,7 @@ async def selftest(runs: int = 3) -> dict:
     llm = judge_llm()
     out = []
     for f in FIXTURES:
-        labels = []
+        labels: list[str] = []
         for _ in range(runs):
             try:
                 labels.append((await judge_point(llm, f["answer"], f["point"])).label)

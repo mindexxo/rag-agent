@@ -55,7 +55,7 @@ async def compute(multi: bool = False) -> dict:
     llm = create_aux_llm()  # 운영과 같은 보조 클라이언트 — LLM_AUX_*가 비면 생성 설정 그대로
     sem = asyncio.Semaphore(CONCURRENCY)
 
-    async def _one(case: dict, _i: int):
+    async def _one(case: dict, _i: int) -> tuple[str, bool, str]:
         # 운영과 같은 예산으로 자른다 (rag/turn/service.py의 condense 경로와 같은 모양).
         # 이 데이터셋은 최대 85토큰이라 실제로 잘리는 케이스는 없지만, 예산 지식이 세 축에
         # 흩어지지 않게 형태를 맞춘다. 데이터가 길어지면 자동으로 운영과 같이 동작한다.
@@ -84,7 +84,7 @@ async def compute(multi: bool = False) -> dict:
     passing_runs = sum(sum(v) for v in per_case.values())
     flaky = [cid for cid, oks in per_case.items() if 0 < sum(oks) < len(oks)]
 
-    by_cat = defaultdict(lambda: [0, 0])  # category -> [pass_runs, total_runs]
+    by_cat: defaultdict[str, list[int]] = defaultdict(lambda: [0, 0])  # category -> [pass_runs, total_runs]
     for cid, oks in per_case.items():
         cat = by_case[cid]["category"]
         by_cat[cat][0] += sum(oks)

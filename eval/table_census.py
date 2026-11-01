@@ -17,6 +17,7 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from config import settings
 from eval.axis_common import TABLE_SEP, commit, is_table_chunk
@@ -46,7 +47,9 @@ async def _chunks(tenant: str) -> list[dict]:
 
 def census(tenant: str, chunks: list[dict]) -> list[dict]:
     """문서별 집계 행. 순수 함수 — 테스트가 조각 dict만 먹인다."""
-    docs = defaultdict(lambda: {"chunks": 0, "table_chunks": 0, "big": set(), "small": 0, "rows": 0})
+    docs: defaultdict[str, dict[str, Any]] = defaultdict(
+        lambda: {"chunks": 0, "table_chunks": 0, "big": set(), "small": 0, "rows": 0}
+    )
     for s in chunks:
         d = docs[s["filename"]]
         d["chunks"] += 1
@@ -76,7 +79,7 @@ def census(tenant: str, chunks: list[dict]) -> list[dict]:
 
 
 def summary(rows: list[dict]) -> str:
-    agg = defaultdict(Counter)
+    agg: defaultdict[tuple[str, str], Counter[str]] = defaultdict(Counter)
     for o in rows:
         a = agg[("inticube" if o["tenant"] == "inticube" else "모의", o["ext"])]
         a["docs"] += 1
@@ -113,7 +116,7 @@ async def main() -> None:
 
 if __name__ == "__main__":
 
-    async def _run():
+    async def _run() -> None:
         try:
             await main()
         finally:

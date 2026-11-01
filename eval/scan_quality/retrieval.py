@@ -12,16 +12,20 @@ import asyncio
 import json
 import sys
 from collections import defaultdict
+from typing import TYPE_CHECKING
 
 import httpx
 from sqlalchemy import select
 
 from eval.scan_quality.scans import OUT, SPECS
 
+if TYPE_CHECKING:
+    from eval.rows import GoldRow
+
 _flat = lambda xs: [y for x in xs for y in (x if isinstance(x, list) else [x])]  # noqa: E731
 
 
-def _gold():
+def _gold() -> list[GoldRow]:
     from eval.generation import load_gold
 
     names = {s.filename for s in SPECS}
@@ -79,6 +83,7 @@ async def swap(kind: str) -> None:
             res = _check(await outbox.drain_once(row_ids=ids), f'{s.filename} 색인')
             async with AsyncSessionLocal() as db:
                 d = await db.get(Document, doc_id)
+            assert d is not None
             if d.status != 'ready':
                 raise RuntimeError(f'{s.filename} 색인 실패: {d.status} {d.status_reason}')
             print(kind, s.filename, d.status, res, flush=True)
@@ -97,7 +102,8 @@ async def measure(label: str) -> None:
     from eval.generation import row_tenant
     from rag.search.retriever import retrieve_candidates
 
-    out, by = [], defaultdict(list)
+    out: list[dict] = []
+    by: defaultdict[str, list[int | None]] = defaultdict(list)
     async with AsyncSessionLocal() as db:
         for g in _gold():
             want = set(_flat(g['expected_docs'])) & {s.filename for s in SPECS}
@@ -109,7 +115,7 @@ async def measure(label: str) -> None:
     for doc, ranks in by.items():
         n = len(ranks)
         print(
-            f"{label:<14} {doc[:28]:<30} n={n:>2} top1 {sum(r == 1 for r in ranks) / n:.2f} top5 {sum(bool(r) and r <= 5 for r in ranks) / n:.2f} "
+            f"{label:<14} {doc[:28]:<30} n={n:>2} top1 {sum(r == 1 for r in ranks) / n:.2f} top5 {sum(r is not None and r <= 5 for r in ranks) / n:.2f} "
             f"miss20 {sum(r is None for r in ranks)}"
         )
 
@@ -117,7 +123,7 @@ async def measure(label: str) -> None:
 if __name__ == '__main__':
     cmd, arg = sys.argv[1], sys.argv[2]
 
-    async def _run():
+    async def _run() -> None:
         try:
             await (swap(arg) if cmd == 'swap' else measure(arg))
         finally:

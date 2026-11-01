@@ -62,7 +62,7 @@ async def compute() -> dict:
     cases = [json.loads(line) for line in GOLD.read_text().splitlines() if line.strip()]
     sem = asyncio.Semaphore(CONCURRENCY)
 
-    async def _one(c: dict, _i: int):
+    async def _one(c: dict, _i: int) -> dict:
         async with sem:
             ans, route = await _answer(c["query"])
         ok, reason = _passes(c, ans)
@@ -90,7 +90,7 @@ async def compute() -> dict:
     passing_runs = sum(sum(v) for v in per_case.values())
     flaky = [cid for cid, oks in per_case.items() if 0 < sum(oks) < len(oks)]
 
-    by_cat = defaultdict(lambda: [0, 0])  # category -> [pass_runs, total_runs]
+    by_cat: defaultdict[str, list[int]] = defaultdict(lambda: [0, 0])  # category -> [pass_runs, total_runs]
     for cid, oks in per_case.items():
         cat = by_id[cid]["category"]
         by_cat[cat][0] += sum(oks)

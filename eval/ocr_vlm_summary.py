@@ -9,19 +9,22 @@ import argparse
 import json
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 from eval.table_parsing.expected import is_numeric
 
 
-def _load(run: Path):
+def _load(run: Path) -> list[dict[str, Any]]:
     rows = [json.loads(line) for line in (run / 'results.jsonl').read_text().splitlines() if line.strip()]
     return [r for r in rows if r['layer'] == 'l1' and r['path'] == 'img']
 
 
-def _aggregate(run: Path) -> tuple[dict, dict]:
+def _aggregate(run: Path) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     """실행 하나 → (축별 집계, 합계). 축 시간은 그 축 표 중 가장 오래 걸린 것."""
-    agg = defaultdict(lambda: dict(c=[0, 0], n=[0, 0], p=[0, 0], num_err=0, extra=0, clean=True, sec=0.0))
-    tot = dict(c=[0, 0], n=[0, 0], p=[0, 0], num_err=0, extra=0, clean_axes=0, sec=0.0)
+    agg: defaultdict[str, dict[str, Any]] = defaultdict(
+        lambda: dict(c=[0, 0], n=[0, 0], p=[0, 0], num_err=0, extra=0, clean=True, sec=0.0)
+    )
+    tot: dict[str, Any] = dict(c=[0, 0], n=[0, 0], p=[0, 0], num_err=0, extra=0, clean_axes=0, sec=0.0)
     for r in _load(run):
         a = agg[r['axis']]
         a['c'][0] += r['cells'][0]

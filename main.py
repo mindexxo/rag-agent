@@ -9,6 +9,7 @@
 
 import asyncio
 import contextlib
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -33,7 +34,7 @@ init_tracing()  # OTel(#7) — otel_endpoint 미설정이면 no-op
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """앱 수명 동안 도는 백그라운드 태스크 기동·정리 (#30).
 
     여기 두는 건 **이 웹 프로세스의 인메모리 상태를 다뤄야 하는 작업**뿐이다 —

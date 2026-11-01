@@ -18,6 +18,7 @@ import json
 from collections import defaultdict
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,7 +35,7 @@ TYPES = {'single_fact', 'paraphrase', 'rare_lexical', 'multi_doc'} | HARD_TYPES
 METRICS = ['recall_at_5', 'recall_at_20', 'hit_at_1', 'mrr']
 
 
-def _table(rows: list[dict], group_fn: Callable[[dict], str], label: str):
+def _table(rows: list[dict], group_fn: Callable[[dict], str], label: str) -> None:
     groups = defaultdict(list)
     for r in rows:
         groups[group_fn(r)].append(r['scores'])
@@ -148,7 +149,7 @@ async def compute(expand: bool = False, tenants: set[str] | None = None) -> dict
             for g, gold_ids in work:
                 expanded = queries_map[g['id']] if expand else None
                 got = await _search(session, tenant, g['query'], expanded)
-                row = {
+                row: dict[str, Any] = {
                     'id': g['id'],
                     'type': g['type'],
                     'tenant': tenant,
@@ -204,7 +205,7 @@ async def main() -> None:
 
 if __name__ == '__main__':
 
-    async def _run():
+    async def _run() -> None:
         try:
             await main()
         finally:

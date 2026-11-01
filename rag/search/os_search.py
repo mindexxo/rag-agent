@@ -34,7 +34,7 @@ def lex_clause(field: str, query_text: str) -> dict:
     return {"match": {field: {"query": query_text, "auto_generate_synonyms_phrase_query": False}}}
 
 
-def _ids(resp) -> list[int]:
+def _ids(resp: dict) -> list[int]:
     return [int(h["_source"]["chunk_id"]) for h in resp["hits"]["hits"]]
 
 

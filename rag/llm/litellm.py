@@ -10,6 +10,7 @@
 """
 
 from collections.abc import AsyncIterator, Callable
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -44,7 +45,7 @@ def with_cache_mark(messages: list[dict]) -> list[dict]:
     return out
 
 
-def _usage_of(obj) -> LlmUsage | None:
+def _usage_of(obj: Any) -> LlmUsage | None:
     """LiteLLM 응답·청크의 usage → LlmUsage. 캐시 적중 토큰은 OpenAI 모양(prompt_tokens_details.cached_tokens)이다."""
     usage = getattr(obj, "usage", None)
     if not usage:

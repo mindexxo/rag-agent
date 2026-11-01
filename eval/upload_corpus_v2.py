@@ -40,6 +40,7 @@ async def _drain_and_mark(document_id: int) -> str:
     await outbox.drain_once(row_ids=ids)
     async with AsyncSessionLocal() as s:
         doc = await s.get(Document, document_id)
+        assert doc is not None
         return '✓' if doc.status == 'ready' else f'✗ {doc.status}: {doc.status_reason}'
 
 

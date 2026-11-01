@@ -41,12 +41,13 @@ def install(name: str) -> None:
 
     import rag.chunking as C
 
+    # 실험용 런타임 패치 — docling 모듈 속성을 바꿔 끼운다(타입 검사 밖)
     if not hasattr(PO, '_scan224_orig'):
-        PO._scan224_orig = PO.KserveV2OcrOptions
-    PO.KserveV2OcrOptions = PO._scan224_orig
+        PO._scan224_orig = PO.KserveV2OcrOptions  # type: ignore[attr-defined]
+    PO.KserveV2OcrOptions = PO._scan224_orig  # type: ignore[attr-defined,misc]
     override = VARIANTS[name]
     if override is None:
-        PO.KserveV2OcrOptions = PO._scan224_orig
+        PO.KserveV2OcrOptions = PO._scan224_orig  # type: ignore[attr-defined,misc]
     else:
         params = {**server_params(), **override}
 
@@ -56,7 +57,7 @@ def install(name: str) -> None:
 
         get_ocr_factory(False), get_ocr_factory(True)
 
-        def _local(**kw: Any):
+        def _local(**kw: Any) -> PO.RapidOcrOptions:
             return PO.RapidOcrOptions(
                 lang=kw.get('lang', ['korean']),
                 scale=kw.get('scale', 3.0),
@@ -65,6 +66,6 @@ def install(name: str) -> None:
                 rapidocr_params=params,
             )
 
-        PO.KserveV2OcrOptions = _local
+        PO.KserveV2OcrOptions = _local  # type: ignore[misc,assignment]
     C.convert_process.docling_convert = lambda p, **kw: C.convert_process.convert_local(p, **kw)
     C.document_converter._converter = None  # 다음 변환에서 새 옵션으로 변환기를 다시 만든다

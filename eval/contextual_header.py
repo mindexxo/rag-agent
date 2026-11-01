@@ -34,6 +34,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -309,7 +310,7 @@ async def measure(runs: int) -> None:
     gold = {g['id']: g for g in load_gold()}
     # (조건, 회차)마다 저장하고 이미 끝난 몫은 건너뛴다 — TEI·세션이 끊겨도 이어 돈다(첫 실행이 cr 1회차에서 끊겨 답변 채점이 날아갔다)
     path = OUT / 'measure.json'
-    result = (
+    result: dict[str, Any] = (
         json.loads(path.read_text(encoding='utf-8'))
         if path.exists()
         else {
@@ -365,7 +366,7 @@ def main() -> None:
     args = ap.parse_args()
     from rag.search.os_client import close_client
 
-    async def run():
+    async def run() -> None:
         try:
             if args.cmd == 'contexts':
                 await make_contexts()

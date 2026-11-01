@@ -3,7 +3,7 @@
 턴 시작·종료(자리표시 기록·마감)는 rag/turn/turn_state.py가 맡는다.
 """
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rag import otel
@@ -29,7 +29,7 @@ class ConversationNotFound(LookupError):
     """없거나 삭제됐거나 다른 소유자의 conversation_id — HTTP 경계가 404로 매핑하는 유일한 prepare 실패."""
 
 
-def owned_filter(tenant_id: str, user_id: str | None):
+def owned_filter(tenant_id: str, user_id: str | None) -> ColumnElement[bool]:
     """대화 소유 판정 WHERE 표현식(tenant + created_by + 미삭제)의 정의점.
 
     질의 경로와 rag/turn/history.py의 조회가 함께 쓴다. user_id=None은 DEFAULT_USER로 본다.
@@ -56,14 +56,14 @@ async def ensure_conversation(
         await session.flush()
         return conversation
 
-    conversation = (
+    owned = (
         await session.execute(
             select(Conversation).where(Conversation.id == conversation_id).where(owned_filter(tenant_id, user_id))
         )
     ).scalar_one_or_none()
-    if conversation is None:
+    if owned is None:
         raise ConversationNotFound(f'Conversation {conversation_id} not found')
-    return conversation
+    return owned
 
 
 async def load_recent_messages(
@@ -135,7 +135,9 @@ async def _condense_call(
             CONDENSE_MULTI_SYSTEM_PROMPT if multi else CONDENSE_SYSTEM_PROMPT,
             build_condense_user_message(query, history),
         )
-        parsed = await acomplete_validated(llm, llm_messages, CondenseMultiResult if multi else CondenseResult, span=sp)
+        parsed: CondenseResult | CondenseMultiResult = await acomplete_validated(
+            llm, llm_messages, CondenseMultiResult if multi else CondenseResult, span=sp
+        )
         queries = _postprocess_queries(parsed, query)
         attrs = {otel.INPUT_VALUE: query, otel.OUTPUT_VALUE: queries[0], 'kms.history_messages': len(history)}
         if multi:
@@ -186,7 +188,8 @@ def trim_messages_for_condense(messages: list, budget_tokens: int) -> list:
 
     긴 히스토리를 그대로 넘기면 이전 답변의 수치·조건이 재작성 질의에 주입된다.
     """
-    selected, used = [], 0
+    selected: list = []
+    used = 0
     for m in reversed(messages):
         cost = estimate_tokens(m.content)
         if selected and used + cost > budget_tokens:  # 최소 1개는 보장
@@ -211,7 +214,8 @@ def build_prior_turns(messages: list, budget_tokens: int) -> list[dict]:
             turns.append({"q": pending_question, "a": _history_content(message)})
             pending_question = None
 
-    selected, used = [], 0
+    selected: list[dict] = []
+    used = 0
     for turn in reversed(turns):
         cost = estimate_tokens(turn["q"]) + estimate_tokens(turn["a"])
         if selected and used + cost > budget_tokens:  # 최소 1턴은 보장

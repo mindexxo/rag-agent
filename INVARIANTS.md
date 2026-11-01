@@ -46,7 +46,7 @@
 | INV-26 | docx 조문 헤딩 폴백은 번호 목록·표 행·인용 문단을 헤딩으로 올리지 않는다 | `rag/chunking/docx.py` | `tests/test_chunking_parsers.py::TestDocxFallbackHeadings::test_번호_목록과_표_행과_장애_같은_낱말은_승격하지_않는다` · `tests/test_chunking_parsers.py::TestDocxFallbackHeadings::test_인용_문단은_승격하지_않는다` | |
 | INV-27 | 관측 장치(워커 메트릭 서버) 실패가 색인을 멈추지 않는다 | `rag/worker.py` | `tests/test_worker_metrics.py::test_포트가_점유돼도_색인은_계속한다` | |
 | INV-28 | outbox 행은 지우지 않는다 — done·failed가 이력이자 관측 지점 | `rag/outbox.py` | `tests/test_invariants_static.py::test_INV28_outbox_행을_지우는_코드가_없다` · `tests/test_invariants_static.py::test_INV28_탐지기는_속성_참조와_스키마_접두_삭제도_잡는다` | outbox 모듈의 delete 호출 자체를 막는다(보수적). 속성 참조·스키마 접두 SQL도 잡는다 |
-| INV-29 | ready ≡ 색인됨 — ready 승격은 mark_done과 같은 커밋에서만 | `rag/outbox.py` | `tests/test_integration_outbox_retry.py::test_커밋_단계만_실패해_failed가_된_문서의_청크는_다음_회차에_지워진다` | |
+| INV-29 | ready ≡ 색인됨 — ready 승격은 mark_done과 같은 커밋에서만, 재동기화는 색인 중(pending) 문서의 청크를 잉여로 지우지 않는다 | `rag/outbox.py` | `tests/test_integration_outbox_retry.py::test_커밋_단계만_실패해_failed가_된_문서의_청크는_다음_회차에_지워진다` · `tests/test_integration_index_reconcile.py::test_색인_도중_reconcile이_끼어들어도_청크_없는_ready가_되지_않는다` | 잉여 기준은 `rag/os_reconcile.py` |
 | INV-09 | 문서 삭제는 행·blob을 보존한다(과거 인용의 원본 다운로드) | `rag/documents.py` | `tests/test_integration_documents.py::test_다운로드는_소프트_삭제_후에도_된다` | |
 
 ## 턴·스트리밍·취소

@@ -50,7 +50,7 @@ class _Stream:
         try:
             return next(self._it)
         except StopIteration:
-            raise StopAsyncIteration
+            raise StopAsyncIteration from None
 
 
 @pytest.fixture

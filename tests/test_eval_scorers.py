@@ -287,7 +287,7 @@ class TestGoldLoading:
     def test_load_gold가_실문서를_합친다(self):
         from eval.generation import GOLD, load_gold
 
-        canonical = sum(1 for l in GOLD.read_text().splitlines() if l.strip())
+        canonical = sum(1 for ln in GOLD.read_text().splitlines() if ln.strip())
         merged = len(load_gold())
         assert merged > canonical, f'gold_private가 안 합쳐졌다 (정본 {canonical} = 병합 {merged})'
 

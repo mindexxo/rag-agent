@@ -9,6 +9,7 @@
 """
 
 import pytest
+from pydantic import ValidationError
 
 from config import settings
 from rag.llm import CitationTail, ConstraintUnsupported, create_llm
@@ -111,5 +112,5 @@ class TestSettings:
         from config import Settings
 
         monkeypatch.setenv('LLM_PROVIDER', 'gpt9')
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             Settings()

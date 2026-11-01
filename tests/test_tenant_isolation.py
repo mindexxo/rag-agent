@@ -1,3 +1,5 @@
+"""tenant_scoped 쿼리 격리 — 한 테넌트로 넣은 행이 다른 테넌트 조회에 보이지 않는다."""
+
 import uuid
 
 import pytest

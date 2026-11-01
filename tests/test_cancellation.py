@@ -131,15 +131,15 @@ async def test_취소하면_부분답변이_cancelled로_남고_정리가_끝난
     assert await inflight_count(tenant_id) == 1
 
     queue: asyncio.Queue = asyncio.Queue()
-    root_span, token = otel.start_turn()
-    task = asyncio.create_task(_run_generation(prepared, queue, lease, 0.0, root_span))
+    turn = otel.start_turn()
+    task = asyncio.create_task(_run_generation(prepared, queue, lease, 0.0, turn.span))
     try:
         await asyncio.wait_for(fake_llm.paused.wait(), timeout=5)  # 정지 지점 도달까지
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
     finally:
-        otel.detach_turn(token)
+        otel.detach_turn(turn.token)
 
     async with AsyncSessionLocal() as session:
         msg = await session.get(Message, assistant_id)
@@ -165,15 +165,15 @@ async def test_취소하면_done이_cancelled와_빈_인용을_싣는다(client,
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
 
     queue: asyncio.Queue = asyncio.Queue()
-    root_span, token = otel.start_turn()
-    task = asyncio.create_task(_run_generation(prepared, queue, lease, 0.0, root_span))
+    turn = otel.start_turn()
+    task = asyncio.create_task(_run_generation(prepared, queue, lease, 0.0, turn.span))
     try:
         await asyncio.wait_for(fake_llm.paused.wait(), timeout=5)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
     finally:
-        otel.detach_turn(token)
+        otel.detach_turn(turn.token)
 
     drained = []
     while not queue.empty():
@@ -197,9 +197,9 @@ async def test_스윕이_failed로_바꿔도_살아있는_태스크는_취소된
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
     lease.handed_off = True
 
-    root_span, token = otel.start_turn()
-    otel.detach_turn(token)
-    spawn_generation(prepared, asyncio.Queue(), lease, 0.0, root_span)
+    turn = otel.start_turn()
+    otel.detach_turn(turn.token)
+    spawn_generation(prepared, asyncio.Queue(), lease, 0.0, turn.span)
     await asyncio.wait_for(fake_llm.paused.wait(), timeout=5)
 
     async with AsyncSessionLocal() as session:  # 스윕이 지나간 상황을 만든다
@@ -234,15 +234,15 @@ async def test_첫_토큰_전에_취소하면_빈_답변으로_남는다(client,
     prepared = await _prepare_turn(tenant_id)
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
 
-    root_span, token = otel.start_turn()
-    task = asyncio.create_task(_run_generation(prepared, asyncio.Queue(), lease, 0.0, root_span))
+    turn = otel.start_turn()
+    task = asyncio.create_task(_run_generation(prepared, asyncio.Queue(), lease, 0.0, turn.span))
     try:
         await asyncio.wait_for(fake_llm.paused.wait(), timeout=5)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
     finally:
-        otel.detach_turn(token)
+        otel.detach_turn(turn.token)
 
     async with AsyncSessionLocal() as session:
         msg = await session.get(Message, prepared.assistant_message_id)
@@ -258,11 +258,11 @@ async def test_정리_도중_취소요청은_대상을_못_찾는다(client, ten
     prepared = await _prepare_turn(tenant_id)
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
 
-    root_span, token = otel.start_turn()
+    turn = otel.start_turn()
     try:
-        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, root_span)  # 완주
+        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, turn.span)  # 완주
     finally:
-        otel.detach_turn(token)
+        otel.detach_turn(turn.token)
 
     # 완주 직후 취소 요청이 도착한 상황 — 레지스트리에 없어야 한다
     assert cancellation.cancel_local(prepared.assistant_message_id) is False
@@ -291,9 +291,9 @@ async def test_생성_중_취소요청은_204이고_cancelled로_귀결(client, 
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
     lease.handed_off = True  # 반납 책임은 태스크가 진다 (kms 라우터와 동일)
 
-    root_span, token = otel.start_turn()
-    otel.detach_turn(token)  # 요청 컨텍스트가 아니므로 즉시 분리
-    spawn_generation(prepared, asyncio.Queue(), lease, 0.0, root_span)
+    turn = otel.start_turn()
+    otel.detach_turn(turn.token)  # 요청 컨텍스트가 아니므로 즉시 분리
+    spawn_generation(prepared, asyncio.Queue(), lease, 0.0, turn.span)
     await asyncio.wait_for(fake_llm.paused.wait(), timeout=5)
 
     cancel = await client.post(f'/kms/messages/{assistant_id}/cancel', headers=USER)
@@ -352,9 +352,9 @@ async def test_진행_중인_남의_생성은_취소할_수_없다(client, tenan
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
     lease.handed_off = True
 
-    root_span, token = otel.start_turn()
-    otel.detach_turn(token)
-    task = spawn_generation(prepared, asyncio.Queue(), lease, 0.0, root_span)
+    turn = otel.start_turn()
+    otel.detach_turn(turn.token)
+    task = spawn_generation(prepared, asyncio.Queue(), lease, 0.0, turn.span)
     await asyncio.wait_for(fake_llm.paused.wait(), timeout=5)
 
     # ① 같은 테넌트의 다른 상담원

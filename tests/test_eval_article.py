@@ -79,7 +79,7 @@ def test_make_query_styles():
 def test_typo_changes_one_syllable_tail_only():
     rng = random.Random(1)
     out = _typo("복무규칙", rng)
-    assert len(out) == 4 and sum(a != b for a, b in zip(out, "복무규칙")) == 1
+    assert len(out) == 4 and sum(a != b for a, b in zip(out, "복무규칙", strict=False)) == 1
 
 
 def test_build_items_deterministic_and_rotates_styles():

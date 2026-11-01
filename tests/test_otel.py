@@ -32,12 +32,12 @@ def test_clip_상한_적용():
 
 def test_start_turn_핸드오프_수명주기_no_op에서_무해():
     # 시작 → detach → (핸드오프 가정) 늦은 end — SSE 생성 경로의 수명주기 그대로
-    sp, token = otel.start_turn()
-    assert not sp.is_recording()
-    otel.set_attrs(sp, {'kms.route': 'knowledge'})
-    otel.detach_turn(token)
-    otel.mark_error(sp, RuntimeError('x'))  # no-op 스팬엔 기록 안 됨, 예외도 없어야
-    sp.end()
+    turn = otel.start_turn()
+    assert not turn.span.is_recording()
+    otel.set_attrs(turn.span, {'kms.route': 'knowledge'})
+    otel.detach_turn(turn.token)
+    otel.mark_error(turn.span, RuntimeError('x'))  # no-op 스팬엔 기록 안 됨, 예외도 없어야
+    turn.span.end()
 
 
 def test_set_documents_no_op에서_무해():
@@ -56,12 +56,12 @@ def test_record_turn_result_no_op에서_무해_그리고_clip_비용_회피():
     from rag.turn.streaming import TurnResult, _record_turn_result
     from schemas.kms import SourceCitation
 
-    sp, token = otel.start_turn()
-    assert not sp.is_recording()
+    turn = otel.start_turn()
+    assert not turn.span.is_recording()
     try:
         with patch.object(otel, 'clip', side_effect=AssertionError('no-op인데 clip이 호출됨')):
             _record_turn_result(
-                sp,
+                turn.span,
                 TurnResult(
                     answer='답변' * 1000,
                     finish_reason='done',
@@ -70,11 +70,11 @@ def test_record_turn_result_no_op에서_무해_그리고_clip_비용_회피():
                 ),
             )
             _record_turn_result(
-                sp,
+                turn.span,
                 TurnResult(  # None latency도 무해
                     answer='', finish_reason='failed', latency_ms=None, citations=[]
                 ),
             )
     finally:
-        otel.detach_turn(token)
-        sp.end()
+        otel.detach_turn(turn.token)
+        turn.span.end()

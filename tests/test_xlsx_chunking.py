@@ -125,7 +125,7 @@ class TestChunkXlsx:
         whole = chunks[0].meta['table_text']
         assert all(c.meta['table_text'] == whole for c in chunks)
         assert whole.count('| 상품코드 |') == 1 and whole.count('[단가표]') == 1  # 완성본엔 헤더·설명 한 번
-        body = [l for c in chunks for l in c.text.splitlines()[3:]]
+        body = [ln for c in chunks for ln in c.text.splitlines()[3:]]
         assert body == whole.splitlines()[3:]  # 묶음을 이으면 행이 빠짐·중복 없이 완성본과 같다
         assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
 

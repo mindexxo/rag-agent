@@ -275,7 +275,7 @@ async def relaxed_quota(tenant_id):
 
 def _current_question(user_content: str) -> str:
     """condense 유저 메시지에서 '현재 질문:' 다음 줄을 집는다 — FakeLlm 반향용."""
-    lines = [l.strip() for l in user_content.splitlines() if l.strip()]
+    lines = [ln.strip() for ln in user_content.splitlines() if ln.strip()]
     return lines[lines.index('현재 질문:') + 1] if '현재 질문:' in lines else lines[-1]
 
 

@@ -41,7 +41,7 @@ def test_예산은_최신_턴_우선_시간순_유지():
     as_ = [f'답변{i}' + '나' * 10 for i in (1, 2, 3)]
     per_turn = estimate_tokens(qs[0]) + estimate_tokens(as_[0])
     msgs = []
-    for q, a in zip(qs, as_):
+    for q, a in zip(qs, as_, strict=False):
         msgs += [_msg('user', q), _msg('assistant', a)]
     result = build_prior_turns(msgs, budget_tokens=per_turn * 2)
     assert result == [{'q': qs[1], 'a': as_[1]}, {'q': qs[2], 'a': as_[2]}]  # 최신 2턴, 시간순

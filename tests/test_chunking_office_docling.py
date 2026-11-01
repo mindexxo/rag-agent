@@ -508,7 +508,7 @@ class TestNestedAndLong:
         chunks = chunk_file(_docx(tmp_path, build))
         assert len(chunks) >= 2
         assert all(c.text.startswith('| 번호 | 품목 | 단가 |') for c in chunks)  # 묶음마다 헤더
-        rows = [l for c in chunks for l in c.text.split('\n')[2:]]
+        rows = [ln for c in chunks for ln in c.text.split('\n')[2:]]
         assert rows == [f'| {i} | 품목-{i:03d} | {i * 1234 % 97000 + 1000:,}원 |' for i in range(1, 46)]  # 행 절단 없음
 
     def test_셀_안_줄바꿈은_공백으로_접혀_행이_깨지지_않는다(self, tmp_path):

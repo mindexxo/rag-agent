@@ -180,7 +180,7 @@ def test_정답_스니펫은_스니펫마다_조각_하나_안에_있다(g, chun
 @pytest.mark.parametrize('name', ['goodpeople_18_해외봉사단복무지침.txt', 'aromanica_18_향료원료입고기준.md'])
 def test_글자_소실_0(name, chunked):
     lines = [
-        l.lstrip('#').strip() for l in _path(name).read_text(encoding='utf-8').split('\n')
+        ln.lstrip('#').strip() for ln in _path(name).read_text(encoding='utf-8').split('\n')
     ]  # MD 헤딩 표지는 제목 경로에서 빠진다
     assert chunks_lost(lines, chunked[name]) == []
 
@@ -221,5 +221,7 @@ def test_B6_MD_표는_묶음마다_열_이름을_단다_267(chunked):
 
 def test_TXT_긴_문단은_문장_중간에서_잘리지만_오버랩이_다시_싣는다(chunked):
     cs = chunked['goodpeople_18_해외봉사단복무지침.txt']
-    kinds = [classify_boundary(a.text, b.text) for a, b in zip(cs, cs[1:]) if a.heading_path == b.heading_path]
+    kinds = [
+        classify_boundary(a.text, b.text) for a, b in zip(cs, cs[1:], strict=False) if a.heading_path == b.heading_path
+    ]
     assert 'mid_overlap' in kinds and 'mid_cut' not in kinds

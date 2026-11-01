@@ -86,7 +86,7 @@ async def test_생성_중_재접속은_밀린분과_실시간을_이어붙인다
 
 
 @pytest.mark.asyncio
-async def test_여러_구독자가_각자_전체를_받는다(client, tenant_id, fake_llm, pass_gate, fresh_redis):
+async def test_여러_구독자가_각자_전체를_받는다(client, tenant_id, fake_llm, pass_gate):
     """XREAD는 비파괴 읽기 — 탭 여러 개가 붙어도 서로 토큰을 나눠 갖지 않는다.
 
     이게 깨지면(예: 컨슈머 그룹을 쓰면) asyncio.Queue를 재사용 못 했던 이유가 그대로 재현된다.

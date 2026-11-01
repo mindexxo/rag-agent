@@ -292,16 +292,25 @@ def fake_llm(monkeypatch):
 
 @pytest_asyncio.fixture
 async def _loop_hygiene():
-    """테스트 종료 시 루프에 묶인 커넥션 전부 정리 (엔진·Redis·http_async)."""
-    yield
+    """테스트마다 루프에 묶이는 연결을 정리한다 (엔진·Redis·http_async·OpenSearch).
+
+    공용 Redis(clients.shared_redis — limiter·취소·재접속이 호출 시점에 읽는다)는 정리가 아니라 앞뒤 교체다.
+    풀의 내부 Lock은 처음 경합한 루프에 묶여 disconnect() 뒤에도 남고, 다른 테스트 루프에서 경합하면
+    "bound to a different event loop"로 죽는다 — 실패를 삼키는 리미터 반납에선 슬롯이 조용히 남는다.
+    """
     import httpx
+    import redis.asyncio as aioredis
 
     import rag.clients as clients
+    from config import settings
     from database import engine
 
+    clients.shared_redis = aioredis.from_url(settings.redis_url)
+    yield
+
     await engine.dispose()
-    # 공용 Redis 하나만 정리하면 된다 (limiter·취소 pub/sub이 clients.shared_redis를 공유)
-    await clients.shared_redis.connection_pool.disconnect()
+    await clients.shared_redis.aclose()
+    clients.shared_redis = aioredis.from_url(settings.redis_url)  # lazy — 이 픽스처 밖 테스트용
     # http_async는 aclose 후 재사용 불가 → 새 인스턴스로 교체
     # (호출부가 함수 안에서 지연 import하므로 모듈 속성 교체가 먹는다)
     await clients.http_async.aclose()
@@ -310,25 +319,6 @@ async def _loop_hygiene():
     from rag.search import os_client
 
     await os_client.close_client()
-
-
-@pytest_asyncio.fixture
-async def fresh_redis():
-    """공용 Redis 클라이언트(clients.shared_redis)를 이 테스트의 루프에 맞는 새 인스턴스로 앞뒤 교체한다.
-
-    풀의 커넥션·내부 Lock은 처음 쓴 루프에 묶인다. 앞선 테스트 루프에 묶인 풀을 쓰면 "bound to a different
-    event loop"(구독 루프는 "Future attached to a different loop")로 죽고, 닫힌 루프에 묶인 커넥션은
-    disconnect()조차 실패한다. 그래서 정리가 아니라 교체다. limiter·취소·재접속은 이 속성을 호출 시점에 읽는다.
-    """
-    import redis.asyncio as aioredis
-
-    import rag.clients as clients
-    from config import settings
-
-    clients.shared_redis = aioredis.from_url(settings.redis_url)
-    yield
-    await clients.shared_redis.aclose()
-    clients.shared_redis = aioredis.from_url(settings.redis_url)  # lazy — 다음 사용자를 위해
 
 
 async def purge_tenant(t: str) -> None:

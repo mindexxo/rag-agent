@@ -185,7 +185,7 @@ async def retrieve_candidates(
     # `if cid in chunk_map` 필수 — 검색과 본문 조회 사이에 문서가 지워지면 mget에서 빠진다.
     result = [chunk_map[cid] for cid in top_ids if cid in chunk_map]
 
-    # 호출 시점마다 settings를 읽는다 — eval/retrieval.py가 이 속성을 런타임에 켰다 껐다 한다.
+    # 호출 시점마다 settings를 읽는다 — eval/_golden_order.py가 이 속성을 런타임에 켰다 껐다 한다.
     if settings.rerank_enabled and result:
         multi = len(dense.per_query_ids) > 1
         result = await _rerank_pool(queries, result, ident_tokens, top_n, multi)

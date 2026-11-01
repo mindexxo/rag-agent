@@ -24,7 +24,6 @@
  "eval/doc_fidelity/synthetic.py",
  "eval/epcov_judge.py",
  "eval/faq_citation.py",
- "eval/gate.py",
  "eval/generation.py",
  "eval/hybrid_replay.py",
  "eval/hybrid_weights.py",

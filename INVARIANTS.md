@@ -105,6 +105,6 @@
 | INV-79 | llm_schemas의 구조 결정 필드(safe·intent·standalone)에 기본값을 주지 않는다 | `rag/turn/llm_schemas.py` | `tests/test_llm_schemas.py::test_스키마_위반은_판단실패_부분복구_없음` (부분) | 필드별 required 일반 단언 없음 |
 | INV-80 | Prometheus 라벨에 고카디널리티 값(tenant_id·conversation_id·filename)을 쓰지 않는다 | `rag/metrics.py` | `tests/test_invariants_static.py::test_INV80_Prometheus_라벨에_고카디널리티_값을_쓰지_않는다` | 금지 토큰: 엔터티 id·사용자·자유 텍스트 계열 |
 | INV-81 | `schemas/query.py`의 죽은 레거시를 새 코드에서 쓰지 않는다 | `AGENTS.md` | `tests/test_invariants_static.py::test_INV81_죽은_레거시_schemas_query를_아무도_import하지_않는다` |  |
-| INV-82 | 측정 축은 정본 골드(`eval/gold_set_v2.jsonl`)만 읽는다 | `AGENTS.md` | `tests/test_invariants_static.py::test_INV82_분할본_gold_v2는_validate_gold_v2만_읽는다` · `tests/test_invariants_static.py::test_INV82_eval이_여는_골드_파일은_정본과_허용_목록뿐이다` | 분할본은 validate_gold_v2만, 옛 v1은 레거시 두 스크립트만(허용 목록 — 정리는 #306) |
+| INV-82 | 측정 축은 정본 골드(`eval/gold_set_v2.jsonl`)만 읽는다 | `AGENTS.md` | `tests/test_invariants_static.py::test_INV82_분할본_gold_v2는_validate_gold_v2만_읽는다` · `tests/test_invariants_static.py::test_INV82_eval이_여는_골드_파일은_정본뿐이다` | 분할본은 validate_gold_v2만 |
 | INV-83 | 기존 인덱스에는 덧붙이는 필드만 추가하고 매핑 변경은 건드리지 않는다 | `rag/search/os_client.py` | `tests/test_invariants_static.py::test_INV83_기존_인덱스에는_빠진_추가_필드만_정의_그대로_덧붙인다` · `tests/test_invariants_static.py::test_INV83_추가_필드는_재색인_없이_붙여도_되는_모양뿐이다` |  |
 | INV-84 | BM25 질의는 lex_clause()로만 만든다(기본 match는 2.18 hybrid를 깬다) | `rag/search/os_client.py` | `tests/test_os_search_pure.py::test_nori_질의에_2_18_결함_회피가_붙어_있다` (부분) | 플래그 존재만 — 모든 호출부가 lex_clause를 쓰는지 미검증 |

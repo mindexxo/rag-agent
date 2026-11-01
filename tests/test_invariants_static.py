@@ -240,12 +240,6 @@ def test_INV81_죽은_레거시_schemas_query를_아무도_import하지_않는�
 GOLD_V2_SPLIT = re.compile(r'(?:^|/)gold_v2(?:/|$)')  # 테넌트별 분할본 디렉터리 — 'gold_set_v2'는 안 걸린다
 GOLD_FILE = re.compile(r'gold[\w-]*\.jsonl')  # 골드 이름을 단 jsonl
 SPLIT_READER = 'eval/validate_gold_v2.py'
-# 정본 밖 골드를 읽는 것이 허용된 곳 — 사유와 함께. 여기 없는 모듈이 새 골드 파일을 열면 실패한다.
-LEGACY_GOLD_READERS = {
-    # v1 단일 테넌트(demo) 골드. run_all의 어느 축도 이 둘을 부르지 않는다(검색축은 eval/retrieval_v2.py) — eval/retrieval.py는
-    # 지금 resolve_gold·score_one 정의점이라 남아 있고, main()만 v1 실행 경로다. eval/gate.py는 eval/refusal.py가 대체한 옛 축.
-    'gold_set_v1.jsonl': {'eval/gate.py', 'eval/retrieval.py'},
-}
 CANONICAL = 'gold_set_v2.jsonl'
 
 
@@ -267,19 +261,16 @@ def test_INV82_분할본_gold_v2는_validate_gold_v2만_읽는다():
     assert set(readers) == {SPLIT_READER}, f'분할본(eval/gold_v2/)을 읽는 모듈: {readers} — 측정 축은 정본만 읽는다'
 
 
-def test_INV82_eval이_여는_골드_파일은_정본과_허용_목록뿐이다():
-    """INV-82(보조) eval/ 코드가 이름으로 여는 골드 jsonl은 정본(eval/gold_set_v2.jsonl)과 LEGACY_GOLD_READERS 뿐이다.
+def test_INV82_eval이_여는_골드_파일은_정본뿐이다():
+    """INV-82(보조) eval/ 코드가 이름으로 여는 골드 jsonl은 정본(eval/gold_set_v2.jsonl) 하나뿐이다.
     gold_private(사내 실문서 골드)는 디렉터리라 이 패턴에 안 걸리고 AGENTS.md가 정본 병합 예외로 둔 것이다.
     축별 전용 셋(intent_set_v1·cache_set_v1 등)은 골드가 아닌 별도 질문셋이라 대상이 아니다."""
-    allowed = {CANONICAL: None, **LEGACY_GOLD_READERS}
-    seen: dict[str, set[str]] = {}
+    seen: set[str] = set()
     for mod, strings in _eval_strings().items():
         for s, line in strings:
             for name in GOLD_FILE.findall(s):
-                seen.setdefault(name, set()).add(mod)
-                assert name in allowed, f'{mod}:{line} 허용 목록 밖의 골드 파일 {name}'
-                readers = allowed[name]
-                assert readers is None or mod in readers, f'{mod}:{line} {name}은 {sorted(readers)}만 읽는다'
+                seen.add(name)
+                assert name == CANONICAL, f'{mod}:{line} 정본 밖의 골드 파일 {name}'
     assert CANONICAL in seen, '정본 골드를 여는 모듈을 하나도 못 찾았다 — 패턴이 틀렸다'
 
 

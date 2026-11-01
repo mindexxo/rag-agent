@@ -42,11 +42,11 @@ async def test_소비자가_없어도_태스크는_완주해_finalize한다(clie
     assert await inflight_count(tenant_id) == 1
 
     queue: asyncio.Queue = asyncio.Queue()  # 아무도 get()하지 않는다
-    root_span, token = otel.start_turn()
+    turn = otel.start_turn()
     try:
-        await _run_generation(prepared, queue, lease, t_request=0.0, root_span=root_span)
+        await _run_generation(prepared, queue, lease, t_request=0.0, root_span=turn.span)
     finally:
-        otel.detach_turn(token)
+        otel.detach_turn(turn.token)
 
     # 완주 증거 ① DB가 done으로 채워졌다
     async with AsyncSessionLocal() as session:
@@ -84,11 +84,11 @@ async def test_캐시_저장이_실패해도_턴은_done이다(client, tenant_id
 
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
     queue: asyncio.Queue = asyncio.Queue()
-    root_span, token = otel.start_turn()
+    turn = otel.start_turn()
     try:
-        await _run_generation(prepared, queue, lease, t_request=0.0, root_span=root_span)
+        await _run_generation(prepared, queue, lease, t_request=0.0, root_span=turn.span)
     finally:
-        otel.detach_turn(token)
+        otel.detach_turn(turn.token)
 
     async with AsyncSessionLocal() as session:
         msg = await session.get(Message, assistant_id)
@@ -124,13 +124,13 @@ async def test_생성_실패도_failed로_남고_정리가_끝난다(client, ten
 
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
     queue: asyncio.Queue = asyncio.Queue()
-    root_span, token = otel.start_turn()
+    turn = otel.start_turn()
     try:
         # 실제 기준점을 넘긴다 — 실패도 소요시간을 남기므로 0.0을 넘기면
         # 부팅 이후 경과가 통째로 latency로 들어간다.
-        await _run_generation(prepared, queue, lease, t_request=time.monotonic(), root_span=root_span)
+        await _run_generation(prepared, queue, lease, t_request=time.monotonic(), root_span=turn.span)
     finally:
-        otel.detach_turn(token)
+        otel.detach_turn(turn.token)
 
     # 실패 기록: _finalize_out_of_band가 새 세션으로 failed를 남긴다.
     # latency도 남긴다 — '얼마 만에 실패했는지'가 장애 분석의 기본 값이라 취소 분기와 같은 규칙이다.

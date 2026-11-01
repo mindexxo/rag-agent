@@ -160,6 +160,9 @@ def mk_chunks():
 @pytest.mark.parametrize('g', GOLD, ids=[g['id'] for g in GOLD])
 def test_정답_스니펫이_조각_하나_안에_있다(g, mk_chunks):
     """스니펫은 원문 표기 — 표지('**'·목록 기호)와 공백은 걷어내고 비교한다."""
-    key = lambda s: re.sub(r'\s+', '', s.replace('**', ''))
+
+    def key(s):
+        return re.sub(r'\s+', '', s.replace('**', ''))
+
     for e in g['expected_chunks']:
         assert any(key(e['snippet']) in key(c.text) for c in mk_chunks[e['filename']]), e['snippet']

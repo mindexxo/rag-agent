@@ -1,6 +1,7 @@
 """실문서 파싱 충실도 도구 — 판정 기준·분류·표본·집계의 순수 로직. DB·VLM·Claude 없이 돈다."""
 
 import pytest
+from pydantic import ValidationError
 
 from eval.doc_fidelity import coverage as cov
 from eval.doc_fidelity.judge import parse
@@ -56,7 +57,7 @@ class TestJudgeParse:
         assert v.type == '차트' and v.relation_errors is None and grade_of(v) == '위험'
 
     def test_없는_유형이나_키_누락은_실패로_올린다(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             parse('{"type":"지도","text_units":1}')
 
 

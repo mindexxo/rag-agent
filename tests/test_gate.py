@@ -141,7 +141,8 @@ class TestPrepareEvidence:
 
         assert [c.text for c in prepare_evidence(chunks, top_k=5)] == [table_evidence_text(c) for c in chunks]
         assert all(
-            c.text.endswith(f'[표 전체]\n{c0.table_text}') for c, c0 in zip(prepare_evidence(chunks, top_k=5), chunks)
+            c.text.endswith(f'[표 전체]\n{c0.table_text}')
+            for c, c0 in zip(prepare_evidence(chunks, top_k=5), chunks, strict=False)
         )
 
     def test_PDF_큰_표_묶음은_문서와_표_순번으로_접힌다(self):

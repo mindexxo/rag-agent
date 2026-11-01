@@ -41,8 +41,8 @@ async def test_ATTACHMENT_인용후보는_첨부만(client, tenant_id, fake_llm,
     async with AsyncSessionLocal() as s:
         svc = RagService(tenant_id=tenant_id, session=s, user_id='agent-a')
         prepared = await svc.prepare('요약해줘', attachments=[DOC])
-    sources, filenames = prepared.citation_candidates
-    assert sources == [] and filenames == ['세탁케어가이드.pdf']
+    candidates = prepared.citation_candidates
+    assert candidates.sources == [] and candidates.attachment_filenames == ['세탁케어가이드.pdf']
 
 
 @pytest.mark.asyncio

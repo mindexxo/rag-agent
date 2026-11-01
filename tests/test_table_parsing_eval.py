@@ -6,10 +6,10 @@
 from types import SimpleNamespace
 
 from eval.table_parsing.expected import Cell, expected_cells, expected_rows, expected_tables, flat
-
-flat_dims = flat
 from eval.table_parsing.score import ActualTable, chunk_tables, docling_tables, match_tables, score_cells, score_rows
 from eval.table_parsing.specs import BY_ID, SPECS, paths_of
+
+flat_dims = flat
 
 S02 = BY_ID['S02_colspan']
 S16 = BY_ID['S16_rowheader']
@@ -255,7 +255,7 @@ class TestQuestions:
             assert len(FACTS[s['id']]) == 2, s['id']
             cells = {norm(cell_text(c)) for t in expected_tables(s) for row in t for c in row if c is not None}
             texts = set()
-            for p, qs in ALL_QUESTIONS[s['id']].items():
+            for qs in ALL_QUESTIONS[s['id']].values():
                 for q in qs:
                     assert any(norm(q.expected) in c for c in cells), (s['id'], q.expected)  # 정답은 표 안 글자
                     texts.add(q.text)

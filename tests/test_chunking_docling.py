@@ -447,7 +447,7 @@ def _picture_pdf(tmp_path, pictures: int = 1):
     )
     p = tmp_path / 'pic.pdf'
     story = []
-    for i in range(pictures):
+    for _ in range(pictures):
         story += [RLImage(str(png), width=300, height=200), PageBreak()]
     SimpleDocTemplate(str(p), pagesize=A4).build(story)
     return p
@@ -876,7 +876,7 @@ class TestTableBlocks:
             t.removeprefix('머리말\n') for t, *_ in chunks if '| 번호 |' in t
         ]  # 큰 표는 묶음마다 표 위 한 줄이 붙는다
         assert len(tables) >= 2  # 1,000토큰 예산이라 둘 이상
-        body_lines = [l for t in tables for l in t.split('\n')[2:]]  # 헤더·구분선 뺀 데이터 행
+        body_lines = [ln for t in tables for ln in t.split('\n')[2:]]  # 헤더·구분선 뺀 데이터 행
         assert body_lines == to_markdown_table(rows[0], rows[1:]).split('\n')[2:]  # 행이 하나도 안 잘리고 순서 그대로
         assert all(t.split('\n')[:2] == to_markdown_table(rows[0], []).split('\n') for t in tables)  # 묶음마다 헤더
 

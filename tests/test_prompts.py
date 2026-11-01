@@ -382,7 +382,9 @@ class TestIntentPromptHistory:
         import json
         from pathlib import Path
 
-        gold = [json.loads(l)['query'] for l in Path('eval/intent_set_v1.jsonl').read_text().splitlines() if l.strip()]
+        gold = [
+            json.loads(ln)['query'] for ln in Path('eval/intent_set_v1.jsonl').read_text().splitlines() if ln.strip()
+        ]
         for phrase in (
             '교환 신청은 며칠까지예요',
             '그렇게 안내받은 기억이 없습니다',

@@ -234,7 +234,10 @@ def test_혼합은_BM25_상위_후보를_올린다():
     rec = CASES["식별자_없음"]
     base = [c.chunk_id for c in hr.assemble(rec, CHUNKS)]
     blended = [c.chunk_id for c in hr.assemble(rec, CHUNKS, hr.Condition("b", blend="add", w_key=0.3, w_desc=0.3))]
-    pos = lambda ids: ids.index(2000) if 2000 in ids else len(ids)
+
+    def pos(ids):
+        return ids.index(2000) if 2000 in ids else len(ids)
+
     assert pos(blended) < pos(base)
 
 

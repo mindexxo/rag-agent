@@ -378,9 +378,9 @@ async def test_INV50_컨텍스트_블록_꼬리_제약_파서가_같은_입력�
     monkeypatch.setattr(RagService, 'finalize', capturing_finalize)
     monkeypatch.setattr(RagService, 'maybe_cache', no_cache)
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
-    root_span, token = otel.start_turn()
-    otel.detach_turn(token)
-    await _run_generation(prepared, asyncio.Queue(), lease, 0.0, root_span)
+    turn = otel.start_turn()
+    otel.detach_turn(turn.token)
+    await _run_generation(prepared, asyncio.Queue(), lease, 0.0, turn.span)
 
     ((messages, constraint),) = llm_calls
     (parsed,) = finalized

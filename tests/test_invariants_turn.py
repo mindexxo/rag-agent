@@ -66,9 +66,9 @@ async def _prepared(tenant_id: str):
 
 async def _run_direct(prepared, queue, lease) -> None:
     """_run_generation을 직접 완주시킨다 (스팬 컨텍스트는 즉시 분리)."""
-    root_span, token = otel.start_turn()
-    otel.detach_turn(token)
-    await _run_generation(prepared, queue, lease, t_request=0.0, root_span=root_span)
+    turn = otel.start_turn()
+    otel.detach_turn(turn.token)
+    await _run_generation(prepared, queue, lease, t_request=0.0, root_span=turn.span)
 
 
 class _RecordingQueue(asyncio.Queue):
@@ -426,9 +426,9 @@ async def test_INV36_실패한_생성_태스크는_finally_첫_await_전에_레�
 
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
     lease.handed_off = True
-    root_span, token = otel.start_turn()
-    otel.detach_turn(token)
-    task = spawn_generation(prepared, _RecordingQueue(_on_put), lease, 0.0, root_span)
+    turn = otel.start_turn()
+    otel.detach_turn(turn.token)
+    task = spawn_generation(prepared, _RecordingQueue(_on_put), lease, 0.0, turn.span)
     assert cancellation._registry.get(mid) is task  # 실제 레지스트리를 거친다
 
     await asyncio.wait_for(task, timeout=10)
@@ -463,9 +463,9 @@ async def test_INV36_완주한_생성_태스크는_캐시_적재_전에_이미_�
     monkeypatch.setattr(RagService, 'maybe_cache', _spy_maybe_cache)
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
     lease.handed_off = True
-    root_span, token = otel.start_turn()
-    otel.detach_turn(token)
-    task = spawn_generation(prepared, _RecordingQueue(_on_put), lease, 0.0, root_span)
+    turn = otel.start_turn()
+    otel.detach_turn(turn.token)
+    task = spawn_generation(prepared, _RecordingQueue(_on_put), lease, 0.0, turn.span)
 
     await asyncio.wait_for(task, timeout=10)
     assert seen.get('done') is True, f'대조군 실패 — done 방출 시점에 이미 미등록: {seen}'

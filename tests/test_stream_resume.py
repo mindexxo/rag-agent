@@ -63,11 +63,11 @@ async def test_끝난_턴은_전체를_재생하고_닫힌다(client, tenant_id,
     await register_faq(client)
     prepared = await _prepared_turn(tenant_id)
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
-    root_span, token = otel.start_turn()
+    turn = otel.start_turn()
     try:
-        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, root_span)
+        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, turn.span)
     finally:
-        otel.detach_turn(token)
+        otel.detach_turn(turn.token)
 
     evs = _events(await _drain(stream_resume.reconnect_reader(tenant_id, prepared.assistant_message_id)))
     names = [e for e, _ in evs]
@@ -92,9 +92,9 @@ async def test_생성_중_재접속은_밀린분과_실시간을_이어붙인다
     fake_llm.pause_after_tokens = 2
     prepared = await _prepared_turn(tenant_id)
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
-    root_span, token = otel.start_turn()
+    turn = otel.start_turn()
 
-    task = asyncio.create_task(_run_generation(prepared, asyncio.Queue(), lease, 0.0, root_span))
+    task = asyncio.create_task(_run_generation(prepared, asyncio.Queue(), lease, 0.0, turn.span))
     try:
         await asyncio.wait_for(fake_llm.paused.wait(), timeout=5)
         # 배치 창(50ms)이 한 번 돌아 앞부분이 스트림에 실릴 때까지
@@ -111,7 +111,7 @@ async def test_생성_중_재접속은_밀린분과_실시간을_이어붙인다
     finally:
         fake_llm.resume.set()
         await task
-        otel.detach_turn(token)
+        otel.detach_turn(turn.token)
 
 
 @pytest_asyncio.fixture
@@ -143,11 +143,11 @@ async def test_여러_구독자가_각자_전체를_받는다(client, tenant_id,
     await register_faq(client)
     prepared = await _prepared_turn(tenant_id)
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
-    root_span, token = otel.start_turn()
+    turn = otel.start_turn()
     try:
-        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, root_span)
+        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, turn.span)
     finally:
-        otel.detach_turn(token)
+        otel.detach_turn(turn.token)
 
     mid = prepared.assistant_message_id
     a, b = await asyncio.gather(
@@ -174,11 +174,11 @@ async def test_Redis_쓰기가_실패해도_생성은_완주한다(client, tenan
     prepared = await _prepared_turn(tenant_id)
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
     queue: asyncio.Queue = asyncio.Queue()
-    root_span, token = otel.start_turn()
+    turn = otel.start_turn()
     try:
-        await _run_generation(prepared, queue, lease, 0.0, root_span)
+        await _run_generation(prepared, queue, lease, 0.0, turn.span)
     finally:
-        otel.detach_turn(token)
+        otel.detach_turn(turn.token)
 
     drained = []
     while not queue.empty():
@@ -204,11 +204,11 @@ async def test_종료마커가_없어도_턴이_끝났으면_닫힌다(client, t
     prepared = await _prepared_turn(tenant_id)
     mid = prepared.assistant_message_id
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
-    root_span, token = otel.start_turn()
+    turn = otel.start_turn()
     try:
-        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, root_span)
+        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, turn.span)
     finally:
-        otel.detach_turn(token)
+        otel.detach_turn(turn.token)
 
     # 마커만 지우고 나머지 엔트리는 남긴다 = 부분 실패 상황 재현
     from rag import clients
@@ -234,11 +234,11 @@ async def test_타_테넌트는_스트림을_못_읽는다(client, tenant_id, ot
     await register_faq(client)
     prepared = await _prepared_turn(tenant_id)
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
-    root_span, token = otel.start_turn()
+    turn = otel.start_turn()
     try:
-        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, root_span)
+        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, turn.span)
     finally:
-        otel.detach_turn(token)
+        otel.detach_turn(turn.token)
 
     from rag import clients
 
@@ -255,11 +255,11 @@ async def test_남의_턴에는_재접속할_수_없다(client, tenant_id, fake_
     await register_faq(client)
     prepared = await _prepared_turn(tenant_id)
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
-    root_span, token = otel.start_turn()
+    turn = otel.start_turn()
     try:
-        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, root_span)
+        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, turn.span)
     finally:
-        otel.detach_turn(token)
+        otel.detach_turn(turn.token)
 
     mid = prepared.assistant_message_id
     res = await client.get(f'/kms/messages/{mid}/events', headers={'X-User-Id': 'agent-x'})
@@ -284,11 +284,11 @@ async def test_TTL이_걸려_자체_소멸한다(client, tenant_id, fake_llm, pa
     await register_faq(client)
     prepared = await _prepared_turn(tenant_id)
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
-    root_span, token = otel.start_turn()
+    turn = otel.start_turn()
     try:
-        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, root_span)
+        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, turn.span)
     finally:
-        otel.detach_turn(token)
+        otel.detach_turn(turn.token)
 
     from config import settings
     from rag import clients
@@ -376,12 +376,12 @@ async def test_순단_후_복구되면_스트림을_포기한다(client, tenant_
     clients.shared_redis.pipeline = flaky
     prepared = await _prepared_turn(tenant_id)
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
-    root_span, token = otel.start_turn()
+    turn = otel.start_turn()
     try:
-        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, root_span)
+        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, turn.span)
     finally:
         clients.shared_redis.pipeline = real_pipeline
-        otel.detach_turn(token)
+        otel.detach_turn(turn.token)
 
     # 턴 자체는 멀쩡하다 — 미러링 실패가 생성을 막지 않는다
     async with AsyncSessionLocal() as s:
@@ -405,11 +405,11 @@ BLOCK_JSON = '{"safe": false, "reason": "프롬프트 인젝션 시도", "intent
 async def _run_to_end(tenant_id: str, prepared) -> None:
     """생성을 끝까지 돌린다 — 재접속이 읽을 스트림을 만드는 것이 목적."""
     lease = await limiter.try_acquire(tenant_id, 10, 'agent-x', 10)
-    root_span, token = otel.start_turn()
+    turn = otel.start_turn()
     try:
-        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, root_span)
+        await _run_generation(prepared, asyncio.Queue(), lease, 0.0, turn.span)
     finally:
-        otel.detach_turn(token)
+        otel.detach_turn(turn.token)
 
 
 @pytest.mark.asyncio

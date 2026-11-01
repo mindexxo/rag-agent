@@ -213,7 +213,7 @@ class TestEvalDocstringCounts:
         doc = ast.get_docstring(ast.parse((_ROOT / module).read_text(encoding='utf-8')))
         assert doc, f'{module}에 모듈 docstring이 없다 — 축의 판정 규약은 docstring이 정의점이다.'
 
-        rows = [json.loads(l) for l in (_ROOT / data).read_text(encoding='utf-8').splitlines() if l.strip()]
+        rows = [json.loads(ln) for ln in (_ROOT / data).read_text(encoding='utf-8').splitlines() if ln.strip()]
         actual = Counter(r[field] for r in rows)
 
         for label in labels:

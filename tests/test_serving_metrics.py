@@ -33,7 +33,7 @@ class _FakeOpenAiStream:
         try:
             return next(self._chunks)
         except StopIteration:
-            raise StopAsyncIteration
+            raise StopAsyncIteration from None
 
     async def close(self):
         self.closed = True

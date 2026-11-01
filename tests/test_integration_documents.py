@@ -488,7 +488,7 @@ async def test_동시_삽입은_유니크_인덱스가_막고_409(client, tenant
     v1 = await upload(client, '환불정책.md', MD)
     await ingest(v1['document_id'])
 
-    import routers.documents as rd
+    import rag.upload as rd
 
     real = rd.handle_upload
 

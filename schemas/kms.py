@@ -153,7 +153,7 @@ class DocumentUploadMetadata(BaseModel):
     folder_id: int | None = Field(None, gt=0)  # null=미분류, 0은 거절(목록 필터의 0=미분류와 다르다)
     # 표 설명 (xlsx 검색 보강). xlsx는 **필수**다 — 다만 "이번 요청에 보냈는가"가
     # 아니라 "계승까지 따진 최종값이 비는가"로 판정하므로 여기서 required로 만들지 않는다.
-    # 그 판정은 `routers/documents.py`의 `upload_document`가 `rag/documents.py`의 `latest_alive`로 끝낸다.
+    # 그 판정은 `rag/upload.py`가 `rag/documents.py`의 `latest_alive`로 끝낸다.
     description: str | None = Field(None, max_length=DOCUMENT_DESCRIPTION_MAX)
     expect_version: int | None = None  # 낙관적 잠금 — 의미는 upload_document 참조
 

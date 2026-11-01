@@ -14,7 +14,7 @@ rag/search/os_index.py의 effective_searchable.
 - 원본 파일은 테넌트 디렉터리 아래 UUID 이름으로 저장 (업로드 1건 = 파일 1개).
 - 버전 롤백은 미지원. 되돌리려면 이전 파일을 다시 업로드한다.
 - **예외**: failed 문서는 사용자에게 "없는 문서"다 — 목록에는 보이되(재시도·삭제해야 하므로)
-  exists·_current_version·handle_upload 셋이 한 기준으로 없는 것처럼 답한다.
+  exists·rag/upload.py의 current_version·handle_upload 셋이 한 기준으로 없는 것처럼 답한다.
   기준 상수는 rag/models.py의 ALIVE_DOCUMENT_STATUSES, 되살리는 규칙은 handle_upload docstring.
 
 동시 업로드:
@@ -28,30 +28,20 @@ rag/search/os_index.py의 effective_searchable.
 
 from pathlib import Path
 from typing import Annotated
-from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import ValidationError
-from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from starlette.concurrency import run_in_threadpool
 from starlette.responses import FileResponse, JSONResponse
 
-from config import settings
 from database import get_session
 from rag import document_admin as admin
-from rag.chunking.xlsx import XlsxUploadRejected, validate_xlsx_upload
+from rag import upload
 from rag.documents import (
-    FailedReuseConflict,
-    document_versions,
-    get_folder,
-    handle_upload,
-    latest_alive,
-    resolve_description,
     soft_delete_documents,
 )
-from rag.models import ALIVE_DOCUMENT_STATUSES, Document
+from rag.folders import require_folder
+from rag.models import Document
 from routers.deps import get_tenant_id, get_user_id
 from routers.errors import document_http_errors
 from routers.uploads import checked_filename, reject_if_oversized
@@ -93,24 +83,6 @@ def _to_response(doc: Document, ref_count: int | None = None) -> DocumentUploadR
 router = APIRouter(prefix='/kms')
 
 DOC_MAX_FILE_BYTES = 10 * 1024 * 1024  # 문서 업로드 크기 상한 (첨부와 별개)
-
-
-async def _current_version(session: AsyncSession, tenant_id: str, filename: str) -> int:
-    """해당 파일명의 현재 버전. 없으면 0.
-
-    판정 기준은 exists API·handle_upload의 재사용 판정과 **정확히 같아야** 한다 — tenant + filename
-    완전 일치, status가 살아 있는 것(ALIVE_DOCUMENT_STATUSES — 세 곳이 같은 상수를 쓴다).
-    기준이 어긋나면 "확인창에서 본 것과 다른 문서가 대체되는" 사고가 난다. failed를 빼는 이유:
-    그 문서는 검색에 없고 재업로드가 그 행을 되살리므로(version 유지) "없는 문서"다.
-    """
-    return (
-        await session.execute(
-            select(func.max(Document.version))
-            .where(Document.tenant_id == tenant_id)  # 격리 — WHERE 절 명시
-            .where(Document.filename == filename)
-            .where(Document.status.in_(ALIVE_DOCUMENT_STATUSES))
-        )
-    ).scalar() or 0
 
 
 def _version_conflict(filename: str, current_version: int) -> JSONResponse:
@@ -192,7 +164,7 @@ async def upload_document(
     # 평범한 문자열 필드를 **둘 다** 받는다.
     document_data: Annotated[UploadFile | str | None, Form(alias='document-data')] = None,
     # ── 아래 둘은 옛 방식(평면 Form 필드). document-data 파트가 없을 때만 쓴다 ──
-    # 표 설명 (xlsx 검색 보강). xlsx는 필수 — 판정은 계승까지 따진 뒤 아래 1-1에서 한다.
+    # 표 설명 (xlsx 검색 보강). xlsx는 필수 — 판정은 계승까지 따진 뒤 rag/upload.py의 _xlsx_precheck가 한다.
     description: str | None = Form(None, max_length=DOCUMENT_DESCRIPTION_MAX),
     # 낙관적 잠금 (선택). exists 응답의 version을 그대로 보낸다 — 없는 이름이면 0.
     #   미전송 → 검사 없음 (기존 호출부 호환)
@@ -210,92 +182,28 @@ async def upload_document(
     reject_if_oversized(request, DOC_MAX_FILE_BYTES)  # 거대 본문은 read 전에 차단
     # 이하 전부 정규화된 값을 쓴다(원본 file.filename 금지) — 브라우저가 NFD로 주면 DB에 분해형이 저장되고 LLM이 NFC로 인용해 매칭이 깨진다.
     filename = checked_filename(file)
-    suffix = Path(filename).suffix.lower()
 
-    # 0-1. 업로드 데이터 확정 + 폴더 검증.
-    #      **blob을 쓰기 전에** 한다 — 뒤에 두면 실패 경로마다 unlink를 챙겨야 한다.
+    # 0-1. 업로드 데이터 확정 + 폴더 검증. **blob을 쓰기 전에** 한다(rag/upload.py 모듈 docstring).
     meta, folder_given = await _resolve_upload_data(document_data, description, expect_version)
     if meta.folder_id is not None:
-        if await get_folder(session, tenant_id, meta.folder_id) is None:  # 남의 테넌트 폴더 차단
-            raise HTTPException(status_code=404, detail="folder not found")
+        with document_http_errors():
+            await require_folder(session, tenant_id, meta.folder_id)  # 남의 테넌트 폴더 차단
 
     # 1. 업로드 바이트 전체를 읽는다
     content = await file.read()
     if len(content) > DOC_MAX_FILE_BYTES:
         raise HTTPException(status_code=413, detail='파일이 10MB를 초과합니다.')
 
-    # 1-1. xlsx 사전검증 — 표 설명 필수 + 표 크기 상한. **blob을 쓰기 전에** 한다(위 0-1과 같은 이유).
-    #      파싱은 워커가 하므로 여기서 막지 않으면 "업로드는 200인데 1분 뒤 failed"가 되고
-    #      디스크엔 blob이, 목록엔 failed 행이 남는다. 결정적 실패라 동기 경로에서 거절한다.
-    #      xlsx가 아니면 추가 쿼리도 워크북 open도 없다.
-    docs = None
-    if suffix == '.xlsx':
-        # 설명 필수는 "이번 요청에 보냈는가"가 아니라 **계승까지 따진 최종값**으로 판정한다(계승 허용).
-        # 계승 출처·식은 handle_upload와 같은 latest_alive·resolve_description — 기준을
-        # ALIVE로 맞춘 배경은 그 docstring 참조. docs는 handle_upload에 그대로 넘겨 재조회를 막는다.
-        docs = await document_versions(session, tenant_id, filename)
-        final_description = resolve_description(meta.description, latest_alive(docs))
-        try:
-            # 워크북 열기는 CPU 작업 — 이벤트 루프를 막지 않게 스레드로(extract_attachment와 같은 규율).
-            await run_in_threadpool(validate_xlsx_upload, content, final_description)
-        except XlsxUploadRejected as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
-        except Exception as e:
-            # openpyxl이 못 여는 파일(손상·확장자 위장) — 안 잡으면 500이 된다. openpyxl은 손상 종류마다
-            # 다른 예외를 낸다(BadZipFile·KeyError·ParseError·IOError — 3.1.5 기준). 나열하지 않고 넓게 잡는다.
-            raise HTTPException(
-                status_code=400, detail='xlsx 파일을 열 수 없습니다 (손상되었거나 올바른 xlsx 형식이 아닙니다).'
-            ) from e
-
-    # 2. blob 저장. 테넌트별 디렉터리 아래 UUID 파일명으로 저장한다.
-    #    업로드 1건 = 파일 1개로 고정 — 내용이 같아도 경로를 공유하지 않는다.
-    #    (내용 해시를 쓰면 v1·v2가 같은 파일을 가리켜, 나중에 비활성 문서 blob을
-    #     정리할 때 살아 있는 문서의 원본까지 지워질 수 있다. 디스크는 조금 더 쓰지만
-    #     '문서 식별은 filename 하나'라는 정책과도 일관된다.)
-    blob_dir = Path(settings.blob_storage_dir) / tenant_id
-    blob_dir.mkdir(parents=True, exist_ok=True)
-    blob_path = blob_dir / f"{uuid4().hex}{suffix}"
-    blob_path.write_bytes(content)
-
-    # 3. 낙관적 잠금 — 확인창에서 본 상태와 지금 DB가 같은지 본다.
-    #    이 조회만으로는 조회~insert 사이 창이 남는다. 그 창은 아래 IntegrityError가 닫는다.
-    if meta.expect_version is not None:
-        current = await _current_version(session, tenant_id, filename)
-        if current != meta.expect_version:
-            blob_path.unlink(missing_ok=True)  # 참조되지 않는 blob 남기지 않기
-            return _version_conflict(filename, current)
-
-    # 4. 파일 인덱싱 후 저장 (mime은 handle_upload가 blob_path에서 직접 구한다)
+    # 2. xlsx 사전검증 → blob 저장 → 낙관적 잠금 → 저장·커밋
     try:
-        result = await handle_upload(
-            session,
-            tenant_id,
-            filename,
-            blob_path,
-            description=meta.description,
-            uploaded_by=user_id,
-            folder_id=meta.folder_id,
-            folder_given=folder_given,
-            docs=docs,  # xlsx 사전검증이 이미 읽었으면 재사용 — 아니면 None이라 안에서 읽는다
+        doc = await upload.store_upload(
+            session, upload.Upload(tenant_id, user_id, filename, content, meta, folder_given)
         )
-        await session.commit()
-    except IntegrityError, FailedReuseConflict:
-        # IntegrityError: 같은 이름·같은 version이 방금 먼저 들어왔다 — UNIQUE(tenant_id, filename,
-        # version). 위 조회를 두 요청이 함께 통과했을 때의 최종 방어선.
-        # (expect_version 미전송 호출도 여기서 409가 된다)
-        # FailedReuseConflict: 같은 failed를 둘이 동시에 되살리려 했고 이쪽이 졌다.
-        # 둘 다 새 blob만 지운다 — 옛 blob은 DB가 여전히 가리키고 있다.
-        await session.rollback()
-        blob_path.unlink(missing_ok=True)
-        return _version_conflict(filename, await _current_version(session, tenant_id, filename))
-    # failed 행을 되살린 경우 옛 blob은 **커밋 뒤에** 지운다 — 커밋 전에 지우면 롤백 시
-    # DB는 옛 경로를 가리키는데 파일은 없다. failed는 인용된 적이 없어 보존할 이유도 없다.
-    if result.stale_blob:
-        Path(result.stale_blob).unlink(missing_ok=True)
-
-    # 색인 대기열 행은 handle_upload가 문서와 같은 트랜잭션에 등록했다 (outbox) —
-    # 워커 cron(1분)이 처리한다. 응답 시점의 status는 pending이고, 검색 반영은 최대 1~5분.
-    return _to_response(result.document)
+    except upload.UploadRejected as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except upload.VersionConflict as e:
+        return _version_conflict(e.filename, e.current_version)
+    return _to_response(doc)
 
 
 @router.get('/documents', response_model=DocumentListResponse)

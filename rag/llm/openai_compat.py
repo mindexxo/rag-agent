@@ -32,7 +32,7 @@ class OpenAiCompatClient:
         model: str | None = None,
         api_key: str | None = None,
         reasoning_effort: str | None = "",
-    ):
+    ) -> None:
         self._model = model or settings.llm_model
         # ""면 요청 시점의 settings.llm_reasoning_effort를 따른다. 보조 클라이언트만 값을 넘긴다
         self._reasoning_effort = reasoning_effort

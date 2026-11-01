@@ -85,9 +85,9 @@ async def rerank_maxpool(queries: list[str], chunks: list) -> tuple[list, list[f
     matrix = await asyncio.gather(*(rerank_scores(q, chunks) for q in queries))
     if not all(s is not None for s in matrix):
         return chunks, None, None
-    per_chunk = list(zip(*matrix))  # [청크][쿼리] 점수
+    per_chunk = list(zip(*matrix, strict=False))  # [청크][쿼리] 점수
     best_qi = [max(range(len(col)), key=col.__getitem__) for col in per_chunk]
-    best = [col[qi] for col, qi in zip(per_chunk, best_qi)]  # == max(col) — 값 불변
+    best = [col[qi] for col, qi in zip(per_chunk, best_qi, strict=False)]  # == max(col) — 값 불변
     order = sorted(range(len(chunks)), key=lambda i: -best[i])
     return [chunks[i] for i in order], [best[i] for i in order], [best_qi[i] for i in order]
 

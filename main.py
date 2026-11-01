@@ -1,10 +1,6 @@
 """KMS 상담 지식 어시스턴트 — FastAPI 앱 부트스트랩.
 
 라우터 조립 + CORS + lifespan 배선만 담당한다. 도메인 로직은 rag/, 라우팅은 routers/.
-(lifespan은 #30에서 처음 도입 — 이 웹 프로세스의 인메모리 상태를 다루는 백그라운드 태스크
- 전용이다. 주기 잡은 rag/worker.py의 arq cron 몫.)
-(과거 STT/화자분리/요약 실험 코드는 2026-07-18 제거, 테스트 UI(/ui 정적 서빙)는
- 2026-07-23 제거 — FE가 별도 앱으로 분리됨. 필요 시 git 이전 백업 참조.)
 """
 
 import asyncio
@@ -35,18 +31,18 @@ init_tracing()  # OTel(#7) — otel_endpoint 미설정이면 no-op
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """앱 수명 동안 도는 백그라운드 태스크 기동·정리 (#30).
+    """앱 수명 동안 도는 백그라운드 태스크 기동·정리.
 
     여기 두는 건 **이 웹 프로세스의 인메모리 상태를 다뤄야 하는 작업**뿐이다 —
     취소 레지스트리(rag/turn/cancellation.py)가 프로세스 로컬이라 그렇다. 주기 스윕(캐시 청소 등)은
     rag/worker.py의 arq cron 몫이고 별 프로세스라 여기와 무관하다.
 
-    주의: 테스트의 httpx ASGITransport는 lifespan을 호출하지 않는다(실측) — 그래서 본문은
+    주의: 테스트의 httpx ASGITransport는 lifespan을 호출하지 않는다 — 그래서 본문은
     subscribe_forever를 부르는 얇은 배선만 두고, 테스트는 그 함수를 직접 띄워 검증한다
     (인덱스 보장은 tests/conftest.purge_tenant가 대신 부른다).
 
-    검색 인덱스 보장(#139): 엔진에 못 붙어도 기동은 한다(ensure_index_soft — ERROR 로그). 로컬 개발에서
-    OpenSearch 없이도 앱을 띄울 수 있게 한 사용자 결정(2026-09-13). 그 상태의 검색 요청은 요청 단위로 실패한다.
+    검색 인덱스 보장: 엔진에 못 붙어도 기동은 한다(ensure_index_soft — ERROR 로그) — OpenSearch 없이도 로컬에서
+    앱을 띄울 수 있게. 그 상태의 검색 요청은 요청 단위로 실패한다.
     """
     await os_client.ensure_index_soft()
     subscriber = asyncio.create_task(cancellation.subscribe_forever())
@@ -71,11 +67,11 @@ app.add_middleware(
 )
 
 
-# Prometheus 스크레이프 (#129) — 앱 지표(rag/metrics.py: 체감 TTFT·finish_reason)와
+# Prometheus 스크레이프 — 앱 지표(rag/metrics.py: 체감 TTFT·finish_reason)와
 # prometheus_client 기본 프로세스 지표를 노출. 인증 없음 — 사내망 개발계 전제, 외부 노출
 # 경로가 생기면 접근 제어 재검토. rag/metrics.py는 routers→rag.turn.streaming 경유로 이미
 # import되므로 여기서 따로 불러올 필요 없다.
-# mount(make_asgi_app()) 대신 직접 라우트인 이유: mount는 /metrics→/metrics/ 307을 낸다(실측).
+# mount(make_asgi_app()) 대신 직접 라우트인 이유: mount는 /metrics→/metrics/ 307을 낸다.
 @app.get('/metrics', include_in_schema=False)
 async def metrics() -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

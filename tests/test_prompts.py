@@ -268,7 +268,7 @@ class TestSystemPromptStructure:
     def test_답변_서식_규칙에_첫_문장_불릿이_없다(self):
         """규칙 3과 짝이라 함께 빠졌다 — 되살리면 첫 문장이 자기모순을 낸다.
 
-        사유는 _SYSTEM_PROMPT_TEMPLATE 위의 ⚠ 주석. 한쪽만 되돌리려면 재측정이 전제다.
+        사유는 SYSTEM_PROMPT_TEMPLATE 위의 ⚠ 주석. 한쪽만 되돌리려면 재측정이 전제다.
         """
         assert '첫 문장은 질문에 대한 핵심 답' not in build_system_prompt()
 

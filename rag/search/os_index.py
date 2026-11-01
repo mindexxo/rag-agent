@@ -186,7 +186,7 @@ async def index_parsed_document(
     """파싱 결과를 색인한다. 옛 청크를 먼저 지운다 — 청크 수가 줄면 큰 chunk_index의 옛 청크가 꼬리로 남는다."""
     await _delete_by_terms('document_id', [document_id])
     docs = []
-    for c, e in zip(chunks, embeddings):
+    for c, e in zip(chunks, embeddings, strict=False):
         docs.append(
             build_doc(
                 ParsedChunk(

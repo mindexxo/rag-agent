@@ -15,15 +15,15 @@ from rag.turn.citation_labels import (
     sources_from_chunks,
 )
 from rag.turn.prompt_texts import (
-    _INTENT_GUARD_SYSTEM_PROMPT_TEMPLATE,
-    _OTHER_SYSTEM_PROMPT_TEMPLATE,
-    _SYSTEM_PROMPT_TEMPLATE,
     CACHE_REUSE_JUDGE_NO_ORIGINAL,
     CACHE_REUSE_JUDGE_SYSTEM,
     CACHE_REUSE_JUDGE_USER_TEMPLATE,
     DEFAULT_DOMAIN_HINT,
+    INTENT_GUARD_SYSTEM_PROMPT_TEMPLATE,
+    OTHER_SYSTEM_PROMPT_TEMPLATE,
     PRIOR_TURNS_LABEL,
     STANDALONE_QUERY_LABEL,
+    SYSTEM_PROMPT_TEMPLATE,
     USER_TEMPLATE,
 )
 from schemas.kms import SourceCitation
@@ -36,17 +36,17 @@ def _resolve_domain_hint(domain_hint: str | None) -> str:
 
 def build_system_prompt(domain_hint: str | None = None) -> str:
     """KNOWLEDGE 생성 시스템 프롬프트 — 지식 범위 슬롯 치환."""
-    return _SYSTEM_PROMPT_TEMPLATE.replace('__DOMAIN_HINT__', _resolve_domain_hint(domain_hint))
+    return SYSTEM_PROMPT_TEMPLATE.replace('__DOMAIN_HINT__', _resolve_domain_hint(domain_hint))
 
 
 def build_intent_guard_prompt(domain_hint: str | None = None) -> str:
     """입력 검사·인텐트 분류 시스템 프롬프트 — KNOWLEDGE 정의의 지식 범위 슬롯 치환."""
-    return _INTENT_GUARD_SYSTEM_PROMPT_TEMPLATE.replace('__DOMAIN_HINT__', _resolve_domain_hint(domain_hint))
+    return INTENT_GUARD_SYSTEM_PROMPT_TEMPLATE.replace('__DOMAIN_HINT__', _resolve_domain_hint(domain_hint))
 
 
 def build_other_system_prompt(domain_hint: str | None = None) -> str:
     """OTHER 경로 생성 시스템 프롬프트 — <역할 안내>의 지식 범위 슬롯 치환."""
-    return _OTHER_SYSTEM_PROMPT_TEMPLATE.replace('__DOMAIN_HINT__', _resolve_domain_hint(domain_hint))
+    return OTHER_SYSTEM_PROMPT_TEMPLATE.replace('__DOMAIN_HINT__', _resolve_domain_hint(domain_hint))
 
 
 def build_chat_prompt(system_content: str, user_content: str) -> list[dict]:

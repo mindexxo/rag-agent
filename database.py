@@ -23,10 +23,10 @@ engine = create_async_engine(
     # 커넥션 startup 시 search_path 지정 — 모델/raw SQL 모두 스키마 미명시라 여기서 일괄 해소.
     # DB role 설정(ALTER ROLE ... SET search_path)에 의존하지 않게 코드에서 못박음.
     connect_args={"server_settings": {"search_path": settings.db_search_path}},
-    pool_pre_ping=True,  # 대여 전 죽은 커넥션 감지·교체 — idle 후 "connection is closed" 500 해소 (P1-9)
+    pool_pre_ping=True,  # 대여 전 죽은 커넥션 감지·교체 — idle 후 "connection is closed" 500을 막는다
     pool_recycle=1800,  # 30분 넘은 커넥션은 선제 재생성 (DB/네트워크 idle 종료 대비)
     # SSE가 생성 완료까지 세션을 점유한다(생성당 요청+배경태스크 2커넥션) — 동시성이 곧 커넥션이다.
-    # 값은 config로 뺀다 (#201): 환경마다 PostgreSQL max_connections와 동거 프로세스가 다르다.
+    # 값은 config로 뺀다: 환경마다 PostgreSQL max_connections와 동거 프로세스가 다르다.
     pool_size=settings.db_pool_size,
     max_overflow=settings.db_max_overflow,
 )

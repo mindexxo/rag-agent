@@ -1,11 +1,8 @@
 {
  "format": {},
  "history": {
-  "config.py": 132,
-  "database.py": 1,
   "eval/doc_fidelity/pictures.py": 1,
   "eval/doc_fidelity/rubric.py": 1,
-  "main.py": 9,
   "rag/turn/llm_schemas.py": 5,
   "routers/conversations.py": 7,
   "routers/documents.py": 9,
@@ -13,11 +10,9 @@
   "routers/stats.py": 1,
   "schemas/conversations.py": 1,
   "schemas/kms.py": 7,
-  "schemas/stats.py": 1,
-  "text_norm.py": 8
+  "schemas/stats.py": 1
  },
  "ruff": {
-  "eval/cache_eval.py::PLC2701": 1,
   "eval/doc_fidelity/picture_specs.py::PLR0913": 3,
   "eval/doc_fidelity/pictures.py::PLR0913": 1,
   "eval/epcov_judge.py::PLR0913": 1,
@@ -26,18 +21,11 @@
   "eval/retrieval_article.py::PLR0913": 1,
   "eval/table_parsing/run.py::PLR0913": 1,
   "rag/documents.py::PLR0913": 2,
-  "rag/llm/litellm.py::ANN204": 1,
-  "rag/llm/openai_compat.py::ANN204": 1,
   "rag/outbox.py::PLR0911": 1,
-  "rag/search/os_index.py::B905": 1,
   "rag/search/os_index.py::PLR0913": 4,
-  "rag/search/reranker.py::B905": 2,
-  "rag/search/retriever.py::B905": 2,
   "rag/search/retriever.py::PLR0913": 2,
   "rag/turn/cache.py::PLR0913": 2,
-  "rag/turn/prompts.py::PLC2701": 3,
   "rag/turn/prompts.py::PLR0913": 1,
-  "rag/turn/service.py::ANN204": 1,
   "rag/turn/service.py::PLR0911": 1,
   "rag/turn/turn_state.py::PLR0913": 2,
   "routers/conversations.py::PLR0913": 1,

@@ -22,8 +22,8 @@ OTHER_USER = {'X-User-Id': 'agent-other'}
 
 
 @pytest_asyncio.fixture
-async def cancel_subscriber(fresh_redis):
-    """취소 채널 구독 루프만 띄운다 — 공용 Redis는 fresh_redis가 이 테스트 루프용으로 교체해 둔다.
+async def cancel_subscriber(_loop_hygiene):
+    """취소 채널 구독 루프만 띄운다 — 공용 Redis는 _loop_hygiene이 이 테스트 루프용으로 교체해 둔다.
 
     httpx ASGITransport가 lifespan을 호출하지 않으므로 main.py의 배선으로는 구독
     루프가 테스트에서 뜨지 않는다. 그래서 함수를 직접 기동한다.

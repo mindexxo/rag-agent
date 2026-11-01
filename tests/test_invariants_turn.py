@@ -333,9 +333,7 @@ async def _replay_then_pings(reader, n: int) -> tuple[int, list[str]]:
 
 
 @pytest.mark.asyncio
-async def test_INV35_유휴_ping은_재접속_스트림에_저장되지_않는다(
-    client, tenant_id, fake_llm, pass_gate, monkeypatch, fresh_redis
-):
+async def test_INV35_유휴_ping은_재접속_스트림에_저장되지_않는다(client, tenant_id, fake_llm, pass_gate, monkeypatch):
     """INV-35: 스트림 ping은 Redis 스트림에 저장하지 않는다(rag/turn/stream_resume.py reconnect_reader).
 
     ping을 합성하는 재접속 리더를 직접 돌린다 — 생성이 멈춘 턴(generating, 종료 마커 없음)에서 블록 주기를 줄여

@@ -79,7 +79,7 @@ async def _refused(tenant: str, query: str) -> tuple[bool, str, str]:
     여기서 버리면 호출부가 파이프라인을 한 번 더 태워야 한다.
 
     route를 함께 돌려주는 이유: 부재단정 판정은 KNOWLEDGE 경로에만 유효하다. OTHER로
-    라우팅된 문항은 시스템 프롬프트 규칙 3을 아예 안 타고 _OTHER_SYSTEM_PROMPT_TEMPLATE로
+    라우팅된 문항은 시스템 프롬프트 규칙 3을 아예 안 타고 OTHER_SYSTEM_PROMPT_TEMPLATE로
     생성되므로, 그 화법("역할 밖 요청이라 안내가 어렵다")을 규칙 3 기준으로 재면 오염이다.
     게다가 OTHER는 prepared.sources가 항상 빈 목록(rag/turn/service.py)이라 **무조건 근거없음으로
     집계**된다 — 판정 대상에서 빼지 않으면 분모가 라우팅 확률에 좌우된다.

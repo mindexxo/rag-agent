@@ -124,7 +124,7 @@ def _prepare_attachment_only(ctx: TurnContext) -> PreparedRag:
 
 
 class RagService:
-    def __init__(self, tenant_id: str, session: AsyncSession, user_id: str | None = None):
+    def __init__(self, tenant_id: str, session: AsyncSession, user_id: str | None = None) -> None:
         # 요청마다 인스턴스 생성 — tenant_id 격리와 last_* 값이 요청 간 섞이지 않는 근거
         self.tenant_id = tenant_id
         self.session = session
@@ -312,7 +312,7 @@ class RagService:
         # 순서가 곧 인용 번호 — 프롬프트 [번호]·꼬리 제약·꼬리 파서가 이 순서를 공유한다.
         sources = [] if retrieval.no_evidence else sources_from_chunks(retrieval.chunks)
 
-        source_doc_ids = _source_doc_ids(retrieval.chunks)
+        source_doc_ids = chunk_source_doc_ids(retrieval.chunks)
         faq_versions = await cache.snapshot_faq_versions(self.session, self.tenant_id, source_doc_ids)
         prior_turns = build_prior_turns(ctx.messages, settings.history_budget_tokens)
 
@@ -499,7 +499,7 @@ class RagService:
         )
 
 
-def _source_doc_ids(chunks: list[RetrievedChunk]) -> list[int]:
+def chunk_source_doc_ids(chunks: list[RetrievedChunk]) -> list[int]:
     """검색 청크의 출처 id 목록(중복 제거) — semantic 캐시의 집합 비교·무효화 키.
 
     FAQ는 문서 id와 충돌하지 않게 음수(-faq_id) — cache.invalidate_source가 같은 키로 지운다.

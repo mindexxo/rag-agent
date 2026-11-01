@@ -63,7 +63,7 @@ def _usage_of(obj: Any) -> LlmUsage | None:
 class LiteLlmClient:
     def __init__(
         self, vendor: str, *, model: str | None = None, api_key: str | None = None, reasoning_effort: str | None = ""
-    ):
+    ) -> None:
         if vendor not in _VENDORS:
             raise ValueError(f"LiteLLM 벤더가 아니다: {vendor!r} (가능: {sorted(_VENDORS)})")
         self.vendor = vendor

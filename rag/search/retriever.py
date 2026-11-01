@@ -97,7 +97,7 @@ def apply_identifier_boost(
     """
     tok = set(tokens)
     rows = []
-    for ch, score, qi in zip(chunks, scores, query_idx):
+    for ch, score, qi in zip(chunks, scores, query_idx, strict=False):
         hit = next((t for t in ch.identifiers if t in tok), None)
         if hit is not None:
             ch = replace(ch, matched_ident=hit)
@@ -257,7 +257,9 @@ async def _rerank_pool(
                 },
             )
         if best is not None and sp.is_recording():  # 채택 점수·기여 쿼리 — DB에 안 남는 진단 정보
-            for i, (ch, score, qi) in enumerate(zip(result[:top_n], best[:top_n], cast('list[int]', best_qi)[:top_n])):
+            for i, (ch, score, qi) in enumerate(
+                zip(result[:top_n], best[:top_n], cast('list[int]', best_qi)[:top_n], strict=False)
+            ):
                 sp.set_attribute(f'reranker.output_documents.{i}.document.id', str(ch.chunk_id))
                 sp.set_attribute(f'reranker.output_documents.{i}.document.score', float(score))
                 sp.set_attribute(f'reranker.output_documents.{i}.document.query_index', qi)  # 0=원본, 1..=확장

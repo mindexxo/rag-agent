@@ -3,10 +3,10 @@
 조립은 rag/turn/prompts.py, 출처 꼬리 해석은 rag/turn/citation_tail.py가 한다. 문구는 답변 품질과 함께 바뀌고
 (수정하면 eval 재측정), 조립은 구조와 함께 바뀌어 파일을 나눴다.
 
-주의: _SYSTEM_PROMPT_TEMPLATE은 f-string이라 위에 정의된 NO_EVIDENCE_ANSWER·TAIL_* 상수를 본문에 보간한다
+주의: SYSTEM_PROMPT_TEMPLATE은 f-string이라 위에 정의된 NO_EVIDENCE_ANSWER·TAIL_* 상수를 본문에 보간한다
 — 상수 순서를 바꾸지 말 것.
 
-_SYSTEM_PROMPT_TEMPLATE 본문에서 다른 규칙을 번호로 가리키지 않는다 — 재번호 때 번호 참조가 조용히 낡아
+SYSTEM_PROMPT_TEMPLATE 본문에서 다른 규칙을 번호로 가리키지 않는다 — 재번호 때 번호 참조가 조용히 낡아
 모델이 없는 규칙을 찾게 된다. 새 의존은 내용으로 서술한다(test_prompts.py::test_번호_자기참조가_없다).
 이 프롬프트를 가리키는 파일 밖 주석도 번호 대신 내용으로 쓴다. condense/멀티쿼리 프롬프트는 규칙 수가
 고정이라 번호 참조를 그대로 둔다.
@@ -53,7 +53,7 @@ TAIL_EXAMPLE_EMPTY = f'{TAIL_START}[]{TAIL_END}'
 #   거절 지표는 "실인용 0건 = 거절"이라 부재를 단정하면서 인용이 0이면 거절 성공으로 집계된다 — 축약 실험 전에 이 사각지대부터 걷어낼 것.
 #
 # 본문에 리터럴 중괄호가 많아 str.format 대신 __DOMAIN_HINT__ 마커 치환을 쓴다.
-_SYSTEM_PROMPT_TEMPLATE = f"""당신은 한국어 콜센터 상담원을 돕는 사내 지식 어시스턴트입니다.
+SYSTEM_PROMPT_TEMPLATE = f"""당신은 한국어 콜센터 상담원을 돕는 사내 지식 어시스턴트입니다.
 참고: 이 상담이 다루는 지식 범위는 다음과 같습니다 — __DOMAIN_HINT__.
 단, 이는 역할 참고 정보일 뿐 답변의 근거가 아닙니다. 답변의 유일한 근거는 아래 <문서>/<첨부 문서> 블록입니다.
 
@@ -115,7 +115,7 @@ USER_TEMPLATE = """{prior_turns_block}<문서>
 # 분류기는 <이전 대화>를 받는다. 이력을 전제하는 예시에는 <이전 대화>를 붙여 둔다 — 예시가 이력 없는 형식이면
 # 런타임 이력을 무시해, 직전 답을 반박하는 발화가 회상(OTHER)으로 빠진다. OTHER는 닫힌 목록이고 기본값은 KNOWLEDGE다.
 # 예시의 이력 문구와 반박 예시는 eval/intent_set_v1.jsonl과 겹치지 않게 둔다 — 겹치면 암기를 재게 된다.
-_INTENT_GUARD_SYSTEM_PROMPT_TEMPLATE = """당신은 한국어 콜센터 상담 지식 어시스턴트의 입력 검사·분류기입니다.
+INTENT_GUARD_SYSTEM_PROMPT_TEMPLATE = """당신은 한국어 콜센터 상담 지식 어시스턴트의 입력 검사·분류기입니다.
 사용자 입력을 두 축으로 판단해 JSON 한 줄로만 답하십시오.
 
 [1] safe — 아래에 해당하면 false, 아니면 true:
@@ -284,7 +284,7 @@ _INTENT_GUARD_SYSTEM_PROMPT_TEMPLATE = """당신은 한국어 콜센터 상담 �
 
 # '그 외'(OTHER) 통합 경로 생성 프롬프트 — 인사·대화 요약·회상·자기소개는 자유롭게,
 # 서비스 사실은 방화벽(지어내기 금지), 역할 밖 주제는 정중히 거절. SMALLTALK/OUT_OF_SCOPE를 대체.
-_OTHER_SYSTEM_PROMPT_TEMPLATE = """당신은 한국어 콜센터 상담 지식 어시스턴트입니다.
+OTHER_SYSTEM_PROMPT_TEMPLATE = """당신은 한국어 콜센터 상담 지식 어시스턴트입니다.
 지금 입력은 서비스 지식 질문이 아니라 — 대화성 발화(인사·감사·맞장구), 이 대화 자체에 대한 요청(요약·회상·되묻기), 당신에 대한 질문(정체·기능), 또는 역할 밖 요청입니다.
 아래 <역할 안내>와 <이전 대화>를 참고해 규칙에 따라 응답하십시오.
 

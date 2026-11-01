@@ -165,7 +165,6 @@ async def test_폴더_생성_이름_중복은_409(client, tenant_id):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(strict=True, reason='#391 이름 대입 뒤 autoflush가 중복 검사 try 밖에서 터져 500')
 async def test_폴더_이름을_다른_폴더와_같게_바꾸면_409(client, tenant_id):
     """FOL-02 — 수정 중복은 생성과 문구가 다르다. 실패해도 폴더 이름은 그대로여야 한다."""
     await make_folder(client, '정책')
@@ -174,6 +173,19 @@ async def test_폴더_이름을_다른_폴더와_같게_바꾸면_409(client, te
         res = await lenient.patch(f'/kms/folders/{other}', json={'name': '정책'})
     assert res.status_code == 409 and res.json() == {'detail': '같은 이름의 폴더가 이미 있습니다.'}
     assert '공지' in [f['name'] for f in (await client.get('/kms/folders')).json()]
+
+
+@pytest.mark.asyncio
+async def test_폴더_이름_중복은_설명_토글과_함께_보내도_409이고_아무것도_안_바뀐다(client, tenant_id):
+    await make_folder(client, '정책')
+    other = await make_folder(client, '공지')
+    async with _lenient_client(tenant_id) as lenient:
+        res = await lenient.patch(
+            f'/kms/folders/{other}', json={'name': '정책', 'description': '새 설명', 'is_searchable': False}
+        )
+    assert res.status_code == 409 and res.json() == {'detail': '같은 이름의 폴더가 이미 있습니다.'}
+    got = next(f for f in (await client.get('/kms/folders')).json() if f['id'] == other)
+    assert (got['name'], got['description'], got['is_searchable']) == ('공지', None, True)
 
 
 @pytest.mark.asyncio

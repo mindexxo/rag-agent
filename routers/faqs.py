@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_session
 from rag import faq as faq_svc
 from rag.models import Faq
-from routers.deps import get_tenant_id, get_user_id
+from routers.deps import get_tenant_id, get_user_id, sanitize_page
 from routers.errors import faq_http_errors
 from schemas.kms import (
     DOC_LIST_DEFAULT_LIMIT,
@@ -51,11 +51,7 @@ async def list_faqs(
     ⚠ #278에서 응답이 배열에서 `{items, total, has_more}`로 바뀌었다(FE 요청대로, 호출자는 FE 하나).
     파라미터 위생(limit 범위 밖은 상한으로, 음수 offset은 0, 빈 q는 미전송)은 문서 목록과 같다.
     """
-    if not 1 <= limit <= DOC_LIST_MAX_LIMIT:
-        limit = DOC_LIST_MAX_LIMIT
-    if offset < 0:
-        offset = 0
-    q = (q or '').strip() or None  # 빈 문자열을 필터로 쓰면 '%%'가 되어 전건 매칭이다
+    limit, offset, q = sanitize_page(limit, offset, q, DOC_LIST_MAX_LIMIT)
 
     page = await faq_svc.list_faqs(session, tenant_id, faq_svc.FaqFilter(q, category_id, is_active), limit, offset)
     return FaqListResponse(

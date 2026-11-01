@@ -42,7 +42,7 @@ from rag.documents import (
 )
 from rag.folders import require_folder
 from rag.models import Document
-from routers.deps import get_tenant_id, get_user_id
+from routers.deps import get_tenant_id, get_user_id, sanitize_page
 from routers.errors import document_http_errors
 from routers.uploads import checked_filename, reject_if_oversized
 from schemas.kms import (
@@ -227,12 +227,7 @@ async def list_documents(
     생긴다. 참조 off 폴더를 실제로 운영하기 시작하면 그때 실효 기준으로 올린다 —
     파라미터 이름이 그대로라 FE 계약은 바뀌지 않는다. (#176 결정)
     """
-    # HTTP 파라미터 위생 — 범위 밖 limit은 상한으로, 음수 offset은 0으로 (대화 목록과 같은 처리).
-    if not 1 <= limit <= DOC_LIST_MAX_LIMIT:
-        limit = DOC_LIST_MAX_LIMIT
-    if offset < 0:
-        offset = 0
-    q = (q or '').strip() or None  # 빈 문자열을 필터로 쓰면 '%%'가 되어 전건 매칭이다
+    limit, offset, q = sanitize_page(limit, offset, q, DOC_LIST_MAX_LIMIT)
     if status and not set(status) <= DOC_STATUSES:
         raise HTTPException(status_code=422, detail=f'알 수 없는 status: {sorted(set(status) - DOC_STATUSES)}')
 

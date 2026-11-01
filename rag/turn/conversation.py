@@ -32,7 +32,7 @@ class ConversationNotFound(LookupError):
 def owned_filter(tenant_id: str, user_id: str | None):
     """대화 소유 판정 WHERE 표현식(tenant + created_by + 미삭제)의 정의점.
 
-    질의 경로와 routers/conversations.py의 조회가 함께 쓴다. user_id=None은 DEFAULT_USER로 본다.
+    질의 경로와 rag/turn/history.py의 조회가 함께 쓴다. user_id=None은 DEFAULT_USER로 본다.
     created_by가 NULL인 대화는 어느 사용자와도 맞지 않아 보이지 않는다. SQL 술어 전용이다.
     """
     return (

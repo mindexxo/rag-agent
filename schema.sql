@@ -194,7 +194,7 @@ CREATE TABLE IF NOT EXISTS messages (
     cited_docs      JSONB,       -- assistant: 실인용 **문서** 파일명 배열 (저장 시 확정 — 문서 지표 집계는 이 컬럼만).
                                  -- **근거없음(ungrounded) = 이 배열과 cited_faq_ids가 둘 다 비어 있음** — 별도 컬럼 없다 (#61, #278).
                                  -- 옛 is_refusal(거절 문구 부분일치)을 대체한 판정이다. NULL도 없음으로 본다
-                                 -- (routers/conversations.py의 `m.cited_docs or []` 관례와 같은 결론).
+                                 -- (rag/turn/history.py의 `m.cited_docs or []` 관례와 같은 결론).
                                  -- 주의: #56 이전 행은 인라인 인용 시절이라 이 컬럼이 비어 있어도
                                  -- 실제로는 근거를 댄 답변이다 — 그 구간 지표는 무의미하다.
                                  -- #278 전 행은 FAQ 인용이 'FAQ' 원소 하나로 여기 들어 있다(항목 불명) — 그대로 둔다.

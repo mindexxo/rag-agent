@@ -1,4 +1,4 @@
-"""성능 수치 리포트 (#97 ③) — Phoenix 스팬에서 단계별 지연 추출. 읽기 전용·GPU 무부하.
+"""성능 수치 리포트 — Phoenix 스팬에서 단계별 지연 추출. 읽기 전용·GPU 무부하.
 
 무엇을 뽑나 (발표 성능 1장의 재료):
 - 턴 완료 시간 p50/p95 — 루트 kms.query 스팬 duration (kms.latency_ms와 같은 턴을
@@ -11,11 +11,11 @@
 
 **표본 주의(발표 인용 시 함께 적을 것)**: Phoenix의 스팬은 개발계 실사용+테스트 트래픽이고,
 eval 풀런이 도는 동안의 턴은 GPU 경합으로 지연이 부풀어 있다. --since/--until로 그런
-시간대를 잘라내고 쓰라. 첫 토큰(TTFT)은 스팬에 없다 — eval/perf_probe.py(실측 프로브)가
+시간대를 잘라내고 쓰라. 첫 토큰(TTFT)은 스팬에 없다 — eval/perf_probe.py(프로브)가
 별도로 잰다.
 
 의존: Phoenix HTTP(OTEL_ENDPOINT의 호스트)만. DB·LLM·TEI 불필요.
-실행: python -m eval.perf_report [--since 2026-08-20] [--until 2026-08-29]
+실행: python -m eval.perf_report [--since YYYY-MM-DD] [--until YYYY-MM-DD]
 """
 
 import argparse
@@ -92,7 +92,7 @@ def main() -> None:
     for s in spans:
         by_trace[s["context"]["trace_id"]].append(s)
 
-    # 경로 분리 (#21 참고 반영): retrieve 자식 유무가 곧 경로다 — KNOWLEDGE(검색+생성)와
+    # 경로 분리: retrieve 자식 유무가 곧 경로다 — KNOWLEDGE(검색+생성)와
     # OTHER(검색 스킵, 인사·회상류)는 지연 분포가 달라서 섞으면 "지식 질문 기준 X초"를 못 말한다.
     kn_total: list[float] = []  # KNOWLEDGE 완주 턴 총 시간
     ot_total: list[float] = []  # OTHER 완주 턴 총 시간

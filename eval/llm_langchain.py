@@ -1,8 +1,7 @@
-"""LlmClient(rag/llm 계약)를 RAGAS judge로 쓰기 위한 langchain 어댑터 (#103 → #290 일반화).
+"""LlmClient(rag/llm 계약)를 RAGAS judge로 쓰기 위한 langchain 어댑터.
 
-원래 Claude CLI 전용 어댑터(#103, 옛 파일명 claude_langchain)였는데 실제로 부르는 건 `client.acomplete(messages)` 하나라,
-설정 공급자(create_llm — vLLM·gemini·openai·anthropic)와 Claude CLI(eval/claude_client.py)를 같은 어댑터로
-감싼다(#290 결정 2). 분기는 eval/ragas_eval.py의 _judge에만 있다.
+실제로 부르는 건 `client.acomplete(messages)` 하나라, 설정 공급자(create_llm — vLLM·gemini·openai·anthropic)와
+Claude CLI(eval/claude_client.py)를 같은 어댑터로 감싼다. 분기는 eval/ragas_eval.py의 _judge에만 있다.
 
 부재단정 judge(eval/absence_judge.py)는 acomplete 시그니처만 맞으면 되어 어댑터가 필요 없지만,
 RAGAS는 judge에게 langchain BaseLanguageModel 인터페이스(agenerate_prompt)를 요구한다 — 그래서
@@ -13,7 +12,7 @@ _agenerate만 네이티브로 구현하면 된다 — asyncio.run 같은 루프 
 acomplete가 이미 async(HTTP 또는 create_subprocess_exec)라 RAGAS 루프에 자연 귀속된다.
 _generate(동기)는 RAGAS가 안 부르므로 스텁이다.
 
-**주의(#103 각주감)**:
+**주의**:
 - temperature는 클라이언트 몫 — 설정 공급자는 LLM_TEMPERATURE, Claude CLI는 CLI 기본 온도로 돈다.
   커스텀 모델에 temperature 속성을 두지 않아 RAGAS의 강제 주입이 자동 무시된다(ragas_eval은 bypass_temperature도 켠다).
 - 제약 의도(schema)를 안 넘긴다 — RAGAS의 JSON 복구 재시도(FixOutputFormat, 프롬프트당 최대 3회)가

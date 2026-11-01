@@ -34,25 +34,24 @@ TYPES = {'multi_turn', 'multi_turn_long'}
 #                   장거리 참조·히스토리 예산 트리밍. 실서버 대화를 재료로 라벨링)
 
 
-CONCURRENCY = 6  # worker15 공유 장비 — RAGAS max_workers와 동일 안전선 (#18)
+CONCURRENCY = 6  # worker15 공유 장비 — RAGAS max_workers와 동일 안전선
 
 
 async def compute(multi: bool = False) -> dict:
     """multi_turn 축 채점 → 요약 반환. 반환 형식은 retrieval_v2.compute와 동일 계열.
 
-    LLM(condense)은 선병렬(vLLM 연속 배칭 활용, #18), 검색·채점은 세션 직렬 —
+    LLM(condense)은 선병렬(vLLM 연속 배칭 활용), 검색·채점은 세션 직렬 —
     AsyncSession은 동시 실행 불가라 gather에 태우지 않는다.
     """
-    gold = load_gold()  # 정본 + gold_private(실문서 multi_turn 15행) — #199와 같은 이전. GOLD 상수는 8/24에 사라졌는데 이 축만 남아 import가 깨져 있었다(#209)
+    gold = load_gold()  # 정본 + gold_private(실문서 multi_turn)
     target = [g for g in gold if g['type'] in TYPES]
 
-    llm = create_aux_llm()  # 재작성은 운영과 같은 보조 클라이언트(#297) — LLM_AUX_*가 비면 생성 설정 그대로
+    llm = create_aux_llm()  # 재작성은 운영과 같은 보조 클라이언트 — LLM_AUX_*가 비면 생성 설정 그대로
     sem = asyncio.Semaphore(CONCURRENCY)
 
     async def _condense(g: dict) -> tuple[str, list[str]]:
-        # 운영과 같은 예산으로 자른다 — #81. 이 축의 multi_turn_long 8문항 중 5문항이 실제로
-        # 걸린다(600 예산, 원래 12~16메시지 → 8~12). 그 5문항이 이 축의 존재 이유(긴 이력)라
-        # 트리밍을 안 하면 docstring이 말하는 "히스토리 예산 트리밍"을 한 번도 안 태우게 된다.
+        # 운영과 같은 예산으로 자른다. multi_turn_long 문항 다수가 예산에 걸리고 그 문항들이 이 축의
+        # 존재 이유(긴 이력)라, 트리밍을 안 하면 docstring이 말하는 "히스토리 예산 트리밍"을 한 번도 안 태우게 된다.
         msgs = trim_messages_for_condense(
             messages_from_conversation(g.get('conversation')), settings.condense_history_budget_tokens
         )
@@ -75,7 +74,7 @@ async def compute(multi: bool = False) -> dict:
             if resolved.stale:
                 stale[tenant] = len(resolved.stale)
             for g in items:
-                gold_ids = sorted(resolved.scoring_ids.get(g['id']) or [])  # 스니펫 포함 청크 전부 (#209)
+                gold_ids = sorted(resolved.scoring_ids.get(g['id']) or [])  # 스니펫 포함 청크 전부
                 if not gold_ids:
                     skipped += 1
                     continue
@@ -99,7 +98,7 @@ async def main() -> None:
 
     result = await compute(multi=args.multi)
     rows = result['rows']
-    if not rows:  # 채점 0 = gold resolve 전멸 (빈/잘못된 DB) — 결과 덮어쓰기 전에 중단 (#18 실사고 가드)
+    if not rows:  # 채점 0 = gold resolve 전멸 (빈/잘못된 DB) — 결과 덮어쓰기 전에 중단
         raise SystemExit(
             f"채점 0문항 (스킵 {result['skipped']}) — DATABASE_URL이 코퍼스 있는 DB인지 확인. 결과 파일 미변경."
         )

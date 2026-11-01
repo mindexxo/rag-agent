@@ -8,7 +8,7 @@
   음영은 BACKGROUND. 글꼴은 CID 한글(HYGothic-Medium) — 글자 모양이 이미지 경로(AppleSDGothicNeo)와 다르다.
 - docx(python-docx): 병합은 cell.merge, 줄바꿈은 문단 추가, 표 안의 표는 cell.add_table. 격자 없음·음영 축은 테두리 없는 표(+짝수 행 w:shd). 세로쓰기는 안 넣는다.
 - xlsx(openpyxl): 병합은 merge_cells, 줄바꿈은 wrap_text, 세로쓰기는 textRotation=90, 날짜·숫자는 **값 타입 그대로**(xlsx_types 축 — 수식은 openpyxl이 캐시값을 못 써 제외).
-  '나란히' 축은 한 시트에 빈 열 2개를 두고 두 표를 놓는다(docling gap_tolerance=0이 둘을 가른다 — #220 결정 9).
+  '나란히' 축은 한 시트에 빈 열 2개를 두고 두 표를 놓는다(docling gap_tolerance=0이 둘을 가른다).
 """
 
 import datetime as dt
@@ -54,7 +54,7 @@ _CAPS = ParagraphStyle(
 
 
 def _ctx_story(spec, body: list) -> list:
-    """--context 문서(#247): 제목·목적·절 제목·도입 문장 → 표(body) → 표 제목 줄·해설·문의. 문맥에는 표 값을 쓰지 않는다(context.py)."""
+    """--context 문서: 제목·목적·절 제목·도입 문장 → 표(body) → 표 제목 줄·해설·문의. 문맥에는 표 값을 쓰지 않는다(context.py)."""
     from eval.table_parsing.context import blocks
 
     b = blocks(spec['id'])

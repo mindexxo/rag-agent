@@ -1,14 +1,14 @@
-"""문장 포함률 (#231 결정 2 = a) — docling과 **독립된** 추출기로 원문 단위를 뽑아 실제 색인 청크(OpenSearch)와 대조한다.
+"""문장 포함률 — docling과 **독립된** 추출기로 원문 단위를 뽑아 실제 색인 청크(OpenSearch)와 대조한다.
 
-기준선을 docling으로 잡으면 docling이 빠뜨린 문장은 원문에서도 빠져 늘 '다 있음'이 나온다. #143이 같은 방식(pdfplumber 문장 1,866개
-↔ docling 청크)으로 소항목 제목 유실을 잡았다.
+기준선을 docling으로 잡으면 docling이 빠뜨린 문장은 원문에서도 빠져 늘 '다 있음'이 나온다. 독립 추출기와 대조해야
+소항목 제목 같은 유실이 드러난다.
   - PDF: pdfplumber. 표 영역(find_tables) 밖 글자는 줄 → 문장, 표 안은 칸 글자를 줄 → 문장(칸 하나가 쪽 전체인 경우가 있다).
   - DOCX: python-docx. 문단 → 문장, 표 칸(중첩 포함) 하나가 단위. 머리글·바닥글은 docling도 버리는 층이라 넣지 않는다.
   - XLSX: openpyxl. 값이 있는 칸 하나가 단위(병합은 왼쪽 위 칸에만 값이 있다).
-그림 속 글자는 이 추출기들이 못 뽑는다 — pictures·judge(#247)가 맡는다.
+그림 속 글자는 이 추출기들이 못 뽑는다 — pictures·judge가 맡는다.
 
 분류(classify): 공백·표 구분자를 지운 문자열(pictures.norm)로 부분 일치를 본다.
-  본문 — 청크 본문의 글 줄에 있다 / 표 — 청크의 표 줄(`|`로 시작)에 있다 / 헤딩 — heading_path에 있다(묶음이 헤딩을 경로로 올린다, #143)
+  본문 — 청크 본문의 글 줄에 있다 / 표 — 청크의 표 줄(`|`로 시작)에 있다 / 헤딩 — heading_path에 있다(묶음이 헤딩을 경로로 올린다)
   부분 — 글자 바이그램의 80% 이상이 한 청크에 있다(띄어쓰기·줄바꿈·하이픈 차이, 분할 경계) / 유실 후보 — 나머지.
 유실 후보만 판정자(Claude)가 원문 맥락과 가장 비슷한 청크를 보고 유실/변형/추출 잡음으로 가른다.
 MIN_CHARS 미만 단위(쪽 번호·'-'·단독 숫자)는 세지 않는다 — 정보가 없고 어디에나 부분 일치한다.
@@ -25,8 +25,8 @@ _PUNCT = re.compile(r'[\[\]()<>『』「」·•\-–—:;,.\'"‘’“”※�
 
 
 def norm(text: str) -> str:
-    """포함 판정용 정규화 — 공백·표 구분자에 더해 괄호·글머리표·구두점·원문자를 지운다. 공백만 지우던 첫 구현은 '(3) 임직원 …'과
-    헤딩의 '(3)임직원…', '• 결과조치'와 '결과조치'를 다르게 봐 25건 중 12건을 유실 후보로 잘못 올렸다(10/18 1차 정리)."""
+    """포함 판정용 정규화 — 공백·표 구분자에 더해 괄호·글머리표·구두점·원문자를 지운다. 공백만 지우면 '(3) 임직원 …'과
+    헤딩의 '(3)임직원…', '• 결과조치'와 '결과조치'를 다르게 봐 유실 후보를 잘못 올린다."""
     return _PUNCT.sub('', _norm(text))
 
 
@@ -69,7 +69,7 @@ def pdf_units(document_id: int, path: Path) -> list[Unit]:
             for t in tables:
                 for row in t.extract() or []:
                     # 칸 글자도 줄·문장으로 나눈다 — 테두리 친 쪽(사내 포털 인쇄본)은 find_tables가 쪽 전체를 칸 하나짜리 표로 잡아
-                    # 조문 여러 개가 한 단위가 됐고, 그런 덩어리는 어느 청크와도 안 맞아 전부 유실 후보로 떴다(급여 표준 16/30, 10/18)
+                    # 조문 여러 개가 한 단위가 되고, 그런 덩어리는 어느 청크와도 안 맞아 전부 유실 후보로 뜬다
                     units += [
                         Unit(document_id, 'pdf', '표', pno, s) for c in row if c and c.strip() for s in _sentences(c)
                     ]
@@ -106,7 +106,7 @@ def xlsx_units(document_id: int, path: Path) -> list[Unit]:
     wb = openpyxl.load_workbook(str(path), data_only=True)
     units = []
     for ws in wb.worksheets:
-        if ws.sheet_state != 'visible':  # 숨긴 시트는 색인하지 않는다(#220 결정)
+        if ws.sheet_state != 'visible':  # 숨긴 시트는 색인하지 않는다(운영과 같게)
             continue
         for row in ws.iter_rows(values_only=True):
             units += [

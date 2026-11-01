@@ -1,4 +1,4 @@
-"""#235 실행기 — 패키지 docstring(eval/scale_noise/__init__.py)의 사용법 참조."""
+"""문서 규모 노이즈 측정 실행기 — 패키지 docstring(eval/scale_noise/__init__.py)의 사용법 참조."""
 
 import argparse
 import asyncio

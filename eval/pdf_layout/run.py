@@ -1,20 +1,20 @@
-"""#244 실행기 — 배치 유형별 합성 PDF를 워커와 같은 변환기(docling)로 읽어 **읽기 순서**를 정답과 대조하고, 조각 단계에서 단이 섞였는지 센다.
+"""PDF 배치 실행기 — 배치 유형별 합성 PDF를 워커와 같은 변환기(docling)로 읽어 **읽기 순서**를 정답과 대조하고, 조각 단계에서 단이 섞였는지 센다.
 
 채점(정의점):
   - 문단 보존(paragraph_fate): 문단 본문(specs.paragraph_bodies)이 docling 요소에 어떻게 남았나 — 세 갈래.
       intact = 한 요소 안에 연속으로 남음 / split = 둘 이상 요소로 나뉘었지만 **글자를 이어 붙이면 원문**(단 끝·쪽 끝에서 마지막 줄이 별도
-      요소가 된 꼴 — 순서는 맞고 글자도 다 있다, 넓은 2단 실측) / **mixed = 글자를 이어도 원문이 안 됨**(다른 단의 줄이 끼어들거나 줄이 사라짐
-      — 좁은 2단 실측: 두 단을 가로로 한 줄씩 이어 읽음). **단 섞임의 주 지표는 mixed**다. 첫 채점은 표식 순서만 봐서 1/4로 과소 집계했고
-      (리뷰 지적 1), 둘째 채점(연속 문자열 여부)은 split을 mixed와 섞었다.
+      요소가 된 꼴 — 순서는 맞고 글자도 다 있다, 넓은 2단에서 나타남) / **mixed = 글자를 이어도 원문이 안 됨**(다른 단의 줄이 끼어들거나 줄이 사라짐
+      — 좁은 2단에서 나타남: 두 단을 가로로 한 줄씩 이어 읽음). **단 섞임의 주 지표는 mixed**다. 표식 순서만 보면 줄 섞임을 놓치고,
+      연속 문자열 여부만 보면 split을 mixed와 섞는다.
   - docling 순서: `docling_elements.docling_elements` 출력에서 문단 표식(`[P07]`)을 등장 순서대로 뽑아 정답(specs.expected_order)과 비교.
       inversions = 인접 쌍 가운데 정답 순서가 뒤집힌 수, displaced = 정답 위치에서 멀리(2칸 이상) 밀린 표식 수(블록이 통째로 밀린 L05 같은 꼴 —
-      인접 쌍 역전은 1로만 센다, 리뷰 지적 5), lost = 정답에 있는데 출력에 없는 표식, dup = 두 번 나온 표식,
+      인접 쌍 역전은 1로만 센다), lost = 정답에 있는데 출력에 없는 표식, dup = 두 번 나온 표식,
       merged = 한 요소에 표식이 둘 이상(이웃 문단이 한 덩어리로 합쳐짐 — 순서는 맞아도 문단 경계를 잃음)
   - 조각: `chunk_file`로 만든 조각 **본문**에서 표식이 정답 순서대로인지(제목 경로로 올라간 문단은 순서와 무관). 내림이 있으면 '섞임'(다른 단·다른 자리의 문단이 한
-      조각에 들어옴 — 검색·인용이 오염되는 모양). 빈틈은 섞임이 아니다 — 표 캡션·헤딩으로 올라간 문단이 빈틈을 만든다(첫 측정의
-      "연속 구간" 판정은 L04·L02에서 거짓 양성을 냈다).
+      조각에 들어옴 — 검색·인용이 오염되는 모양). 빈틈은 섞임이 아니다 — 표 캡션·헤딩으로 올라간 문단이 빈틈을 만든다("연속 구간"
+      판정은 L04·L02에서 거짓 양성을 낸다).
   - 머리글·바닥글(L07): 요소 글에 furniture 문자열이 들어오면 '본문 오염'.
-운영 코드 무변경. 변환은 `convert_process.convert_local`(인프로세스)로 한 번만 하고 그 문서를 chunk_file에 끼운다(표 축 #246과 같은 방식). OCR은 끈다(순서
+운영 코드 무변경. 변환은 `convert_process.convert_local`(인프로세스)로 한 번만 하고 그 문서를 chunk_file에 끼운다(표 축과 같은 방식). OCR은 끈다(순서
 판정과 무관, 원격 의존 제거 — 끝나면 복구). 그림 캡션 설정은 운영 그대로다 — L03의 그림이 캡션 대상이면 VLM이 호출된다(안 닿으면 변환 실패).
 용법: python -m eval.pdf_layout.run [--out eval/results/pdf_layout] [--only L01_two_col_narrow ...]
 산출물: <out>/docs/*.pdf, results.jsonl(건별 — 실제 순서·조각 글 포함), matrix.md(유형 × 지표).
@@ -60,7 +60,7 @@ def order_score(expected: list[str], got: list[str]) -> dict:
 
 def _norm(s: str) -> str:
     """공백·줄바꿈·NBSP를 모두 지운다 — docling이 단 끝 문단의 마지막 줄을 별도 요소로 내면 조각엔 줄바꿈 하나만 끼고 글자 순서는
-    그대로다(넓은 2단 실측). 그건 찢어짐이 아니다 — 글자 사이에 **다른 글자**가 끼어든 것만 찢어짐이다."""
+    그대로다(넓은 2단). 그건 찢어짐이 아니다 — 글자 사이에 **다른 글자**가 끼어든 것만 찢어짐이다."""
     return re.sub(r'[\s\xa0]+', '', s or '')
 
 
@@ -117,7 +117,7 @@ def evaluate(spec: dict, pdf: Path) -> dict:
     fate = paragraph_fate(bodies, [t for _, t, _, _ in elements])
     furniture = [f for f in spec.get('furniture', []) if f != '쪽' and any(f in (t or '') for _, t, _, _ in elements)]
 
-    # 조각 — 변환을 다시 하지 않고 같은 문서를 끼운다(표 축 #246 run.py와 같은 방식)
+    # 조각 — 변환을 다시 하지 않고 같은 문서를 끼운다(표 축 run.py와 같은 방식)
     orig = ch.convert_process.docling_convert
     ch.convert_process.docling_convert = lambda *a, **k: doc
     try:

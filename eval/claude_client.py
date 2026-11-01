@@ -1,28 +1,27 @@
-"""Claude CLI 생성 클라이언트 (#96 — 프론티어 비교군 (a) 생성기 교체).
+"""Claude CLI 생성 클라이언트 — 프론티어 비교군(생성기 교체)용.
 
 OpenAI 호환 API가 아니라 `claude -p`(헤드리스 CLI)를 서브프로세스로 부른다. API 키·종량
 과금 없이 좌석 사용량 안에서 돌고, 이미 개발에 쓰는 승인 채널이라 외부 전송이 신규가
-아니라는 것이 채택 이유다(이슈 #96 코멘트 2026-08-29). eval 전용 — 운영 rag/에는 물리지
+아니라는 것이 채택 이유다. eval 전용 — 운영 rag/에는 물리지
 않는다(rag→eval import 금지 규칙과 별개로, 운영 생성기는 vLLM 하나여야 한다).
 
 LlmClient(rag/llm)와 acomplete 시그니처를 맞춰 eval/generation.py에 주입한다.
 다른 점 — 전부 결과 각주에 명시할 것:
-- 제약 의도(schema·citations, #287)를 **받되 무시한다**. CLI에 그 배관이 없다.
+- 제약 의도(schema·citations)를 **받되 무시한다**. CLI에 그 배관이 없다.
   꼬리는 프롬프트 서술(rag/turn/prompt_texts.py의 TAIL_EXAMPLE_MULTI 규칙)만으로 유도되고, 채점기는
   꼬리 부재를 인용 0으로 세므로 미준수는 수치에 정직하게 반영된다.
 - astream 없음 — eval generate()는 acomplete만 쓴다. 필요해지면 그때 추가.
 - temperature·max_tokens 통제 불가(CLI 미노출).
 
-호출 위생 (전부 실측 근거):
+호출 위생:
 - 프롬프트는 stdin으로 넘긴다 — 롱컨텍스트 모드는 수십만 자라 argv 길이 제한에 걸린다.
 - **stdout만** 답변으로 취급한다 — 리포 안에서 돌리면 stderr에 설정 경고가 섞여 나왔다.
 - cwd를 빈 임시 디렉터리로 둔다 — 리포에서 돌리면 CLAUDE.md 등 프로젝트 컨텍스트가
   주입돼 "순수 모델" 비교가 오염된다.
 - --tools "" 로 도구를 차단한다(파일 읽기 등 에이전트 행동 없는 순수 생성 콜).
 - **MCP·스킬·설정 로딩을 끈다**(--strict-mcp-config --disable-slash-commands --setting-sources "") —
-  빈 cwd로는 부족했다. 사용자 설정에 등록된 MCP 서버·스킬·플러그인의 도구 정의가 매 호출 시스템 프롬프트에
-  실려, 판정 프롬프트 수백 자에 **입력 77,722토큰**이 붙었다. 끄면 3,756토큰(약 20분의 1, 2026-10-10 실측) —
-  RAGAS 심판이 사용량 한도 한 창에 약 500작업밖에 못 가던 원인(#218). 판정 출력 형식은 동일.
+  빈 cwd로는 부족하다. 사용자 설정에 등록된 MCP 서버·스킬·플러그인의 도구 정의가 매 호출 시스템 프롬프트에
+  실려 입력 토큰이 수십 배로 불고, 사용량 한도를 빠르게 소진한다. 꺼도 판정 출력 형식은 같다.
 - 시스템 메시지가 없어도 최소 --system-prompt를 넘긴다 — 없으면 Claude Code 기본 시스템 프롬프트가 붙는다.
 
 스모크: python -m eval.claude_client   (LLM 서버·DB 불필요, claude CLI 로그인만 필요)
@@ -46,7 +45,7 @@ class ClaudeCliClient:
         # 프로젝트 컨텍스트 오염 방지용 중립 cwd — 클라이언트 수명 동안 유지
         self._workdir = tempfile.mkdtemp(prefix="claude-eval-")
         # claude 실행 파일을 절대경로로 고정한다 — 백그라운드/cron 셸은 로그인 PATH를
-        # 상속 못 해 'claude'를 못 찾는다(실측: 대량 런이 FileNotFoundError로 통째 실패).
+        # 상속 못 해 'claude'를 못 찾는다(FileNotFoundError).
         # 여기서 한 번 해석해두면 서브프로세스가 PATH에 의존하지 않는다.
         self._exe = shutil.which("claude")
         if not self._exe:
@@ -99,12 +98,12 @@ class ClaudeCliClient:
         return out.decode().strip()
 
     async def acomplete_image(self, prompt: str, image_png: bytes, system: str | None = None) -> str:
-        """이미지 1장 + 지시문 1콜(#247 그림 캡션 판정). 위생 플래그는 acomplete와 같다.
+        """이미지 1장 + 지시문 1콜(그림 캡션 판정). 위생 플래그는 acomplete와 같다.
 
         `-p` 텍스트 stdin으로는 이미지를 못 넘긴다 — `--input-format stream-json`으로 사용자 메시지의 content에
-        image 블록(base64 PNG)을 싣는다(2026-10-18 실측: 한글·화살표·금액 그림을 그대로 옮겼다). stream-json 입력은
+        image 블록(base64 PNG)을 싣는다. stream-json 입력은
         출력도 stream-json(+--verbose)을 요구해, 마지막 result 이벤트의 result 문자열만 답으로 취한다.
-        승인 채널은 acomplete와 같은 claude CLI다(모듈 docstring — 외부 전송이 신규가 아니다, 실문서 그림은 #247 결정 1).
+        승인 채널은 acomplete와 같은 claude CLI다(모듈 docstring — 외부 전송이 신규가 아니다).
         """
         import base64
         import json

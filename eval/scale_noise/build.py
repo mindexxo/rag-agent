@@ -1,6 +1,6 @@
-"""#235 임시 인덱스 — 운영 인덱스 복사 + 노이즈 조각(규모별) → forcemerge.
+"""규모 노이즈 임시 인덱스 — 운영 인덱스 복사 + 노이즈 조각(규모별) → forcemerge.
 
-복사는 #234와 같이 search(match_all)+bulk로 `_id`·`_source`(dense 포함)를 그대로 옮긴다(재임베딩 없음). 노이즈 조각은 운영 색인
+복사는 search(match_all)+bulk로 `_id`·`_source`(dense 포함)를 그대로 옮긴다(재임베딩 없음). 노이즈 조각은 운영 색인
 문서 조립 함수(rag/search/os_index.build_doc)에 ParsedChunk를 넘겨 만든다 — 필드 모양(헤딩·식별자·Nori·bigram)이 운영과 같다.
 document_id는 NOISE_DOC_ID_BASE부터 문서마다 하나(PG 행 없음 — 검색 평가 경로는 노이즈에 PG를 안 쓴다, eval/retrieval.resolve_gold는
 정답 문서만 PG로 푼다). x0는 노이즈 0(복사+forcemerge만) — 세그먼트 구조를 맞춘 기준선. idf는 x30과 같은 노이즈를 NOISE_TENANT로.
@@ -42,7 +42,7 @@ async def _all_docs(index: str) -> list[dict]:
 
 def _noise_docs(limit: int, tenant: str) -> tuple[list[dict], int]:
     """노이즈 조각을 문서 단위로 limit개 이상 채운다 → (OS 문서 목록, 문서 수). filter를 다시 돌려 kept가 줄어도 chunks.jsonl엔
-    옛 문서가 남으므로 **kept 교집합**만 쓴다(리뷰 지적 6)."""
+    옛 문서가 남으므로 **kept 교집합**만 쓴다."""
     kept = set(json.loads(FILTER.read_text(encoding='utf-8'))['kept'])
     by_doc = defaultdict(list)
     for l in CHUNKS.read_text(encoding='utf-8').splitlines():
@@ -81,7 +81,7 @@ async def build(conds: list[str]) -> None:
     if bad:
         raise SystemExit(f'모르는 조건 {bad} — 가능: {CONDITIONS}')
     base = await _all_docs(settings.opensearch_index)
-    # 배수의 기준 = 측정 테넌트의 **검색 가능한** 문서 조각(kNN 풀이 searchable 필터를 걸므로 같은 모집단, 리뷰 지적 10)
+    # 배수의 기준 = 측정 테넌트의 **검색 가능한** 문서 조각(kNN 풀이 searchable 필터를 걸므로 같은 모집단)
     n_tenant = sum(
         1 for d in base if d.get('tenant_id') == TENANT and d.get('document_id') is not None and d.get('searchable')
     )

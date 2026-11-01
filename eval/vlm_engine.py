@@ -1,15 +1,12 @@
-"""측정용 VLM 변환 엔진(#296) — docling VlmPipeline + ApiVlmOptions로 **쪽 전체**를 VLM에 넣어 마크다운으로 받고, 그걸 DoclingDocument로
+"""측정용 VLM 변환 엔진 — docling VlmPipeline + ApiVlmOptions로 **쪽 전체**를 VLM에 넣어 마크다운으로 받고, 그걸 DoclingDocument로
 만든다. 상용 전환 a안("캡션과 같은 VLM이 OCR까지")의 운영 모양 그대로라, 하네스가 이 엔진으로 돌린 결과 = a안을 채택했을 때의 색인이다.
 
 운영 코드는 건드리지 않는다 — rag/chunking/convert_process의 `convert_local`만 이 프로세스 안에서 바꿔 끼운다(eval/scan_quality/ocr_variant와 같은 패턴).
-VLM 주소·모델·키·온도는 캡션 설정(VLM_CAPTION_*)을 그대로 쓴다 — 벤더 전환은 .env 세 줄(#290 "주소가 곧 벤더").
+VLM 주소·모델·키·온도는 캡션 설정(VLM_CAPTION_*)을 그대로 쓴다 — 벤더 전환은 .env 세 줄(주소가 곧 벤더).
 
 고정값(비교 조건 — 보고에 적을 것): 프롬프트 PROMPT(기본 V2), scale 2.0(72dpi 기준 배수 — docling 기본값. 캡션의 4.0보다 낮은 건 쪽
 전체라 픽셀이 많아서다. **scale을 바꿔 비교한 실험은 하지 않았다**), 출력 상한 4,000(표 한 쪽이 캡션 상한 1,500을 넘을 수 있어서),
-응답 형식 markdown. 사내 Qwen2.5-VL 7B 원형 실측(10/24): 표 이미지 1쪽 3.4초, 표 2개 TableItem 추출.
-
-측정 결과(10/25, 이슈 #296 코멘트가 정본): gpt-5-mini 표 22축 셀 94.2%·숫자 오독 6(Triton 80.9%·26), 스캔 5건 헤딩 0.93·띄어쓰기
-0.96(Triton 0.80·0.68). 사내 7B는 숫자 오독 51로 Triton보다 나쁘다. Gemini 2.5 Flash는 무료 한도(하루 20건)로 표 12축만.
+응답 형식 markdown.
 
 사용: install() 뒤 rag.chunking.chunk_file / convert_process.convert_local 호출. uninstall()로 원복(스캔 하네스의 디지털 기준 변환이 섞이지 않게).
 """
@@ -25,8 +22,8 @@ PROMPT_V1 = (
     "이 쪽을 마크다운으로 옮겨 적어라. 표는 마크다운 표(| 칸 | 칸 |)로 — 병합된 칸은 그 값을 해당 칸마다 반복해 적고, 빈 칸은 비워 둔다. "
     "제목은 #로, 본문은 문단으로. 보이는 글자를 그대로 쓰고 없는 내용을 지어내지 마라. 설명·주석 없이 마크다운만 출력."
 )
-# V2(#296): 절 제목 표시를 VLM 판단에 맡기지 않고 규칙으로 못박는다. V1에서 gpt-5-mini가 1쪽 절 제목('2. 증빙 요건')을 평문으로 써서
-# docling 마크다운 해석기가 앞 번호 목록의 6번째 항목으로 합치고 번호를 다시 매겼다('2.'→'6.' — 글자 내용이 바뀐다, 실측 10/25).
+# V2: 절 제목 표시를 VLM 판단에 맡기지 않고 규칙으로 못박는다. 절 제목('2. 증빙 요건')을 평문으로 쓰면
+# docling 마크다운 해석기가 앞 번호 목록의 항목으로 합치고 번호를 다시 매긴다('2.'→'6.' — 글자 내용이 바뀐다).
 # '## '를 붙이면 목록으로 합쳐지지 않는다. 문서 제목 '#'는 1쪽 맨 위 하나뿐 — 쪽 단위 호출이라 쪽마다 '#'가 생기던 것도 막는다.
 PROMPT_V2 = (
     "이 쪽을 마크다운으로 옮겨 적어라. 규칙:\n"
@@ -67,8 +64,8 @@ def build_converter():
         scale=SCALE,
         timeout=TIMEOUT,
         concurrency=1,
-        # 온도는 **옵션 필드**로 줘야 한다 — docling ApiVlmModel이 params 위에 vlm_options.temperature를 덮어쓴다(실측: params에만
-        # 1.0을 주니 gpt-5가 0.0 거부 400). 인자 이름은 캡션과 같은 새 표기(#290 결정 3 — gpt-5가 max_tokens 거부)
+        # 온도는 **옵션 필드**로 줘야 한다 — docling ApiVlmModel이 params 위에 vlm_options.temperature를 덮어쓴다(params에만
+        # 주면 무시된다). 인자 이름은 캡션과 같은 max_completion_tokens(gpt-5가 max_tokens 거부)
         temperature=settings.vlm_caption_temperature,
         params={'model': settings.vlm_caption_model, 'max_completion_tokens': MAX_TOKENS},
     )
@@ -102,7 +99,7 @@ def _paced(fn):
             time.sleep(30)
         # 다섯 번 다 비었다 = 한도 소진(무료 티어 일일 20건 등). 한계: 정당하게 빈 쪽(백지)도 같은 판정이 된다 — 현재 측정 문서엔 백지 쪽이 없다.
         # 빈 결과로 두면 그 쪽이 '미검출 0점'으로 채점돼 한도 초과가 품질
-        # 저하로 둔갑한다(10/24 실측). 측정을 통째로 멈춘다 — 남은 문서는 --only로 이어 돌린다.
+        # 저하로 둔갑한다. 측정을 통째로 멈춘다 — 남은 문서는 --only로 이어 돌린다.
         print('[vlm_engine] 빈 응답 5회 연속 — 한도 소진으로 보고 측정 중단', flush=True)
         os._exit(3)
 
@@ -118,12 +115,9 @@ def _patch_requests():
         M._vlm296_patched = True
 
 
-# 헤딩 조립 보정(#296) — VLM이 '#'로 쓴 줄은 docling에서 title 라벨이 되는데 PDF 청킹(docling_elements.sections_from_docling_elements)은 section_header만
-# 헤딩으로 본다 → 문서 제목이 본문 줄로 떨어졌다(채점 '제목 ✗'의 원인, 실측 10/25). title → section_header로 바꾸면 청킹이 첫 헤딩을
-# 문서 제목, 나머지를 절로 층을 다시 만든다.
-# 기각한 보정: '번호 헤딩 꼴 글 줄을 헤딩으로 올리기' — gpt-5-mini 33줄 중 확인 항목 목록 4줄 이상을 헤딩으로 올렸고(오탐), 근본 원인
-# (VLM이 절 제목을 평문으로 써서 docling이 앞 번호 목록에 합치고 번호까지 다시 매김 '2.'→'6.')을 못 막는다. 원인은 PROMPT_V2로 막았다
-# (아로마니카 스캔본 헤딩 13/13 원본과 일치, 번호 보존).
+# 헤딩 조립 보정 — VLM이 '#'로 쓴 줄은 docling에서 title 라벨이 되는데 PDF 청킹(docling_elements.sections_from_docling_elements)은 section_header만
+# 헤딩으로 본다 → 그대로 두면 문서 제목이 본문 줄로 떨어진다. title → section_header로 바꾸면 청킹이 첫 헤딩을
+# 문서 제목, 나머지를 절로 층을 다시 만든다. 절 제목이 평문이 되는 문제는 여기가 아니라 PROMPT_V2가 막는다.
 
 
 def _fix_headings(doc):

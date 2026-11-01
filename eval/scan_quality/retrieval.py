@@ -1,4 +1,4 @@
-"""스캔판이 검색에 주는 영향(#224) — 대상 문서의 골드 문항으로 '정답 문서가 처음 나오는 순위'를 잰다.
+"""스캔판이 검색에 주는 영향 — 대상 문서의 골드 문항으로 '정답 문서가 처음 나오는 순위'를 잰다.
 
 스캔판은 띄어쓰기·글자가 달라 골드 스니펫으로 정답 청크를 풀 수 없다 — 그래서 청크가 아니라 **문서** 단위로 본다.
 같은 파일명으로 디지털판 / 스캔판(OCR 변형별)을 번갈아 색인해 놓고 이 스크립트를 돌린다(교체는 swap 명령).
@@ -33,7 +33,7 @@ def _gold():
 
 
 async def swap(kind: str) -> None:
-    """5건을 디지털판 또는 스캔판으로 바꿔 올린다 — 옛 문서는 지우고(DROP drain) 새로 올린다(같은 파일명 재업로드 함정, #222)."""
+    """5건을 디지털판 또는 스캔판으로 바꿔 올린다 — 옛 문서는 지우고(DROP drain) 새로 올린다(같은 파일명 재업로드 함정)."""
     from database import AsyncSessionLocal
     from main import app
     from rag import outbox
@@ -67,7 +67,7 @@ async def swap(kind: str) -> None:
             if old:
                 await c.delete('/kms/documents?' + '&'.join(f'ids={i}' for i in old))
                 # 지운 문서의 행만 — 테넌트 전체 pending을 집으면 공유 개발계에서 다른 세션 업로드까지 이 프로세스가 처리해
-                # 그쪽 blob이 없으면 failed로 굳는다(#179와 같은 함정, #224 리뷰)
+                # 그쪽 blob이 없으면 failed로 굳는다
                 async with AsyncSessionLocal() as db:
                     rows = [r for i in old for r in await outbox.pending_row_ids(db, document_id=i)]
                 _check(await outbox.drain_once(row_ids=rows), f'{s.filename} 옛 판 삭제')
@@ -86,7 +86,7 @@ async def swap(kind: str) -> None:
 
 def _check(res: dict, what: str) -> dict:
     """drain이 건너뛰었거나(다른 drain이 잠금 중·색인 확인 실패) 실패한 행이 있으면 멈춘다 — 그대로 두면 옛 청크가 남은 채
-    measure가 라벨과 다른 상태를 잰다(#224 리뷰)."""
+    measure가 라벨과 다른 상태를 잰다."""
     if res.get('skipped') or res.get('failed'):
         raise RuntimeError(f'{what}: drain 결과 {res}')
     return res

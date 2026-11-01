@@ -8,17 +8,16 @@ classify_and_guard가 입력을 올바른 경로로 보내는지 측정한다.
 - safe 대상: decision.safe == True 이고 intent가 expected_intent와 같아야 정답
 
 특히 확인하는 경계:
-- 대화/메타(요약·회상·자기소개) → OTHER (이번 변경으로 신설)
+- 대화/메타(요약·회상·자기소개) → OTHER
 - "환불 규정 요약해줘"(서비스 내용 요약) → KNOWLEDGE (급소)
 - 기존 인사/도메인/인젝션/pii 회귀
-- rebuttal(#142): 직전 답을 반박·의심하는 발화 → KNOWLEDGE. 행에 prior_turns(최근 문답)가 있고
+- rebuttal: 직전 답을 반박·의심하는 발화 → KNOWLEDGE. 행에 prior_turns(최근 문답)가 있고
   분류기가 그걸 받는다. 문체 4(해요체 의문·단정, 합쇼체, 반말) × 형태 4(직접부정·출처대비·확신요구·
   의심표명) 격자라 한 어미가 점수를 좌우하지 못한다. neg 2건은 이력이 있어도 맞장구는 OTHER여야
   한다는 과잉 발동 감시.
 
 골드 규율: 문구가 분류 프롬프트의 예시(rag/turn/prompt_texts.py)와 **겹치면 안 된다** — 겹치면 일반화가 아니라 암기를
-잰다(#63). 2026-09-29에 겹치던 23행을 같은 경계·다른 문구로 바꿨다(tests/test_prompts.py가 반박 예시
-문구의 부재를 래칫으로 고정). 골드를 바꾸기 전엔 intent_set_v1_before_<변경>.jsonl.bak으로 스냅샷을
+잰다(tests/test_prompts.py가 반박 예시 문구의 부재를 래칫으로 고정). 골드를 바꾸기 전엔 intent_set_v1_before_<변경>.jsonl.bak으로 스냅샷을
 뜬다(gitignore, 로컬 이력).
 
 실행: python -m eval.intent
@@ -39,7 +38,7 @@ CONCURRENCY = 4  # LLM 서버 동시 호출 제한
 def _is_correct(case: dict, decision) -> bool:
     if not case["expected_safe"]:
         return decision.safe is False  # 차단 대상은 safe=False면 정답
-    # acceptable_intents(#59): RETRY와 OTHER는 직전 턴이 취소가 아니면 같은 동작으로
+    # acceptable_intents: RETRY와 OTHER는 직전 턴이 취소가 아니면 같은 동작으로
     # 수렴한다(디스패처 폴백) — 그 경계 발화는 둘 다 정답으로 인정해 억지 라벨을 피한다.
     accepted = case.get("acceptable_intents") or [case["expected_intent"]]
     return decision.safe is True and decision.intent in accepted
@@ -53,11 +52,11 @@ async def compute() -> dict:
     """인텐트 채점 실행 → 요약 반환 (출력은 main).
 
     반환: {'rows','accuracy','safe_accuracy','intent_accuracy','n','n_unsafe'}.
-    accuracy(전체)는 히스토리 연속성 때문에 유지하되, **차단 정확도를 분리 집계**한다 (#22) —
+    accuracy(전체)도 내되 **차단 정확도를 분리 집계**한다 —
     차단 케이스가 소수라 합산 지표는 "아무것도 차단하지 않아도 높게" 나와 안전성 회귀를 못 잡는다.
     """
     cases = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
-    llm = create_aux_llm()  # 운영과 같은 보조 클라이언트(#297) — LLM_AUX_*가 비면 생성 설정 그대로
+    llm = create_aux_llm()  # 운영과 같은 보조 클라이언트 — LLM_AUX_*가 비면 생성 설정 그대로
     sem = asyncio.Semaphore(CONCURRENCY)
 
     async def run(case: dict) -> dict:
@@ -68,7 +67,7 @@ async def compute() -> dict:
                 case.get("has_attachments", False),
                 domain_hint=case.get("domain_hint"),
                 prior_turns=case.get("prior_turns"),
-            )  # #142 — 없으면 첫 턴
+            )  # prior_turns가 없으면 첫 턴
         return {**case, "got_safe": d.safe, "got_intent": d.intent, "ok": _is_correct(case, d)}
 
     rows = list(await asyncio.gather(*(run(c) for c in cases)))
@@ -95,7 +94,7 @@ async def main():
 
     print(f"[인텐트 분류 정확도]  총 {len(rows)}문항\n")
     print(f"{'category':<24}{'정확도':>12}")
-    # attachment 누락 시 총합과 카테고리 합이 안 맞아 조용히 사라진다 — 정의 순서에 포함 (#22)
+    # attachment 누락 시 총합과 카테고리 합이 안 맞아 조용히 사라진다 — 정의 순서에 포함
     order = [
         "greeting",
         "meta_summary",
@@ -126,7 +125,7 @@ async def main():
 
     total_ok = sum(1 for r in rows if r["ok"])
     print(f"\n전체: {total_ok}/{len(rows)} ({total_ok / len(rows):.0%})")
-    # 안전성은 분리해서 본다 — 합산 지표에 묻히면 차단 회귀를 못 잡는다 (#22)
+    # 안전성은 분리해서 본다 — 합산 지표에 묻히면 차단 회귀를 못 잡는다
     print(f"  ├ 차단 정확도(unsafe {result['n_unsafe']}건): {result['safe_accuracy']:.0%}")
     print(f"  └ 라우팅 정확도(safe {len(rows) - result['n_unsafe']}건): {result['intent_accuracy']:.0%}")
 

@@ -1,24 +1,21 @@
-"""eval 전용 — gold의 대화 이력(list[dict])을 rag.turn.conversation이 소비하는 Message로 (#77).
+"""eval 전용 — gold의 대화 이력(list[dict])을 rag.turn.conversation이 소비하는 Message로 바꾼다.
 
 **계약.** rag/turn/conversation.py의 이력 함수들이 이력 객체에서 읽는 것:
 
     속성       읽는 곳                                     없으면
     role      _history_content · build_prior_turns        user↔assistant 짝짓기 실패(턴 전부 소실)
     content   _history_content · estimate_tokens          TypeError
-    status    _history_content (role=='assistant'일 때만)  ← #77이 여기서 터졌다
+    status    _history_content (role=='assistant'일 때만)  AttributeError
 
 이 표의 근거(ground truth)는 rag/turn/conversation.py 코드 자체이고 옮길 수 없다. 여기는 그
 계약을 **eval 쪽에서 만족시키는 단일 지점**이다 — 소비처(condense·generation·retrieval_mt)는
 이 함수만 부르고 필드를 직접 조립하지 않는다.
 
-**왜 SimpleNamespace를 버렸나.** 예전엔 세 소비처가 각자 SimpleNamespace로 흉내냈다.
-SimpleNamespace는 **넘긴 키만** 속성으로 갖기 때문에, 소비 함수가 새 속성을 읽기 시작하면
-그 키를 안 넘긴 쪽이 AttributeError로 죽는다. 실제로 #59가 status를 도입했을 때 세 곳 중
-condense.py만 고쳐졌고, 나머지 둘은 그때부터 크래시 상태였다 — #72가 failed 분기를 더하며
-같은 자리가 또 걸렸고, 그 사이 생성축·멀티턴검색축을 한 번도 못 돌렸다(두 번 다 사람이
-우연히 발견했다). 진짜 Message(rag/models.py, SQLAlchemy declarative)는 매핑 컬럼 전부가
-인스턴스 속성으로 존재해 미설정이면 None일 뿐이라, **이 버그 클래스가 원리적으로 사라진다.**
-DB·세션 없이 생성 가능하다(tests/test_condense_multiquery.py에 선례).
+**왜 SimpleNamespace가 아니라 진짜 Message인가.** SimpleNamespace는 **넘긴 키만** 속성으로
+갖기 때문에, 소비 함수가 새 속성을 읽기 시작하면 그 키를 안 넘긴 소비처가 AttributeError로
+죽는다. 진짜 Message(rag/models.py, SQLAlchemy declarative)는 매핑 컬럼 전부가 인스턴스
+속성으로 존재해 미설정이면 None일 뿐이라, **이 버그 클래스가 원리적으로 사라진다.**
+DB·세션 없이 생성 가능하다(tests/test_condense_multiquery.py도 그렇게 쓴다).
 
 **status를 명시로 채우는 이유.** Message.status의 컬럼 기본값(mapped_column(default='done'))은
 flush(INSERT) 시점에만 적용된다 — 여기서 만드는 transient 객체는 안 채우면 None으로 남는다.
@@ -37,7 +34,6 @@ gold가 값을 실었으면 그대로 통과시킨다 — 어댑터를 안 고�
 분기하기 시작하면, 여기는 그 필드를 안 채우니 항상 None이다 — eval은 영원히 한쪽 분기만
 타면서 통과한다. 크래시가 없어 회귀 테스트도 신호를 안 준다. 막으려면 gold 스키마 쪽
 래칫이 필요하다(eval/validate_gold_v2.py의 REQUIRED_KEYS를 conversation 내부 키까지 확장).
-#77 스콥에서는 제외했다 — 다시 마주치면 그 훅부터 볼 것.
 
 실행: python -m eval._gold_history        # 계약 스모크 (DB·LLM 불필요)
 """
@@ -58,7 +54,7 @@ def messages_from_conversation(conversation: list[dict] | None) -> list[Message]
 
 
 if __name__ == '__main__':
-    # 스모크 — 계약만 확인한다 (eval/ragas_adapter.py 선례)
+    # 스모크 — 계약만 확인한다
     msgs = messages_from_conversation([{'role': 'user', 'content': '질문'}, {'role': 'assistant', 'content': '답변'}])
     assert [m.role for m in msgs] == ['user', 'assistant']
     assert msgs[1].status == DEFAULT_STATUS

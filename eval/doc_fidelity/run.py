@@ -1,4 +1,4 @@
-"""실문서 파싱 충실도 검증 실행기 (#247 그림 캡션 · #231 문장 포함률).
+"""실문서 파싱 충실도 검증 실행기 (그림 캡션 · 문장 포함률).
 
     python -m eval.doc_fidelity.run --tenant inticube --phase extract     # 그림 전수 추출(docling 재변환 — VLM 사용)
     python -m eval.doc_fidelity.run --tenant inticube --phase judge       # Claude 1차 판정(rubric.py)
@@ -7,7 +7,7 @@
     python -m eval.doc_fidelity.run --tenant inticube --phase review      # 재판정 HTML(review.html)
     python -m eval.doc_fidelity.run --tenant inticube --phase summarize [--human human.json]
 
-산출물은 eval/results/doc_fidelity/<tenant>/ — **gitignore**(실문서 그림·원문이 들어 있다, #247 결정 3). 커밋하는 것은 이 코드뿐.
+산출물은 eval/results/doc_fidelity/<tenant>/ — **gitignore**(실문서 그림·원문이 들어 있다). 커밋하는 것은 이 코드뿐.
 필요: DB·OpenSearch(색인 청크), VLM(extract·synthetic), claude CLI(judge·coverage). 모듈 역할:
   pictures(추출·색인 대조) · rubric(판정 기준 정의점) · judge(Claude 판정) · coverage(문장 포함률) · synthetic · review(HTML·집계)
 """
@@ -81,7 +81,7 @@ async def phase_extract(tenant: str, out: Path, files: list[str] | None = None) 
         ]
         chunks_norm = [norm(c['text']) for c in chunks]
         for r in recs:
-            if r['in_index'] is False:  # 결정 5 — 색인 쪽 캡션을 사람이 볼 수 있게 가장 비슷한 청크를 붙인다
+            if r['in_index'] is False:  # 색인 쪽 캡션을 사람이 볼 수 있게 가장 비슷한 청크를 붙인다
                 i, _ = cov.best_chunk(norm(r['caption']), chunks_norm)
                 r['nearest_chunk'] = chunks[i]['text'][:1500] if i >= 0 else ''
         rows += recs
@@ -144,7 +144,7 @@ async def phase_coverage(tenant: str, out: Path, concurrency: int) -> None:
                             }
                         ]
                     )
-                except RuntimeError as e:  # 호출 실패는 그 단위만 '판정 실패'로 — 실행 전체를 멈추지 않는다(리뷰 지적)
+                except RuntimeError as e:  # 호출 실패는 그 단위만 '판정 실패'로 — 실행 전체를 멈추지 않는다
                     return {**u, 'loss_label': '판정 실패', 'loss_note': f'호출 실패: {str(e)[:200]}'}
             m = _JSON.search(raw or '')
             try:
@@ -169,8 +169,8 @@ async def phase_synthetic_pictures(out: Path) -> None:
     from eval.doc_fidelity.picture_specs import DOC_NAMES, PICTURES
     from eval.doc_fidelity.synthetic import match_pictures, score_picture
 
-    # 기준은 최신 추출(pictures.jsonl)이다. 판정(judged.jsonl)은 같은 그림 id가 있을 때만 붙인다 — 판정 파일을 먼저 읽던 첫 구현은
-    # 문서를 다시 올린 뒤에도 옛 추출(지운 문서 id)을 채점했다(10/18, 경계 재배치 확인 중 발견)
+    # 기준은 최신 추출(pictures.jsonl)이다. 판정(judged.jsonl)은 같은 그림 id가 있을 때만 붙인다 — 판정 파일을 기준으로 삼으면
+    # 문서를 다시 올린 뒤에도 옛 추출(지운 문서 id)을 채점한다
     verdicts = (
         {r['picture_id']: r.get('verdict') for r in load_jsonl(out / 'judged.jsonl')}
         if (out / 'judged.jsonl').exists()
@@ -227,8 +227,8 @@ def chunk_view(r: dict, chunks: list[dict]) -> list[dict]:
     """그림 하나가 실제로 들어간 색인 청크들(문서 순서).
 
     캡션이 있으면: 그 캡션에만 있는 줄(정규화 4자 이상, 3개 넘는 청크에 나오는 줄은 뺀다)을 덮는 **최소 청크**를 탐욕적으로 고른다.
-    줄 하나라도 든 청크를 전부 보이던 첫 구현은 타임레포트 화면 캡처마다 청크 7~11개를 붙였다 — 'Hansol Time Report'·'Light
-    Mode' 같은 공통 줄이 모든 캡처에 있다(10/18 실측). 긴 캡션은 분할기가 두 청크로 나누므로 2개가 정상일 수 있다.
+    줄 하나라도 든 청크를 전부 보이면 화면 캡처마다 청크가 너무 많이 붙는다 — 'Light Mode' 같은 공통 줄이
+    모든 캡처에 있기 때문이다. 긴 캡션은 분할기가 두 청크로 나누므로 2개가 정상일 수 있다.
     캡션이 없으면: 자리표시가 든 청크. 청크의 page는 **첫 줄의 쪽**이라 그림 쪽 바로 앞 쪽에서 시작한 청크도 본다.
     PDF는 쪽을 그림 쪽·바로 앞 쪽으로 한정한다.
     """
@@ -264,7 +264,7 @@ def chunk_view(r: dict, chunks: list[dict]) -> list[dict]:
 
 
 def phase_ab_review(variants: list[str], tenant: str = 'inticube') -> None:
-    """두 변형 캡션 블라인드 비교 페이지(결정 15). variants = [기준, 후보]. 실문서(inticube)는 캡션 대상이던 그림만,
+    """두 변형 캡션 블라인드 비교 페이지. variants = [기준, 후보]. 실문서(inticube)는 캡션 대상이던 그림만,
     합성(homeplus)은 변형 캡션이 있는 그림 전부(XLSX처럼 운영에서 캡션이 안 붙는 그림도 프롬프트 비교에는 넣는다)."""
     from eval.doc_fidelity.review import write_ab_html
 

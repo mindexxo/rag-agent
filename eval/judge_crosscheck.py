@@ -1,8 +1,8 @@
-"""judge 교차검증 (#103) — 같은 답변을 vLLM judge와 Claude judge로 이중 채점해 불일치를 뽑는다.
+"""judge 교차검증 — 같은 답변을 vLLM judge와 Claude judge로 이중 채점해 불일치를 뽑는다.
 
-이 이슈의 진짜 산출물: "우리 judge(Qwen3-14B 자기채점)를 얼마나 믿어도 되는가"의 수치.
+이 축의 산출물: "우리 judge(Qwen3-14B 자기채점)를 얼마나 믿어도 되는가"의 수치.
 불일치 목록을 사람이 읽고(측정 규율) 어느 쪽이 맞는지 표본 확인하는 게 최종 판단.
-Claude judge도 LLM이라 순환을 "끊는" 게 아니라 "다변화" — 최종 기준은 #98 사람 평가.
+Claude judge도 LLM이라 순환을 "끊는" 게 아니라 "다변화" — 최종 기준은 사람 평가.
 
 **부재단정 축**만 다룬다(저렴 — 인용 0건 답변 ~50건). RAGAS 축 교차검증은 전체가 19~38시간
 이라 스모크 규모로만 별도 실행(ragas_eval.py RAGAS_JUDGE=claude), 여기서 안 묶는다.
@@ -10,11 +10,11 @@ Claude judge도 LLM이라 순환을 "끊는" 게 아니라 "다변화" — 최�
 **입력은 audit 재활용 한 경로뿐이다.** 기존 refusal 실행이 남긴 absence_judge_*.jsonl의
 answer에 **Claude judge만** 새로 적용하고, vLLM 판정은 파일의 absence 컬럼을 쓴다. 같은
 answer에 두 judge를 적용하는 게 순수 비교의 핵심 — 생성을 두 번 하면 비결정성이 섞여
-judge 비교가 오염된다(그래서 refusal 즉석 실행 경로는 없앴다: absence_misses가 answer를
-보존하지 않아 무의미했다, 리뷰 발견). GPU 불필요(Claude 좌석만).
+judge 비교가 오염된다(refusal 즉석 실행 경로가 없는 이유: absence_misses는 answer를
+보존하지 않는다). GPU 불필요(Claude 좌석만).
 
 **judge 비결정성**: Claude도 LLM이라 1회 판정은 흔들릴 수 있다(absence_judge selftest가
-그 흔들림을 실측). 그래서 불일치로 판정된 건만 Claude 재판정 1회를 더 해 flaky를 표시한다
+그 흔들림을 잰다). 그래서 불일치로 판정된 건만 Claude 재판정 1회를 더 해 flaky를 표시한다
 (refusal.compute의 assertion 재판정 패턴과 같은 근거) — 불일치가 견해차인지 그 순간의
 flaky인지 결과에 남긴다.
 
@@ -30,7 +30,7 @@ from pathlib import Path
 from eval.absence_judge import judge_absence
 from eval.claude_client import ClaudeCliClient
 
-CONCURRENCY = 4  # claude -p 콜=서브프로세스 (longcontext_claude 선례)
+CONCURRENCY = 4  # claude -p 콜=서브프로세스라 동시 호출을 낮게 둔다
 RESULT_DIR = Path(__file__).resolve().parent / "results"
 
 

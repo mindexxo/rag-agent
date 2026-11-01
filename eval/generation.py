@@ -1,4 +1,4 @@
-"""1.5.D 생성 평가 하네스 (oracle / retrieved 2모드, §5.3).
+"""생성 평가 하네스 (oracle / retrieved 2모드).
 
 검색 결과를 고정하고 LLM만 평가:
 - oracle:    gold 정답 청크를 직접 주입 → LLM 순수 성능 (검색 변수 제거)
@@ -10,9 +10,9 @@
 
 LLM 서버 필요: .env의 LLM_PROVIDER/LLM_BASE_URL/LLM_MODEL (기본 공급자 vllm).
 실행: python -m eval.generation
-비교군 (#96a): GENERATOR=claude [CLAUDE_MODEL=sonnet] python -m eval.generation
+비교군: GENERATOR=claude [CLAUDE_MODEL=sonnet] python -m eval.generation
   — 생성 콜만 Claude CLI로 교체(condense·검색은 운영 그대로), 결과는 generation_{mode}_claude.jsonl.
-  롱컨텍스트 비교군(#96b, 파이프라인 전체 제거)은 eval/longcontext_claude.py — 별개 축이다.
+  롱컨텍스트 비교군(파이프라인 전체 제거)은 eval/longcontext_claude.py — 별개 축이다.
 """
 
 import asyncio
@@ -45,7 +45,7 @@ TENANT = "demo"  # v1(단일 테넌트) 기본값 — v2 gold는 id 접두로 �
 V2_TENANTS = {"summers", "homeplus", "adererror", "aromanica", "goodpeople", "harim", "inticube"}
 GOLD = Path("eval/gold_set_v2.jsonl")
 GOLD_VERSION = "v2"
-# 비공개 골드(사내 실문서, #138 ③) — 정본 옆에 두되 gitignore. 파일이 없으면 정본만 읽는다.
+# 비공개 골드(사내 실문서) — 정본 옆에 두되 gitignore. 파일이 없으면 정본만 읽는다.
 GOLD_PRIVATE_DIR = Path("eval/gold_private")
 
 
@@ -72,16 +72,10 @@ def row_tenant(g: GoldRow) -> str:
 
 RESULT_DIR = Path("eval/results")
 # 생성 평가 본체. multi_turn은 gold의 conversation을 운영 condense_query에 태워
-# 독립 질문으로 재작성한 뒤 동일 경로로 평가 (E.1 운영 경로 그대로 측정)
-#
-# multi_turn은 **이 날짜 이전 결과와 비교 불가** (#48, 2026-08-19): 두 가지가 바뀌었다.
-#   1) 이력 블록(prior_turns)을 넘기지 않던 버그 수정 — 운영은 넣는데 여기는 안 넣었고,
-#      그래서 "재작성 오염 때문에 오답"이라는 오진이 나왔다(같은 오염 재작성본으로 재측정하니
-#      이력 없음 1/10 · 이력 있음 8/10).
-#   2) "질문:" 슬롯이 재작성본 → 원 질문 + 재작성본 병기로 바뀜.
-# citation_accuracy v3(#56)와 같은 종류의 고지다 — 측정 정의가 바뀐 것이지 모델이 변한 게 아니다.
-# single_fact/paraphrase/rare_lexical/multi_doc은 이력이 없고 두 질의가 같아 렌더 무변경.
-# 고난도 6종 (#95) — 전부 has_evidence=True 생성 챌린지라 GEN_TYPES에 합류한다.
+# 독립 질문으로 재작성한 뒤 동일 경로로 평가한다(운영 경로 그대로 측정).
+# multi_turn은 이력 블록(prior_turns)을 함께 싣고, "질문:" 슬롯에 원 질문 + 재작성본을 병기한다.
+# single_fact/paraphrase/rare_lexical/multi_doc은 이력이 없고 두 질의가 같아 렌더가 같다.
+# 고난도 6종 — 전부 has_evidence=True 생성 챌린지라 GEN_TYPES에 합류한다.
 # 검색축 난이도 그룹은 기존 'hard'에 섞지 않고 'hard_new'로 분리한다(retrieval_v2.DIFFICULTY)
 # — 섞으면 run_all의 r5_hard 시계열 구성이 조용히 바뀌어 회귀인지 구성 변경인지 못 가른다.
 HARD_TYPES = {"multi_hop", "calc", "exception", "negation", "temporal", "conflict"}
@@ -90,7 +84,7 @@ TOP_K = 5
 USE_RERANK = False  # 추가 리랭크 여부. 주의: retrieve_candidates가 settings.rerank_enabled(현재 True)로
 # 이미 내부 리랭크 1회 수행 → retrieved 모드는 이미 '리랭커 포함'(=시스템 전체).
 # True로 켜면 이중 리랭크. 도입 확정이라 내부 1회로 충분 → False 유지.
-SMOKE = int(os.getenv("SMOKE", "0")) or None  # 스모크셋 크기 (0/미설정=전체) — 검증용 부분 실행 (#18)
+SMOKE = int(os.getenv("SMOKE", "0")) or None  # 스모크셋 크기 (0/미설정=전체) — 검증용 부분 실행
 
 
 # ===== 컨텍스트 구성 =================================================
@@ -99,7 +93,7 @@ SMOKE = int(os.getenv("SMOKE", "0")) or None  # 스모크셋 크기 (0/미설정
 async def oracle_context(session, chunk_ids: list[int]) -> list[RetrievedChunk]:
     """gold 정답 청크 id들을 RetrievedChunk로 (LLM 컨텍스트 주입용).
 
-    id는 색인 chunk_id다(resolve_gold가 색인에서 푼다 — #139). 본문·메타도 색인에서 읽는다;
+    id는 색인 chunk_id다(resolve_gold가 색인에서 푼다). 본문·메타도 색인에서 읽는다;
     session은 호출부 호환용으로 받기만 한다.
     """
     if not chunk_ids:
@@ -108,12 +102,12 @@ async def oracle_context(session, chunk_ids: list[int]) -> list[RetrievedChunk]:
 
     chunk_map = await os_search.fetch_chunk_map(chunk_ids)
     chunks = [chunk_map[cid] for cid in chunk_ids if cid in chunk_map]
-    # 운영과 같은 근거 준비(#222) — 정답 묶음도 시트 완성본으로 바꿔 넣는다(같은 시트 묶음이 여럿이면 하나로 접힌다)
+    # 운영과 같은 근거 준비 — 정답 묶음도 시트 완성본으로 바꿔 넣는다(같은 시트 묶음이 여럿이면 하나로 접힌다)
     return prepare_evidence(chunks, len(chunks))
 
 
 async def retrieved_context(session, tenant: str, query: str) -> list[RetrievedChunk]:
-    """실제 검색기 결과 top-K (옵션: 리랭커 재정렬). 자르기는 운영과 같은 prepare_evidence(#222 — 접기·시트 확장 포함)."""
+    """실제 검색기 결과 top-K (옵션: 리랭커 재정렬). 자르기는 운영과 같은 prepare_evidence(접기·시트 확장 포함)."""
     cands = await retrieve_candidates(session, tenant, query, top_n=20)
     chunks = cands.chunks
     if USE_RERANK and chunks:
@@ -136,15 +130,10 @@ async def generate(
     """RAG 프롬프트로 답변 1건 생성 (LLM 서버 필요).
 
     운영(rag/turn/service.py)과 같은 조립점을 쓴다 — 인자를 한쪽에서만 빼먹는 종류의 어긋남을
-    구조적으로 막기 위해서다(#48: 여기서 prior_turns가 빠져 있었고 아무 데도 안 걸렸다).
+    구조적으로 막기 위해서다.
 
-    출처 꼬리 제약도 운영과 같이 붙인다 (#61) — 이전엔 하네스만 제약 없이 생성했다.
-    첨부는 []다 — gold set에 첨부 문항이 0건이다.
-
-    #65부터 이 제약이 **실제로 강제된다**(#56 도입 이후 처음). 그전 구현(정규식)은 vLLM에서
-    무효였고, 그래서 붙이기 전후 위반율이 같았다(oracle 1.1%·retrieved 1.6%).
-    이 하네스가 그 강제 효과를 재는 1차 지표다: 위반율이 0으로
-    떨어지는지가 검증 대상이다. 제약을 거부하는 서버를 위한 재시도는 #287에서 지웠다(운영과 동일).
+    출처 꼬리 제약도 운영과 같이 붙인다. 첨부는 []다 — gold set에 첨부 문항이 0건이다.
+    제약을 거부하는 서버를 위한 재시도는 없다(운영과 동일).
     """
     prompt = build_knowledge_generation_prompt(
         original_query, chunks, standalone_query=standalone_query, prior_turns=prior_turns
@@ -169,8 +158,8 @@ _MIN_CLAUSE = 6  # 이보다 짧은 조각은 의미를 못 실어 임베딩이 
 # '- ' 목록으로 나누라"고 **지시**하므로 이 형태는 예외가 아니라 정상 출력이다.
 _BULLET_HEAD = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
 _MAX_RUN_JOIN = 12  # 한 런에 이 개수를 넘으면 묶지 않는다 — 너무 길면 주제가 뭉개진다
-# 마크다운 강조 표지. 생성기가 금액·결론을 '**240,000원**'처럼 굵게 쓰면 부분문자열 일치가 깨졌다 — 기대
-# "총 240,000원입니다"가 "총 … = **240,000원**입니다"를 놓쳐 미적중(#221 실측, 사람 판정 '담김'). 서식이지 내용이 아니다.
+# 마크다운 강조 표지. 생성기가 금액·결론을 '**240,000원**'처럼 굵게 쓰면 부분문자열 일치가 깨진다 — 기대
+# "총 240,000원입니다"가 "총 … = **240,000원**입니다"를 놓친다. 서식이지 내용이 아니라 지우고 비교한다.
 _MD_EMPHASIS = re.compile(r"\*\*|__|`")
 
 
@@ -179,29 +168,28 @@ def _split_sentences(text: str) -> list[str]:
 
 
 def _bullet_run_candidates(text: str) -> list[str]:
-    """목록 블록을 **한 덩어리로 되붙인** 후보. 쪼개진 사실을 다시 모으는 것이 목적이다 (#196).
+    """목록 블록을 **한 덩어리로 되붙인** 후보. 쪼개진 사실을 다시 모으는 것이 목적이다.
 
     왜 필요한가: 생성 프롬프트 규칙 8이 "항목이 2개 이상이면 '- ' 목록으로 나누라"고 지시한다.
     그러면 한 사실의 **주어가 머리말 줄에, 값이 불릿 줄에** 갈라져 어느 한 줄도 포인트 전체와
-    닮지 않는다. 실측(인티큐브 실문서 90건, #196): 포인트 "수습 및 시용기간은 3개월 이상입니다"에
-    머리말 '신규 입사자의 수습 및 시용기간은 다음과 같습니다'가 0.707, 값이 든
-    '- 일반 신규 채용: 3 개월 이상'이 0.682로 **둘 다 임계 0.75 미달**이었다.
-    14B 적중·9B 미적중 포인트 21개 중 **20개가 0.646~0.748 구간**에 몰려 있었다.
+    닮지 않는다. 예: 포인트 "수습 및 시용기간은 3개월 이상입니다"에 머리말
+    '신규 입사자의 수습 및 시용기간은 다음과 같습니다'(0.707)도, 값이 든
+    '- 일반 신규 채용: 3 개월 이상'(0.682)도 임계 0.75에 못 미친다.
 
-    임계를 낮추지 않는 이유: 그 구간에는 진짜 누락도 섞여 있다(rl004 40점↔60점 0.646,
-    md008 월간3일↔누적3회 0.695, pp010 연장1.5배↔야간0.5배 0.741). 임계만 내리면 같이 통과한다.
+    임계를 낮추지 않는 이유: 0.65~0.75 구간에는 진짜 누락도 섞여 있다(40점↔60점,
+    월간3일↔누적3회, 연장1.5배↔야간0.5배). 임계만 내리면 같이 통과한다.
     그래서 기준을 완화하는 대신 **비교 대상을 제대로 만들어** 준다 — 답변이 실제로 쓴 줄을
     순서대로 이어붙일 뿐이라 없는 내용이 생기지 않는다.
 
     런마다 둘을 낸다: 머리말+런, 런만. 머리말이 다른 사실일 수도 있어 런만도 남긴다.
     고정 윈도우(2줄)가 아니라 **런 전체**인 이유: 결재선 4줄 사례(작성자→HR팀장→재무팀장→
-    경영전략부문장)는 2줄씩 묶으면 체인 절반만 모여 여전히 미달이다(실측 0.734).
+    경영전략부문장)는 2줄씩 묶으면 체인 절반만 모여 여전히 미달이다.
 
     **원문을 줄 단위로 본다 — _split_sentences 결과를 쓰면 안 된다.** `_SENT_SPLIT`이 숫자 뒤
     마침표를 문장 경계로 자르기 때문에 "1. 신청"이 ['1', '신청']으로 쪼개져 번호 목록이 영영
-    탐지되지 않는다(리뷰 지적, 실측 확인). `1)` 형태만 우연히 살아남아 숫자+마침표 분기가 죽은
-    코드가 된다. 프롬프트 규칙 8은 "- "만 지시하지만, 이 저장소엔 모델이 서식 지시를 안 지킨
-    전례가 있다(#56→#65 인용 꼬리) — 번호 목록으로 새도 조용히 무력화되지 않게 한다.
+    탐지되지 않는다. `1)` 형태만 우연히 살아남아 숫자+마침표 분기가 죽은 코드가 된다.
+    프롬프트 규칙 8은 "- "만 지시하지만 모델이 서식 지시를 안 지킬 수 있다 — 번호 목록으로
+    새도 조용히 무력화되지 않게 한다.
     """
     lines = [ln.strip() for ln in text.splitlines()]
     out: list[str] = []
@@ -229,10 +217,10 @@ def _split_segments(text: str) -> list[str]:
 
     포인트 하나는 사실 하나인데 답변은 여러 사실을 쉼표로 잇는다. 문장만 쓰면
     "A는 X이고, B는 Y입니다"에 포인트 'B는 Y'를 대조하게 되어 코사인이 0.7대로
-    깎인다(골드 450문항 실측: 0.80 미만 63쌍 → 절 추가 후 13쌍). 문장 통째도
+    깎인다. 문장 통째도
     후보로 남겨서 긴 포인트가 손해 보지 않게 한다.
 
-    반대 방향(한 사실이 여러 줄로 **쪼개진** 경우)은 _bullet_run_candidates가 맡는다 (#196).
+    반대 방향(한 사실이 여러 줄로 **쪼개진** 경우)은 _bullet_run_candidates가 맡는다.
     """
     sentences = _split_sentences(text)
     out: list[str] = []
@@ -255,23 +243,15 @@ def _cosine(a: list[float], b: list[float]) -> float:
 def expected_points_coverage(answer: str, points: list[str]) -> float | None:
     """기대 포인트가 답변에 담긴 비율. 부분문자열 → 임베딩 2단 매칭.
 
-    부분문자열 단계는 한 번 제거했다가 실측으로 복원했다. 제거 사유는 포인트가
-    '2년' 같은 맨값이던 시절 주어가 어긋난 답변을 만점 통과시킨 구멍이었는데,
-    포인트를 전부 "대상+값" 서술문으로 정규화(450문항)한 지금은 부분문자열
-    일치가 곧 그 사실 전체의 인용이라 구멍이 성립하지 않는다. 반대로 없애면
-    포인트를 원문 그대로 담은 답변이 감점된다 — 짧은 포인트가 긴 문장 안에
-    있으면 코사인이 0.7대로 깎여서다(생성물 900행 실측, 확실한 위음성 6쌍).
+    부분문자열 단계: 포인트가 전부 "대상+값" 서술문이라 부분문자열 일치가 곧 그 사실
+    전체의 인용이다. 이 단계가 없으면 포인트를 원문 그대로 담은 답변이 감점된다 — 짧은
+    포인트가 긴 문장 안에 있으면 코사인이 0.7대로 깎여서다.
 
-    임베딩 단계는 패러프레이즈용. 임계 0.75의 근거는 EPCOV_SIM_THRESHOLD 주석.
+    임베딩 단계는 패러프레이즈용. 임계 0.75의 근거는 EPCOV_SIM_THRESHOLD 주석. 후보에는
+    목록 블록 결합(_bullet_run_candidates)도 들어간다. 부분문자열 단계는 답변·포인트 양쪽의
+    마크다운 강조(`**`·`__`·백틱)를 지우고 비교한다.
 
-    **채점 기준 변경 고지 (#196, 2026-10-03): 이 날짜 이전 EPCov 값과 비교 불가.**
-    임베딩 후보에 목록 블록 결합(_bullet_run_candidates)이 추가됐다 — 임계·부분문자열·금액
-    게이트는 그대로고, 한 사실이 "머리말 + 불릿 여러 줄"로 쪼개졌을 때만 결합 후보가 더 생긴다.
-    모델이 바뀐 것이 아니라 **측정 정의가 바뀐 것**이다(citation_accuracy v3·multi_turn #48과
-    같은 종류의 고지). 같은 이유로 eval/consistency.py의 flaky·일치율도 이 날짜로 끊어 읽어라.
-
-    **채점 기준 변경 고지 (#221, 2026-10-11)**: 부분문자열 단계가 답변·포인트 양쪽의 마크다운 강조(`**`·`__`·백틱)를
-    지우고 비교한다. 이 함수(규칙 판정)는 그 외 그대로다. run_mode의 `expected_points_coverage`는 이제 **규칙 + 2단계 심판** 값이고
+    이 함수는 규칙 판정만 한다. run_mode의 `expected_points_coverage`는 **규칙 + 2단계 심판** 값이고
     규칙만의 값은 `expected_points_coverage_rule`에 남는다(_epcov_scores).
     """
     if not points:
@@ -283,27 +263,24 @@ def expected_points_coverage(answer: str, points: list[str]) -> float | None:
 def expected_points_hits(answer: str, points: list[str]) -> list[bool]:
     """포인트별 히트 벡터 — 판정 로직의 정의점 (coverage는 이 비율일 뿐이다).
 
-    분리 이유(#97 ②): 생성 일관성 축(eval/consistency.py)은 "런마다 **같은 포인트**를
+    분리 이유: 생성 일관성 축(eval/consistency.py)은 "런마다 **같은 포인트**를
     맞히는가"를 재야 해서 비율이 아니라 벡터가 필요하다. 채점 기준을 복제하면
     두 축의 판정이 조용히 어긋나므로 여기서만 판정하고 양쪽이 나눠 쓴다."""
     norm_answer = re.sub(r"\s+", "", _MD_EMPHASIS.sub("", answer))
-    # 포인트 쪽도 같이 지운다 — 골드 5행은 포인트 자체에 '**SK-250 베이비**'처럼 강조가 있다(리뷰 지적·확인).
+    # 포인트 쪽도 같이 지운다 — 골드 일부는 포인트 자체에 '**SK-250 베이비**'처럼 강조가 있다.
     # 답변만 지우면 그 포인트들이 부분문자열 단계에서 영영 안 맞는다.
     hits = [_contains_point(norm_answer, re.sub(r"\s+", "", _MD_EMPHASIS.sub("", p))) for p in points]
 
     remaining_idx = [i for i, h in enumerate(hits) if not h]
-    # 금액 게이트 (#119): 포인트에 "원(₩) 단위 금액"이 있으면 그 값이 답변에 실재할 때만
+    # 금액 게이트: 포인트에 "원(₩) 단위 금액"이 있으면 그 값이 답변에 실재할 때만
     # 임베딩 폴백을 허용한다. 임베딩은 "값"이 아니라 "주제 유사도"로 판정해서, 값이 없는데도
-    # 같은 주제 세그먼트로 통과하는 위양성이 있었다. 두 갈래 모두 실측으로 잡았다:
-    #   ① 답변이 금액을 누락(미완결 계산·두루뭉술) — summers_ca001: 정답의 '12,000원'은
-    #      세그먼트 코사인 미달로 놓치고, 값이 빠진 미완결 답변은 '적립금' 단어 유사도로 통과해
-    #      정답<오답 역전.
-    #   ② 답변이 틀린 금액을 진술 — goodpeople_cf001: 정답 40만원인데 답변 50만원을,
-    #      임베딩이 '연간 매칭 한도' 주제 유사도로 통과시킴.
+    # 같은 주제 세그먼트로 통과하는 위양성이 생긴다. 두 갈래:
+    #   ① 답변이 금액을 누락(미완결 계산·두루뭉술) — 값이 빠진 답변이 주제 단어 유사도로
+    #      통과해, 값을 쓴 정답보다 점수가 높아질 수 있다.
+    #   ② 답변이 틀린 금액을 진술 — 정답 40만원인데 답변 50만원을 주제 유사도로 통과시킨다.
     # 게이트 대상을 "원 단위 숫자"로 한정하는 이유: 개수·월·퍼센트는 답변에서 한글 수사로
     # 나오거나('두 개'), ISO 날짜는 0-패딩('04' vs '4월')이라 전량 매칭을 걸면 위음성이
-    # 쏟아진다(실측: harim_pp016·summers_tm002). '원'을 앵커로 삼으면 무게(1000g)·연도(2026)도
-    # 자연히 빠지고 진짜 금액 누락만 겨냥한다(harim_md006의 1000g 오인 방지).
+    # 쏟아진다. '원'을 앵커로 삼으면 무게(1000g)·연도(2026)도 자연히 빠지고 진짜 금액 누락만 겨냥한다.
     norm_answer_num = _normalize_number_notation(norm_answer)
     gated_idx = [i for i in remaining_idx if _amounts_present(norm_answer_num, points[i])]
     if gated_idx:
@@ -320,7 +297,7 @@ def expected_points_hits(answer: str, points: list[str]) -> list[bool]:
 
 
 def _amounts_present(norm_answer_num: str, point: str) -> bool:
-    """금액 게이트(#119) — 포인트의 원 단위 금액이 전부 답변에 있는가. 금액이 없으면 True(all([])).
+    """금액 게이트 — 포인트의 원 단위 금액이 전부 답변에 있는가. 금액이 없으면 True(all([])).
     norm_answer_num은 공백 제거·마크다운 강조 제거·숫자 표기 정규화를 거친 답변이다."""
     # '만원'→'0000원' 정규화 후 원 앞 숫자만 추출 (콤마는 정규화가 이미 제거)
     amts = re.findall(r"(\d+)원", _normalize_number_notation(_MD_EMPHASIS.sub("", point)))
@@ -328,14 +305,13 @@ def _amounts_present(norm_answer_num: str, point: str) -> bool:
 
 
 def point_amounts_present(answer: str, point: str) -> bool:
-    """금액 게이트의 공개 진입점 — EPCov 2단계 심판(#221)도 같은 게이트를 건다(eval/epcov_judge.py docstring)."""
+    """금액 게이트의 공개 진입점 — EPCov 2단계 심판도 같은 게이트를 건다(eval/epcov_judge.py docstring)."""
     norm = re.sub(r"\s+", "", _MD_EMPHASIS.sub("", answer))
     return _amounts_present(_normalize_number_notation(norm), point)
 
 
 # 'N만원'/'N만' → 'N0000' (예: '3만원'→'30000', '18.9만'→'189000'). 콤마 제거와 같은 계층의
-# 표기 정규화다 — 고난도 전수검증(#119)에서 정답 "3만원"이 기대 "30,000원"과 안 맞아 감점되던
-# false fail의 최다 원인. 소수도 처리('2.5만'→'25000'). '만' 뒤에 원/숫자가 붙는 경우만 잡아
+# 표기 정규화다 — 정답 "3만원"이 기대 "30,000원"과 안 맞아 감점되는 위음성을 막는다. 소수도 처리('2.5만'→'25000'). '만' 뒤에 원/숫자가 붙는 경우만 잡아
 # '만족'·'십만 건' 같은 비금액 '만'은 건드리지 않는다(뒤가 원 또는 문자열 끝/비숫자일 때만).
 _MAN_RE = re.compile(r'(\d+(?:\.\d+)?)만(?=원|$|[^\d가-힣])')
 
@@ -347,7 +323,7 @@ def _normalize_number_notation(s: str) -> str:
 
 def _contains_point(norm_answer: str, norm_point: str) -> bool:
     """숫자 경계를 지키는 부분문자열 매칭 — '30분'이 '130분'/'305분'에 오탐되는 것 방지.
-    콤마·만원 표기를 양쪽에서 정규화 — '38,000원'·'3만원'과 xlsx 숫자셀('38000'·'30000')의 표기 차이 흡수 (#119)."""
+    콤마·만원 표기를 양쪽에서 정규화 — '38,000원'·'3만원'과 xlsx 숫자셀('38000'·'30000')의 표기 차이 흡수."""
     norm_answer = _normalize_number_notation(norm_answer)
     norm_point = _normalize_number_notation(norm_point)
     if not norm_point:
@@ -364,7 +340,7 @@ def _contains_point(norm_answer: str, norm_point: str) -> bool:
 
 
 def must_not_contain_violations(answer: str, forbidden: list[str]) -> list[str] | None:
-    """금지 문구 중 답변에 실제로 등장한 것들 (#95 오정보 채점).
+    """금지 문구 중 답변에 실제로 등장한 것들 (오정보 채점).
 
     빈 리스트 = 위반 없음, forbidden 자체가 비면 None(해당 없음 — 분모에서 제외).
     EPCov의 사각을 메운다: EPCov는 "있어야 할 것"만 재고, 상충 문서의 반대편 값이나
@@ -407,44 +383,22 @@ def _citation_match(core: str, stem: str) -> bool:
 def citation_accuracy(answer: str, expected_docs: list[str], chunks: list[RetrievedChunk]) -> float:
     r"""기대 문서 중 답변이 실제로 인용한 비율 (0..1).
 
-    v5 (#65, **v4 이전 결과와 비교 불가**): 꼬리 제약이 **처음으로 실제 강제된다**
-    (정규식 → structural_tag, #56 도입 이후 최초). 채점 코드는 무변경 — 여전히 운영 배관
-    (TailSplitter → resolve_citations)을 그대로 쓰고, resolve_citations의 `\d+` 추출이
-    대괄호·쉼표·여백을 무시하므로 꼬리 형식이 `««1,3»»`에서 `««[1,3]»»`로 바뀐 것도
-    파싱에 영향이 없다. 바뀌는 것은 **입력 분포**다: 유효 범위 밖 번호가 원천 차단되므로
-    "꼬리가 범위 밖 번호뿐이라 인용 0건이 되던" 위반(v4 시점 oracle 1.1%·retrieved 1.6%)이
-    사라진다. 수치가 오르면 그 강제 효과이고, 무변동이면 대다수가 이미 준수했다는 뜻이다 —
-    어느 쪽도 채점 정의 변경이 아니다.
-
-    v4 (#61, **v3 이전 결과와 비교 불가**): 두 가지가 운영과 일치하게 바뀌었다.
-      1) 꼬리 분리를 운영 배관(TailSplitter)으로 교체 — 이전엔 rsplit/split으로 직접
-         잘랐고, 그건 운영의 오탐 복구를 갖지 않았다. 원리적으로 갈리는 케이스:
-         `««1»» 추가 설명` → 옛 파싱 '1' / 운영 None(END 뒤 텍스트 = 오탐),
-         `««1,2 그리고 3개 항목이…`(END 없음) → 옛 파싱이 **본문에서 숫자를 뽑는다** / 운영 None.
-         실데이터 450문항 전수 대조에서는 불일치 0이었지만(모델이 얌전했다는 뜻),
-         채점 정의가 운영과 달랐다는 사실은 그대로다.
-      2) generate()가 운영과 같은 꼬리 제약을 붙인다 — 생성 조건 변경(위 generate 참조).
-    채점 정의가 바뀐 것이지 모델이 좋아지거나 나빠진 게 아니다.
-
-    v3 (#56, **v2 이전 결과와 비교 불가**): 인용이 본문 인라인에서 답변 끝 출처 꼬리
-    (TAIL_START…TAIL_END, 번호 목록)로 이동 — 운영과 같은 배관(sources_from_chunks →
-    resolve_citations)으로 번호를 파일명으로 되돌려 채점한다. 채점기가 배관을 따로 들면
-    운영과 다른 번호 해석이 생길 수 있다(단일 정의점 원칙). #56 이전 아카이브
-    (report_generation_v1 등)의 Cite 수치와 이 채점기의 수치를 나란히 놓지 말 것 —
-    채점 정의가 바뀐 것이지 모델이 좋아지거나 나빠진 게 아니다. 꼬리가 없으면
-    (형식 미준수) 인용 0으로 집계 — 그게 사실이다.
+    인용은 답변 끝 출처 꼬리(TAIL_START…TAIL_END, 번호 목록)에서 읽는다. 꼬리 분리·번호 해석은
+    운영 배관(TailSplitter → sources_from_chunks → resolve_citations)을 그대로 쓴다 — 채점기가
+    배관을 따로 들면 운영과 다른 번호 해석이 생길 수 있다(단일 정의점 원칙). 그래서 운영의 오탐
+    복구도 그대로 따른다: `««1»» 추가 설명`(END 뒤 텍스트)이나 END 없는 꼬리는 인용 None이다.
+    resolve_citations의 `\d+` 추출이 대괄호·쉼표·여백을 무시하므로 `««1,3»»`·`««[1,3]»»` 모두 같다.
+    꼬리가 없으면(형식 미준수) 인용 0으로 집계 — 그게 사실이다.
     eval/rescore_v2.py는 v2 라벨 꼬리 전용이라 이 시그니처로는 동작하지 않는다(의도적).
 
-    v2 개정 (기존 0/1 any-match와 비교 불가):
-    - any-match는 multi_doc에서 문서 하나만 인용해도 만점 → 커버리지 비율로 교체.
-    - FAQ 출처는 'FAQ'로 인용됨 — 기대에 'FAQ'를 넣으면 정확 매칭.
-      (#278부터 운영 인용은 항목별 'FAQ: 질문'이지만 이 채점기의 기대 'FAQ'는 **어느 FAQ든 인용했나**로 그대로 둔다 —
-       골드에 FAQ 문항이 0건이라 정의 변경이 아니고, 항목 단위 채점은 eval/faq_citation.py가 faq_id로 한다.)
-    - 확장자 스트립을 5개 형식 전체로 확장 (corpus v2 대응).
+    - any-match가 아니라 커버리지 비율이다 — any-match는 multi_doc에서 문서 하나만 인용해도 만점이다.
+    - FAQ 출처는 'FAQ'로 접는다 — 운영 인용은 항목별 'FAQ: 질문'이지만 이 채점기의 기대 'FAQ'는
+      **어느 FAQ든 인용했나**다(골드에 FAQ 문항이 없다). 항목 단위 채점은 eval/faq_citation.py가 faq_id로 한다.
+    - 확장자 스트립은 5개 형식 전체.
     """
     if not expected_docs:
         return 0.0
-    # 꼬리 분리는 운영 배관 그대로 (#61) — 완성된 문자열을 한 청크로 흘려 넣는다.
+    # 꼬리 분리는 운영 배관 그대로 — 완성된 문자열을 한 청크로 흘려 넣는다.
     # feed/finish의 계약상 부분 스트리밍과 결과가 같다: 보류(_hold)는 finish가 비워내고,
     # 오탐 복구 판정은 누적 버퍼 기준이라 청크 경계와 무관하다.
     splitter = TailSplitter()
@@ -452,7 +406,7 @@ def citation_accuracy(answer: str, expected_docs: list[str], chunks: list[Retrie
     splitter.finish()
     cited = resolve_citations(splitter.tail_raw, sources_from_chunks(chunks), [])
     # 기대 stem과 같은 규칙으로 확장자 제거 — '공지.txt' vs '공지'는 4자 미만이라 포함 매칭도 못 탄다.
-    # FAQ 인용은 항목 표시명('FAQ: 질문', #278)이 아니라 'FAQ'로 접는다 — 기대 'FAQ'와 정확 매칭되게.
+    # FAQ 인용은 항목 표시명('FAQ: 질문')이 아니라 'FAQ'로 접는다 — 기대 'FAQ'와 정확 매칭되게.
     cores = ['FAQ' if c.faq_id is not None else re.sub(r"\.(pdf|docx|xlsx|txt|md)$", "", c.filename) for c in cited]
     # 원소가 리스트면 대체 출처 그룹 — 같은 정보가 여러 문서에 있을 때 하나만 인용해도 인정
     groups = [[d] if isinstance(d, str) else d for d in expected_docs]
@@ -479,16 +433,16 @@ async def judge_faithfulness(answer: str, chunks: list[RetrievedChunk]) -> float
 
 # ===== 메인 ==========================================================
 
-# 동시성 실측(#101 코멘트, 2026-08-29): 32 여유(KV 58%)·60 포화(KV 97.6%, 선점으로
-# 처리량 반토막) → 기본 40. 파일럿 실트래픽과 경합하는 시간대엔 EVAL_CONCURRENCY로 낮출 것.
+# 동시성 기본 40 — 사내 vLLM 기준 32는 KV 여유, 60은 KV 포화로 선점이 생겨 처리량이 반토막 난다.
+# 파일럿 실트래픽과 경합하는 시간대엔 EVAL_CONCURRENCY로 낮출 것.
 CONCURRENCY = int(os.getenv("EVAL_CONCURRENCY", "40"))
 
 
 async def _misinfo_scores(judge, answer: str, forbidden: list[str]) -> dict:
-    """오정보 채점 2단계(#214): 문자열 후보(must_not_contain_violations) → 후보가 있을 때만 LLM 확인.
+    """오정보 채점 2단계: 문자열 후보(must_not_contain_violations) → 후보가 있을 때만 LLM 확인.
     scores에 세 키 — 확정 위반(기존 키, 하위 호환), 1단계 후보, 판정 감사(사유·오류).
     judge는 absence_judge.judge_llm()이다 — 거절축과 **같은 판정자**(ABSENCE_JUDGE=claude 교차채점 포함).
-    생성용 llm을 쓰면 두 축이 같은 지표를 다른 판정자로 재게 된다(리뷰 지적)."""
+    생성용 llm을 쓰면 두 축이 같은 지표를 다른 판정자로 재게 된다."""
     candidates = must_not_contain_violations(answer, forbidden)
     if not candidates:
         return {
@@ -510,11 +464,11 @@ EPCOV_JUDGE_WORKERS = int(
 
 
 async def _epcov_scores(judge, sem, answer: str, points: list[str], rule_hits: list[bool]) -> dict:
-    """EPCov 2단계(#221): 규칙 히트(rule_hits) → 미적중이면서 금액 게이트를 통과한 포인트만 심판 확인.
+    """EPCov 2단계: 규칙 히트(rule_hits) → 미적중이면서 금액 게이트를 통과한 포인트만 심판 확인.
 
     scores에 세 키 — 최종 커버리지(기존 키, 심판 반영), 규칙만의 커버리지(이력 비교용 이중 기록), 판정 감사.
     포인트가 없으면 셋 다 기존처럼 None/빈 값. 금액이 빠진 미적중은 심판에 넘기지 않는다 — 판정자가 관대하면
-    '9,600원 기대 / 9,000원 답'을 담김으로 보는 오판이 실측됐다(eval/epcov_judge.py docstring)."""
+    '9,600원 기대 / 9,000원 답'을 담김으로 보는 오판이 난다(eval/epcov_judge.py docstring)."""
     if not points:
         return {
             "expected_points_coverage": None,
@@ -533,7 +487,7 @@ async def _epcov_scores(judge, sem, answer: str, points: list[str], rule_hits: l
         "expected_points_coverage_rule": sum(rule_hits) / len(points),
         "expected_points_audit": audit,
         # 판정 실패 수 — fail-closed라 실패해도 점수는 규칙 값으로 조용히 남는다. 한도·로그인 만료로 전부 실패하면
-        # '심판 반영' 결과처럼 보이는 규칙 결과가 된다(10/10 RAGAS: 실패 268건이 사유 공란). summarize가 크게 찍는다.
+        # '심판 반영' 결과처럼 보이는 규칙 결과가 된다. summarize가 크게 찍는다.
         "expected_points_judge_errors": sum(1 for a in audit if a["error"]),
     }
 
@@ -541,22 +495,22 @@ async def _epcov_scores(judge, sem, answer: str, points: list[str], rule_hits: l
 async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, epcov_judging: bool = True):
     """oracle / retrieved 한 모드로 생성 + 채점 → row 리스트.
 
-    LLM 콜(condense·generate)은 병렬(vLLM 연속 배칭, #18), 컨텍스트 조회·채점은 직렬 —
+    LLM 콜(condense·generate)은 병렬(vLLM 연속 배칭), 컨텍스트 조회·채점은 직렬 —
     AsyncSession은 동시 실행 불가라 gather에 태우지 않는다.
 
-    gen_llm: 생성 단계만 다른 클라이언트로 교체 (#96 비교군 (a)). condense는 항상 llm
+    gen_llm: 생성 단계만 다른 클라이언트로 교체(비교군). condense는 항상 llm
     (운영 vLLM)이다 — 비교의 공정성은 "파이프라인 고정, 생성기만 교체"에서 나오므로
     재작성까지 바꾸면 무엇의 격차인지 알 수 없게 된다. None이면 llm 그대로(기존 동작).
 
-    epcov_judging: False면 EPCov 2단계 심판(#221)을 부르지 않는다 — 최종 커버리지 = 규칙 커버리지, 판정자는
+    epcov_judging: False면 EPCov 2단계 심판을 부르지 않는다 — 최종 커버리지 = 규칙 커버리지, 판정자는
     'rule-only'로 기록. 생성 일관성 축(eval/consistency.py)이 끈다: N×R 반복 생성마다 심판을 부르면 비용이 R배다.
     """
     gen_llm = gen_llm or llm
     condense_llm = (
         create_aux_llm() if aux_overridden() else llm
-    )  # 재작성은 운영처럼 보조 클라이언트(#297) — 설정이 비면 llm 그대로
-    misinfo_judge_llm = judge_llm()  # 오정보 2단계 판정자(#214) — 거절축과 동일, 모드당 1회 생성
-    # EPCov 2단계 판정자(#221) — 전용 스위치 EPCOV_JUDGE(기본 claude). 끄면 규칙만.
+    )  # 재작성은 운영처럼 보조 클라이언트 — 설정이 비면 llm 그대로
+    misinfo_judge_llm = judge_llm()  # 오정보 2단계 판정자 — 거절축과 동일, 모드당 1회 생성
+    # EPCov 2단계 판정자 — 전용 스위치 EPCOV_JUDGE(기본 claude). 끄면 규칙만.
     epcov_llm = epcov_judge.judge_llm() if epcov_judging else None
     epcov_label = epcov_judge.judge_label() if epcov_judging else "rule-only"
     epcov_sem = asyncio.Semaphore(EPCOV_JUDGE_WORKERS)
@@ -565,14 +519,14 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, e
 
     # ① condense 선병렬 (multi_turn만 — DB 무관).
     # multi_turn: 이전 대화를 운영 condense에 태워 독립 질문으로 재작성.
-    # **검색**은 재작성 질의를 쓰고, **생성**은 원 질문 + 재작성 참고 병기 — 운영 경로와 동일 (#48).
+    # **검색**은 재작성 질의를 쓰고, **생성**은 원 질문 + 재작성 참고 병기 — 운영 경로와 동일.
     # 이력 블록(prior_turns)도 운영과 같은 함수·같은 예산으로 만들어 함께 싣는다.
     async def _standalone(g):
         if g["type"] != "multi_turn":
             return g["id"], (None, [])
         history = messages_from_conversation(g.get("conversation"))
         async with sem:
-            # 예산이 둘로 갈리는 것까지 운영과 같게 맞춘다 (#81) — condense는 600으로 자른
+            # 예산이 둘로 갈리는 것까지 운영과 같게 맞춘다 — condense는 600으로 자른
             # 이력을, 생성 맥락은 자르지 않은 원본을 받는다(build_prior_turns가 2000으로 자체
             # 트리밍한다). rag/turn/service.py가 같은 messages에서 두 경로를 독립으로 뽑는 구조다.
             standalone = await condense_query(
@@ -603,7 +557,7 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, e
 
     answers = await asyncio.gather(*(_generate(g, c) for g, c in work))
 
-    # ④ EPCov — 규칙(embed_texts_sync 포함)은 직렬, 미적중 포인트의 심판 확인은 전 행에 걸쳐 병렬(#221).
+    # ④ EPCov — 규칙(embed_texts_sync 포함)은 직렬, 미적중 포인트의 심판 확인은 전 행에 걸쳐 병렬.
     # 행마다 순서대로 기다리면 Claude 판정자(호출=프로세스, 수 초)로 모드당 20분 가까이 걸린다.
     points_l = [g.get("expected_points", []) for g, _ in work]
     rule_l = [expected_points_hits(a, p) if p else [] for a, p in zip(answers, points_l)]
@@ -645,13 +599,11 @@ async def run_mode(session, llm, mode: str, gold_rows, resolved, gen_llm=None, e
 
 
 def _smoke_sample[R: Mapping[str, object]](rows: list[R], n: int) -> list[R]:
-    """스모크셋 — 타입별로 고르게 뽑는다 (#77).
+    """스모크셋 — 타입별로 고르게 뽑는다.
 
-    옛 구현은 `rows[:n]`이었다. gold는 테넌트 블록이 이어진 순서라 앞에서 자르면 앞쪽
-    타입만 들어온다 — multi_turn은 첫 테넌트 기준 인덱스 60번대에 있어서 SMOKE<61이면
-    **한 문항도 안 걸렸다.** 그런데 #77이 고친 버그가 정확히 multi_turn 경로(gold 이력을
-    Message로 변환해 condense에 태우는 곳)였다. 즉 "SMOKE로 빨리 확인"하는 관행이 그
-    버그를 재현하지 못했고, 그래서 #59 이후 두 달 가까이 아무도 못 봤다.
+    gold는 테넌트 블록이 이어진 순서라 앞에서 자르면(`rows[:n]`) 앞쪽 타입만 들어온다 —
+    multi_turn은 첫 테넌트 기준 인덱스 60번대에 있어서 작은 SMOKE로는 한 문항도 안 걸리고,
+    그 경로(gold 이력을 Message로 변환해 condense에 태우는 곳)의 결함을 스모크가 못 잡는다.
 
     타입별 몫은 올림으로 계산해 n을 살짝 넘을 수 있다 — 스모크는 표본이지 정량이 아니라
     타입 누락(=경로 누락)을 막는 쪽이 중요하다. 원래 순서는 유지한다(결과 파일 비교 편의).
@@ -669,9 +621,7 @@ def _smoke_sample[R: Mapping[str, object]](rows: list[R], n: int) -> list[R]:
 
 async def main():
     # load_gold()를 쓴다 — GOLD를 직접 읽으면 eval/gold_private/(사내 실문서 골드)가 통째로
-    # 빠진다. 그 상태로 #114 9B A/B를 540건 돌렸는데 **실문서가 0건**이었다(#196). 이 함수가
-    # 정의만 돼 있고 아무도 안 쓰던 미이전 상태를 여기서 해소한다. 테넌트 라우팅은 이미
-    # 준비돼 있었다 — V2_TENANTS에 inticube가 들어 있고 row_tenant가 id 접두로 라우팅한다.
+    # 빠진다. 테넌트 라우팅은 row_tenant가 id 접두로 한다(V2_TENANTS에 inticube 포함).
     gold = load_gold()
     gen_gold = [g for g in gold if g["type"] in GEN_TYPES]
     if SMOKE:
@@ -679,7 +629,7 @@ async def main():
     RESULT_DIR.mkdir(exist_ok=True)
 
     llm = create_llm()
-    # 생성기 선택 (#96 비교군 (a)): GENERATOR=claude 면 **생성 콜만** Claude CLI로 교체.
+    # 생성기 선택(비교군): GENERATOR=claude 면 **생성 콜만** Claude CLI로 교체.
     # condense·검색·채점은 운영 그대로 — 무엇이 격차를 만들었는지 한 변수로 좁히기 위해서다
     # (run_mode의 gen_llm docstring). 모델은 CLAUDE_MODEL(기본 sonnet)로 바꾼다.
     generator = os.getenv("GENERATOR", "vllm")
@@ -715,10 +665,10 @@ async def main():
         for mode in ("oracle", "retrieved"):
             print(f"\n=== mode: {mode} ({len(gen_gold)}문항) ===")
             rows = await run_mode(session, llm, mode, gen_gold, resolved, gen_llm=gen_llm)
-            if not rows:  # 채점 0 = resolve 전멸 (빈/잘못된 DB) — 재료 파일 덮어쓰기 방지 (#18 실사고 가드)
+            if not rows:  # 채점 0 = resolve 전멸 (빈/잘못된 DB) — 재료 파일 덮어쓰기 방지
                 raise SystemExit(f"{mode}: 생성 0행 — DATABASE_URL이 코퍼스 있는 DB인지 확인. 결과 파일 미변경.")
             for r in rows:
-                r["generator"] = gen_label  # 어느 생성기의 수치인지 행 단위 자기서술 (#96)
+                r["generator"] = gen_label  # 어느 생성기의 수치인지 행 단위 자기서술
             # vllm은 기존 파일명 유지(과거 결과와 diff 편의), 비교군은 접미로 분리 — 덮어쓰기 방지
             suffix = "" if generator == "vllm" else f"_{generator}"
             out = RESULT_DIR / f"generation_{mode}{suffix}.jsonl"
@@ -732,7 +682,7 @@ def summarize(rows):
     """모드별 deterministic 평균 (judge는 채점 붙으면 추가).
 
     Misinfo 열 = must_not_contain 위반율(위반 행 수 / 필드 보유 행 수) — 분모가 없으면 '-'.
-    마지막에 일반 vs 고난도(HARD_TYPES) 2줄 집계 — 발표의 "일반 vs 고난도" 비교가 이 출력이다 (#95).
+    마지막에 일반 vs 고난도(HARD_TYPES) 2줄 집계 — 발표의 "일반 vs 고난도" 비교가 이 출력이다.
     """
     by_type = defaultdict(list)
     for r in rows:
@@ -748,7 +698,7 @@ def summarize(rows):
         cov_avg = sum(cov) / len(cov) if cov else 0.0
         rule = [s.get("expected_points_coverage_rule") for s in ss]
         rule = [v for v in rule if v is not None]
-        rule_avg = f"{sum(rule) / len(rule):>9.2f}" if rule else f"{'-':>9}"  # #221 이전 결과 파일엔 없다
+        rule_avg = f"{sum(rule) / len(rule):>9.2f}" if rule else f"{'-':>9}"  # 옛 결과 파일엔 규칙 값이 없다
         print(f"{label:<14}{n:>4}{cov_avg:>8.2f}{rule_avg}{sum(cite) / n:>7.2f}{misinfo:>9}")
 
     judges = {r.get("epcov_judge") for r in rows}

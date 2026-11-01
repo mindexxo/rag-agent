@@ -1,4 +1,4 @@
-"""종단 멀티턴 시나리오 러너 (#99) — 발표 시연 각본을 자동 재생하고 턴별로 판정한다.
+"""종단 멀티턴 시나리오 러너 — 발표 시연 각본을 자동 재생하고 턴별로 판정한다.
 
 기존 eval은 전부 '한 턴 조각'(검색/생성/분류 각각)이다. 실사용은 5~10턴 흐름이고 그
 검증은 수동 E2E뿐이었다. 이 러너는 시연 각본과 같은 시나리오를 자동 재생해 ①통과율
@@ -11,9 +11,9 @@
 **두 종류의 턴** (turn의 seed_status 유무로 구분):
 - 실행 턴: prepare→generate→finalize를 실제로 태워 route·인용·포인트를 판정.
 - 시드 턴(seed_status): 취소·차단은 SSE 스트리밍+연결 끊김 기반이라 ASGI 직접 호출로는
-  진짜 재현이 안 된다(tests/test_cancellation.py:289 실측). 그 턴만 DB에 해당 상태로 심고
+  진짜 재현이 안 된다(tests/test_cancellation.py 참고). 그 턴만 DB에 해당 상태로 심고
   (실행 없이), 다음 턴이 그 상태를 어떻게 처리하는지 검증한다 — 취소 뒤 '다시'가 질문을
-  복원하는가(#59), 차단 턴 첨부가 다음 턴에 안 새는가(#63). RETRY/첨부격리 디스패처는
+  복원하는가, 차단 턴 첨부가 다음 턴에 안 새는가. RETRY/첨부격리 디스패처는
   DB 컬럼값만 읽으므로 시드는 우회가 아니라 정석이다(리포 retry/attachment 테스트가 같은 패턴).
 
 **maybe_cache는 일부러 호출하지 않는다** — 캐시 시나리오는 이 세트에서 제외했고(cache_eval이
@@ -60,8 +60,8 @@ async def _seed_turn(tenant_id: str, conversation_id: int, turn: dict) -> None:
     """cancelled/blocked 턴을 파이프라인 없이 DB에 직접 심는다 (기존 conversation_id에 이어붙임).
 
     tests/conftest.seed_turn과 같은 모양이지만 여기 따로 둔다 — eval은 pytest에 의존하지
-    않는다(#99 설계). blocked 시드 + seed_attach면 다음 턴의 _load_history_attachments가
-    blocked_turn 서브쿼리로 자동 제외한다(#63) — 별도 처리 불필요.
+    않는다. blocked 시드 + seed_attach면 다음 턴의 _load_history_attachments가
+    blocked_turn 서브쿼리로 자동 제외한다 — 별도 처리 불필요.
     """
     status = turn["seed_status"]
     if status == "cancelled" and not turn.get("seed_standalone"):
@@ -106,7 +106,7 @@ async def _run_turn(tenant_id: str, conversation_id: int, turn: dict) -> dict:
             answer = "".join([tok async for tok in svc.generate(prepared)])
             citations = _citations(prepared, answer)
             # terminal_status 사용 — 인젝션 턴은 실시간 blocked라 DB에도 blocked로 저장돼야
-            # 다음 턴의 이력 격리(#22)가 성립한다. DONE 하드코딩 금지.
+            # 다음 턴의 이력 격리가 성립한다. DONE 하드코딩 금지.
             await svc.finalize(
                 prepared,
                 answer,
@@ -120,9 +120,9 @@ async def _run_turn(tenant_id: str, conversation_id: int, turn: dict) -> dict:
     return {
         "route": _display_route(prepared),
         "citations": [c.filename for c in citations],
-        # 프롬프트에 실제로 주입된 첨부 파일명 — 차단 첨부 격리(#63)를 코드 레벨로
+        # 프롬프트에 실제로 주입된 첨부 파일명 — 차단 첨부 격리를 코드 레벨로
         # 검증하기 위해서다. 답변 텍스트만 보면 규칙1(인젝션 방어)이 누출을 막아
-        # 격리 서브쿼리 고장을 못 잡는다(리뷰 발견) — 주입 목록을 직접 관측한다.
+        # 격리 서브쿼리 고장을 못 잡는다 — 주입 목록을 직접 관측한다.
         "attachment_files": [a["filename"] for a in (prepared.attachments or [])],
         "answer": answer,
         "cache_hit": prepared.is_cache_hit,
@@ -147,7 +147,7 @@ def _check(turn: dict, obs: dict) -> list[str]:
         if missing:
             fails.append(f"인용 누락: {missing} (실제 {obs['citations']})")
     # _contains_point 재사용 — 공백만 지우는 substring은 "5만원"이 "15만원"에 오탐된다
-    # (리뷰 발견). 숫자 경계+콤마 정규화를 그대로 가져와 수치 판정을 정확히 한다.
+    # 숫자 경계+콤마 정규화를 그대로 가져와 수치 판정을 정확히 한다.
     norm_answer = obs["answer"].replace(" ", "")
     for s in turn.get("expect_contains", []):
         if not _contains_point(norm_answer, s.replace(" ", "")):
@@ -155,7 +155,7 @@ def _check(turn: dict, obs: dict) -> list[str]:
     for s in turn.get("expect_not_contains", []):
         if _contains_point(norm_answer, s.replace(" ", "")):
             fails.append(f"금지 문구 존재: {s!r}")
-    for fn in turn.get("expect_not_attached", []):  # 차단 첨부 격리 코드 레벨 검증 (#63)
+    for fn in turn.get("expect_not_attached", []):  # 차단 첨부 격리 코드 레벨 검증
         if any(fn in af for af in obs.get("attachment_files", [])):
             fails.append(f"차단 첨부 주입됨: {fn!r} (실제 {obs.get('attachment_files')})")
     return fails
@@ -165,7 +165,7 @@ async def run_scenario(sc: dict) -> dict:
     """시나리오 하나 = 대화 하나. 턴을 순서대로 재생하고 판정. 정리는 끝에 1회."""
     tenant = sc["tenant"]
     async with AsyncSessionLocal() as session:
-        # 턴 0 전에 대화를 미리 만들어 정리할 id를 확보 (refusal.py와 같은 #72 근거)
+        # 턴 0 전에 대화를 미리 만들어 정리할 id를 확보 — prepare() 안에서 실패하면 대화 id를 몰라 정리가 샌다
         conversation = await ensure_conversation(session, tenant, None)
         await session.commit()
         conv_id = conversation.id

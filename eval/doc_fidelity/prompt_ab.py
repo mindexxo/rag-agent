@@ -1,10 +1,10 @@
-"""캡션 프롬프트 제거 실험·비교 (#247 결정 13·14) — 운영과 같은 VLM에 크롭을 직접 보내 프롬프트 변형별 캡션을 만들고 채점한다.
+"""캡션 프롬프트 제거 실험·비교 — 운영과 같은 VLM에 크롭을 직접 보내 프롬프트 변형별 캡션을 만들고 채점한다.
 
 색인은 건드리지 않는다(재색인 없이 프롬프트만 비교). 크롭은 extract 단계가 남긴 것 — PDF는 운영 VLM 입력과 같은 배수(4)로
 쪽에서 자른 것, DOCX·XLSX는 파일 속 원본이라 docling이 보내는 그림과 같다.
 
-변형(VARIANTS)은 #247 이전 운영 프롬프트(V0)를 한 줄씩 바꿔 가며 효과를 가른다 — 추측으로 고치지 않는다. 채택안은
-V13(결정 15, 10/18)이고 지금 rag/chunking/document_converter.PICTURE_CAPTION_PROMPT와 같다(테스트가 강제). 채점(score_variant)은 합성 그림 정답(picture_specs)으로 자동:
+변형(VARIANTS)은 이전 운영 프롬프트(V0)를 한 줄씩 바꿔 가며 효과를 가른다 — 추측으로 고치지 않는다. 채택안은
+V13이고 지금 rag/chunking/document_converter.PICTURE_CAPTION_PROMPT와 같다(테스트가 강제). 채점(score_variant)은 합성 그림 정답(picture_specs)으로 자동:
   글자·숫자·짝·순서(synthetic.score_picture) + 빈 칸 환각(P08 '2026년 4분기'에 숫자를 지어냈나) + 흐름도 화살표 연결(edges가
   '→'가 든 한 줄에 함께 있나) + 영문 유지(P05의 영문 메뉴).
 실문서는 정답이 없어 캡션만 남기고 Claude 판정(judge.judge_one)·사람 확인으로 본다.
@@ -69,7 +69,7 @@ VARIANTS = {
     'V6_현행+빈칸+조건부': _join(BASE_LINES[:4] + CONDITIONAL + [BASE_LINES[4], BLANK, BASE_LINES[5]]),
     'V7_V6-위치나열': _join(BASE_LINES[:3] + CONDITIONAL + [BASE_LINES[4], BLANK, BASE_LINES[5]]),
     # V6은 '"박스: 설명"'을 글자 그대로 따라 써 '박스: 사업부장 승인 必'이 됐다(채용 흐름도, 10/18) — 자리표시자로 쓴다.
-    # 구체적인 예시 문장은 넣지 않는다 — 예시가 출력 형태를 지배한다(실험 규율, #15·#212)
+    # 구체적인 예시 문장은 넣지 않는다 — 예시가 출력 형태를 지배한다
     'V8_V6+자리표시자': _join(BASE_LINES[:4] + CONDITIONAL_V2 + [BASE_LINES[4], BLANK, BASE_LINES[5]]),
     # V8은 박스 설명을 한 칸씩 밀어 붙였다('모집공고: 면접 대상자 선정' — 첫 박스에 설명이 없는 채용 흐름도, 10/18). '바로 아래 설명만'
     # 으로 좁히자(V9 시험) 귀속을 아예 포기했다 — 7B는 박스-설명 공간 귀속을 안정적으로 못 한다. 틀린 귀속은 귀속 없음보다 위험하므로

@@ -1,4 +1,4 @@
-"""그림 캡션 판정 기준 — **정의점**(#247 결정 6, 2026-10-18 사용자 확정). Claude 1차 판정과 사람 재판정이 같은 기준을 쓴다.
+"""그림 캡션 판정 기준 — **정의점**. Claude 1차 판정과 사람 재판정이 같은 기준을 쓴다.
 
 유형: 흐름도 · 차트 · 화면 캡처 · 표형 그림 · 수식 · 사진·장식. 사진·장식(로고·아이콘·사진)은 글자 정보가 없어 **판정에서 빼고
 개수만** 센다.
@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field, field_validator
 TYPES = ('흐름도', '차트', '화면 캡처', '표형 그림', '수식', '사진·장식')
 GRADES = ('정확', '경미', '오류', '위험')
 EXCLUDED_TYPE = '사진·장식'
-MINOR_RATIO = 0.10  # 경미/오류 경계 — 누락+오독 ÷ 글자 덩어리 (결정 6)
+MINOR_RATIO = 0.10  # 경미/오류 경계 — 누락+오독 ÷ 글자 덩어리
 
 
 class Verdict(BaseModel):
@@ -48,12 +48,12 @@ class Verdict(BaseModel):
     @field_validator('evidence', mode='before')
     @classmethod
     def _one_string_is_a_list(cls, v):
-        # 판정자가 근거가 하나면 문자열로 답한다(10/18 실측 — '누락: 버튼 2개(-, +)'). 내용은 맞으니 목록으로 감싼다
+        # 판정자가 근거가 하나면 문자열로 답하기도 한다. 내용은 맞으니 목록으로 감싼다
         return [v] if isinstance(v, str) else v
 
 
 def grade_of(v: Verdict) -> str | None:
-    """개수 → 등급(결정 6). 사진·장식은 None(판정 제외)."""
+    """개수 → 등급. 사진·장식은 None(판정 제외)."""
     if v.type == EXCLUDED_TYPE:
         return None
     if v.number_errors or v.hallucinations:

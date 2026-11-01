@@ -1,28 +1,27 @@
 """시맨틱 캐시 히트 정확성 평가 — 캐시가 '같은 질문은 재사용, 다른 질문은 안 섞는지'.
 
-캐시 히트 조건(#113): 유사도 ≥ floor(후보 게이트) AND 검색 doc집합 동일 AND
+캐시 히트 조건: 유사도 ≥ floor(후보 게이트) AND 검색 doc집합 동일 AND
 **LLM 재사용 판정 승인** — 판정 없이는 서빙이 없다(자동 서빙 임계·기계 가드 제거).
 두 실패 방향:
 - 오탐(false hit): 임베딩은 비슷하나 의미가 다른 질문("환불 되는"vs"안되는")이 옛 답 재생 → 오답.
 - 과잉거절(false miss): 같은 질문의 다른 표현(paraphrase)인데 캐시 미스 → 캐시 효용 손실.
 
-셋 구성(#113 확장, 40쌍): negative 22 = negation(6)·numeric(4)·condition(4)·temporal(4)·
+셋 구성(40쌍): negative 22 = negation(6)·numeric(4)·condition(4)·temporal(4)·
 exception(4) / positive 18 = para_surface(9)·para_deep(9). kind는 문형 분류이지 현행 판정
-분류가 아니다. **positive 쌍은 전부 "q1·q2의 top-5 doc집합이 실측 동일"을
-확인하고 넣었다** — doc집합이 다르면 판정기까지 못 가서 히트가 불가능해 문항 오류가 되기 때문
-(#113 실측: 구어체 쌍 25개 중 18개가 doc집합 상이 — 이런 쌍은 여기 없고, doc집합 가드
-완화(#113 개선 4)의 근거 데이터로만 남겼다). 셋을 고치면 아래 건수 주장과 composition을
+분류가 아니다. **positive 쌍은 전부 "q1·q2의 top-5 doc집합이 동일"함을 돌려서
+확인하고 넣었다** — doc집합이 다르면 판정기까지 못 가서 히트가 불가능해 문항 오류가 되기 때문이다
+(구어체 쌍은 doc집합이 갈리는 경우가 많아 넣지 않았다). 셋을 고치면 아래 건수 주장과 composition을
 같이 갱신하라 — tests/test_docs_freshness.py가 기계 검증한다.
 
 방식: doc_ids는 각 행의 tenant(6개 모의 테넌트, 로컬 DB에 인제스트 필수)에서 검색해 뽑되,
 캐시 저장/조회는 버려도 되는 가짜 테넌트(EVAL_TENANT)에 격리 → 실테넌트 캐시 오염 없음.
 쌍마다 save_answer(q1)→조회(q2)→정리. 쌍마다 지우므로 DB에 항상 row 1개 — get_semantic의
 LIMIT 1이 교란 요인이 아니게 하는 전제이니 "한 번에 다 심는" 최적화를 하지 마라.
-의존: DB + TEI 임베딩 + TEI 리랭커(retrieve가 rerank를 탐) + vLLM(재사용 판정 #113).
+의존: DB + TEI 임베딩 + TEI 리랭커(retrieve가 rerank를 탐) + vLLM(재사용 판정).
 
-q1·q2 임베딩은 여기서 한 번씩 만들어 save_answer/get_semantic에 넘기고(#50 계약과 동일)
+q1·q2 임베딩은 여기서 한 번씩 만들어 save_answer/get_semantic에 넘기고(운영 호출 계약과 동일)
 쌍별 유사도도 같은 벡터로 계산한다 — 오판정이 어느 관문 탓인지(failed_guard)를
-기록하기 위함. TEI는 호출마다 비결정적(실측 1.4e-4)이라 운영 경로의 판정과 등가다.
+기록하기 위함. TEI는 호출마다 비결정적(차이 1e-4 수준)이라 운영 경로의 판정과 등가다.
 
 실행: python -m eval.cache_eval — 운영 경로 그대로 판정기를 태우므로 **vLLM 필수**
 (DB·TEI에 더해). 판정이 LLM이라 경계 문항은 실행마다 ±1건 흔들릴 수 있다 — 케이스
@@ -48,7 +47,7 @@ GOLD = Path(__file__).resolve().parent / "cache_set_v1.jsonl"
 EVAL_TENANT = "__cache_eval__"  # 캐시 저장 격리용 (실테넌트 캐시 불건드림)
 
 # 셋 구성이 바뀌면 눈금이 바뀐다 — run_all이 version_key로 써서 직전 값과의 비교를 차단.
-# 셋을 고칠 때마다 이 문자열을 갱신하라 (#113, 검색축 gold_composition과 같은 메커니즘).
+# 셋을 고칠 때마다 이 문자열을 갱신하라 (검색축 gold_composition과 같은 메커니즘).
 COMPOSITION = "v1-40p"
 
 
@@ -72,7 +71,7 @@ async def _clear(session) -> None:
 def _failed_guard(similarity: float, docset_equal: bool) -> str | None:
     """미스일 때 어느 관문이 막았는가 — 오판정 분해용. 히트면 None.
 
-    판정 순서는 운영(get_semantic)과 동일: floor → docset → 판정기(#113).
+    판정 순서는 운영(get_semantic)과 동일: floor → docset → 판정기.
     """
     if similarity < settings.semantic_cache_floor:
         return "floor" if docset_equal else "floor+docset"
@@ -92,18 +91,18 @@ async def compute() -> dict:
     rows = []
     from rag.clients import shared_aux_llm
 
-    llm = shared_aux_llm  # 운영 판정기와 같은 보조 클라이언트(#297)
+    llm = shared_aux_llm  # 운영 판정기와 같은 보조 클라이언트
 
     async with AsyncSessionLocal() as session:
         await _clear(session)
         for p in pairs:
-            # 0. 임베딩은 여기서 만들어 재사용 (#50 계약) — 유사도 기록 + TEI 호출 절감
+            # 0. 임베딩은 여기서 만들어 재사용 (운영 호출 계약) — 유사도 기록 + TEI 호출 절감
             v1 = (await embed_query(p["q1"])).dense
             v2 = (await embed_query(p["q2"])).dense
             similarity = _cosine(v1, v2)
             # 1. q1의 doc집합으로 캐시에 심는다 (답변은 더미 — 히트 여부만 관심)
             ids1 = await _docids(session, p["tenant"], p["q1"])
-            # 원문(#153)은 질문 자체를 넣는다 — 이 셋의 q1·q2는 자족 단일턴 질의이고,
+            # 원문(original_query)은 질문 자체를 넣는다 — 이 셋의 q1·q2는 자족 단일턴 질의이고,
             # 운영에서 단일턴은 condense를 건너뛰어 원문==재작성문이기 때문이다(service._prepare_knowledge).
             await cache.save_answer(
                 session, EVAL_TENANT, p["q1"], "더미 답변", [], ids1, query_embedding=v1, original_query=p["q1"]

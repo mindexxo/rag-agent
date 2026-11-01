@@ -1,12 +1,12 @@
-"""리뷰 HTML·사람 재판정·집계 (#247 결정 1·7).
+"""리뷰 HTML·사람 재판정·집계.
 
-재판정 대상(select_for_human): ALL_BELOW장 이하면 **전부**(결정 8). 그보다 많으면 Claude가 오류·위험·애매·판정 실패로 본 그림 **전부** +
+재판정 대상(select_for_human): ALL_BELOW장 이하면 **전부**. 그보다 많으면 Claude가 오류·위험·애매·판정 실패로 본 그림 **전부** +
 정확·경미로 본 그림 중 **20%**(시드 고정).
-정상 표본까지 사람이 보므로 '판정자가 놓친 비율'이 숫자로 나온다. 캡션이 색인과 다른 그림(in_index=False)도 전부 넣는다(결정 5).
+정상 표본까지 사람이 보므로 '판정자가 놓친 비율'이 숫자로 나온다. 캡션이 색인과 다른 그림(in_index=False)도 전부 넣는다.
 사진·장식은 판정 제외라 표본에 넣지 않는다.
 
 HTML 카드: 원본 크롭 | 캡션 | Claude 판정(개수·근거) | 사람 등급 선택·메모. 입력은 브라우저 localStorage에 임시 저장되고
-'판정 내보내기'가 human.json을 내려받게 한다 — summarize가 그 파일을 읽는다(결정 7 = a).
+'판정 내보내기'가 human.json을 내려받게 한다 — summarize가 그 파일을 읽는다.
 """
 
 import html
@@ -33,7 +33,7 @@ def is_flagged(r: dict) -> bool:
     )
 
 
-ALL_BELOW = 60  # 이 장수 이하면 사람이 전부 본다(결정 8 — 실문서 29장, 20% 표본은 2~3장이라 의미가 없었다)
+ALL_BELOW = 60  # 이 장수 이하면 사람이 전부 본다 — 그림이 적으면 20% 표본이 몇 장뿐이라 의미가 없다
 
 
 def select_for_human(records: list[dict]) -> list[dict]:
@@ -196,7 +196,7 @@ COVERAGE_LABELS = ('유실', '변형', '잡음')
 
 
 def write_coverage_html(units: list[dict], chunks_by_doc: dict, out: Path) -> Path:
-    """문장 포함률 확인 페이지(#231) — Claude가 '유실'·'판정 실패'로 본 원문 단위를 사람이 유실/변형/잡음으로 다시 가른다.
+    """문장 포함률 확인 페이지 — Claude가 '유실'·'판정 실패'로 본 원문 단위를 사람이 유실/변형/잡음으로 다시 가른다.
     카드: 원문 단위 | 가장 비슷한 색인 청크 | Claude 판정·메모 | 사람 선택. 내보내기 = human_coverage.json."""
     cards = []
     for i, u in enumerate(units):
@@ -270,7 +270,7 @@ padding:10px;font-size:13px}} .cap{{background:#e3efff}} .ph{{background:#ffe3e3
 
 
 def write_ab_html(items: list[dict], out: Path, key_out: Path, crops_rel: str = 'crops', seed: int = 247) -> Path:
-    """프롬프트 A/B 블라인드 비교(#247 결정 15) — 그림마다 두 캡션의 좌우를 시드 고정으로 섞는다. 어느 쪽이 현행인지는
+    """프롬프트 A/B 블라인드 비교 — 그림마다 두 캡션의 좌우를 시드 고정으로 섞는다. 어느 쪽이 현행인지는
     key_out(JSON)에만 적고 페이지에는 쓰지 않는다. items = [{picture_id, crop, filename, caption_a_src, caption_b_src, base, cand}]
     선택: A가 낫다 / B가 낫다 / 비슷하다 + 메모 → ab_human.json 내려받기."""
     rng = random.Random(seed)

@@ -1,4 +1,4 @@
-"""코퍼스 문서를 폴더로 분류하고 '참조 설명'을 채운다 (2026-08-05).
+"""코퍼스 문서를 폴더로 분류하고 '참조 설명'을 채운다.
 
 폴더 설명은 리랭커 입력에 붙어 **폴더 사이 순위**에 개입한다(rag/search/index_text 참조).
 그래서 설명은 짧고 변별적이어야 한다 — 길면 후보 수만큼 누적돼 지연이 늘고,
@@ -13,8 +13,8 @@
 구어체 질의와 문체가 닮아 상위로 올라오지만 정책 근거가 아닌 문서라,
 설명에 그 사실을 적어 리랭커가 구분할 수 있게 한다.
 
-폴더 메타는 엔진 청크에 복사돼 있다(#139 — folder_id·folder_name·folder_description·searchable). 그래서
-PG만 바꾸면 검색은 옛 폴더로 동작한다. 배정·원복은 **같은 커밋에 META_DOCUMENTS 행을 얹고**(#187) 자기 행만
+폴더 메타는 엔진 청크에 복사돼 있다(folder_id·folder_name·folder_description·searchable). 그래서
+PG만 바꾸면 검색은 옛 폴더로 동작한다. 배정·원복은 **같은 커밋에 META_DOCUMENTS 행을 얹고** 자기 행만
 바로 drain한다 — eval/reindex_documents.py와 같은 규약(공유 DB라 전체 drain은 남의 행을 건드린다).
 폴더 변경(rag/folders.py update_folder)이 하는 것과 같은 fan-out이다.
 
@@ -62,7 +62,7 @@ def classify(filename: str, title: str = "") -> str:
     리랭커 입력에 붙는다. 설명이 틀리면 안 붙이느니만 못하므로 안내 쪽에 우선권을 준다.
     (파일명에 '정책'이 명시된 건 그대로 정책 — 아래 예외 참조)
     """
-    # 소스에 타이핑된 한글 키워드(NFC)와 DB filename을 비교하므로 NFC로 맞춘다 (#34).
+    # 소스에 타이핑된 한글 키워드(NFC)와 DB filename을 비교하므로 NFC로 맞춘다.
     # DB에 NFD 행이 남아 있으면 아래 매칭이 전부 실패해 모든 문서가 최종 폴백 'guide'로
     # 몰리고, 폴더 설명이 틀리게 붙어 리랭커 입력이 조용히 오염된다 (예외도 로그도 없다).
     hay = nfc(f"{filename} {title}")
@@ -155,7 +155,7 @@ async def main() -> None:
             )
             if not docs:
                 continue
-            # 첫 청크(chunk_index 0)의 헤딩·본문 — 청크는 색인에만 있다(#139). 없으면 None.
+            # 첫 청크(chunk_index 0)의 헤딩·본문 — 청크는 색인에만 있다. 없으면 None.
             from rag.search import os_index, os_search
 
             first = await os_search.fetch_chunk_map(

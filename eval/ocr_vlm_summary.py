@@ -1,7 +1,7 @@
-"""#296 요약 — 표 이미지 하네스(#246) 실행 디렉터리 여러 개와 스캔 대조(#224) compare.json을 엔진 나란히 표로 만든다.
+"""OCR 엔진 비교 요약 — 표 이미지 하네스 실행 디렉터리 여러 개와 스캔 대조 compare.json을 엔진 나란히 표로 만든다.
 
 사용: python -m eval.ocr_vlm_summary --runs eval/results/ocr296/triton eval/results/ocr296/vlm_qwen ... [--scan eval/results/scan224/compare.json]
-      → stdout 마크다운. 셀 = 자리·글자 완전 일치(띄어쓰기 포함 — Triton은 띄어쓰기 소실이 여기서 깎인다, #253). 존재 = 띄어쓰기 무시하고 글자가 문서 어딘가에 있는가.
+      → stdout 마크다운. 셀 = 자리·글자 완전 일치(띄어쓰기 포함 — Triton은 띄어쓰기 소실이 여기서 깎인다). 존재 = 띄어쓰기 무시하고 글자가 문서 어딘가에 있는가.
 숫자 오류 = 기대가 숫자인 칸의 오독('오독' kind 중 is_numeric), 추가 = 기대에 없는 칸이 생김(환각 후보).
 """
 

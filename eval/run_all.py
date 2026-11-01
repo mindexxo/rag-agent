@@ -26,7 +26,7 @@
   python -m eval.run_all --intent        # 인텐트만 (LLM)
   python -m eval.run_all --ragas --smoke 0   # 생성축 전체(기본 SMOKE=3)
 
-참고: --ragas 심판은 기본 설정 공급자(RAGAS_JUDGE=settings = LLM_PROVIDER, 사내 vLLM이면 비용·rate limit 없음). 외부 심판은 LLM_PROVIDER를 바꾼다(#290).
+참고: --ragas 심판은 기본 설정 공급자(RAGAS_JUDGE=settings = LLM_PROVIDER, 사내 vLLM이면 비용·rate limit 없음). 외부 심판은 LLM_PROVIDER를 바꾼다.
       전 축은 사내망(DB·TEI·vLLM) 접근이 필요하다.
 
 생성축(--ragas)은 '미리 생성해둔 답변'(generation_retrieved.jsonl)을 채점만 한다
@@ -58,48 +58,44 @@ class Row:
     label: str
     higher_better: bool = True
     # 이 키(들)가 직전과 다르면 비교하지 않는다 (기준이 바뀐 것). 튜플이면 **하나라도** 다르면
-    # 비교 불가 — 거절 부재단정률처럼 judge 버전과 골드 구성이 **동시에** 기준인 행이 있다 (#199).
+    # 비교 불가 — 거절 부재단정률처럼 judge 버전과 골드 구성이 **동시에** 기준인 행이 있다.
     version_key: str | tuple[str, ...] | None = None
     eps: float | None = None  # 이 행만의 회귀 임계. None이면 REGRESSION_EPS
 
 
 ROWS = [
     Row("intent", "accuracy", "인텐트 정확도"),
-    Row("intent", "safe_accuracy", "가드 차단 정확도"),  # 안전성 분리 축 (#22) — 합산에 묻히면 회귀를 못 잡는다
+    Row("intent", "safe_accuracy", "가드 차단 정확도"),  # 안전성 분리 축 — 합산에 묻히면 회귀를 못 잡는다
     Row("condense", "accuracy", "질의재작성 정확도"),
-    # 실문서 편입(#199)으로 분모가 바뀐다(no_evidence 58→68·trap 50→58) — 구성 변경이
-    # 회귀로 찍히지 않게 version_key를 건다. #198의 RAGAS n과 같은 조치.
+    # 골드 구성이 바뀌면 분모가 바뀐다 — 구성 변경이 회귀로 찍히지 않게 version_key를 건다.
     Row("refusal", "accuracy", "거절 정확도", version_key="gold_composition"),
-    # 캐시 셋 구성이 바뀌면(6쌍→40쌍 #113) 분모가 달라 다른 눈금 — 구성 변경 첫 실행을
+    # 캐시 셋 구성이 바뀌면 분모가 달라 다른 눈금 — 구성 변경 첫 실행을
     # '비교 불가'로 처리한다 (retrieval의 gold_composition과 같은 메커니즘).
     Row("cache", "accuracy", "캐시히트 정확도", version_key="cache_composition"),
     Row("other", "accuracy", "OTHER 경계준수"),
-    # 검색 전체 평균 4행: #95에서 고난도 90행이 TYPES에 편입돼 **구성이 바뀌었다** —
-    # version_key(gold_composition)가 구성 변경 첫 실행을 '비교 불가'로 처리한다
-    # (hard_new를 층화에서 분리한 것과 같은 원리를 전체 평균에도 적용, 리뷰 지적).
+    # 검색 전체 평균 4행: 골드 구성(TYPES)이 바뀌면 version_key(gold_composition)가
+    # 구성 변경 첫 실행을 '비교 불가'로 처리한다.
     Row("retrieval", "recall_at_5", "검색  R@5", version_key="gold_composition"),
     Row("retrieval", "r5_easy", "검색  R@5(쉬움)"),
     Row("retrieval", "r5_medium", "검색  R@5(중간)"),
     Row("retrieval", "r5_hard", "검색  R@5(어려움)"),
-    # 고난도 신설 6종 (#95) — 기존 'hard'에 안 섞는 이유는 retrieval_v2.DIFFICULTY 주석.
+    # 고난도 6종 — 기존 'hard'에 안 섞는 이유는 retrieval_v2.DIFFICULTY 주석.
     Row("retrieval", "r5_hard_new", "검색  R@5(고난도-신규)"),
     Row("retrieval", "recall_at_20", "검색  R@20", version_key="gold_composition"),
     Row("retrieval", "hit_at_1", "검색  Hit@1", version_key="gold_composition"),
     Row("retrieval", "mrr", "검색  MRR", version_key="gold_composition"),
     # RAGAS 2행도 같은 구성 변경의 영향권 — 채점 대상(generation_*.jsonl)의 구성이 바뀌면
-    # 분모가 달라 다른 눈금이 된다(#95 고난도 편입, #196 실문서 편입).
-    # 예전엔 version_key 배관이 없어 "주석으로 고지"했는데, #196에서 540→630으로 바뀌면서
-    # 구성 변경이 회귀 경고로 찍히는 것을 실제로 겪어 **채점 문항 수(n)를 version_key로** 걸었다.
+    # 분모가 달라 다른 눈금이 된다 — **채점 문항 수(n)를 version_key로** 건다.
     # n은 ragas_eval.compute가 이미 요약에 싣고 있어 추가 배관이 필요 없다.
     # 한계: 구성이 바뀌었는데 n이 우연히 같으면 못 잡는다 — 그런 변경은 커밋 주석으로 고지할 것.
     Row("ragas", "faithfulness", "생성  faithfulness", version_key="n"),
     Row("ragas", "answer_relevancy", "생성  relevancy", version_key="n"),
-    # 정답 대조 2축(#216): 모범답안 보유 문항만이라 분모가 n이 아니라 n_ref — version_key도 그것으로
+    # 정답 대조 2축: 모범답안 보유 문항만이라 분모가 n이 아니라 n_ref — version_key도 그것으로
     Row("ragas", "answer_correctness", "생성  정답일치", version_key="n_ref"),
     Row("ragas", "context_recall", "생성  근거재현", version_key="n_ref"),
-    # 낮을수록 좋은 유일한 행 (#76) — 부재단정률이 오르는 것이 회귀다.
+    # 낮을수록 좋은 유일한 행 — 부재단정률이 오르는 것이 회귀다.
     # 임계를 전역(0.01)보다 크게 잡는 이유: 분모가 58 내외라 **1건이 1.7%**다. 게다가 같은
-    # 프롬프트에서 3회 반복 시 0~2건(0.0~3.5%)으로 흔들린다(#76 실측). 전역 임계를 쓰면
+    # 프롬프트에서 3회 반복 시 0~2건(0.0~3.5%)으로 흔들린다. 전역 임계를 쓰면
     # 한 건 흔들림이 매번 회귀 경고가 되어 ⚠ 자체를 아무도 믿지 않게 된다.
     # 0.04 = 2건 이상 차이일 때만 반응한다. 1건 차이는 감사 로그(문항별 판정)로 본다.
     # 기준이 둘이다 — judge 프롬프트 버전과 골드 구성. 하나만 걸면 다른 쪽 변경이 회귀로 샌다.
@@ -111,7 +107,7 @@ ROWS = [
         version_key=("judge_prompt_version", "gold_composition"),
         eps=0.04,
     ),
-    # 오답단정률 (#95) — trap에서 낚인 값(must_not_contain)이 답변에 실린 비율. 낮을수록 좋다.
+    # 오답단정률 — trap에서 낚인 값(must_not_contain)이 답변에 실린 비율. 낮을수록 좋다.
     # 순수 문자열 매칭이라 judge 버전 개념이 없다 — 매칭 규칙을 바꾸면 그 커밋에서
     # citation_accuracy 전례대로 "vN 이전과 비교 불가" 주석을 여기 남길 것.
     # eps=0.04: absence_rate와 같은 이유 — 분모 50 내외라 1건이 2%다.
@@ -269,7 +265,7 @@ async def _run_async(name: str):
         # (None으로 넣으면 '측정 실패'로 오인돼 가짜 회귀가 뜸).
         d = r["by_difficulty"]
         out = dict(r["overall"])
-        out["gold_composition"] = r["gold_composition"]  # version_key 재료 (#95)
+        out["gold_composition"] = r["gold_composition"]  # version_key 재료
         for grp, key in (
             ("easy", "r5_easy"),
             ("medium", "r5_medium"),
@@ -302,7 +298,7 @@ async def _run_async(name: str):
             "accuracy": r["accuracy"],
             "false_answer": r["false_answer"],
             "false_refusal": r["false_refusal"],
-            # 부재단정 축 (#76). 판정 버전을 같이 실어 "기준이 바뀐 것"과 "실제 회귀"를 가른다.
+            # 부재단정 축. 판정 버전을 같이 실어 "기준이 바뀐 것"과 "실제 회귀"를 가른다.
             "absence_rate": r["absence_rate"],
             # 분모·분자·흔들림을 같이 싣는다 — 비율만 보면 1건 차이(≈1.7%)를 추세로 오독한다.
             "absence_judged_n": r["absence_judged_n"],
@@ -310,7 +306,7 @@ async def _run_async(name: str):
             "absence_judge_errors": r["absence_judge_errors"],
             "absence_flaky": r["absence_flaky"],
             "judge_prompt_version": r["judge_prompt_version"],
-            # 오답단정 축 (#95) — 분모·분자 동반 (absence와 같은 이유)
+            # 오답단정 축 — 분모·분자 동반 (absence와 같은 이유)
             "misinfo_rate": r["misinfo_rate"],
             "misinfo_n": r["misinfo_n"],
             "misinfo_violated_n": r["misinfo_violated_n"],
@@ -324,7 +320,7 @@ async def _run_async(name: str):
             "false_hit": r["false_hit"],
             "false_miss": r["false_miss"],
             "cache_composition": r["composition"],
-        }  # version_key 재료 (#113)
+        }  # version_key 재료
     if name == "other":
         from eval.other_eval import compute
 
@@ -398,7 +394,7 @@ def main() -> None:
             "faithfulness": r["faithfulness"],
             "answer_relevancy": r["answer_relevancy"],
             "n": r["n"],
-            # 정답 대조 2축(#216) — 분모가 모범답안 보유 문항(n_ref)이라 따로 싣는다
+            # 정답 대조 2축 — 분모가 모범답안 보유 문항(n_ref)이라 따로 싣는다
             "context_recall": r["context_recall"],
             "answer_correctness": r["answer_correctness"],
             "n_ref": r["n_ref"],

@@ -1,15 +1,15 @@
-"""하이브리드 가중치 검증(#248) — 캡처·동치 확인·진단 CLI. 계산은 eval/hybrid_replay(순수부)에 있다.
+"""하이브리드 가중치 검증 — 캡처·동치 확인·진단 CLI. 계산은 eval/hybrid_replay(순수부)에 있다.
 
 질문: 키워드(BM25 Nori)·벡터 결합에 **가중치를 둘지 말지**. 기준선은 현행(가중치 없음: 벡터 30 + 키워드 주입 15 → 리랭커).
 리랭커가 순서를 정하는 구조라 가중치가 품질을 바꿀 수 있는 자리는 둘뿐이다 — ① 리랭커 풀에 누가 들어가나 ② 리랭크 뒤
 점수에 섞기. 그래서 먼저 현행에서 놓친 문항이 어느 쪽인지 진단하고(diagnose), 0이 아닌 쪽에 해당하는 후보만 비교한다.
 
-질문셋 셋(설계 결정 6): v2(문장형 골드, retrieval_v2와 같은 문항·정답) / keyword(상담원식 짧은 질의, eval/retrieval_keyword) /
+질문셋 셋: v2(문장형 골드, retrieval_v2와 같은 문항·정답) / keyword(상담원식 짧은 질의, eval/retrieval_keyword) /
 article(조 번호, eval/retrieval_article). 셋 다 단일 질의(멀티쿼리 확장 없음).
 
 절차 (각 단계 결과는 eval/results/hybrid_<stamp>/ — gitignore, 실문서 원문이 들어간다):
   capture  질문마다 한 번 — 임베딩 벡터, 벡터 30·100(거리), BM25 30·100(점수), 식별자 후보, 후보 상위집합의 리랭커 점수,
-           그 조각들. 벡터·BM25 30은 운영 크기를 **따로** 받는다(설계 2 — 100의 앞 30을 운영 결과로 가정하지 않는다).
+           그 조각들. 벡터·BM25 30은 운영 크기를 **따로** 받는다(100의 앞 30을 운영 결과로 가정하지 않는다).
   verify   ① 운영 retrieve_candidates의 단계 함수(임베딩·벡터·BM25·식별자·본문 조회·리랭커)를 그 레코드의 캡처값으로 끼워
            실제로 돌린 결과 = 재생(assemble) — **전 문항 완전 일치여야 측정 진행**(조립 검사, 색인 변동과 무관).
            ② 끼우지 않은 실제 운영(표본)과 재생 비교 — 근접 동점(리랭커 흔들림)·색인 변동으로 설명되지 않는 차이 0건이어야 한다.
@@ -74,7 +74,7 @@ def settings_snapshot() -> dict:
 
 
 async def load_v2() -> list[dict]:
-    """retrieval_v2와 같은 문항·정답(정답 = 스니펫 포함 조각 전부, #209). 복제한 루프의 정의점: eval/retrieval_v2.compute —
+    """retrieval_v2와 같은 문항·정답(정답 = 스니펫 포함 조각 전부). 복제한 루프의 정의점: eval/retrieval_v2.compute —
     그쪽은 채점까지 한 루프라 문항만 뽑을 수 없어 복제했다(기존 축 무변경). 둘이 어긋나지 않게 고칠 때는 함께 고친다."""
     from database import (
         AsyncSessionLocal,  # DB 세션을 여는 건 v2 캡처뿐이다(모듈 import 자체는 hybrid_replay 경유로 이미 됨)
@@ -273,8 +273,8 @@ _CURRENT: contextvars.ContextVar[tuple[dict, dict, list[float]]] = contextvars.C
 def _patched():
     """운영 retrieve_candidates의 **단계 함수만** 지금 레코드(_CURRENT)의 캡처값으로 바꾼다 — 조립·정렬·가산·자르기는 운영 코드가
     실제로 돈다. 그래서 ① 확인은 '재생 조립 = 운영 조립'만 보고, 공유 색인이 캡처 뒤에 바뀌어도(다른 세션의 업로드 — BM25 IDF는
-    인덱스 전체라 남의 테넌트 문서에도 점수가 움직인다, 첫 실행 실측 5건) 흔들리지 않는다. 레코드별 값은 ContextVar라 gather에도
-    섞이지 않는다 — 처음엔 질문 문장으로 합쳤다가 같은 문장이 두 셋에 있는 문항의 점수가 섞였다(첫 실행 실측 1건).
+    인덱스 전체라 남의 테넌트 문서에도 점수가 움직인다) 흔들리지 않는다. 레코드별 값은 ContextVar라 gather에도
+    섞이지 않는다 — 질문 문장을 키로 쓰면 같은 문장이 두 셋에 있는 문항의 점수가 섞인다.
     재생이 요구하지 않은 후보를 운영이 요구하면 KeyError — 풀이 캡처 상위집합 밖이라는 뜻이다."""
     names = {
         (rag.search.retriever, "embed_texts"),
@@ -355,7 +355,7 @@ async def verify(path: Path, live_n: int) -> bool:
 
     # ② 아무것도 끼우지 않은 실제 운영(표본). 차이는 셋 중 하나로 가른다 — 근접 동점(리랭커 흔들림), 색인 변동(캡처 뒤 벡터·
     #    BM25 30이 달라짐 — 공유 색인), 설명 안 됨. 합격은 '설명 안 됨 0'이다: 리랭커 흔들림만으로 근접 동점 자리바꿈이 표본의
-    #    12~15%였다(2026-10-18 두 실행) — 완전 일치 비율을 기준으로 두면 TEI 잡음을 결함으로 오판한다(설계 8을 실측으로 고침).
+    #    10%대다 — 완전 일치 비율을 기준으로 두면 TEI 잡음을 결함으로 오판한다.
     sample = random.Random(248).sample(recs, min(live_n, len(recs)))
 
     async def _live_one(r):
@@ -377,8 +377,8 @@ async def verify(path: Path, live_n: int) -> bool:
         if drift:
             drifted += 1
             continue
-        # 근접 동점 = 어긋난 **모든** 자리에서 두 후보의 리랭커 점수 차 < LIVE_TIE_EPS(첫 자리만 보면 뒤의 실질 차이를 놓친다 —
-        # 리뷰 지적). 상위 20 경계에서 점수가 0에 가까운 후보끼리 들고 나는 것도 여기 든다(실측 'OFF': 9~17위 점수 0.0015~0.0027).
+        # 근접 동점 = 어긋난 **모든** 자리에서 두 후보의 리랭커 점수 차 < LIVE_TIE_EPS(첫 자리만 보면 뒤의 실질 차이를 놓친다).
+        # 상위 20 경계에서 점수가 0에 가까운 후보끼리 들고 나는 것도 여기 든다.
         diffs = [(a, b) for a, b in zip(mine, ids) if a != b]
         tie = len(mine) == len(ids) and all(
             str(a) in r["rerank"]

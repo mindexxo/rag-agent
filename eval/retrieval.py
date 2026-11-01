@@ -19,8 +19,8 @@ class Resolved:
 
     doc_ids: dict[str, int] = field(default_factory=dict)
     chunk_ids: dict[str, list[int]] = field(default_factory=dict)  # 스니펫당 **첫 매치** 1개 — oracle 주입용(순서 보존)
-    # 스니펫을 포함한 청크 **전부** — 검색축 채점용(#209). 같은 문장이 두 쪽에 중복된 문서(타임레포트 5·6쪽, 계획/실적
-    # Flow 반복)에서 다른 중복 청크가 1위면 chunk_ids만으론 miss로 찍혔다(#203 sf004·pp001, 재인제스트마다 뒤집힘).
+    # 스니펫을 포함한 청크 **전부** — 검색축 채점용. 같은 문장이 여러 쪽에 중복된 문서에서 다른 중복 청크가 1위면
+    # chunk_ids만으론 miss로 찍히고, 어느 쪽이 1위인지는 재인제스트마다 뒤집힌다.
     # oracle엔 쓰지 않는다 — 같은 문장 청크를 두 번 주입하면 토큰 낭비이고 생성 oracle 기준선이 흔들린다.
     scoring_ids: dict[str, set[int]] = field(default_factory=dict)
     stale: list[str] = field(default_factory=list)
@@ -36,7 +36,7 @@ def match_expected_chunks(
     """expected_chunks → (주 정답 id 목록, 채점용 id 집합, 못 찾은 스니펫 목록). DB 없는 순수 함수 — 테스트는 튜플만 먹인다.
 
     주 정답 = 스니펫당 하나: heading_path가 일치하는 매치가 있으면 그것, 없으면 첫 매치(현행 규칙 그대로, oracle용).
-    채점 집합 = 스니펫을 포함한 청크 전부(#209). snippet 포함이 정답 판정의 최종 검증자(§4.1)라는 원칙은 같고,
+    채점 집합 = 스니펫을 포함한 청크 전부. snippet 포함이 정답 판정의 최종 검증자라는 원칙은 같고,
     "포함한 청크가 여럿이면 전부 근거"라는 당연한 귀결을 채점에만 적용한다.
     """
     primary: list[int] = []
@@ -55,7 +55,7 @@ def match_expected_chunks(
 
 
 async def _indexed_chunks(document_id: int) -> list[tuple[int, list[str], str]]:
-    """문서의 색인 청크 (chunk_id, heading_path, text). 청크는 OpenSearch에만 있다(#139)."""
+    """문서의 색인 청크 (chunk_id, heading_path, text). 청크는 OpenSearch에만 있다."""
     resp = await os_client.client().search(
         index=settings.opensearch_index,
         body={

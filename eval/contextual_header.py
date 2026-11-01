@@ -1,20 +1,20 @@
-"""청크 머리말이 잘린 맥락을 메우는가 — 머리말 없음 / 현행 머리말 / Contextual Retrieval / 규칙 맥락 줄 비교(#234).
+"""청크 머리말이 잘린 맥락을 메우는가 — 머리말 없음 / 현행 머리말 / Contextual Retrieval / 규칙 맥락 줄 비교.
 
 머리말(rag/search/index_text.build_index_text — '파일명 > 헤딩')은 임베딩·어휘 필드(Nori·bigram)·리랭커 세 곳에 같은 모양으로 들어간다.
 조건마다 그 세 곳의 텍스트만 바꾼 **임시 인덱스**(kms_chunks_exp234_<조건>)를 만들고, 운영 검색(retrieve_candidates)을 인덱스 이름만
-바꿔 그대로 돌린다 — 측정용 재구현이 틀릴 위험(#128)을 없애려고(#234 결정 3). 리랭커 입력은 같은 변형 텍스트로 바꿔 끼운다.
+바꿔 그대로 돌린다 — 측정용 재구현이 틀릴 위험을 없애려고. 리랭커 입력은 같은 변형 텍스트로 바꿔 끼운다.
 
-조건(#234 결정 2)
+조건
   none   : 본문만
   header : 현행 — 파일명 > 헤딩 + 본문
   cr     : LLM이 쓴 맥락 문장 + 현행 머리말 + 본문. 원 방법(Anthropic Contextual Retrieval)대로 문서와 조각을 주고 "검색이 잘 되게
-           이 조각의 맥락을 짧게" 쓰게 한다. 생성기는 운영 vLLM(결정 4) — 문서가 길면 그 조각 앞뒤 CR_WINDOW_TOKENS만 준다
+           이 조각의 맥락을 짧게" 쓰게 한다. 생성기는 운영 vLLM — 문서가 길면 그 조각 앞뒤 CR_WINDOW_TOKENS만 준다
   rule   : 현행 머리말 + 잘린 맥락 줄(eval/chunk_boundary.context_losses의 목록 머리·소제목, '단,' 등은 앞 조각 마지막 줄) + 본문
-           — #266 a안을 측정용으로만 흉내 낸 것
+           — 잘린 맥락 줄을 덧붙이는 안을 측정용으로만 흉내 낸 것
 측정 테넌트(V2_TENANTS)의 문서 조각만 바꾸고, 다른 테넌트·FAQ 조각은 그대로 복사한다 — BM25 IDF가 인덱스 전체로 정해지므로
 모집단을 운영과 같게 둔다. 임시 인덱스는 `drop`으로 지운다(운영 인덱스는 읽기만 한다).
 
-채점(결정 5): 검색 — 전체 골드 검색축(eval/retrieval_v2.compute) 그대로, 맥락 셋(id에 _cx·_cb0)은 따로 묶는다. 답변 — 맥락 셋만,
+채점: 검색 — 전체 골드 검색축(eval/retrieval_v2.compute) 그대로, 맥락 셋(id에 _cx·_cb0)은 따로 묶는다. 답변 — 맥락 셋만,
 상위 5 근거로 운영 생성 → EPCov(규칙+심판), 회차를 나눠 돈다(TEI·생성 흔들림).
 
 사용:
@@ -100,7 +100,7 @@ def _by_document(docs: list[dict]) -> dict[int, list[dict]]:
 
 def rule_lines(chunks: list[dict]) -> dict[int, str]:
     """chunk_id → 잃은 맥락 줄. 목록 머리·소제목은 그 줄, '단,'·'이 경우'는 앞 조각의 마지막 글줄(가리키는 대상).
-    표 손실(table_*)은 넣지 않는다 — #257이 표 전체를 근거로 넘긴다."""
+    표 손실(table_*)은 넣지 않는다 — 표는 운영에서 표 전체를 근거로 넘긴다."""
     out = {}
     for x in context_losses([{'heading_path': c['heading_path'], 'text': c['text']} for c in chunks]):
         cid = chunks[x['at']]['chunk_id']
@@ -248,7 +248,7 @@ def condition(cond: str, rerank_texts: dict[int, str]):
         if not folder:
             return v
         # 근사 — 운영 build_index_text(folder=)는 폴더를 머리말 조각 목록 맨 앞에 넣고 ' > '로 잇는다. 여기는 완성된 텍스트 앞에
-        # 붙여, 머리말 조각이 없는 header·cr 조각에서 모양이 조금 다르다(폴더 있는 테넌트만, #234 리뷰 Minor)
+        # 붙여, 머리말 조각이 없는 header·cr 조각에서 모양이 조금 다르다(폴더 있는 테넌트만)
         return f'{folder}\n{v}' if cond == 'none' else f'{folder} > {v}'
 
     settings.opensearch_index, rr._rerank_text = index_name(cond), rerank_text
@@ -302,7 +302,7 @@ async def measure(runs: int) -> None:
 
     cr = json.loads(CR_FILE.read_text(encoding='utf-8'))
     # 조각은 build가 만든 스냅숏(header 임시 인덱스)에서 읽는다 — 운영 인덱스는 공유라 build 뒤에도 다른 세션의 업로드로 바뀐다.
-    # 운영에서 읽으면 바뀐 조각이 변형 텍스트 표에 없어 리랭커 입력이 조용히 운영 머리말로 돌아간다(#234 리뷰 지적 1)
+    # 운영에서 읽으면 바뀐 조각이 변형 텍스트 표에 없어 리랭커 입력이 조용히 운영 머리말로 돌아간다
     docs = await _all_docs(index_name('header'))
     rule = {cid: line for chunks in _by_document(docs).values() for cid, line in rule_lines(chunks).items()}
     gold = {g['id']: g for g in load_gold()}

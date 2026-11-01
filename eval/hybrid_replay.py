@@ -1,15 +1,15 @@
-"""하이브리드 가중치 검증(#248) — 캡처한 값만으로 검색 조립을 다시 계산하는 **순수 계산부**. 실행 중 외부 연결(DB·OpenSearch·TEI)을
+"""하이브리드 가중치 검증 — 캡처한 값만으로 검색 조립을 다시 계산하는 **순수 계산부**. 실행 중 외부 연결(DB·OpenSearch·TEI)을
 열지 않는다(import 체인에는 eval.retrieval의 database 모듈이 딸려 온다 — score_one 정의점을 한 곳에 두려는 대가).
 
-왜 재생인가(설계 결정 5): 리랭커(cross-encoder)는 질문-조각 쌍을 독립으로 채점하므로, 질문마다 후보 상위집합의 점수를
+왜 재생인가: 리랭커(cross-encoder)는 질문-조각 쌍을 독립으로 채점하므로, 질문마다 후보 상위집합의 점수를
 한 번 받아 두면 풀 구성을 바꾼 조건을 다시 검색하지 않고 계산할 수 있다. 조건끼리 같은 점수를 쓰니 TEI의 호출마다의
 흔들림(1.4e-4)이 조건 차이에 섞이지 않는다. 캡처·CLI는 eval/hybrid_weights.py.
 
 **재생이 운영과 같다는 보장**: `assemble(BASELINE)`은 운영 rag/search/retriever.retrieve_candidates의 단일 질의 경로를 그대로 따른다
-— 벡터 30 → BM25 30 중 벡터에 없는 것 15개 뒤에 → 식별자 일치 뒤에 → 리랭커 점수 안정 정렬 → 식별자 +가산 → 상위 20
-(#257로 '한 시트만' 필터는 없어졌다). 재구현은 풀 조립(build_pool)뿐이고 나머지는 운영 함수(apply_identifier_boost·prepare_evidence)를
+— 벡터 30 → BM25 30 중 벡터에 없는 것 15개 뒤에 → 식별자 일치 뒤에 → 리랭커 점수 안정 정렬 → 식별자 +가산 → 상위 20.
+재구현은 풀 조립(build_pool)뿐이고 나머지는 운영 함수(apply_identifier_boost·prepare_evidence)를
 그대로 부른다. 그래도 재구현이 어긋날 수 있으므로 eval/hybrid_weights의 verify가 **캡처값을 운영 함수에 끼워 실제로 돌린
-결과와 전 문항 완전 일치**를 확인한 뒤에만 측정한다(#128 1차 측정은 조립이 틀려 기준선과 수학적으로 같은 풀이 됐다).
+결과와 전 문항 완전 일치**를 확인한 뒤에만 측정한다(조립이 틀리면 조건이 달라도 기준선과 같은 풀이 될 수 있다).
 tests/test_hybrid_replay가 같은 비교를 합성 데이터로 하고, 일부러 망가뜨린 재생이 그 비교에서 실패하는지도 본다.
 
 레코드(캡처 1줄, dict): set·qid·tenant·type·query·gold_ids·token(키워드 축만)·dense30[[id,거리]]·dense100·bm25_30[id]·
@@ -39,7 +39,7 @@ class Condition:
     ident_boost=0.3, 혼합 없음)과 같다.
 
     리랭크 뒤 혼합(blend, 3단계 — 2단계 진단에서 풀 누락이 0이라 가중치가 닿을 수 있는 자리는 여기뿐이었다):
-      - "add":    리랭커 점수 + w × BM25 정규화 점수 — #238 식별자 가산과 같은 자리·같은 모양(리랭커 확신은 크게 못 뒤집는다)
+      - "add":    리랭커 점수 + w × BM25 정규화 점수 — 식별자 가산과 같은 자리·같은 모양(리랭커 확신은 크게 못 뒤집는다)
       - "convex": (1 − w) × 리랭커 점수 + w × BM25 정규화 점수 — 다른 팀의 '키워드 : 의미' 비중을 그대로 옮긴 꼴
       BM25 정규화 = 그 질문의 BM25 점수 / 그 질문 BM25 1위 점수(0~1). BM25 상위 100 밖 후보는 0.
       w는 질문이 '키워드형'(숫자 포함 또는 15자 이하 — 다른 팀 규칙 그대로)이면 w_key, 아니면 w_desc.
@@ -60,7 +60,7 @@ BASELINE = Condition("baseline")
 NO_LEXICAL = Condition(
     "키워드주입_0", lex_inject=0
 )  # 하이브리드 기여도 진단용 — 후보 아님(현행에서 키워드 채널만 끈 것)
-# 3단계 후보(결정 11) — 결과를 보기 전에 고정한 목록이다(여러 조건 중 우연히 이긴 것을 고르는 착시를 막는다).
+# 3단계 후보 — 결과를 보기 전에 고정한 목록이다(여러 조건 중 우연히 이긴 것을 고르는 착시를 막는다).
 CANDIDATES = (
     Condition("add_0.1", blend="add", w_key=0.1, w_desc=0.1),
     Condition("add_0.2", blend="add", w_key=0.2, w_desc=0.2),
@@ -106,7 +106,7 @@ def _bm25_ids(rec: dict, n: int) -> list[int]:
 
 
 def build_pool(rec: dict, cond: Condition = BASELINE) -> list[int]:
-    """리랭커 풀(순서 있음) — rag/search/retriever.retrieve_candidates의 '하이브리드 어휘 주입(#135)'·'식별자 채널 주입(#238)' 블록과
+    """리랭커 풀(순서 있음) — rag/search/retriever.retrieve_candidates의 '하이브리드 어휘 주입'·'식별자 채널 주입' 블록과
     같은 조립. 벡터가 비면 빈 풀(어휘 주입도 안 함)."""
     top = _dense_ids(rec, cond.dense_n)
     if not top:
@@ -143,8 +143,8 @@ def assemble(
 def evaluate(rec: dict, final: list[RetrievedChunk], chunks: dict[int, RetrievedChunk]) -> dict:
     """문항 하나의 지표. in_evidence = 모델이 실제로 받는 근거에 정답이 있나 — 키워드 축은 근거 **글**에 토큰이 있나(evidence_has),
     나머지는 근거 조각 id에 정답이 있거나 **정답과 같은 표의 조각이 근거에 있나**. 표는 같은 표 조각을 가장 위 하나로
-    접고 표 전체로 바꿔 넘기므로(prepare_evidence ①③, #257부터 PDF·DOCX 큰 표도) 정답 행이 든 형제 조각은 id로는 빠져도 모델은 그 행을 본다
-    (첫 진단 실측: 최종 2~3위인데 '근거 밖'으로 세진 문장형 문항이 전부 이 꼴, 2026-10-18 — 건수는 eval/report_hybrid_weights). retrieval_article은 조 번호라 표가
+    접고 표 전체로 바꿔 넘기므로(prepare_evidence ①③, PDF·DOCX 큰 표 포함) 정답 행이 든 형제 조각은 id로는 빠져도 모델은 그 행을 본다.
+    retrieval_article은 조 번호라 표가
     거의 없어 id 기준을 그대로 쓴다 — 이 함수의 셈법이 그보다 정확하다."""
     evidence = prepare_evidence(final, TOP_K)
     if rec["set"] == "keyword":
@@ -193,7 +193,7 @@ def diagnose(rec: dict, chunks: dict[int, RetrievedChunk]) -> dict:
 
 def summarize_diagnosis(rows: list[dict], key: str = "type") -> dict:
     """유형별 진단 집계. 주입 상방(N) = 정답이 현행 풀 밖인데 BM25 상위 N 안에 있는 문항 수 — 풀을 넓히는 가중치가 구할 수
-    있는 상한이다(#128과 같은 정의, 그때 문장형 450문항에서 0). lexical_saves = 키워드 주입을 끄면 근거에서 빠지는 문항 수
+    있는 상한이다. lexical_saves = 키워드 주입을 끄면 근거에서 빠지는 문항 수
     (하이브리드가 지금 하는 일), dense_top1·bm25_top1 = 리랭커 없이 채널 혼자 정답을 1위·5위 안에 두는 비율."""
     groups: dict[str, list[dict]] = defaultdict(list)
     for r in rows:

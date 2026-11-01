@@ -7,9 +7,9 @@ LLM 의존이라 이 축에서 제외 — 멀티턴 검색축은 eval.retrieval_
 사용: python3 -m eval.retrieval_v2
      python3 -m eval.retrieval_v2 --expand   # 멀티쿼리 통합(#5) on A/B — 이때만 LLM 사용
 
-표 문항 묶음(#232): 문항마다 정답 조각의 표 종류(`table`: ''/big/small/big+small, 판정은 eval.axis_common.is_table_chunk)와
+표 문항 묶음: 문항마다 정답 조각의 표 종류(`table`: ''/big/small/big+small, 판정은 eval.axis_common.is_table_chunk)와
 표 조각의 파일 형식(`table_fmt`)을 행에 적고 [표 문항]·[표 형식별]로 따로 평균을 낸다 — 골드 type에 표 구분이 없어
-"표 셀 값 질문의 검색 성적"이 유형 평균에 묻혀 있었다.
+"표 셀 값 질문의 검색 성적"이 유형 평균에 묻히기 때문이다.
 """
 
 import argparse
@@ -53,7 +53,7 @@ def _overall(rows) -> dict:
 
 # 검색 난이도 층화 — type을 난이도 그룹으로 묶는다 (별도 태깅 없이 type 재활용).
 # 쉬움: 직접 사실·고유용어(매칭 쉬움) / 어려움: 다문서 종합·멀티턴 맥락 의존.
-# hard_new(#95 고난도 6종)를 기존 'hard'에 섞지 않는 이유: run_all의 r5_hard 시계열
+# hard_new(고난도 6종)를 기존 'hard'에 섞지 않는 이유: run_all의 r5_hard 시계열
 # 구성이 조용히 바뀌면 다음 실행의 하락이 회귀인지 구성 변경인지 못 가른다
 # (citation_accuracy가 판정 변경 때마다 겪은 문제와 같은 패턴).
 DIFFICULTY = {
@@ -82,24 +82,23 @@ async def compute(expand: bool = False, tenants: set[str] | None = None) -> dict
 
     expand=True면 운영 플래그 on과 동일하게 condense_to_queries(#5, 빈 히스토리)로
     멀티쿼리를 만들어 첫 줄=주 쿼리, 나머지=변형으로 검색 (A/B). 변형은 rows에 기록.
-    tenants가 있으면 그 테넌트 문항만 돈다(#235 규모 실험이 측정 테넌트만 반복 측정) — 기본은 전부.
+    tenants가 있으면 그 테넌트 문항만 돈다(규모 실험이 측정 테넌트만 반복 측정) — 기본은 전부.
 
     반환: {'rows': [...], 'skipped': int, 'overall': {recall_at_5, ...}, 'stale': {tenant: n}}
 
     gold_composition: 채점 대상 구성의 버전 문자열 — run_all이 version_key로 써서 구성이
-    바뀐 첫 실행을 '회귀'가 아니라 '비교 불가'로 처리한다 (#95에서 고난도 90행이 전체
-    평균에 편입되며 필요해짐 — absence_rate의 judge_prompt_version과 같은 메커니즘).
+    바뀐 첫 실행을 '회귀'가 아니라 '비교 불가'로 처리한다 (absence_rate의 judge_prompt_version과 같은 메커니즘).
     """
     gold = load_gold()  # 정본 + eval/gold_private (인티큐브 실문서 골드 — gitignore)
     target = [g for g in gold if g['type'] in TYPES and (tenants is None or row_tenant(g) in tenants)]
 
-    # 1단계(expand만): LLM 선병렬 — vLLM 연속 배칭 활용 (#18). DB 접근 없어 gather 안전
+    # 1단계(expand만): LLM 선병렬 — vLLM 연속 배칭 활용. DB 접근 없어 gather 안전
     queries_map: dict[str, list[str]] = {}
     if expand:
         from rag.llm import create_aux_llm
         from rag.turn.conversation import condense_to_queries
 
-        llm = create_aux_llm()  # 재작성은 운영과 같은 보조 클라이언트(#297)
+        llm = create_aux_llm()  # 재작성은 운영과 같은 보조 클라이언트
         sem = asyncio.Semaphore(6)  # worker15 공유 장비 — RAGAS와 동일 안전선
 
         async def _expand(g):
@@ -119,10 +118,10 @@ async def compute(expand: bool = False, tenants: set[str] | None = None) -> dict
             resolved = await resolve_gold(session, tenant, items)
             if resolved.stale:
                 stale[tenant] = len(resolved.stale)
-            # 정답 조각의 표 여부(#232) — 테넌트당 한 번 읽는다
+            # 정답 조각의 표 여부 — 테넌트당 한 번 읽는다
             gold_chunks = await fetch_chunk_map(sorted({c for s in resolved.scoring_ids.values() for c in s}))
             for g in items:
-                gold_ids = sorted(resolved.scoring_ids.get(g['id']) or [])  # 스니펫 포함 청크 전부 (#209)
+                gold_ids = sorted(resolved.scoring_ids.get(g['id']) or [])  # 스니펫 포함 청크 전부
                 if not gold_ids:
                     skipped += 1
                     continue
@@ -160,7 +159,7 @@ async def compute(expand: bool = False, tenants: set[str] | None = None) -> dict
         'overall': _overall(rows),
         'by_difficulty': _by_difficulty(rows),
         'stale': stale,
-        # 구성 버전 (#95) — TYPES 구성이 바뀔 때마다 갱신할 것 (docstring 참조)
+        # 구성 버전 — TYPES 구성이 바뀔 때마다 갱신할 것 (docstring 참조)
         'gold_composition': 'v2+hard95',
     }
 
@@ -176,7 +175,7 @@ async def main() -> None:
 
     result = await compute(expand=args.expand)
     rows, skipped = result['rows'], result['skipped']
-    if not rows:  # 채점 0 = gold resolve 전멸 (빈/잘못된 DB) — 결과 덮어쓰기 전에 중단 (#18 실사고 가드)
+    if not rows:  # 채점 0 = gold resolve 전멸 (빈/잘못된 DB) — 결과 덮어쓰기 전에 중단
         raise SystemExit(f"채점 0문항 (스킵 {skipped}) — DATABASE_URL이 코퍼스 있는 DB인지 확인. 결과 파일 미변경.")
     for tenant, n in result['stale'].items():
         print(f'⚠ {tenant} 라벨 노후 {n}건')

@@ -1,4 +1,4 @@
-"""채점 — 두 층(#246 결정 3).
+"""표 파싱 하네스 채점 — 두 층.
   L1 `score_doc`: docling 문서의 표 셀 격자(병합 범위·글자) vs 정의. 추출 정확도. docling·OCR·TableFormer의 책임.
   L2 `score_chunks`: chunk_file 결과의 markdown 행 vs 경로별 기대 행(expected.expected_rows). 색인 결과 정확도. 우리 렌더까지 포함.
 
@@ -193,10 +193,10 @@ def all_texts(actuals: list[ActualTable]) -> set[str]:
 
 def chunk_tables(chunks, *, xlsx: bool = False) -> list[list[list[str]]]:
     """청크 목록 → markdown 표(행 목록)들. 구분선('---')이 나오면 그 윗줄이 헤더인 새 표 — 단 **직전 표와 헤더가 같으면 같은
-    표의 다음 행 묶음**으로 잇는다(#252: 긴 표는 행 묶음마다 헤더를 반복한다). 긴 표가 청크 경계에서 갈려 뒷 청크가 '|' 행으로
-    바로 시작하면 앞 표에 잇는다. xlsx는 시트 완성본(meta.table_text)이 전체라 그것만 읽는다. PDF·DOCX 큰 표 묶음도 #257부터
+    표의 다음 행 묶음**으로 잇는다(긴 표는 행 묶음마다 헤더를 반복한다). 긴 표가 청크 경계에서 갈려 뒷 청크가 '|' 행으로
+    바로 시작하면 앞 표에 잇는다. xlsx는 시트 완성본(meta.table_text)이 전체라 그것만 읽는다. PDF·DOCX 큰 표 묶음도
     table_text를 갖지만 읽지 않는다 — 이 하네스가 재는 것이 묶음 분할(헤더 반복·행 경계)이라 묶음에서 다시 잇는다. 형식은 청크로
-    가르지 않고 호출부가 알려 준다: 표만 있는 PDF는 모든 청크가 표 묶음이라 청크 모양으로는 xlsx와 구별되지 않는다(#257 리뷰)."""
+    가르지 않고 호출부가 알려 준다: 표만 있는 PDF는 모든 청크가 표 묶음이라 청크 모양으로는 xlsx와 구별되지 않는다."""
     if xlsx and chunks and chunks[0].meta and chunks[0].meta.get('table_text'):
         texts = []
         seen = set()
@@ -219,7 +219,7 @@ def chunk_tables(chunks, *, xlsx: bool = False) -> list[list[list[str]]]:
                 if cur and cur[-1] is prev:
                     cur.pop()
                 if cur is not None and cur and cur[0] == prev:
-                    pass  # 같은 헤더가 반복되면 같은 표의 다음 행 묶음(#252 — batch_table_rows가 헤더를 반복) → 잇는다
+                    pass  # 같은 헤더가 반복되면 같은 표의 다음 행 묶음(batch_table_rows가 헤더를 반복) → 잇는다
                 else:
                     cur = [prev]
                     tables.append(cur)
@@ -239,8 +239,8 @@ def score_rows(
     expected: list[list[str]], actual: list[list[str]] | None, presence_pool: set[str] | None = None
 ) -> Score:
     """L2 — 기대 행 vs 실제 행, 자리 비교. 구조(행·열 수)가 다르면 글자 존재율로만.
-    **분할기 흔적까지 포함해 잰다**(#246 리뷰 결정 a): 긴 표가 청크 경계에서 잘리거나 겹침(50토큰)으로 행이 중복되면
-    그것도 색인에 들어간 그대로이므로 오류로 집계한다 — 결함 B(#252)의 근거."""
+    **분할기 흔적까지 포함해 잰다**: 긴 표가 청크 경계에서 잘리거나 겹침(50토큰)으로 행이 중복되면
+    그것도 색인에 들어간 그대로이므로 오류로 집계한다."""
     exp_cells = [Cell(r, c, 1, 1, norm(t)) for r, row in enumerate(expected) for c, t in enumerate(row)]
     dims = (len(expected), max(len(r) for r in expected))
     if actual is None:

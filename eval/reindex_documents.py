@@ -1,8 +1,7 @@
 """활성 문서 재색인 CLI — 청킹·임베딩 방식이 바뀌었을 때 검색 색인(OpenSearch)을 새 방식으로 다시 만든다.
 
-배경(2026-08-03): 인덱스 입력에 '파일명 > 헤딩' 병합(rag/search/index_text)과 DOCX 섹션 청킹
-(rag/chunking)이 들어갔다. 둘 다 **재색인해야** 반영된다 — 기존 dense 벡터는 옛 방식으로
-만들어졌고, DOCX는 청크 경계 자체가 달라졌다.
+색인 입력(rag/search/index_text)이나 청킹(rag/chunking)이 바뀌면 **재색인해야** 반영된다 — 기존 dense
+벡터는 옛 방식으로 만들어졌고, 청크 경계 자체가 달라질 수 있다.
 
 사용법:
     python -m eval.reindex_documents --dry-run              # 대상만 출력, 변경 없음
@@ -15,7 +14,7 @@
   - 실패한 문서는 status='failed'로 남는다 → 검색에서 빠지므로, 요약을 보고 재실행할 것.
   - blob 원본이 없으면 건드리지 않고 건너뛴다 (청크를 지운 뒤 재생성 못 하는 사태 방지).
 
-롤백: 청크는 blob에서 언제든 다시 만들 수 있는 파생 데이터다(색인에만 있다 — #139).
+롤백: 청크는 blob에서 언제든 다시 만들 수 있는 파생 데이터다(색인에만 있다).
       옛 방식으로 되돌리려면 코드를 revert한 뒤 이 스크립트를 다시 돌리면 된다.
 
 주의: 임베딩 TEI 서버(사내망)가 필요하다. 로컬에서는 ConnectTimeout으로 실패한다.
@@ -83,7 +82,7 @@ async def reindex_one(document_id: int) -> None:
         row = outbox.enqueue(session, doc.tenant_id, outbox.INDEX_DOCUMENT, document_id=doc.id)
         await session.commit()
 
-    # 이 문서의 행만 처리 — 공유 DB의 다른 pending 업로드를 건드리지 않게 row_ids로 한정 (#139)
+    # 이 문서의 행만 처리 — 공유 DB의 다른 pending 업로드를 건드리지 않게 row_ids로 한정
     await outbox.drain_once(row_ids=[row.id])  # 청킹 + 임베딩 + 색인 + ready 승격
 
     async with AsyncSessionLocal() as session:  # 승격 확인 — 실패면 status가 failed로 남는다

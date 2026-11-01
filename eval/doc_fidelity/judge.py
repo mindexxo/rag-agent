@@ -1,4 +1,4 @@
-"""그림 캡션 1차 판정 — Claude가 원본 크롭과 캡션을 보고 rubric(결정 6)대로 센다(#247 결정 1 = b-1).
+"""그림 캡션 1차 판정 — Claude가 원본 크롭과 캡션을 보고 rubric대로 센다.
 
 등급은 rubric.grade_of가 개수에서 다시 계산한다. 판정자가 매긴 등급과 다르면 `grade_mismatch`로 남기고 코드 쪽을 쓴다 —
 같은 기준을 사람 재판정에도 쓰므로 등급의 정의는 한 곳(코드)에 있어야 한다.
@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from eval.doc_fidelity.rubric import PROMPT, PROMPT_VERSION, Verdict, grade_of
 
-DEFAULT_MODEL = 'claude-sonnet-4-5-20250929'  # #253 재판정자와 같은 모델(eval/table_parsing/llm_judge.py)
+DEFAULT_MODEL = 'claude-sonnet-4-5-20250929'  # 표 파싱 재판정자와 같은 모델(eval/table_parsing/llm_judge.py)
 _JSON = re.compile(r'\{.*\}', re.S)
 
 
@@ -52,7 +52,7 @@ async def judge_all(
     """records(pictures 기록) → 판정 붙인 기록. 크롭이 없는 그림은 판정하지 않는다(error='크롭 없음').
 
     호출 실패(한도·로그인 만료·시간 초과 — ClaudeCliClient가 RuntimeError로 올린다)도 그 그림의 error로 남기고 나머지를 계속한다.
-    전에는 예외가 gather 밖으로 새어 실행 전체가 멈추고 끝까지 모은 판정이 통째로 사라졌다(리뷰 지적, #247). sink(Path)가 있으면
+    예외가 gather 밖으로 새면 실행 전체가 멈추고 모은 판정이 통째로 사라지기 때문이다. sink(Path)가 있으면
     그림 하나가 끝날 때마다 JSONL로 이어 쓴다 — 프로세스가 죽어도 진행분이 남고 --retry-errors가 실패분만 다시 돌린다.
     """
     import json

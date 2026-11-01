@@ -1,8 +1,8 @@
 """질의 재작성(condense) 평가 — 후속 질문을 독립 질문으로 바꿀 때
 현재 질문의 조건·수치를 보존하고, 대명사를 해소하며, 이전 답변 내용을 주입하지 않는지.
 
-condense는 LLM 호출인데 세 축(인텐트·검색·생성) 어디에도 안 잡히던 사각지대였다.
-2026-07-20 실사고: "7일 맞죠?"→"14일인가요?"(전제 주입), "하자 교환"→"단순변심"(용어 치환).
+condense는 LLM 호출인데 세 축(인텐트·검색·생성) 어디에도 안 잡히는 사각지대다.
+잡으려는 실패 예: "7일 맞죠?"→"14일인가요?"(전제 주입), "하자 교환"→"단순변심"(용어 치환).
 정답 문장을 못 박기 어려워 '행동 기반' 규칙 채점을 쓴다:
   - must_keep       : 현재 질문의 조건·수치가 재작성 결과에 남아야 (보존)
   - must_not_contain: 이전 답변의 값이 재작성에 끼면 안 됨 (오염 방지)
@@ -52,11 +52,11 @@ async def compute(multi: bool = False) -> dict:
     변형 생성을 얹었을 때 재작성 품질이 회귀하지 않는지 본다. 변형 줄은 채점 대상 아님.
     """
     cases = [json.loads(l) for l in GOLD.read_text().splitlines() if l.strip()]
-    llm = create_aux_llm()  # 운영과 같은 보조 클라이언트(#297) — LLM_AUX_*가 비면 생성 설정 그대로
+    llm = create_aux_llm()  # 운영과 같은 보조 클라이언트 — LLM_AUX_*가 비면 생성 설정 그대로
     sem = asyncio.Semaphore(CONCURRENCY)
 
     async def _one(case: dict, _i: int):
-        # 운영과 같은 예산으로 자른다 (rag/turn/service.py의 condense 경로와 같은 모양) — #81.
+        # 운영과 같은 예산으로 자른다 (rag/turn/service.py의 condense 경로와 같은 모양).
         # 이 데이터셋은 최대 85토큰이라 실제로 잘리는 케이스는 없지만, 예산 지식이 세 축에
         # 흩어지지 않게 형태를 맞춘다. 데이터가 길어지면 자동으로 운영과 같이 동작한다.
         msgs = trim_messages_for_condense(

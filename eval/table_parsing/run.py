@@ -1,11 +1,11 @@
-"""#246 실행기 — 합성 표 46개 × 4경로를 워커와 같은 경로로 변환해 두 층을 채점하고 매트릭스를 쓴다.
+"""표 파싱 검증 실행기 — 합성 표 46개 × 4경로를 워커와 같은 경로로 변환해 두 층을 채점하고 매트릭스를 쓴다.
 
 용법:
     python -m eval.table_parsing.run                      # 전체(변환 약 4분 + 모델 로딩, OCR·VLM 서버 필요)
     python -m eval.table_parsing.run --only S01_basic S02_colspan --paths img pdf
     python -m eval.table_parsing.run --out eval/results/table_parsing/run2
-    python -m eval.table_parsing.run --engine vlm --paths img   # #296: 쪽 전체를 VLM(VLM_CAPTION_*)으로 — eval/vlm_engine.py
-    python -m eval.table_parsing.run --engine llm --paths img   # #299: 운영 상용 OCR 경로(OCR_PROVIDER=llm — 사진 표는 잘라서 LLM)
+    python -m eval.table_parsing.run --engine vlm --paths img   # 쪽 전체를 VLM(VLM_CAPTION_*)으로 — eval/vlm_engine.py
+    python -m eval.table_parsing.run --engine llm --paths img   # 운영 상용 OCR 경로(OCR_PROVIDER=llm — 사진 표는 잘라서 LLM)
 
 산출물(<out>/): docs/(생성 문서·png), results.jsonl(건별·즉시 기록), matrix_l1.md·matrix_l2.md(축 × 경로),
 mismatches.md(틀린 칸 기대↔실제 나란히 + 실제 markdown 행). 변환은 `convert_process.convert_local`(docling 인프로세스 — 워커의 변환
@@ -36,7 +36,7 @@ from eval.table_parsing.score import (
 from eval.table_parsing.specs import BY_ID, PATH_LABEL
 
 PATHS = ('img', 'pdf', 'docx', 'xlsx')
-_ENGINE = 'triton'  # --engine 값(결과 행 자기서술, #296)
+_ENGINE = 'triton'  # --engine 값(결과 행 자기서술)
 
 
 def _score_pair(spec, path, doc, chunks):

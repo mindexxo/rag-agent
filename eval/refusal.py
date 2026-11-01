@@ -4,8 +4,7 @@
 운영은 게이트를 거의 꺼두고(max_dense_distance=inf) LLM 자체 거절에 의존하므로,
 게이트만으로는 부족 — prepare()+generate() 전체를 태워 '최종 거절 여부'를 본다. 프롬프트에 민감하니 즉석 실행(항상 현재 프롬프트 기준).
 
-**측정 대상이 #61에서 넓어졌다 — 이전 결과와 비교할 때 유의.** 판정이 거절 문구
-부분일치에서 "실인용 0건"으로 바뀌면서, 위 두 경로 말고 **제3의 경우까지 여기 들어온다**:
+판정 기준은 거절 문구가 아니라 "실인용 0건"이라, 위 두 경로 말고 **제3의 경우까지 여기 들어온다**:
 "근거를 못 댔는데 거절 문구도 없이 답한" 답변(부재를 단정하거나 근거 없이 확신하는 유형).
 그래서 이 축의 이름은 '거절'이지만 실제로 재는 것은 '근거를 못 댄 비율'이다 —
 SHOULD_REFUSE/SHOULD_ANSWER·_refused의 '거절'도 그 뜻으로 읽을 것.
@@ -18,10 +17,10 @@ SHOULD_REFUSE/SHOULD_ANSWER·_refused의 '거절'도 그 뜻으로 읽을 것.
 
 지점3은 거절/답변 판정만 채점한다. 답변 내용 품질은 보지 않는다.
 
-**부재단정 축이 따라 붙는다 (#76).** 위 판정이 본문을 안 보기 때문에 "제공되지 않습니다
+**부재단정 축이 따라 붙는다.** 위 판정이 본문을 안 보기 때문에 "제공되지 않습니다
 ««[]»»"가 정상 거절과 같은 점수를 받는다 — no_evidence에서 둘 다 인용 0건이라 "거절 성공"이다.
 그 사각지대를 메우려고, **인용 0건인 답변만** LLM judge에 넘겨 부재를 사실로 단정했는지
-따로 센다. 판정 정의·기각한 대안(정규식·RAGAS faithfulness)·self-judge 편향의 한계는
+따로 센다. 판정 정의·self-judge 편향의 한계는
 eval/absence_judge.py 모듈 docstring이 정의점이다 — 여기서는 "인용 0건이면 판정을
 호출한다"만 안다. absence_rate는 accuracy와 독립이며 **회귀 감시 전용**이다.
 
@@ -50,10 +49,9 @@ SHOULD_ANSWER = {"trap"}  # 답변이 정답 (근거 있는 유도)
 
 
 def _citations(prepared: PreparedRag, answer: str) -> list:
-    """답변의 실인용 — 운영 두 경로와 같은 방식으로 구한다 (#61).
+    """답변의 실인용 — 운영 두 경로와 같은 방식으로 구한다.
 
-    옛 판정은 `is_refusal(answer)`(거절 문구 부분일치) 한 줄이었다. 폐기 사유·실측은
-    rag/turn/citation_tail.py 모듈 docstring(단일 정의점) — 여기서는 그 규약을 적용만 한다.
+    규약의 정의점은 rag/turn/citation_tail.py 모듈 docstring — 여기서는 그 규약을 적용만 한다.
 
     경로가 둘인 이유는 운영과 같다. 즉시 경로(캐시 히트·근거없음·차단)와 OTHER는 출처
     꼬리 메커니즘 자체가 없어 prepared.sources가 그대로 답이다 —
@@ -67,8 +65,8 @@ def _citations(prepared: PreparedRag, answer: str) -> list:
     splitter = TailSplitter()
     splitter.feed(answer)
     splitter.finish()
-    # 후보 파생은 PreparedRag.citation_candidates 한 곳 (#65) — 운영 두 호출부와 같은 통로다.
-    # 여기서 직접 조립하면 이 PR이 없애려던 '우연히 같은' 상태가 eval에만 남는다.
+    # 후보 파생은 PreparedRag.citation_candidates 한 곳 — 운영 두 호출부와 같은 통로다.
+    # 여기서 직접 조립하면 운영과 '우연히 같은' 상태가 되어 어긋나도 모른다.
     return resolve_citations(splitter.tail_raw, *prepared.citation_candidates)
 
 
@@ -86,9 +84,9 @@ async def _refused(tenant: str, query: str) -> tuple[bool, str, str]:
     """
     async with AsyncSessionLocal() as session:
         svc = RagService(tenant_id=tenant, session=session)
-        # 대화를 **미리** 만들고 그 id를 넘긴다 (#72). prepare()에 맡기면 그 안에서 실패했을 때
-        # (판단 실패·검색 오류 — 폴백을 걷어낸 뒤로 잦다) 방금 커밋된 대화의 id를 알 길이 없어
-        # 정리가 통째로 새고, 이 헬퍼가 막으려던 고아 누적이 그대로 재현된다.
+        # 대화를 **미리** 만들고 그 id를 넘긴다. prepare()에 맡기면 그 안에서 실패했을 때
+        # (판단 실패·검색 오류) 방금 커밋된 대화의 id를 알 길이 없어 정리가 통째로 새고
+        # 고아 대화가 쌓인다.
         conversation = await ensure_conversation(session, tenant, None)
         await session.commit()
         try:
@@ -102,8 +100,7 @@ async def _refused(tenant: str, query: str) -> tuple[bool, str, str]:
 async def compute() -> dict:
     """거절 정확성 채점 → 요약. 반환: {accuracy, n, false_answer, false_refusal, by_type, misses}."""
     # load_gold()를 쓴다 — GOLD 직독이면 eval/gold_private/(사내 실문서)가 통째로 빠진다.
-    # #196과 같은 누락이고, 거절축은 no_evidence 10 + trap 8 = 18건이 영향받는다.
-    # 거절 정확도는 모델 교체 판단의 실제 축이라(#114) 모의 코퍼스만으로 재면 안 된다.
+    # 거절 정확도는 모델 교체 판단의 실제 축이라 모의 코퍼스만으로 재면 안 된다.
     gold = load_gold()
     target = [g for g in gold if g["type"] in (SHOULD_REFUSE | SHOULD_ANSWER)]
     sem = asyncio.Semaphore(CONCURRENCY)
@@ -125,13 +122,13 @@ async def compute() -> dict:
                     # 판정 불가를 refusal_ok로 추측하지 않는다 — 지표가 실패를 숨긴다.
                     absence_error = f"{type(exc).__name__}: {exc}"
         should_refuse = g["type"] in SHOULD_REFUSE
-        # 오답단정 (#95) — trap이 "답했는가"만 재던 공백을 메운다: 낚인 값(must_not_contain)이
+        # 오답단정 — trap이 "답했는가"만 재던 공백을 메운다: 낚인 값(must_not_contain)이
         # 답변에 실렸는지. route 게이트는 부재단정과 같은 이유(OTHER는 규칙 3 밖) —
         # 그래서 라우팅 정확도가 이 지표의 분모를 조용히 줄일 수 있다(의도된 설계).
         misinfo_candidates = (
             must_not_contain_violations(answer, g.get("must_not_contain", [])) if route == "knowledge" else None
         )
-        # 2단계(#214): 문자열 후보가 있을 때만 LLM이 '단정'인지 '부정·정정'인지 가른다 — 실측 오탐 3/4.
+        # 2단계: 문자열 후보가 있을 때만 LLM이 '단정'인지 '부정·정정'인지 가른다 — 문자열 일치만으론 오탐이 많다.
         # 같은 세마포어 안에서 돈다(LLM 동시 상한). 판정 실패는 위반 유지(fail-closed, misinfo_judge docstring).
         misinfo, misinfo_audit = misinfo_candidates, []
         if misinfo_candidates:
@@ -166,18 +163,18 @@ async def compute() -> dict:
     false_answer = sum(1 for r in ne if not r["refused"])  # 거절해야 하는데 답함
     false_refusal = sum(1 for r in tr if r["refused"])  # 답해야 하는데 거절함
 
-    # 부재단정 (#76) — 인용 0건 답변 중 부재를 사실로 단정한 비율.
+    # 부재단정 — 인용 0건 답변 중 부재를 사실로 단정한 비율.
     # 이 축의 accuracy와 독립이다: 부재단정은 no_evidence에서 "거절 성공"으로 집계되므로
     # accuracy를 아무리 봐도 안 보인다. 그 사각지대가 이 지표의 존재 이유다.
     judged = [r for r in rows if r["absence"] is not None]
     errors = sum(1 for r in rows if r["absence_error"] is not None)
     assertions = [r for r in judged if r["absence"]]
 
-    # 흔들림 관측 (#76 리뷰) — 판정이 항목당 1콜이라 비결정성이 조용히 지나간다.
+    # 흔들림 관측 — 판정이 항목당 1콜이라 비결정성이 조용히 지나간다.
     # eval/other_eval.py는 전 케이스를 RUNS=3으로 돌려 flaky를 지표로 내는데, 여기서 그걸
     # 그대로 하면 judge 호출이 3배가 된다. 대신 **부재단정으로 판정된 행만** 1회 재판정한다 —
     # 이 축에서 값을 움직이는 것은 분자뿐이고, 그 행이 재판정에서 뒤집히면 그 회차의 수치를
-    # 믿을 수 없다는 뜻이다. 실측 근거: 같은 스위트에서 1건 → 0건으로 뒤집힌 회차가 있었다.
+    # 믿을 수 없다는 뜻이다.
     flaky = []
     for r in assertions:
         try:
@@ -206,7 +203,7 @@ async def compute() -> dict:
         ]
     )
 
-    # 오답단정 (#95) — misinfo가 None이 아닌 행(=must_not_contain 보유 + knowledge 라우팅)만 분모.
+    # 오답단정 — misinfo가 None이 아닌 행(=must_not_contain 보유 + knowledge 라우팅)만 분모.
     misinfo_target = [r for r in rows if r["misinfo"] is not None]
     misinfo_violated = [r for r in misinfo_target if r["misinfo"]]
 
@@ -214,13 +211,13 @@ async def compute() -> dict:
         "accuracy": sum(r["ok"] for r in rows) / len(rows) if rows else 0.0,
         "n": len(rows),
         # 채점 대상 구성 — run_all이 version_key로 써서 구성이 바뀐 첫 실행을 '비교 불가'로
-        # 처리한다(retrieval의 gold_composition·#198의 RAGAS n과 같은 메커니즘). 실문서 편입으로
-        # no_evidence 58→68·trap 50→58이 되면서 분모가 바뀐 것이 회귀로 오판되던 것을 막는다.
+        # 처리한다(retrieval의 gold_composition·RAGAS n과 같은 메커니즘). 분모가 바뀐 것을
+        # 회귀로 오판하지 않게 한다.
         "gold_composition": f"ne{len(ne)}/trap{len(tr)}",
         "misinfo_rate": len(misinfo_violated) / len(misinfo_target) if misinfo_target else None,
         "misinfo_n": len(misinfo_target),
         "misinfo_violated_n": len(misinfo_violated),
-        "misinfo_candidate_n": sum(1 for r in misinfo_target if r["misinfo_candidates"]),  # 1단계 후보 행 수(#214)
+        "misinfo_candidate_n": sum(1 for r in misinfo_target if r["misinfo_candidates"]),  # 1단계 후보 행 수
         "misinfo_judge_version": MISINFO_JUDGE_VERSION,
         "misinfo_misses": [{"id": r["id"], "query": r["query"], "violated": r["misinfo"]} for r in misinfo_violated],
         "false_answer": false_answer,

@@ -1,7 +1,7 @@
-"""롱컨텍스트 통짜 비교군 (#96 (b)) — 파이프라인 없이 "문서 전부 + 질문"을 Claude에.
+"""롱컨텍스트 통짜 비교군 — 파이프라인 없이 "문서 전부 + 질문"을 Claude에.
 
 무엇을 재나: "검색이니 리랭크니 없이 프론티어 모델에 코퍼스를 통째로 넣으면 되지 않나?"
-라는 질문에 대한 실측 답. (a) 생성기 교체(GENERATOR=claude python -m eval.generation)가
+라는 질문에 측정으로 답한다. 생성기 교체(GENERATOR=claude python -m eval.generation)가
 파이프라인을 고정하고 모델 격차를 재는 것과 반대로, 여기는 **파이프라인 전체를 제거**해
 파이프라인의 가치를 잰다. 같은 골드셋·같은 채점(EPCov)이라 두 결과는 나란히 놓을 수 있다.
 
@@ -67,7 +67,7 @@ async def load_corpus(session, tenant: str) -> str:
 
     문서: ready·is_active·is_searchable (운영 검색 필터와 동일 조건) 청크를
     chunk_index 순으로 이어붙임. FAQ: faq_id 청크 전부를 'FAQ' 블록으로
-    (채점기 기대 'FAQ'와 짝 — eval.generation.citation_accuracy v2 참조. 운영 인용은 #278부터 항목별
+    (채점기 기대 'FAQ'와 짝 — eval.generation.citation_accuracy v2 참조. 운영 인용은 항목별
     'FAQ: 질문'이지만 이 축은 문서 단위 비교라 FAQ를 한 블록으로 둔 채다).
     """
     doc_rows = (
@@ -79,7 +79,7 @@ async def load_corpus(session, tenant: str) -> str:
     ).all()
     doc_ids = {d_id: fn for d_id, fn in doc_rows}
 
-    # 청크는 색인에만 있다(#139) — 테넌트의 searchable 청크를 전부 읽어 문서별로 모은다.
+    # 청크는 색인에만 있다 — 테넌트의 searchable 청크를 전부 읽어 문서별로 모은다.
     # chunk_id = document_id<<20 | chunk_index(FAQ는 음수)라 id 오름차순이 곧 문서·청크 순이다.
     from config import settings
     from rag.search import os_client, os_search
@@ -211,7 +211,7 @@ async def main():
         r["scores"]["expected_points_coverage"] = expected_points_coverage(
             r["answer"], by_id[r["id"]].get("expected_points", [])
         )
-        # 규칙만으로 채점한다(#221 2단계 심판 없음) — 생성 평가의 심판 반영 EPCov와 섞이지 않게 자기서술
+        # 규칙만으로 채점한다(2단계 심판 없음) — 생성 평가의 심판 반영 EPCov와 섞이지 않게 자기서술
         r["scores"]["expected_points_coverage_rule"] = r["scores"]["expected_points_coverage"]
         r["epcov_judge"] = "rule-only"
 

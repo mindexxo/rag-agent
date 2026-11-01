@@ -1,8 +1,8 @@
-"""합성 스캔의 청킹 결과를 원본 디지털 PDF와 대조한다(#224) — 제목·헤딩 경로·문장·띄어쓰기.
+"""합성 스캔의 청킹 결과를 원본 디지털 PDF와 대조한다 — 제목·헤딩 경로·문장·띄어쓰기.
 
-정답은 같은 원본 디지털 PDF를 같은 청킹으로 돌린 결과다(글자 층을 그대로 읽으므로 원문과 같다 — #231 문장 포함률 PDF 0.98~).
+정답은 같은 원본 디지털 PDF를 같은 청킹으로 돌린 결과다(글자 층을 그대로 읽으므로 원문과 거의 같다).
 변환은 이 프로세스에서 돌린다(자식 프로세스를 거치면 OCR 설정을 실험으로 바꿀 수 없다 — eval.scan_quality.ocr_variant).
-쪽 전체 OCR 모드(OcrMode.FULL_PAGE)는 1차 실측에서 기각했다 — 제목은 고치나 본문 띄어쓰기 유지 0.64→0.16·글자 0.993→0.782(100dpi).
+쪽 전체 OCR 모드(OcrMode.FULL_PAGE)는 쓰지 않는다 — 제목은 고치나 본문 띄어쓰기·글자 정확도가 크게 떨어진다.
 
 지표(문서마다):
   title_ok        첫 헤딩(heading_path[0], 문서 제목)이 원본과 같은가 — 공백 무시 글자 유사도 0.95 이상
@@ -12,8 +12,8 @@
   char_acc        공백 뺀 전체 글자 일치율(difflib ratio)
   space_kept      원본 띄어쓰기 중 스캔에 남은 비율(공백 뺀 글자 정렬 위에서 셈)
 
-사용: python -m eval.scan_quality.compare [remote|local_min736|local_max|local_min400|vlm|llm ...]  (ocr_variant.VARIANTS + vlm=#296 쪽 전체 VLM
-      + llm=#299 운영 상용 OCR 경로 OCR_PROVIDER=llm)   → eval/results/scan224/compare.json · compare.html
+사용: python -m eval.scan_quality.compare [remote|local_min736|local_max|local_min400|vlm|llm ...]  (ocr_variant.VARIANTS + vlm=쪽 전체 VLM
+      + llm=운영 상용 OCR 경로 OCR_PROVIDER=llm)   → eval/results/scan224/compare.json · compare.html
 """
 
 import difflib
@@ -37,10 +37,10 @@ def _chunk(path, variant: str):
     from eval import vlm_engine
     from eval.scan_quality.ocr_variant import install
 
-    vlm_engine.uninstall()  # 앞 모드가 vlm이었으면 원복 — 디지털 기준·OCR 변형이 VLM을 타지 않게(#296)
-    settings.ocr_provider = 'llm' if variant == 'llm' else 'triton'  # 운영 상용 OCR 경로(#299) — 다른 모드엔 안 샌다
+    vlm_engine.uninstall()  # 앞 모드가 vlm이었으면 원복 — 디지털 기준·OCR 변형이 VLM을 타지 않게
+    settings.ocr_provider = 'llm' if variant == 'llm' else 'triton'  # 운영 상용 OCR 경로 — 다른 모드엔 안 샌다
     if variant == 'vlm':
-        vlm_engine.install()  # 쪽 전체 VLM(VLM_CAPTION_* 설정의 벤더), #296
+        vlm_engine.install()  # 쪽 전체 VLM(VLM_CAPTION_* 설정의 벤더)
     else:
         install('remote' if variant == 'llm' else variant)  # llm은 OCR 옵션을 안 쓴다 — 변환만 이 프로세스로
     return C.chunk_file(path)
@@ -94,7 +94,7 @@ def measure(digital, scan) -> dict:
     return {
         'title': dh[0] if dh else None,
         'scan_title': sh[0] if sh else None,
-        # 공백 무시 글자 유사도 0.95 이상이면 같은 제목 — 'ㆍ'(한글 자모)를 OCR이 '·'로 읽는 정도는 깨짐이 아니다(harim_13 실측)
+        # 공백 무시 글자 유사도 0.95 이상이면 같은 제목 — 'ㆍ'(한글 자모)를 OCR이 '·'로 읽는 정도는 깨짐이 아니다
         'title_sim': round(difflib.SequenceMatcher(None, _ns(dh[0]), _ns(sh[0])).ratio(), 3) if dh and sh else 0.0,
         'title_ok': bool(dh and sh and difflib.SequenceMatcher(None, _ns(dh[0]), _ns(sh[0])).ratio() >= 0.95),
         'heading_recall': sum(_ns(h) in {_ns(x) for x in sh} for h in dh) / len(dh) if dh else 1.0,

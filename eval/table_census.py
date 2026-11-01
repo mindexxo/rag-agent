@@ -1,8 +1,8 @@
-"""표 전수 조사(#232) — 색인 조각을 테넌트별로 읽어 문서마다 표 조각·큰 표·작은 표·표 행 수를 세고 코퍼스 × 형식으로 묶는다.
+"""표 전수 조사 — 색인 조각을 테넌트별로 읽어 문서마다 표 조각·큰 표·작은 표·표 행 수를 세고 코퍼스 × 형식으로 묶는다.
 
 표 조각 판정은 eval.axis_common.is_table_chunk(큰 표 표식 `is_table` 또는 마크다운 구분선)다. 큰 표는 `table_key`로 세고(묶음이
 여럿이라도 표 하나), 작은 표는 구분선 수로 센다. 행 수는 마크다운 행에서 헤더·구분선을 뺀 것 — 큰 표는 묶음마다 헤더가
-반복되므로(rag.chunking.batch_table_rows) 묶음 단위로 뺀다. 재인제스트 전 구판 색인은 `table_key`가 없어(#257) 큰 표가
+반복되므로(rag.chunking.batch_table_rows) 묶음 단위로 뺀다. 재인제스트 전 구판 색인은 `table_key`가 없어 큰 표가
 문서당 하나로 뭉쳐 보인다 — 그런 수치가 나오면 재색인부터.
 
 용법: python -m eval.table_census [--tenants summers homeplus ...] [--out eval/results/table_census.jsonl]

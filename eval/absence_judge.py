@@ -1,4 +1,4 @@
-"""부재단정 판정 — LLM judge (#76).
+"""부재단정 판정 — LLM judge.
 
 **정의(v1).** 답변이 문서에 근거가 없는 사안을 두고 실제 세계의 사실을 확정적으로
 단정하면 부재단정이다 — "제공되지 않습니다"·"불가합니다"·"지원하지 않습니다"처럼.
@@ -8,24 +8,23 @@
 창작하지 않고 생성 프롬프트와 같은 개념을 쓴다 — 정상형 대조 예시로
 rag.turn.prompt_texts.NO_EVIDENCE_ANSWER를 import해 박는다(문구가 바뀌면 예시가 따라간다).
 
-**왜 필요한가.** #61이 거절 판정을 "실인용 0건"으로 바꿨다(정의점은
+**왜 필요한가.** 거절 판정은 "실인용 0건"이다(정의점은
 rag/turn/citation_tail.py). 그 규약은 본문을 안 보기 때문에 아래 둘을 구별하지 못한다:
 
     해당 내용은 제공된 문서에서 확인할 수 없습니다.   ««[]»»   ← 정상 거절
     정책 범위에 포함되지 않습니다.                    ««[]»»   ← 부재단정
 
-둘 다 인용 0건이라 no_evidence 문항에서 똑같이 "거절 성공"으로 집계된다. #62에서
-프롬프트 축약 후보 8개를 측정하는 동안 이 사각지대가 매번 판단을 흐렸다 — 거절
-정확도가 1.5pp 오른 후보(H13)가 실제로는 부재단정이 2배였다. 그래서 기각 근거를
-전부 사람이 원문을 읽어 만들었다. 이 판정기가 그 수동 판정을 대신한다.
+둘 다 인용 0건이라 no_evidence 문항에서 똑같이 "거절 성공"으로 집계된다 — 거절
+정확도가 올라도 실제로는 부재단정이 늘었을 수 있고, 그걸 가리려면 사람이 원문을
+읽어야 한다. 이 판정기가 그 수동 판정을 대신한다.
 
 **판정 범위는 인용 0건 부분집합뿐이다.** 인용이 있으면 호출하지 않는다 — 그 결정은
 eval/refusal.py의 몫이다. 이 2단 구조가 정규식으로는 원리적으로 못 가르던 케이스를
 구조적으로 해결한다: "개봉 상품은 반품 불가"는 근거를 인용했으면 정상 답변이고
 안 했으면 부재단정인데, 표면 패턴은 둘이 똑같다. 인용 개수가 그걸 가른다.
 
-**정규식을 쓰지 않는 이유.** 이 프로젝트가 이미 실패했다(실측·사유는
-rag/turn/citation_tail.py docstring). #62 측정 중 만든 정규식이 밟은 결함은 아래 FIXTURES가 전수다.
+**정규식을 쓰지 않는 이유.** 표면 패턴으로는 경계를 못 가른다(사유는
+rag/turn/citation_tail.py docstring). 정규식이 틀리는 케이스는 아래 FIXTURES에 모았다.
 
 **RAGAS faithfulness를 쓰지 않는 이유.** 답변을 사실 주장으로 분해한 뒤 각각의
 근거 여부를 재는데, 주장이 추출되지 않으면(statements == []) nan을 반환하고
@@ -47,7 +46,7 @@ X%"라는 절대값 주장에는 쓸 수 없다. eval/ragas_eval.py가 같은 �
 읽는 기준도 같이 흔들린다 — 편향이 일정한 오프셋이라 전후 비교에서 상쇄된다는 가정이
 여기서 깨진다. **규칙 3에 인접한 프롬프트 변경의 결과는 이 수치만으로 판단하지 말고
 외부 judge나 사람 판정으로 교차 확인해야 한다.** 코드로 막을 수 없는 지점이다.
-외부 judge는 설정 공급자를 바꾸면 된다(ABSENCE_JUDGE=vllm + LLM_PROVIDER=openai 등, #290) — 별도 분기는 없다.
+외부 judge는 설정 공급자를 바꾸면 된다(ABSENCE_JUDGE=vllm + LLM_PROVIDER=openai 등) — 별도 분기는 없다.
 
 **버저닝.** JUDGE_PROMPT_VERSION을 판정 결과·감사 로그·요약에 모두 스탬프한다.
 판정 기준이나 프롬프트가 바뀌면 올리고, 이전 버전의 absence_rate와 비교하지 말 것 —
@@ -123,7 +122,7 @@ def _build_messages(query: str, answer: str) -> list[dict]:
 def judge_llm() -> LlmClient:
     """판정용 클라이언트. 기본은 생성과 같은 사내 vLLM(self-judge).
 
-    ABSENCE_JUDGE=claude면 Claude(claude -p 헤드리스)로 교차채점한다(#103) — 자기채점
+    ABSENCE_JUDGE=claude면 Claude(claude -p 헤드리스)로 교차채점한다 — 자기채점
     편향을 다른 모델로 다변화한다. ClaudeCliClient는 acomplete 시그니처가 LlmClient와
     같아(덕 타이핑) 그대로 주입되고, acomplete_validated의 JSON 파싱·실패 폴백이 동일하게
     작동한다(스키마 강제 의도만 무시됨 — JSON은 프롬프트 지시로 유도). 판정자가
@@ -134,7 +133,7 @@ def judge_llm() -> LlmClient:
         from eval.claude_client import ClaudeCliClient
 
         return ClaudeCliClient(model=os.getenv("CLAUDE_MODEL", "sonnet"))
-    if judge != "vllm":  # #290: 외부 judge는 별도 값이 아니라 설정 공급자(LLM_PROVIDER)로 — 값 이름 'vllm'은 호환 유지
+    if judge != "vllm":  # 외부 judge는 별도 값이 아니라 설정 공급자(LLM_PROVIDER)로 — 값 이름 'vllm'은 호환 유지
         raise SystemExit(
             f"ABSENCE_JUDGE={judge} — vllm(설정 공급자)|claude 만 지원. 외부 judge는 LLM_PROVIDER를 바꾼다(#290)"
         )
@@ -150,7 +149,7 @@ async def judge_absence(llm: LlmClient, query: str, answer: str) -> AbsenceJudgm
     return await acomplete_validated(llm, _build_messages(query, answer), AbsenceJudgment)
 
 
-# 판정기 회귀 고정 — #62 측정 중 정규식이 실제로 틀린 케이스 전수.
+# 판정기 회귀 고정 — 정규식 판정이 틀리는 케이스 모음.
 # 근거 있는 부정을 넣지 않는 이유는 모듈 docstring(판정 범위) 참조.
 FIXTURES: list[dict] = [
     # ── 정규식이 놓쳤던 것 (미검출) ──
@@ -247,8 +246,8 @@ def save_audit(rows: list[dict], stamp: str | None = None) -> Path:
     """판정 원문·사유를 감사 로그로 남긴다.
 
     요약 JSON(eval/results/history/summary_*.json)은 헤드라인 지표만 담는 계약이라 여기 안 넣는다.
-    #62에서 refusal.compute()의 misses가 요약에 실리지 않아 매 측정마다 원문을 손으로 다시
-    읽어야 했다 — 그 반복을 없애는 것이 이 파일의 목적이다.
+    refusal.compute()의 misses는 요약에 실리지 않으므로, 측정마다 원문을 손으로 다시
+    읽지 않게 여기 남긴다.
     파일명에 스탬프와 건수를 박는 이유는 eval/ragas_eval.py와 같다 — 고정 이름은 덮어쓴다.
     """
     RESULTS.mkdir(parents=True, exist_ok=True)

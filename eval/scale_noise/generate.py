@@ -1,8 +1,8 @@
-"""#235 노이즈 문서 생성 — 운영 vLLM(14B)에 직접 요청, 이어 돌리기 가능.
+"""규모 노이즈 실험용 문서 생성 — 운영 vLLM(14B)에 직접 요청, 이어 돌리기 가능.
 
 운영 rag/llm 공급자를 쓰지 않는 이유: 온도 0.2·max_tokens 3,000이 고정이라 수백 편이 비슷해지고 긴 규정이 잘린다.
 eval/ragas_eval.py처럼 AsyncOpenAI를 직접 만들어 온도·상한을 넘긴다(thinking off는 동일).
-동시성은 NOISE_CONCURRENCY(기본 12) — worker15 공유 장비, 14B 안전선 동시 24·32 붕괴(#101·#114).
+동시성은 NOISE_CONCURRENCY(기본 12) — worker15 공유 장비, 14B는 동시 24가 안전선이고 32에서 무너진다.
 산출: DOCS/<id>.md + MANIFEST(한 줄 = 문서 하나: id·kind·topic·company·chars·sec). 이미 manifest에 있는 id는 건너뛴다.
 """
 

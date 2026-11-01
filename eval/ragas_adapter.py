@@ -33,7 +33,7 @@ def build_dataset(mode: str = "retrieved", ref_only: bool = False) -> Evaluation
     """저장된 {mode} 생성 결과 → RAGAS EvaluationDataset (기존 호출부 호환 래퍼 — 정의점은 build_samples).
 
     ref_only=True: 검수된 정답문(expected_answer)이 있는 gold만 — reference 필요 지표
-    (context_recall·answer_correctness)용. 파일럿 30문항(2026-08-08) → 551문항(2026-10-10).
+    (context_recall·answer_correctness)용.
     """
     rows = build_samples(mode)
     return EvaluationDataset.from_list([r["sample"] for r in rows if r["has_ref"] or not ref_only])
@@ -42,12 +42,12 @@ def build_dataset(mode: str = "retrieved", ref_only: bool = False) -> Evaluation
 def build_samples(mode: str = "retrieved") -> list[dict]:
     """저장된 {mode} 생성 결과 → [{"id", "has_ref", "sample"}] (생성 결과 파일 순서).
 
-    #216: 한 번 실행에 '기본 3지표는 전체, 정답 대조 2지표는 has_ref 행만'을 계산하려면 행 id와
+    한 번 실행에 '기본 3지표는 전체, 정답 대조 2지표는 has_ref 행만'을 계산하려면 행 id와
     모범답안 보유 여부가 필요하다 — EvaluationDataset은 id를 실을 자리가 없어 여기서 함께 돌려준다.
     """
     # load_gold()라야 사내 실문서 골드(eval/gold_private/)가 들어온다 — 정본만 읽으면
     # 생성 결과에 실문서 행이 있어도 gold_by_id에 없어서 아래 `g is None`으로 통째 스킵된다.
-    # generation.py와 **두 곳 다** 고쳐야 실문서가 RAGAS까지 도달한다 (#196).
+    # generation.py와 **두 곳 다** 고쳐야 실문서가 RAGAS까지 도달한다.
     gold_by_id = {g["id"]: g for g in load_gold()}
     rows = _load_jsonl(RESULT_DIR / f"generation_{mode}.jsonl")
 

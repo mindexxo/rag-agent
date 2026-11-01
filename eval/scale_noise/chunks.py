@@ -1,6 +1,6 @@
-"""#235 노이즈 문서 → 운영과 같은 조각·같은 벡터.
+"""규모 노이즈 문서 → 운영과 같은 조각·같은 벡터.
 
-청킹은 워커와 같은 rag/chunking.chunk_file(.md는 docling MD 백엔드, #267)을 자식 프로세스 풀로 돌리고, 임베딩 입력은 운영 색인과
+청킹은 워커와 같은 rag/chunking.chunk_file(.md는 docling MD 백엔드)을 자식 프로세스 풀로 돌리고, 임베딩 입력은 운영 색인과
 같은 build_index_text('파일명 > 헤딩' 머리말)로 조립해 TEI에 보낸다 — 노이즈 조각의 길이·벡터 분포가 실문서 조각과 같아야
 규모 실험이 된다. 파일명은 '<회사> <주제>.md'(id가 아니라 사람이 읽는 이름 — 머리말이 임베딩에 들어가므로).
 산출: CHUNKS(한 줄 = 조각: doc·filename·chunk_index·text·heading_path·page·meta·dense). 이미 있는 doc은 건너뛴다.

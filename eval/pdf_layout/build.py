@@ -1,4 +1,4 @@
-"""#244 배치 유형별 합성 PDF 렌더 — specs.SPECS를 reportlab로 그린다(정본). 글꼴은 표 축과 같은 CID 한글(HYGothic-Medium).
+"""배치 유형별 합성 PDF 렌더 — specs.SPECS를 reportlab로 그린다(정본). 글꼴은 표 축과 같은 CID 한글(HYGothic-Medium).
 
 다단은 BaseDocTemplate + Frame 여러 개, 단 넘김은 FrameBreak. 그림 옆 글 흐름은 ImageAndFlowables. 가로 쪽은 PageTemplate(pagesize=landscape).
 머리글·바닥글은 onPage 콜백으로 그린다(본문 프레임 밖). 사이드바는 본문 2/3·상자 1/3 프레임.
@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from eval.pdf_layout.specs import SPECS  # noqa: E402
 
-SIZE, LEADING = 11.6, 13.8  # 실문서 규정 실측(#240)
+SIZE, LEADING = 11.6, 13.8  # 실문서 규정 문서의 본문 글자 크기·행간
 
 
 def _styles():

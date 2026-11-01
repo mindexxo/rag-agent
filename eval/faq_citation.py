@@ -1,24 +1,22 @@
-"""FAQ 항목 인용 정확도 축 (#278) — "FAQ 여러 개 중 **맞는 항목**을 인용하나".
+"""FAQ 항목 인용 정확도 축 — "FAQ 여러 개 중 **맞는 항목**을 인용하나".
 
-#278 전에는 FAQ 인용이 'FAQ' 하나로 접혀(rag/turn/citation_labels.sources_from_chunks) 어느 항목을 인용했는지
-어디에도 남지 않았다 — 그래서 골드셋(eval/gold_set_v2.jsonl)에 FAQ 문항이 0건이고 잴 수 있는 것도
-"FAQ를 인용했나"뿐이었다. 이 축은 항목 단위로 잰다: 합성 FAQ 30개(eval/faq_set.jsonl, 주제가 가까운 6묶음×5 —
+골드셋(eval/gold_set_v2.jsonl)에는 FAQ 문항이 없어 "FAQ를 인용했나"까지만 잰다. 이 축은 항목 단위로 잰다: 합성 FAQ 30개(eval/faq_set.jsonl, 주제가 가까운 6묶음×5 —
 옆 항목과 헷갈려야 시험이 된다)를 전용 테넌트에 넣고, 항목당 질문 2개(대표 질문 그대로·구어체 바꿔 쓰기)로
 운영과 같은 배관(검색→리랭크→근거 준비→생성→꼬리 해석)을 태운 뒤 인용된 faq_id가 기대 항목인지 본다.
 
-FAQ 내용은 문서와 **다르게** 만들었다(사용자 결정 7) — 겹치면 모델이 문서를 인용해 버리는데 그건 틀린 게 아니라
+FAQ 내용은 문서와 **다르게** 만들었다 — 겹치면 모델이 문서를 인용해 버리는데 그건 틀린 게 아니라
 채점이 흐려진다. 전용 테넌트(FAQ_EVAL_TENANT)에는 문서가 없다 — 경쟁 상대는 다른 FAQ 항목이다.
 
 지표(행마다 기록, 요약은 평균):
-- faq_cited: 인용 중 FAQ가 하나라도 있나 — #278 전 코드에서도 잴 수 있는 유일한 값(전후 비교용)
-- correct:   기대 faq_id가 인용에 있나 — #278 후 코드에서만 값이 있다(전 코드는 인용 객체에 faq_id가 없어 None)
+- faq_cited: 인용 중 FAQ가 하나라도 있나 — 인용이 'FAQ'로 접히는 옛 코드에서도 잴 수 있는 값(전후 비교용)
+- correct:   기대 faq_id가 인용에 있나 — 인용 객체에 faq_id가 없는 옛 코드에서는 None
 - retrieved / rank: 기대 항목이 근거(prepare_evidence 결과)에 들어왔나, 몇 번째인가 — 생성과 검색 책임을 가른다
-- n_candidates: 인용 후보 수 — #278 전엔 FAQ가 1로 접혀 항상 1, 후엔 근거에 든 항목 수
+- n_candidates: 인용 후보 수 — FAQ가 하나로 접히는 옛 코드는 항상 1, 항목별 인용이면 근거에 든 항목 수
 
 사용:
   python -m eval.faq_citation load              # 세트를 테넌트에 적재(기존 FAQ 삭제 후) + 색인(TEI 필요)
   python -m eval.faq_citation measure --label after   # 생성·채점 → eval/results/faq_citation_<label>.jsonl
-'전' 측정은 #278 전 커밋의 워크트리에 이 파일과 세트를 복사해 같은 명령으로 돌린다(load는 한 번이면 된다 —
+'전' 측정은 항목별 인용 도입 전 커밋의 워크트리에 이 파일과 세트를 복사해 같은 명령으로 돌린다(load는 한 번이면 된다 —
 청크 텍스트 조립 규약 rag/search/faq_indexing.build_faq_chunk_text가 같다). 결과를 인용할 때는 커밋을 함께 적는다(AGENTS.md).
 """
 
@@ -102,7 +100,7 @@ async def measure(session, llm: LlmClient, label: str) -> list[dict]:
         expected = by_question[r["question"]]
         cited = _cited(answer, chunks)
         cited_faq_ids = [getattr(c, "faq_id", None) for c in cited]
-        per_item = any(getattr(c, "faq_id", None) is not None for c in sources_from_chunks(chunks))  # #278 후 코드인가
+        per_item = any(getattr(c, "faq_id", None) is not None for c in sources_from_chunks(chunks))  # 항목별 인용인가
         ranks = [i + 1 for i, c in enumerate(chunks) if c.faq_id == expected]
         out.append(
             {

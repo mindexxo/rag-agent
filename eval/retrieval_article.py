@@ -1,23 +1,23 @@
-"""조 번호 질문 검색축 (#238) — "취업규칙 제48조 알려줘"에서 그 조가 오는가, 옆 조항·다른 규정이 섞이는가.
+"""조 번호 질문 검색축 — "취업규칙 제48조 알려줘"에서 그 조가 오는가, 옆 조항·다른 규정이 섞이는가.
 
-다른 팀 세미나 지적("유사도 검색으로 조 번호를 찾으면 옆 조항이 섞인다")의 실측용. 검색 코드는 건드리지 않는다
+"유사도 검색으로 조 번호를 찾으면 옆 조항이 섞인다"는 우려를 잰다. 검색 코드는 건드리지 않는다
 — 운영 경로(`retrieve_candidates` → `prepare_evidence`)를 그대로 태워 잰다.
 
-질문셋 파일이 없다 — 실행할 때마다 색인에서 만든다(#238 결정 4). `eval/gold_private`에 두면
+질문셋 파일이 없다 — 실행할 때마다 색인에서 만든다. `eval/gold_private`에 두면
 `eval.generation.load_gold`가 다른 축에 병합해 버리고, 재색인하면 고정 정답이 낡는다.
 
-- 정답: 그 문서에서 색인 사전(`identifiers` — 제목 경로 + 묶음 헤딩, rag/identifiers)에 그 조가 있는 조각 전부(결정 3·20).
+- 정답: 그 문서에서 색인 사전(`identifiers` — 제목 경로 + 묶음 헤딩, rag/identifiers)에 그 조가 있는 조각 전부.
   하나라도 걸리면 적중. 본문 속 "제48조에 따라" 같은 참조는 사전에 없어 걸리지 않는다. 조가 여럿 든 조각은 "묶음"으로 따로 센다.
-  **정답 정의와 식별자 채널이 같은 함수를 쓰므로 이 축은 자기검증 성격이다** — 독립 검증은 실제 채팅 질문(이슈 #238 코멘트의 23건)으로 한다.
-- 질문: 조 하나에 하나, 문체 ①정직 ②러프 ③채팅체(오타)를 번갈아(결정 8). 오타는 문서명에만 — 조 번호가
+  **정답 정의와 식별자 채널이 같은 함수를 쓰므로 이 축은 자기검증 성격이다** — 독립 검증은 실제 채팅 질문으로 한다.
+- 질문: 조 하나에 하나, 문체 ①정직 ②러프 ③채팅체(오타)를 번갈아. 오타는 문서명에만 — 조 번호가
   바뀌면 정답이 바뀐다. 시드 고정이라 매번 같은 질문이 나온다.
-- 문서명 없는 "제N조" 질문은 원리적으로 모호해 검색 점수에서 뺀다(결정 2). `--answers`가 여러 문서에 겹치는
+- 문서명 없는 "제N조" 질문은 원리적으로 모호해 검색 점수에서 뺀다. `--answers`가 여러 문서에 겹치는
   번호 10개로 운영과 같은 검색→생성 답을 받아 파일로 떨군다 — 판정(단정했나/되묻거나 나눠 보였나)은 사람이 한다.
   `--answers`는 근거 상위 5개에 정답이 없는 문항의 실제 답변도 떨군다 — 검색 섞임이 답변 섞임으로 이어지는지가 진짜 위험이다.
 - 합격 기준은 **정답이 근거 상위 5개(생성 모델이 받는 것)에 들었나**(`in_evidence`)다. Hit@1은 참고로만 남긴다
-  — 1위가 아니어도 5개 안이면 생성이 골라 답했다(화면 재현 3건, 2026-10-15).
+  — 1위가 아니어도 5개 안이면 생성이 골라 답한다.
 
-테넌트: inticube(사내 실문서) + article_test(공개 법령 DOCX — 가지 조문·DOCX 보강용, 결정 7).
+테넌트: inticube(사내 실문서) + article_test(공개 법령 DOCX — 가지 조문·DOCX 보강용).
 필요: OpenSearch + TEI(임베딩·리랭커). `--answers`는 vLLM도.
 
 사용: python -m eval.retrieval_article            # 검색 채점
@@ -34,7 +34,7 @@ from datetime import datetime
 from pathlib import Path
 
 from config import settings
-from eval.axis_common import chunk_head, commit, load_chunks  # 색인 읽기·지문 — 키워드 축(#248)과 공용
+from eval.axis_common import chunk_head, commit, load_chunks  # 색인 읽기·지문 — 키워드 축과 공용
 from eval.retrieval import score_one
 from rag.identifiers import chunk_identifiers
 from rag.search.os_client import close_client
@@ -47,7 +47,7 @@ TOP_K = 5  # LLM이 받는 근거 수 — eval.generation.TOP_K와 같다
 CONCURRENCY = 6  # TEI 공유 장비 — retrieval_mt와 같은 안전선
 BARE_N = 10
 
-# 파일명 → 상담원이 부를 이름 (결정 5). 회사명은 상담원이 붙이지 않는다.
+# 파일명 → 상담원이 부를 이름. 회사명은 상담원이 붙이지 않는다.
 _COMPANY_WORDS = ("주식회사", "(주)", "한솔인티큐브", "인티큐브")
 _NAME_DROP = (
     re.compile(r"\[[^\]]*\]"),  # [인사 _ 규정] · [인티큐브]
@@ -91,7 +91,7 @@ def _article_num(key: str) -> tuple[int, int]:
     return int(n[0]), int(n[1]) if len(n) > 1 else 0
 
 
-# ----- 질문 생성 (결정 8) -------------------------------------------------
+# ----- 질문 생성 -------------------------------------------------
 
 _CHAT_ENDINGS = ("머임", "어케돼요", "내용좀요", "뭐라고 나와있음?", "알려줘용", "확인좀")
 _TYPO_TAILS = (0, 1, 4, 21)  # 받침 없음·ㄱ·ㄴ·ㅇ — 채팅 오타에서 흔한 받침 실수
@@ -239,7 +239,7 @@ def write_failures(path: Path, rows: list[dict], text_of: dict) -> None:
 
 
 def write_gold_sample(path: Path, items: list[dict], text_of: dict, n: int = 20) -> None:
-    """정답 표시가 맞는지 사람이 원문과 대조할 표본 (결정 3)."""
+    """정답 표시가 맞는지 사람이 원문과 대조할 표본."""
     rng = random.Random(SEED)
     lines = ["# 정답 조각 표본 — 원문의 그 조가 맞는지 대조", ""]
     for it in rng.sample(items, min(n, len(items))):
@@ -249,7 +249,7 @@ def write_gold_sample(path: Path, items: list[dict], text_of: dict, n: int = 20)
     path.write_text("\n".join(lines))
 
 
-# ----- 문서명 없는 질문 (결정 2·9) -------------------------------------------
+# ----- 문서명 없는 질문 -------------------------------------------
 
 _BARE_FORMS = ("제{key} 내용 알려줘", "{key} 뭐야", "제{key} 몇이야")
 

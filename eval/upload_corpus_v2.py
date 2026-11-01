@@ -1,7 +1,7 @@
-"""corpus_v2 업로드·인덱싱 셋업 (C-2 E2E) — 실 TEI 임베딩 사용 (사내망 필요).
+"""corpus_v2 업로드·인덱싱 셋업 — 실 TEI 임베딩 사용 (사내망 필요).
 
 테넌트별 디렉터리의 문서를 실제 업로드 API(ASGI 직call)로 넣고, 인덱싱 잡을 직접 실행한다.
-*.rev2.* 는 버저닝 테스트용이라 제외. 재실행 시 같은 filename이면 새 version이 쌓인다 (dedupe 제거, 2026-08-05).
+*.rev2.* 는 버저닝 테스트용이라 제외. 재실행 시 같은 filename이면 새 version이 쌓인다 (dedupe 없음).
 
 사용:
   python3 -m eval.upload_corpus_v2            # 업로드 + 인덱싱 + 카나리아 검증
@@ -54,7 +54,7 @@ async def upload_all() -> None:
                     continue
                 body = res.json()
                 if body['status'] == 'pending':
-                    # 이 문서의 대기열 행만 처리 (#139 outbox) — 공유 DB의 남의 행은 건드리지 않는다
+                    # 이 문서의 outbox 대기열 행만 처리 — 공유 DB의 남의 행은 건드리지 않는다
                     async with AsyncSessionLocal() as s:
                         ids = await outbox.pending_row_ids(s, document_id=body['document_id'])
                     await outbox.drain_once(row_ids=ids)
@@ -94,7 +94,7 @@ async def verify() -> bool:
                 await os_client.client().count(
                     index=settings.opensearch_index, body={"query": {"term": {"tenant_id": tenant}}}
                 )
-            )["count"]  # 청크는 색인에만 (#139)
+            )["count"]  # 청크는 색인에만 있다
             print(f'{tenant}: ready {n_docs}문서 / {n_chunks}청크')
 
         print('\n── 격리 카나리아 (실 임베딩 검색) ──')

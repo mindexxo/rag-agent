@@ -5,7 +5,7 @@ generate 스팬은 스트리밍 루프 전체를 감싸서 첫 delta 시각이 �
 그래서 이 축만은 스팬 추출(eval/perf_report.py)이 아니라 클라이언트에서 직접 잰다.
 
 측정 설계:
-- 문항은 골드셋에서 타입 균등 표본(N=30 기본) — 재현 가능(무작위 없음, _smoke_sample).
+- 문항은 골드셋에서 타입 균등 표본(N=30 기본) — 재현 가능(무작위 없음, smoke_sample).
 - 각 문항을 **새 대화로 2회 연속** 질의: 1회차 = 콜드(전체 파이프라인) TTFT/완료,
   2회차 = 같은 질문 재질의 → 답변 캐시 히트 경로의 응답 시간. 단 1회차가 근거없음
   거절이면 캐시 미적재라 2회차도 콜드다 — done의 citations 유무로 구분해 따로 센다.
@@ -24,7 +24,7 @@ from pathlib import Path
 
 import httpx
 
-from eval.generation import GEN_TYPES, GOLD, _smoke_sample, row_tenant
+from eval.generation import GEN_TYPES, GOLD, row_tenant, smoke_sample
 
 RESULT_DIR = Path("eval/results")
 OUT = RESULT_DIR / "perf_probe.jsonl"
@@ -93,7 +93,7 @@ async def main() -> None:
     args = ap.parse_args()
 
     gold = [json.loads(line) for line in GOLD.read_text().splitlines() if line.strip()]
-    sample = _smoke_sample([g for g in gold if g["type"] in GEN_TYPES], args.n)
+    sample = smoke_sample([g for g in gold if g["type"] in GEN_TYPES], args.n)
 
     rows = []
     async with httpx.AsyncClient(timeout=120) as client:

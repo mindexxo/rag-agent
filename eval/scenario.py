@@ -29,9 +29,9 @@ import time
 from pathlib import Path
 
 from database import AsyncSessionLocal
-from eval._turn_cleanup import discard_turn
-from eval.generation import _citation_match, _contains_point
-from eval.refusal import _citations
+from eval.generation import citation_match, contains_point
+from eval.refusal import answer_citations
+from eval.turn_cleanup import discard_turn
 from rag.models import Message
 from rag.turn.conversation import ensure_conversation
 from rag.turn.prepared import PreparedRag
@@ -104,7 +104,7 @@ async def _run_turn(tenant_id: str, conversation_id: int, turn: dict) -> dict:
                 turn["say"], conversation_id=conversation_id, attachments=_to_attachments(turn.get("attach"))
             )
             answer = "".join([tok async for tok in svc.generate(prepared)])
-            citations = _citations(prepared, answer)
+            citations = answer_citations(prepared, answer)
             # terminal_status 사용 — 인젝션 턴은 실시간 blocked라 DB에도 blocked로 저장돼야
             # 다음 턴의 이력 격리가 성립한다. DONE 하드코딩 금지.
             await svc.finalize(
@@ -143,17 +143,17 @@ def _check(turn: dict, obs: dict) -> list[str]:
     if want := turn.get("expect_docs"):
         cores = [_EXT_RE.sub("", c) for c in obs["citations"]]
         groups = [[d] if isinstance(d, str) else d for d in want]
-        missing = [g for g in groups if not any(_citation_match(c, _EXT_RE.sub("", s)) for s in g for c in cores)]
+        missing = [g for g in groups if not any(citation_match(c, _EXT_RE.sub("", s)) for s in g for c in cores)]
         if missing:
             fails.append(f"인용 누락: {missing} (실제 {obs['citations']})")
-    # _contains_point 재사용 — 공백만 지우는 substring은 "5만원"이 "15만원"에 오탐된다
+    # contains_point 재사용 — 공백만 지우는 substring은 "5만원"이 "15만원"에 오탐된다
     # 숫자 경계+콤마 정규화를 그대로 가져와 수치 판정을 정확히 한다.
     norm_answer = obs["answer"].replace(" ", "")
     for s in turn.get("expect_contains", []):
-        if not _contains_point(norm_answer, s.replace(" ", "")):
+        if not contains_point(norm_answer, s.replace(" ", "")):
             fails.append(f"문구 누락: {s!r}")
     for s in turn.get("expect_not_contains", []):
-        if _contains_point(norm_answer, s.replace(" ", "")):
+        if contains_point(norm_answer, s.replace(" ", "")):
             fails.append(f"금지 문구 존재: {s!r}")
     for fn in turn.get("expect_not_attached", []):  # 차단 첨부 격리 코드 레벨 검증
         if any(fn in af for af in obs.get("attachment_files", [])):

@@ -20,8 +20,8 @@ from pathlib import Path
 
 from config import settings
 from database import AsyncSessionLocal
-from eval._gold_history import messages_from_conversation
 from eval.generation import load_gold, row_tenant
+from eval.gold_history import messages_from_conversation
 from eval.retrieval import resolve_gold, score_one
 from eval.retrieval_v2 import METRICS
 from rag.llm import create_aux_llm

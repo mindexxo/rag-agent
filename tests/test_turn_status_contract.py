@@ -28,7 +28,7 @@ class TestStrEnumCompat:
 
     def test_다섯_값이_전부다(self):
         """새 상태를 추가하면 이 테스트가 깨진다 — 그때 확인할 곳:
-        파생 집합(turn_state) · eval/_gold_history.py 계약 · FE의 status 판별 로직."""
+        파생 집합(turn_state) · eval/gold_history.py 계약 · FE의 status 판별 로직."""
         assert {s.value for s in TurnStatus} == {'generating', 'done', 'cancelled', 'failed', 'blocked'}
 
 

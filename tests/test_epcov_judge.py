@@ -60,7 +60,7 @@ class TestEpcovScores:
         # vLLM 판정자가 '9,600원 기대 / 9,000원 답'을 담김으로 본 오판(#221 실측) — 게이트가 판정 전에 막는다
         judge = _FakeJudge({"적립금은 9,600원": "covered"})
         s = _run(
-            G._epcov_scores(
+            G.epcov_scores(
                 judge, asyncio.Semaphore(1), "기본 적립율 3%라 9,000원이 적립됩니다.", ["적립금은 9,600원"], [False]
             )
         )
@@ -72,7 +72,7 @@ class TestEpcovScores:
         # (리뷰: 두 번째 라벨이 없어 판정 '실패'로도 같은 0.5가 나와 우연히 통과하던 것을 고침)
         judge = _FakeJudge({"데님 이염은 보상 대상이 아닙니다": "covered", "개별 심사 가능": "not_covered"})
         s = _run(
-            G._epcov_scores(
+            G.epcov_scores(
                 judge,
                 asyncio.Semaphore(1),
                 "따라서 이염은 보상 대상이 아닙니다.",
@@ -88,18 +88,18 @@ class TestEpcovScores:
     def test_판정_실패_수를_행에_남긴다(self):
         # 한도·로그인 만료로 전부 실패하면 '심판 반영'처럼 보이는 규칙 결과가 된다 — 실패는 보여야 한다(리뷰)
         judge = _FakeJudge({}, fail={"p1", "p2"})
-        s = _run(G._epcov_scores(judge, asyncio.Semaphore(2), "답", ["p1", "p2"], [False, False]))
+        s = _run(G.epcov_scores(judge, asyncio.Semaphore(2), "답", ["p1", "p2"], [False, False]))
         assert s["expected_points_judge_errors"] == 2
         assert s["expected_points_coverage"] == s["expected_points_coverage_rule"] == 0.0
 
     def test_판정자가_없으면_규칙_값_그대로(self):
         # run_mode(epcov_judging=False) — 생성 일관성 축이 쓰는 경로
-        s = _run(G._epcov_scores(None, asyncio.Semaphore(1), "답", ["a", "b"], [True, False]))
+        s = _run(G.epcov_scores(None, asyncio.Semaphore(1), "답", ["a", "b"], [True, False]))
         assert s["expected_points_coverage"] == s["expected_points_coverage_rule"] == 0.5
         assert s["expected_points_audit"] == []
 
     def test_포인트가_없으면_None(self):
-        s = _run(G._epcov_scores(_FakeJudge({}), asyncio.Semaphore(1), "답", [], []))
+        s = _run(G.epcov_scores(_FakeJudge({}), asyncio.Semaphore(1), "답", [], []))
         assert s["expected_points_coverage"] is None and s["expected_points_coverage_rule"] is None
 
 

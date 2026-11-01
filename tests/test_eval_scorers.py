@@ -7,7 +7,7 @@
 import pytest
 
 import eval.generation as gen
-from eval.generation import _citation_match, citation_accuracy, expected_points_coverage
+from eval.generation import citation_accuracy, citation_match, expected_points_coverage
 from rag.search.retrieval_types import RetrievedChunk
 from rag.turn.citation_labels import citation_tail
 
@@ -44,16 +44,16 @@ def _chunks(*filenames: str) -> list[RetrievedChunk]:
 
 class TestCitationMatch:
     def test_정확_일치와_FAQ(self):
-        assert _citation_match('FAQ', 'FAQ')
-        assert _citation_match('배송지연대응', '배송지연대응')
+        assert citation_match('FAQ', 'FAQ')
+        assert citation_match('배송지연대응', '배송지연대응')
 
     def test_프리픽스형_파일명(self):
         # gold 기대명과 DB 파일명의 prefix 차이 흡수 (kms_03_ 등)
-        assert _citation_match('배송지연대응', 'kms_03_배송지연대응')
+        assert citation_match('배송지연대응', 'kms_03_배송지연대응')
 
     def test_짧은_토큰_우연_매칭_거부(self):
-        assert not _citation_match('배송', 'kms_03_배송지연대응')  # 2자 포함 — 오탐 방지
-        assert not _citation_match('첨부: 영수증', '배송지연대응')
+        assert not citation_match('배송', 'kms_03_배송지연대응')  # 2자 포함 — 오탐 방지
+        assert not citation_match('첨부: 영수증', '배송지연대응')
 
 
 class TestCitationAccuracy:
@@ -116,7 +116,7 @@ def fake_embed(monkeypatch):
     """
     from rag.search.embeddings import Embedding
 
-    monkeypatch.setattr(gen, '_contains_point', lambda *a: False)
+    monkeypatch.setattr(gen, 'contains_point', lambda *a: False)
     # 벡터 자리에 원문을 실어 보내고, 코사인 자리에서 포함 여부로 답한다.
     monkeypatch.setattr(gen, 'embed_texts_sync', lambda texts: [Embedding(dense=[t]) for t in texts])
     monkeypatch.setattr(gen, '_cosine', lambda p, s: 1.0 if p[0] in s[0] else 0.0)
@@ -239,7 +239,7 @@ class TestExpectedPointsCoverage:
 
 
 class TestMustNotContainViolations:
-    """오정보 채점 (#95) — 금지값이 답변에 섞였는지. 매칭 정의점은 _contains_point 재사용."""
+    """오정보 채점 (#95) — 금지값이 답변에 섞였는지. 매칭 정의점은 contains_point 재사용."""
 
     def test_필드_없으면_None(self):
         # None = 해당 없음 — 위반율 분모에서 제외된다 (빈 리스트=위반 없음과 다른 값)

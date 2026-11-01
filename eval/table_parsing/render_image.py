@@ -24,85 +24,112 @@ def cell_text(c: Any) -> str:
     return str(c) if not isinstance(c, dict) else c.get('t', '')
 
 
-def render_table(rows: Rows, *, font_size: int = 16, style: str = 'grid', row_header: bool = False) -> Image.Image:
-    f = font(font_size)
-    nrows, ncols = len(rows), max(len(r) for r in rows)
-    tmp = ImageDraw.Draw(Image.new('RGB', (10, 10)))
+_MEASURE = ImageDraw.Draw(Image.new('RGB', (10, 10)))
 
-    def tsize(text: str, vertical: bool = False) -> tuple[float, float]:
-        lines = text.split('\n') or ['']
-        w = max(tmp.textlength(line, font=f) for line in lines)
-        h = len(lines) * font_size * LINE
-        return (h, w) if vertical else (w, h)
 
-    nested_imgs = {}
-    for r, row in enumerate(rows):
-        for c, cell in enumerate(row):
-            if isinstance(cell, dict) and cell.get('nested'):
-                nested_imgs[(r, c)] = render_table(cell['nested'], font_size=font_size - 2)
-    col_w = [0] * ncols
-    row_h = [0] * nrows
+def _text_size(text: str, f: ImageFont.FreeTypeFont, vertical: bool = False) -> tuple[float, float]:
+    lines = text.split('\n') or ['']
+    w = max(_MEASURE.textlength(line, font=f) for line in lines)
+    h = len(lines) * f.size * LINE
+    return (h, w) if vertical else (w, h)
+
+
+def _span(cell: Any) -> tuple[int, int]:
+    """(rs, cs) — 병합 칸의 행·열 폭."""
+    if isinstance(cell, dict):
+        return cell.get('rs', 1), cell.get('cs', 1)
+    return 1, 1
+
+
+def _nested_images(rows: Rows, font_size: int) -> dict[tuple[int, int], Image.Image]:
+    return {
+        (r, c): render_table(cell['nested'], font_size=font_size - 2)
+        for r, row in enumerate(rows)
+        for c, cell in enumerate(row)
+        if isinstance(cell, dict) and cell.get('nested')
+    }
+
+
+def _grid_sizes(
+    rows: Rows, nested_imgs: dict[tuple[int, int], Image.Image], f: ImageFont.FreeTypeFont
+) -> tuple[list[float], list[float]]:
+    """열 너비·행 높이 — 병합 안 된 칸만 크기를 정한다."""
+    col_w: list[float] = [0] * max(len(r) for r in rows)
+    row_h: list[float] = [0] * len(rows)
     for r, row in enumerate(rows):
         for c, cell in enumerate(row):
             if cell is None:
                 continue
-            cs = cell.get('cs', 1) if isinstance(cell, dict) else 1
-            rs = cell.get('rs', 1) if isinstance(cell, dict) else 1
+            rs, cs = _span(cell)
             if (r, c) in nested_imgs:
                 w, h = nested_imgs[(r, c)].size
             else:
-                w, h = tsize(cell_text(cell), isinstance(cell, dict) and cell.get('v'))
+                w, h = _text_size(cell_text(cell), f, isinstance(cell, dict) and cell.get('v'))
             if cs == 1:
                 col_w[c] = max(col_w[c], w + 2 * PAD)
             if rs == 1:
                 row_h[r] = max(row_h[r], h + 2 * PAD)
-    col_w = [max(w, 40) for w in col_w]
-    row_h = [max(h, 30) for h in row_h]
+    return [max(w, 40) for w in col_w], [max(h, 30) for h in row_h]
+
+
+def _edges(sizes: list[float]) -> list[float]:
+    out: list[float] = [1]
+    for s in sizes:
+        out.append(out[-1] + s)
+    return out
+
+
+def _draw_frame(d: ImageDraw.ImageDraw, box: list[float], bg: str | None, style: str) -> None:
+    if bg:
+        d.rectangle(box, fill=bg)
+    x0, y0, x1, y1 = box
+    if style == 'grid':
+        d.rectangle(box, outline='black', width=1)
+    elif style == 'hlines':
+        d.line([x0, y1, x1, y1], fill='black', width=1)
+        d.line([x0, y0, x1, y0], fill='black', width=1)
+    elif style == 'striped':
+        d.line([x0, y1, x1, y1], fill='#999', width=1)
+
+
+def _draw_text(im: Image.Image, cell: Any, box: list[float], bg: str | None, f: ImageFont.FreeTypeFont) -> None:
+    """칸 글자 — 세로쓰기('v')는 가로로 그린 뒤 90도 돌려 칸 가운데에 붙인다."""
+    x0, y0, x1, y1 = box
+    text = cell_text(cell)
+    if isinstance(cell, dict) and cell.get('v'):
+        tw, th = _text_size(text, f)
+        t = Image.new('RGB', (int(tw) + 4, int(th) + 4), bg or 'white')
+        ImageDraw.Draw(t).text((2, 2), text, fill='black', font=f)
+        t = t.rotate(90, expand=True)
+        im.paste(t, (int((x0 + x1 - t.width) / 2), int((y0 + y1 - t.height) / 2)))
+    else:
+        ImageDraw.Draw(im).multiline_text((x0 + PAD, y0 + PAD), text, fill='black', font=f, spacing=4)
+
+
+def render_table(rows: Rows, *, font_size: int = 16, style: str = 'grid', row_header: bool = False) -> Image.Image:
+    f = font(font_size)
+    nested_imgs = _nested_images(rows, font_size)
+    col_w, row_h = _grid_sizes(rows, nested_imgs, f)
     W, Hh = int(sum(col_w)) + 2, int(sum(row_h)) + 2
     im = Image.new('RGB', (W, Hh), 'white')
     d = ImageDraw.Draw(im)
-    xs = [1]
-    for w in col_w:
-        xs.append(xs[-1] + w)
-    ys = [1]
-    for h in row_h:
-        ys.append(ys[-1] + h)
+    xs, ys = _edges(col_w), _edges(row_h)
     covered = set()
     for r, row in enumerate(rows):
         for c, cell in enumerate(row):
             if cell is None or (r, c) in covered:
                 continue
-            cs = cell.get('cs', 1) if isinstance(cell, dict) else 1
-            rs = cell.get('rs', 1) if isinstance(cell, dict) else 1
-            for dr in range(rs):
-                for dc in range(cs):
-                    if (dr, dc) != (0, 0):
-                        covered.add((r + dr, c + dc))
-            x0, y0, x1, y1 = xs[c], ys[r], xs[c + cs], ys[r + rs]
+            rs, cs = _span(cell)
+            covered |= {(r + dr, c + dc) for dr in range(rs) for dc in range(cs) if (dr, dc) != (0, 0)}
+            box = [xs[c], ys[r], xs[c + cs], ys[r + rs]]
             bg = cell.get('bg') if isinstance(cell, dict) else None
             if style == 'striped' and r > 0 and r % 2 == 0 and not bg:
                 bg = '#f2f2f2'
-            if bg:
-                d.rectangle([x0, y0, x1, y1], fill=bg)
-            if style == 'grid':
-                d.rectangle([x0, y0, x1, y1], outline='black', width=1)
-            elif style == 'hlines':
-                d.line([x0, y1, x1, y1], fill='black', width=1)
-                d.line([x0, y0, x1, y0], fill='black', width=1)
-            elif style == 'striped':
-                d.line([x0, y1, x1, y1], fill='#999', width=1)
+            _draw_frame(d, box, bg, style)
             if (r, c) in nested_imgs:
-                im.paste(nested_imgs[(r, c)], (int(x0 + PAD), int(y0 + PAD)))
-                continue
-            text = cell_text(cell)
-            if isinstance(cell, dict) and cell.get('v'):
-                tw, th = tsize(text)
-                t = Image.new('RGB', (int(tw) + 4, int(th) + 4), bg or 'white')
-                ImageDraw.Draw(t).text((2, 2), text, fill='black', font=f)
-                t = t.rotate(90, expand=True)
-                im.paste(t, (int((x0 + x1 - t.width) / 2), int((y0 + y1 - t.height) / 2)))
+                im.paste(nested_imgs[(r, c)], (int(box[0] + PAD), int(box[1] + PAD)))
             else:
-                d.multiline_text((x0 + PAD, y0 + PAD), text, fill='black', font=f, spacing=4)
+                _draw_text(im, cell, box, bg, f)
     d.rectangle([0, 0, W - 1, Hh - 1], outline='black', width=1)
     return im
 

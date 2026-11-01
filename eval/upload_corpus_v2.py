@@ -29,10 +29,40 @@ CANARIES = [
 ]
 
 
-async def upload_all() -> None:
+async def _drain_and_mark(document_id: int) -> str:
+    """이 문서의 outbox 대기열 행만 처리하고 결과 표지를 돌려준다 — 공유 DB의 남의 행은 건드리지 않는다."""
     from database import AsyncSessionLocal
-    from main import app
     from rag import outbox
+    from rag.models import Document
+
+    async with AsyncSessionLocal() as s:
+        ids = await outbox.pending_row_ids(s, document_id=document_id)
+    await outbox.drain_once(row_ids=ids)
+    async with AsyncSessionLocal() as s:
+        doc = await s.get(Document, document_id)
+        return '✓' if doc.status == 'ready' else f'✗ {doc.status}: {doc.status_reason}'
+
+
+async def _upload_one(client: httpx.AsyncClient, tenant: str, f: Path) -> bool:
+    """파일 하나 업로드(+대기 중이면 색인). HTTP 실패면 False."""
+    data = {}
+    if f.suffix == '.xlsx':
+        data['description'] = f.stem.split('_', 2)[-1]  # 표 설명 = 파일명 주제부
+    res = await client.post('/kms/documents', files={'file': (f.name, f.read_bytes())}, data=data)
+    if res.status_code != 200:
+        print(f'  ✗ {tenant}/{f.name}: HTTP {res.status_code} {res.text[:100]}')
+        return False
+    body = res.json()
+    if body['status'] == 'pending':
+        mark = await _drain_and_mark(body['document_id'])
+    else:
+        mark = f"= {body['status']}"
+    print(f'  {mark} {tenant}/{f.name}')
+    return True
+
+
+async def upload_all() -> None:
+    from main import app
 
     total = 0
     for tenant in TENANTS:
@@ -45,28 +75,8 @@ async def upload_all() -> None:
             for f in sorted((ROOT / tenant).iterdir()):
                 if '.rev2' in f.name or f.name.startswith('.'):
                     continue
-                data = {}
-                if f.suffix == '.xlsx':
-                    data['description'] = f.stem.split('_', 2)[-1]  # 표 설명 = 파일명 주제부
-                res = await client.post('/kms/documents', files={'file': (f.name, f.read_bytes())}, data=data)
-                if res.status_code != 200:
-                    print(f'  ✗ {tenant}/{f.name}: HTTP {res.status_code} {res.text[:100]}')
-                    continue
-                body = res.json()
-                if body['status'] == 'pending':
-                    # 이 문서의 outbox 대기열 행만 처리 — 공유 DB의 남의 행은 건드리지 않는다
-                    async with AsyncSessionLocal() as s:
-                        ids = await outbox.pending_row_ids(s, document_id=body['document_id'])
-                    await outbox.drain_once(row_ids=ids)
-                    from rag.models import Document
-
-                    async with AsyncSessionLocal() as s:
-                        doc = await s.get(Document, body['document_id'])
-                        mark = '✓' if doc.status == 'ready' else f'✗ {doc.status}: {doc.status_reason}'
-                else:
-                    mark = f"= {body['status']}"
-                print(f'  {mark} {tenant}/{f.name}')
-                total += 1
+                if await _upload_one(client, tenant, f):
+                    total += 1
     print(f'\n업로드 시도 {total}건 완료')
 
 

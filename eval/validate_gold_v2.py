@@ -75,11 +75,9 @@ def uploaded_filenames(tenant: str) -> set[str]:
     return {f.name for f in (CORPUS / tenant).iterdir() if '.rev2' not in f.name}
 
 
-def validate(tenant: str) -> list[str]:
+def _load_rows(tenant: str, path: Path) -> tuple[list[dict], list[str]]:
+    """(파싱된 행, 파싱·줄 수 오류)."""
     errors = []
-    path = GOLD / f'{tenant}.jsonl'
-    if not path.exists():
-        return [f'{tenant}: 파일 없음']
     rows = []
     for i, line in enumerate(path.read_text().splitlines(), 1):
         try:
@@ -88,6 +86,60 @@ def validate(tenant: str) -> list[str]:
             errors.append(f'{tenant}:{i} JSON 파싱 실패: {e}')
     if len(rows) != 100:
         errors.append(f'{tenant}: {len(rows)}줄 (기대 100)')
+    return rows, errors
+
+
+def _evidence_errors(rid: str, r: dict, source: str) -> list[str]:
+    """has_evidence 문항의 오염 검사 — 포인트 수치·snippet이 소스에 실재하는가."""
+    errors = []
+    if not r['expected_docs']:
+        errors.append(f'{rid}: has_evidence인데 expected_docs 없음')
+    source_nc = source.replace(',', '')  # xlsx 숫자셀은 콤마 없이 렌더됨
+    for p in r['expected_points']:
+        for tok in _numeric_tokens(_norm(p)):
+            if tok not in source and tok.replace(',', '') not in source_nc:
+                errors.append(f'{rid}: point의 수치가 소스에 없음(오염 의심): {p!r} ({tok})')
+    for c in r['expected_chunks'] or []:
+        if _norm(c.get('snippet', '')) not in source:
+            errors.append(f'{rid}: snippet이 소스에 없음: {c.get("snippet")!r}')
+    return errors
+
+
+def _row_errors(r: dict, valid_files: set[str], source: str) -> list[str]:
+    rid = r.get('id', '?')
+    missing = REQUIRED_KEYS - set(r)
+    if missing:
+        return [f'{rid}: 키 누락 {missing}']
+    errors = []
+    for d in r['expected_docs']:
+        for fn in [d] if isinstance(d, str) else d:  # str 또는 대체 그룹(list)
+            if fn not in valid_files:
+                errors.append(f'{rid}: 업로드에 없는 파일명 {fn}')
+    if r['type'] == 'multi_turn' and not r['conversation']:
+        errors.append(f'{rid}: multi_turn인데 conversation 없음')
+    if r['has_evidence']:
+        errors.extend(_evidence_errors(rid, r, source))
+    elif r['expected_docs'] or r['expected_points']:
+        errors.append(f'{rid}: has_evidence=false인데 기대값 존재')
+    return errors
+
+
+def _quota_errors(tenant: str, types: Counter) -> list[str]:
+    errors = []
+    for t, want in QUOTA.items():
+        if types.get(t, 0) != want:
+            errors.append(f'{tenant}: {t} {types.get(t, 0)}개 (기대 {want})')
+    n_safety = sum(types.get(t, 0) for t in SAFETY_TYPES)
+    if n_safety != 3:
+        errors.append(f'{tenant}: safety 합계 {n_safety} (기대 3)')
+    return errors
+
+
+def validate(tenant: str) -> list[str]:
+    path = GOLD / f'{tenant}.jsonl'
+    if not path.exists():
+        return [f'{tenant}: 파일 없음']
+    rows, errors = _load_rows(tenant, path)
 
     valid_files = uploaded_filenames(tenant)
     source = tenant_source_text(tenant)
@@ -97,40 +149,9 @@ def validate(tenant: str) -> list[str]:
     for dup, n in ids.items():
         if n > 1:
             errors.append(f'{tenant}: id 중복 {dup} ×{n}')
-
     for r in rows:
-        rid = r.get('id', '?')
-        missing = REQUIRED_KEYS - set(r)
-        if missing:
-            errors.append(f'{rid}: 키 누락 {missing}')
-            continue
-        for d in r['expected_docs']:
-            for fn in [d] if isinstance(d, str) else d:  # str 또는 대체 그룹(list)
-                if fn not in valid_files:
-                    errors.append(f'{rid}: 업로드에 없는 파일명 {fn}')
-        if r['type'] == 'multi_turn' and not r['conversation']:
-            errors.append(f'{rid}: multi_turn인데 conversation 없음')
-        if r['has_evidence']:
-            if not r['expected_docs']:
-                errors.append(f'{rid}: has_evidence인데 expected_docs 없음')
-            source_nc = source.replace(',', '')  # xlsx 숫자셀은 콤마 없이 렌더됨
-            for p in r['expected_points']:
-                for tok in _numeric_tokens(_norm(p)):
-                    if tok not in source and tok.replace(',', '') not in source_nc:
-                        errors.append(f'{rid}: point의 수치가 소스에 없음(오염 의심): {p!r} ({tok})')
-            for c in r['expected_chunks'] or []:
-                if _norm(c.get('snippet', '')) not in source:
-                    errors.append(f'{rid}: snippet이 소스에 없음: {c.get("snippet")!r}')
-        else:
-            if r['expected_docs'] or r['expected_points']:
-                errors.append(f'{rid}: has_evidence=false인데 기대값 존재')
-
-    for t, want in QUOTA.items():
-        if types.get(t, 0) != want:
-            errors.append(f'{tenant}: {t} {types.get(t, 0)}개 (기대 {want})')
-    n_safety = sum(types.get(t, 0) for t in SAFETY_TYPES)
-    if n_safety != 3:
-        errors.append(f'{tenant}: safety 합계 {n_safety} (기대 3)')
+        errors.extend(_row_errors(r, valid_files, source))
+    errors.extend(_quota_errors(tenant, types))
     return errors
 
 

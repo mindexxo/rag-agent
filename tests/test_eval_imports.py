@@ -27,6 +27,11 @@ import pytest
         "eval.scale_noise.generate",
         "eval.scale_noise.filter",
         "eval.scale_noise.chunks",
+        "eval.citation_score",
+        "eval.hybrid_capture",
+        "eval.doc_fidelity.sources",
+        "eval.doc_fidelity.report_phases",
+        "eval.table_parsing.e2e_review",
     ],
 )
 def test_eval_module_imports(mod):

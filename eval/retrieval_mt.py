@@ -22,7 +22,7 @@ from config import settings
 from database import AsyncSessionLocal
 from eval.generation import load_gold, row_tenant
 from eval.gold_history import messages_from_conversation
-from eval.retrieval import resolve_gold, score_one
+from eval.retrieval import resolve_by_tenant, scorable, score_one
 from eval.retrieval_v2 import METRICS
 from rag.llm import create_aux_llm
 from rag.search.retriever import retrieve_candidates
@@ -66,18 +66,12 @@ async def compute(multi: bool = False) -> dict:
     # 2단계: 검색·채점 — 세션 직렬
     rows, skipped, stale = [], 0, {}
     async with AsyncSessionLocal() as session:
-        by_tenant = {}
-        for g in target:
-            by_tenant.setdefault(row_tenant(g), []).append(g)
-        for tenant, items in by_tenant.items():
-            resolved = await resolve_gold(session, tenant, items)
+        async for tenant, items, resolved in resolve_by_tenant(session, target, row_tenant):
             if resolved.stale:
                 stale[tenant] = len(resolved.stale)
-            for g in items:
-                gold_ids = sorted(resolved.scoring_ids.get(g['id']) or [])  # 스니펫 포함 청크 전부
-                if not gold_ids:
-                    skipped += 1
-                    continue
+            work, n_skip = scorable(items, resolved)
+            skipped += n_skip
+            for g, gold_ids in work:
                 queries = queries_map[g['id']]
                 cands = await retrieve_candidates(session, tenant, queries[0], top_n=20, expanded_queries=queries[1:])
                 scores = score_one([c.chunk_id for c in cands.chunks], gold_ids)

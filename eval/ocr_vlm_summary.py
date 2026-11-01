@@ -18,35 +18,38 @@ def _load(run: Path):
     return [r for r in rows if r['layer'] == 'l1' and r['path'] == 'img']
 
 
+def _aggregate(run: Path) -> tuple[dict, dict]:
+    """실행 하나 → (축별 집계, 합계). 축 시간은 그 축 표 중 가장 오래 걸린 것."""
+    agg = defaultdict(lambda: dict(c=[0, 0], n=[0, 0], p=[0, 0], num_err=0, extra=0, clean=True, sec=0.0))
+    tot = dict(c=[0, 0], n=[0, 0], p=[0, 0], num_err=0, extra=0, clean_axes=0, sec=0.0)
+    for r in _load(run):
+        a = agg[r['axis']]
+        a['c'][0] += r['cells'][0]
+        a['c'][1] += r['cells'][1]
+        a['n'][0] += r['numeric'][0]
+        a['n'][1] += r['numeric'][1]
+        a['p'][0] += r['presence'][0]
+        a['p'][1] += r['presence'][1]
+        a['num_err'] += sum(1 for m in r['mismatches'] if m['kind'] == '오독' and is_numeric(m['expected']))
+        a['extra'] += sum(1 for m in r['mismatches'] if m['kind'] == '추가')
+        a['clean'] &= r['clean']
+        a['sec'] = max(a['sec'], r['seconds'])
+    for a in agg.values():
+        tot['c'][0] += a['c'][0]
+        tot['c'][1] += a['c'][1]
+        tot['n'][0] += a['n'][0]
+        tot['n'][1] += a['n'][1]
+        tot['p'][0] += a['p'][0]
+        tot['p'][1] += a['p'][1]
+        tot['num_err'] += a['num_err']
+        tot['extra'] += a['extra']
+        tot['clean_axes'] += a['clean']
+        tot['sec'] += a['sec']
+    return agg, tot
+
+
 def table_matrix(runs: list[Path]) -> str:
-    per = {}
-    for run in runs:
-        agg = defaultdict(lambda: dict(c=[0, 0], n=[0, 0], p=[0, 0], num_err=0, extra=0, clean=True, sec=0.0))
-        tot = dict(c=[0, 0], n=[0, 0], p=[0, 0], num_err=0, extra=0, clean_axes=0, sec=0.0)
-        for r in _load(run):
-            a = agg[r['axis']]
-            a['c'][0] += r['cells'][0]
-            a['c'][1] += r['cells'][1]
-            a['n'][0] += r['numeric'][0]
-            a['n'][1] += r['numeric'][1]
-            a['p'][0] += r['presence'][0]
-            a['p'][1] += r['presence'][1]
-            a['num_err'] += sum(1 for m in r['mismatches'] if m['kind'] == '오독' and is_numeric(m['expected']))
-            a['extra'] += sum(1 for m in r['mismatches'] if m['kind'] == '추가')
-            a['clean'] &= r['clean']
-            a['sec'] = max(a['sec'], r['seconds'])
-        for a in agg.values():
-            tot['c'][0] += a['c'][0]
-            tot['c'][1] += a['c'][1]
-            tot['n'][0] += a['n'][0]
-            tot['n'][1] += a['n'][1]
-            tot['p'][0] += a['p'][0]
-            tot['p'][1] += a['p'][1]
-            tot['num_err'] += a['num_err']
-            tot['extra'] += a['extra']
-            tot['clean_axes'] += a['clean']
-            tot['sec'] += a['sec']
-        per[run.name] = (agg, tot)
+    per = {run.name: _aggregate(run) for run in runs}
     names = [r.name for r in runs]
     axes = sorted({ax for agg, _ in per.values() for ax in agg})
     out = ['| 축 | ' + ' | '.join(names) + ' |', '|---|' + '---|' * len(names)]

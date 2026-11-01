@@ -30,6 +30,7 @@ import asyncio
 from collections import defaultdict
 
 from sqlalchemy import delete, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import AsyncSessionLocal
 from rag import outbox
@@ -90,6 +91,127 @@ async def _drain(rows: list[SearchIndexOutbox]) -> None:
         print(f"⚠ 엔진 메타 갱신 미완 {r} — 행은 pending으로 남아 워커가 재시도한다")
 
 
+async def _clear(session: AsyncSession, tenants: list[str], names: set[str], apply: bool) -> None:
+    """배정 해제 + 생성한 폴더 삭제. dry-run이면 커밋하지 않는다(세션 종료 시 버려진다)."""
+    meta_rows = []  # 같은 커밋에 얹은 META_DOCUMENTS 행 — 커밋 뒤 이 행들만 drain한다
+    for t in tenants:
+        ids = (
+            (await session.execute(select(Folder.id).where(Folder.tenant_id == t).where(Folder.name.in_(names))))
+            .scalars()
+            .all()
+        )
+        if not ids:
+            continue
+        # 해제 대상은 UPDATE 전에 뽑는다 — 엔진 청크의 옛 폴더명·설명(·off였다면 searchable)을 지워야 한다
+        doc_ids = (
+            (
+                await session.execute(
+                    select(Document.id).where(Document.tenant_id == t).where(Document.folder_id.in_(ids))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        await session.execute(update(Document).where(Document.id.in_(doc_ids)).values(folder_id=None))
+        await session.execute(delete(Folder).where(Folder.id.in_(ids)))
+        if doc_ids:
+            meta_rows.append(outbox.enqueue(session, t, outbox.META_DOCUMENTS, document_ids=list(doc_ids)))
+        print(f"{t}: 폴더 {len(ids)}개 제거 + 배정 해제 {len(doc_ids)}건")
+    if apply:
+        await session.commit()
+        await _drain(meta_rows)
+        print("\n원복 완료")
+    else:
+        print("\n(dry-run — --apply 필요)")
+
+
+async def _load_docs(session: AsyncSession, t: str) -> list[tuple[Document, list[str] | None, str | None]]:
+    """테넌트의 활성 문서와 첫 청크(chunk_index 0)의 헤딩·본문 — 청크는 색인에만 있다. 없으면 None."""
+    docs = (
+        (
+            await session.execute(
+                select(Document)
+                .where(Document.tenant_id == t)
+                .where(Document.is_active.is_(True))
+                .where(Document.status == "ready")
+                .order_by(Document.filename)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not docs:
+        return []
+    from rag.search import os_index, os_search
+
+    first = await os_search.fetch_chunk_map([os_index.chunk_os_id(document_id=d.id, chunk_index=0) for d in docs])
+    rows = []
+    for d in docs:
+        c = first.get(os_index.chunk_os_id(document_id=d.id, chunk_index=0))
+        rows.append((d, c.heading_path if c else None, c.text if c else None))
+    return rows
+
+
+async def _upsert_folders(session: AsyncSession, t: str) -> dict[str, int]:
+    """FOLDERS 각각을 만들거나 설명·검색토글을 맞추고 폴더 키 → id를 돌려준다."""
+    folder_ids = {}
+    for key, (name, desc) in FOLDERS.items():
+        f = (
+            (await session.execute(select(Folder).where(Folder.tenant_id == t).where(Folder.name == name)))
+            .scalars()
+            .first()
+        )
+        if f is None:
+            f = Folder(tenant_id=t, name=name, description=desc, is_searchable=True)
+            session.add(f)
+            await session.flush()
+        else:
+            f.description = desc
+            f.is_searchable = True  # 배정 후 off면 문서가 검색에서 통째로 빠진다
+        folder_ids[key] = f.id
+    return folder_ids
+
+
+def _print_plan(plan: dict[str, dict[str, list[str]]]) -> None:
+    for t, groups in plan.items():
+        print(f"\n[{t}]")
+        for name in (n for n, _ in FOLDERS.values()):
+            files = groups.get(name, [])
+            if files:
+                print(f"  {name} ({len(files)})")
+                for fn in files:
+                    print(f"      {fn}")
+
+
+async def _assign(session: AsyncSession, tenants: list[str], apply: bool) -> None:
+    plan: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+    meta_rows = []  # 같은 커밋에 얹은 META_DOCUMENTS 행 — 커밋 뒤 이 행들만 drain한다
+    for t in tenants:
+        rows = await _load_docs(session, t)
+        if not rows:
+            continue
+        folder_ids = await _upsert_folders(session, t)
+        for d, heading, text in rows:
+            title = (heading or [""])[0] or (text or "").lstrip().split("\n", 1)[0][:60]
+            key = classify(d.filename, title)
+            plan[t][FOLDERS[key][0]].append(f"{d.filename}   〔{title[:34]}〕")
+            d.folder_id = folder_ids[key]
+        # 배정한 문서 전부에 fan-out — 폴더 설명·검색토글이 바뀐 경우까지 한 행으로 덮는다
+        meta_rows.append(outbox.enqueue(session, t, outbox.META_DOCUMENTS, document_ids=[d.id for d, _, _ in rows]))
+
+    _print_plan(plan)
+
+    total = sum(len(v) for g in plan.values() for v in g.values())
+    if apply:
+        await session.commit()
+        await _drain(meta_rows)
+        print(f"\n반영 완료 — 문서 {total}건 / 테넌트 {len(plan)}개 (엔진 폴더 메타는 outbox META로 갱신됨)")
+        print("⚠ 리랭커 입력이 바뀌었으므로 검색축 재측정 필요 (재색인은 불필요)")
+    else:
+        await session.rollback()
+        print(f"\n(dry-run) 문서 {total}건 / 테넌트 {len(plan)}개 — 반영하려면 --apply")
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser(description="코퍼스 폴더 분류")
     ap.add_argument("--apply", action="store_true", help="실제 반영 (미지정 시 dry-run)")
@@ -100,114 +222,11 @@ async def main() -> None:
     tenants = [args.tenant] if args.tenant else V2_TENANTS
     names = {name for name, _ in FOLDERS.values()}
 
-    meta_rows = []  # 같은 커밋에 얹은 META_DOCUMENTS 행 — 커밋 뒤 이 행들만 drain한다
     async with AsyncSessionLocal() as session:
         if args.clear:
-            for t in tenants:
-                ids = (
-                    (
-                        await session.execute(
-                            select(Folder.id).where(Folder.tenant_id == t).where(Folder.name.in_(names))
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                if not ids:
-                    continue
-                # 해제 대상은 UPDATE 전에 뽑는다 — 엔진 청크의 옛 폴더명·설명(·off였다면 searchable)을 지워야 한다
-                doc_ids = (
-                    (
-                        await session.execute(
-                            select(Document.id).where(Document.tenant_id == t).where(Document.folder_id.in_(ids))
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                await session.execute(update(Document).where(Document.id.in_(doc_ids)).values(folder_id=None))
-                await session.execute(delete(Folder).where(Folder.id.in_(ids)))
-                if doc_ids:
-                    meta_rows.append(outbox.enqueue(session, t, outbox.META_DOCUMENTS, document_ids=list(doc_ids)))
-                print(f"{t}: 폴더 {len(ids)}개 제거 + 배정 해제 {len(doc_ids)}건")
-            if args.apply:
-                await session.commit()
-                await _drain(meta_rows)
-                print("\n원복 완료")
-            else:
-                print("\n(dry-run — --apply 필요)")
-            return
-
-        plan: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
-        for t in tenants:
-            docs = (
-                (
-                    await session.execute(
-                        select(Document)
-                        .where(Document.tenant_id == t)
-                        .where(Document.is_active.is_(True))
-                        .where(Document.status == "ready")
-                        .order_by(Document.filename)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            if not docs:
-                continue
-            # 첫 청크(chunk_index 0)의 헤딩·본문 — 청크는 색인에만 있다. 없으면 None.
-            from rag.search import os_index, os_search
-
-            first = await os_search.fetch_chunk_map(
-                [os_index.chunk_os_id(document_id=d.id, chunk_index=0) for d in docs]
-            )
-            rows = []
-            for d in docs:
-                c = first.get(os_index.chunk_os_id(document_id=d.id, chunk_index=0))
-                rows.append((d, c.heading_path if c else None, c.text if c else None))
-
-            folder_ids = {}
-            for key, (name, desc) in FOLDERS.items():
-                f = (
-                    (await session.execute(select(Folder).where(Folder.tenant_id == t).where(Folder.name == name)))
-                    .scalars()
-                    .first()
-                )
-                if f is None:
-                    f = Folder(tenant_id=t, name=name, description=desc, is_searchable=True)
-                    session.add(f)
-                    await session.flush()
-                else:
-                    f.description = desc
-                    f.is_searchable = True  # 배정 후 off면 문서가 검색에서 통째로 빠진다
-                folder_ids[key] = f.id
-
-            for d, heading, text in rows:
-                title = (heading or [""])[0] or (text or "").lstrip().split("\n", 1)[0][:60]
-                key = classify(d.filename, title)
-                plan[t][FOLDERS[key][0]].append(f"{d.filename}   〔{title[:34]}〕")
-                d.folder_id = folder_ids[key]
-            # 배정한 문서 전부에 fan-out — 폴더 설명·검색토글이 바뀐 경우까지 한 행으로 덮는다
-            meta_rows.append(outbox.enqueue(session, t, outbox.META_DOCUMENTS, document_ids=[d.id for d, _, _ in rows]))
-
-        for t, groups in plan.items():
-            print(f"\n[{t}]")
-            for name in (n for n, _ in FOLDERS.values()):
-                files = groups.get(name, [])
-                if files:
-                    print(f"  {name} ({len(files)})")
-                    for fn in files:
-                        print(f"      {fn}")
-
-        total = sum(len(v) for g in plan.values() for v in g.values())
-        if args.apply:
-            await session.commit()
-            await _drain(meta_rows)
-            print(f"\n반영 완료 — 문서 {total}건 / 테넌트 {len(plan)}개 (엔진 폴더 메타는 outbox META로 갱신됨)")
-            print("⚠ 리랭커 입력이 바뀌었으므로 검색축 재측정 필요 (재색인은 불필요)")
+            await _clear(session, tenants, names, args.apply)
         else:
-            await session.rollback()
-            print(f"\n(dry-run) 문서 {total}건 / 테넌트 {len(plan)}개 — 반영하려면 --apply")
+            await _assign(session, tenants, args.apply)
 
 
 if __name__ == "__main__":

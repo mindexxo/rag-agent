@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from docling_core.types.doc import BoundingBox, DoclingDocument, NodeItem
+    from docling_core.types.doc import BoundingBox, DoclingDocument, NodeItem, PictureItem
+    from PIL import Image
 
 type Convert = Callable[..., DoclingDocument]  # 문서 변환 함수(테스트 주입용)
 
@@ -95,13 +96,39 @@ def _in_table(item: NodeItem, doc: DoclingDocument) -> bool:
     return False
 
 
+def _locate(
+    item: PictureItem, doc: DoclingDocument, path: Path, fmt: str
+) -> tuple[int | None, float | None, Image.Image | None]:
+    """그림의 쪽 번호·쪽 면적 대비 비율·원본 크롭. PDF는 쪽을 그려 자르고, 그 밖은 docling이 든 원본을 쓴다."""
+    from config import settings
+
+    prov = item.prov[0] if item.prov else None
+    page = prov.page_no if prov else None
+    ratio = None
+    image = None
+    if prov is not None and page in doc.pages:
+        size = doc.pages[page].size
+        ratio = prov.bbox.area() / (size.width * size.height) if size.width * size.height else None
+        if fmt == 'pdf':
+            image = _pdf_crop(path, page, prov.bbox, size.height, settings.vlm_caption_scale)
+    if image is None:
+        image = item.get_image(doc)
+    return page, ratio, image
+
+
+def _skip_reason(fmt: str, ratio: float | None, threshold: float) -> str:
+    """캡션이 없는 이유."""
+    if fmt == 'xlsx':
+        return 'XLSX 하한(#249)'
+    return '면적 하한' if ratio is not None and ratio < threshold else '기타'
+
+
 def extract_document(
     document_id: int, filename: str, path: Path, chunk_texts: list[str], crops_dir: Path, convert: Convert | None = None
 ) -> list[PictureRecord]:
     """문서 하나 → 그림 기록들. convert는 테스트 주입용(기본: 운영 docling_convert — 변환 자식 프로세스)."""
     from docling_core.types.doc import PictureItem
 
-    from config import settings
     from rag import chunking as ch
 
     fmt = path.suffix.lower().lstrip('.')
@@ -114,25 +141,9 @@ def extract_document(
         if not isinstance(item, PictureItem):
             continue
         i = len(out)
-        prov = item.prov[0] if item.prov else None
-        page = prov.page_no if prov else None
-        ratio = None
-        image = None
-        if prov is not None and page in doc.pages:
-            size = doc.pages[page].size
-            ratio = prov.bbox.area() / (size.width * size.height) if size.width * size.height else None
-            if fmt == 'pdf':
-                image = _pdf_crop(path, page, prov.bbox, size.height, settings.vlm_caption_scale)
-        if image is None:
-            image = item.get_image(doc)
+        page, ratio, image = _locate(item, doc, path, fmt)
         caption = ch.docling_elements.docling_picture_caption(item)
-        skip = ''
-        if not caption:
-            skip = (
-                'XLSX 하한(#249)'
-                if fmt == 'xlsx'
-                else ('면적 하한' if ratio is not None and ratio < threshold else '기타')
-            )
+        skip = '' if caption else _skip_reason(fmt, ratio, threshold)
         name = f'{document_id}_{i:03d}.png'
         if image is not None:
             buf = io.BytesIO()

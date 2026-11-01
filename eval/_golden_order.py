@@ -18,6 +18,7 @@ import asyncio
 import hashlib
 import json
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -52,6 +53,16 @@ EXPANDED = {
     '교환은 몇 번까지 가능해?': ['교환 횟수 제한', '재교환 가능 여부'],
     '반품 기간': ['반품 신청 기한', '환불 접수 기간'],
 }
+
+
+def _cases() -> Iterator[tuple[str, str, list[str] | None, bool]]:
+    """(질의, 경로, 멀티쿼리 변형, 리랭크) — 질의마다 single, 변형이 있으면 multi, 각각 리랭크 off·on 순."""
+    for q in QUERIES:
+        for label, exp in (('single', None), ('multi', EXPANDED.get(q))):
+            if label == 'multi' and not exp:
+                continue
+            for rerank_on in (False, True):
+                yield q, label, exp, rerank_on
 
 
 async def main():
@@ -89,19 +100,15 @@ async def main():
             (await session.execute(select(Document.tenant_id).distinct().order_by(Document.tenant_id))).scalars().all()
         )
         for tenant in tenants:
-            for q in QUERIES:
-                for label, exp in (('single', None), ('multi', EXPANDED.get(q))):
-                    if label == 'multi' and not exp:
-                        continue
-                    for rerank_on in (False, True):
-                        settings.rerank_enabled = rerank_on  # 호출 시점마다 읽히는지도 함께 검증
-                        cands = await rt.retrieve_candidates(session, tenant, q, top_n=20, expanded_queries=exp)
-                        key = f'{tenant}|{q}|{label}|rerank={rerank_on}'
-                        out[key] = {
-                            'ids': [c.chunk_id for c in cands.chunks],
-                            'ident': [c.matched_ident for c in cands.chunks],
-                            'dist': round(cands.top_dense_distance, 9),
-                        }
+            for q, label, exp, rerank_on in _cases():
+                settings.rerank_enabled = rerank_on  # 호출 시점마다 읽히는지도 함께 검증
+                cands = await rt.retrieve_candidates(session, tenant, q, top_n=20, expanded_queries=exp)
+                key = f'{tenant}|{q}|{label}|rerank={rerank_on}'
+                out[key] = {
+                    'ids': [c.chunk_id for c in cands.chunks],
+                    'ident': [c.matched_ident for c in cands.chunks],
+                    'dist': round(cands.top_dense_distance, 9),
+                }
     await engine.dispose()
     print(json.dumps(out, ensure_ascii=False, indent=1, sort_keys=True))
 

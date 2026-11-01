@@ -28,6 +28,8 @@ LlmClient(rag/llm)와 acomplete 시그니처를 맞춰 eval/generation.py에 주
 """
 
 import asyncio
+import base64
+import json
 import shutil
 import tempfile
 from typing import TYPE_CHECKING
@@ -57,6 +59,41 @@ class ClaudeCliClient:
         if not self._exe:
             raise RuntimeError("claude 실행 파일을 PATH에서 찾지 못함 — claude-code 설치·로그인 확인")
 
+    def _command(self, io_flags: list[str], system: str | None) -> list[str]:
+        """위생 플래그(모듈 docstring)가 박힌 `claude -p` 명령줄. io_flags는 입출력 형식 플래그."""
+        assert self._exe is not None
+        return [
+            self._exe,
+            "-p",
+            "--model",
+            self.model,
+            "--tools",
+            "",
+            *io_flags,
+            "--strict-mcp-config",
+            "--disable-slash-commands",
+            "--setting-sources",
+            "",
+            "--system-prompt",
+            system or _MINIMAL_SYSTEM,
+        ]
+
+    async def _run(self, cmd: list[str], stdin: bytes, what: str) -> tuple[int | None, bytes, bytes]:
+        """중립 cwd에서 서브프로세스 1회 → (exit 코드, stdout, stderr). 상한 초과는 프로세스를 죽이고 RuntimeError."""
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=self._workdir,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(stdin), timeout=TIMEOUT_SECONDS)
+        except asyncio.TimeoutError as e:
+            proc.kill()
+            raise RuntimeError(f"{what} 타임아웃 ({TIMEOUT_SECONDS}s, model={self.model})") from e
+        return proc.returncode, out, err
+
     async def acomplete(
         self, messages: list[dict], *, schema: type[BaseModel] | None = None, citations: CitationTail | None = None
     ) -> str:
@@ -66,42 +103,15 @@ class ClaudeCliClient:
         # assistant 턴이 섞인 형태가 오면 순서대로 이어붙인다 — 정보 소실보다 낫다.
         prompt = "\n\n".join(m["content"] for m in messages if m["role"] != "system")
 
-        cmd = [
-            self._exe,
-            "-p",
-            "--model",
-            self.model,
-            "--tools",
-            "",
-            "--output-format",
-            "text",
-            "--strict-mcp-config",
-            "--disable-slash-commands",
-            "--setting-sources",
-            "",
-            "--system-prompt",
-            system or _MINIMAL_SYSTEM,
-        ]
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=self._workdir,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            out, err = await asyncio.wait_for(proc.communicate(prompt.encode()), timeout=TIMEOUT_SECONDS)
-        except asyncio.TimeoutError as e:
-            proc.kill()
-            raise RuntimeError(f"claude -p 타임아웃 ({TIMEOUT_SECONDS}s, model={self.model})") from e
-        if proc.returncode != 0:
+        cmd = self._command(["--output-format", "text"], system)
+        returncode, out, err = await self._run(cmd, prompt.encode(), "claude -p")
+        if returncode != 0:
             # stderr 앞부분만 — 로그인 만료·한도 도달이 여기로 온다. 조용히 삼키면
             # 빈 답변이 채점돼 수치가 오염되므로 시끄럽게 실패한다.
             # 사유는 stdout으로 오는 경우가 많다(한도·요청 제한 메시지) — stderr만 보면 빈 문자열이라 원인 불명이었다
             # (10/10 A 실행 실패 268건 전부 사유 공란). 둘 다 싣는다.
             raise RuntimeError(
-                f"claude -p 실패 (exit {proc.returncode}): stdout={out.decode()[:200]!r} stderr={err.decode()[:200]!r}"
+                f"claude -p 실패 (exit {returncode}): stdout={out.decode()[:200]!r} stderr={err.decode()[:200]!r}"
             )
         return out.decode().strip()
 
@@ -113,9 +123,6 @@ class ClaudeCliClient:
         출력도 stream-json(+--verbose)을 요구해, 마지막 result 이벤트의 result 문자열만 답으로 취한다.
         승인 채널은 acomplete와 같은 claude CLI다(모듈 docstring — 외부 전송이 신규가 아니다).
         """
-        import base64
-        import json
-
         msg = {
             "type": "user",
             "message": {
@@ -133,53 +140,29 @@ class ClaudeCliClient:
                 ],
             },
         }
-        cmd = [
-            self._exe,
-            "-p",
-            "--model",
-            self.model,
-            "--tools",
-            "",
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--strict-mcp-config",
-            "--disable-slash-commands",
-            "--setting-sources",
-            "",
-            "--system-prompt",
-            system or _MINIMAL_SYSTEM,
-        ]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=self._workdir,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            out, err = await asyncio.wait_for(
-                proc.communicate((json.dumps(msg, ensure_ascii=False) + "\n").encode()), timeout=TIMEOUT_SECONDS
-            )
-        except asyncio.TimeoutError as e:
-            proc.kill()
-            raise RuntimeError(f"claude -p(이미지) 타임아웃 ({TIMEOUT_SECONDS}s, model={self.model})") from e
-        result = None
-        for line in out.decode().splitlines():
-            try:
-                event = json.loads(line)
-            except ValueError:
-                continue
-            if event.get("type") == "result":
-                result = event
-        if proc.returncode != 0 or result is None or result.get("is_error"):
+        cmd = self._command(["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"], system)
+        stdin = (json.dumps(msg, ensure_ascii=False) + "\n").encode()
+        returncode, out, err = await self._run(cmd, stdin, "claude -p(이미지)")
+        result = _last_result_event(out)
+        if returncode != 0 or result is None or result.get("is_error"):
             raise RuntimeError(
-                f"claude -p(이미지) 실패 (exit {proc.returncode}): "
+                f"claude -p(이미지) 실패 (exit {returncode}): "
                 f"result={str(result)[:200]!r} stderr={err.decode()[:200]!r}"
             )
         return str(result.get("result") or "").strip()
+
+
+def _last_result_event(out: bytes) -> dict | None:
+    """stream-json 출력에서 마지막 result 이벤트. JSON이 아닌 줄은 건너뛴다."""
+    result = None
+    for line in out.decode().splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("type") == "result":
+            result = event
+    return result
 
 
 async def _smoke():

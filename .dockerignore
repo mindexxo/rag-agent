@@ -31,3 +31,7 @@ sample_site
 scratch_*.log
 *.md
 AI_인터뷰_준비.txt
+
+# 개발계 공용 설정 — 이미지에 들어가면 운영에서 빠뜨린 값이 조용히 개발계 주소로 채워진다.
+# 운영 값은 서버의 kms.env로만 주입한다(deploy/README.md).
+.env.dev

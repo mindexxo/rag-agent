@@ -30,12 +30,26 @@ RUN pip install --upgrade pip \
     && pip uninstall -y rapidocr opencv-python \
     && pip install --no-cache-dir opencv-python-headless
 
+# 시간대 — ICCS 컨테이너와 로그 시각을 맞춘다. slim 베이스엔 zoneinfo가 없다.
+ENV TZ=Asia/Seoul
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+# docling 모델(레이아웃·표 구조)을 이미지에 굽는다 — 배포마다 컨테이너를 새로 만들므로 실행 중 다운로드는
+# 매번 반복되고, 외부 사이트 장애가 곧 색인 실패가 된다. HF_HUB_OFFLINE은 빠진 모델을 받으러 나가지 않고 바로 실패시킨다.
+ENV DOCLING_ARTIFACTS_PATH=/opt/docling-models \
+    HF_HUB_OFFLINE=1
+RUN HF_HUB_OFFLINE=0 docling-tools models download layout tableformer -o /opt/docling-models \
+    && chmod -R a+rX /opt/docling-models
+
+# 실행 사용자 = ICCS 컨테이너와 같은 ccadmin:admin(1001:1002) — 공유 NAS 파일 권한이 이 ID로 맞춰져 있다.
+RUN groupadd -g 1002 admin && useradd -m -u 1001 -g admin ccadmin
+
 # 애플리케이션 코드 복사
 COPY . .
 
-# 비루트 사용자로 구동
-RUN useradd -m appuser
-USER appuser
+USER ccadmin
 
 EXPOSE 8000
 

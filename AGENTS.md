@@ -61,6 +61,8 @@ import한다(118MB 패키지라 사내 vLLM·TEI만 쓰는 프로세스가 비�
   못 붙어도 서버·워커는 기동되지만(ERROR 로그) 검색·색인이 안 된다.
 - 색인 정합 복구: `python -m rag.os_reconcile`(대조만) / `--apply`(재등재·삭제). `eval/`이 아니라
   `rag/` 아래인 이유는 도커 이미지가 `eval/`을 빼기 때문이다 — 운영 복구 명령은 운영 이미지 안에 있어야 한다(#146).
+- ICCS 앱 서버 배포: `deploy/`(compose·빌드/배포 스크립트·운영 설정 틀) — 절차는 `deploy/README.md`. 루트
+  `docker-compose.yml`은 개발계용이다. 운영 이미지에는 `.env.dev`가 없다(값은 서버의 `kms.env`로만).
 - 테스트: `pytest` — 전체 십수 분, 절반이 docling 변환 테스트(LLM·임베딩은 fake로 대체).
   DB·Redis·OpenSearch는 **로컬 컨테이너만** 쓴다(`docker-compose.test.yml`, 도커 필요) — 루트 `conftest.py`가 `.env`의
   개발계 주소를 로컬 포트로 덮고, 세션 시작마다 `up -d --wait`로 헬스체크까지 기다린다(떠 있으면 약 1초, 첫 기동은 OpenSearch 이미지 빌드).

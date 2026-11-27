@@ -156,7 +156,7 @@ def _config_violations(rel: str, text: str) -> list[str]:
 
 def test_커밋된_설정에_평문_비밀값이_없다():
     bad = []
-    for path in _committed(r'(^|/)\.env[^/]*$|(^|/)docker-compose[^/]*\.ya?ml$'):
+    for path in _committed(r'(^|/)\.env[^/]*$|(^|/)[^/]+\.env(\.example)?$|(^|/)docker-compose[^/]*\.ya?ml$'):
         bad += _config_violations(str(path.relative_to(ROOT)), path.read_text(encoding='utf-8'))
     assert not bad, f'평문 비밀값(값은 생략) — 빈 값·자리표시·${{변수}}로 바꾸거나 사유·값 해시와 함께 ALLOWED에: {bad}'
 

@@ -108,3 +108,10 @@
 | INV-82 | 측정 축은 정본 골드(`eval/gold_set_v2.jsonl`)만 읽는다 | `AGENTS.md` | `tests/test_invariants_static.py::test_INV82_분할본_gold_v2는_validate_gold_v2만_읽는다` · `tests/test_invariants_static.py::test_INV82_eval이_여는_골드_파일은_정본뿐이다` | 분할본은 validate_gold_v2만 |
 | INV-83 | 기존 인덱스에는 덧붙이는 필드만 추가하고 매핑 변경은 건드리지 않는다 | `rag/search/os_client.py` | `tests/test_invariants_static.py::test_INV83_기존_인덱스에는_빠진_추가_필드만_정의_그대로_덧붙인다` · `tests/test_invariants_static.py::test_INV83_추가_필드는_재색인_없이_붙여도_되는_모양뿐이다` |  |
 | INV-84 | BM25 질의는 lex_clause()로만 만든다(기본 match는 2.18 hybrid를 깬다) | `rag/search/os_client.py` | `tests/test_os_search_pure.py::test_nori_질의에_2_18_결함_회피가_붙어_있다` · `tests/test_invariants_code.py::test_INV84_rag의_전문_검색_절은_lex_clause_하나에서만_만든다` · `tests/test_invariants_code.py::test_INV84_탐지기는_함수_밖과_다른_종류의_전문_검색_절도_잡는다` | rag/ 안 match 계열 dict 리터럴은 lex_clause에만 |
+
+## 배포
+
+| ID | 불변식 | 정의점 | 강제 | 비고 |
+|---|---|---|---|---|
+| INV-90 | 배포에서 API·워커는 같은 업로드 원본 경로(`BLOB_STORAGE_DIR`)를 같은 NAS 마운트 아래로 본다 — DB에 절대경로가 저장된다 | `deploy/docker-compose.yml` | `tests/test_deploy_config.py::test_INV90_API와_워커는_같은_업로드_원본_경로를_같은_NAS_마운트_아래로_본다` | 경로는 compose가 고정 — 서버 kms.env로 못 바꾸게 틀에서 뺐다(`test_운영_설정_틀의_키는_전부_config에_있는_이름이다`) |
+| INV-91 | 운영 이미지에는 개발계 설정(`.env.dev`)을 넣지 않는다 — 빠뜨린 운영 값이 개발계 주소로 채워지지 않게 | `.dockerignore` | `tests/test_deploy_config.py::test_INV91_운영_이미지에는_개발계_설정이_들어가지_않는다` |  |
